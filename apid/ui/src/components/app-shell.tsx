@@ -1,6 +1,6 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Activity, Boxes, Cable, KeyRound, LogOut, Settings2 } from 'lucide-react'
+import { Activity, Boxes, Cable, Clock3, KeyRound, LogOut, Settings2 } from 'lucide-react'
 import { api, rememberSession } from '@/lib/api'
 import { sessionKey } from '@/components/auth'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ const nav = [
   { to: '/network' as const, label: 'Network', icon: Cable },
   { to: '/services' as const, label: 'Services', icon: Boxes },
   { to: '/access' as const, label: 'Access', icon: KeyRound },
+  { to: '/time' as const, label: 'Time', icon: Clock3 },
   { to: '/system' as const, label: 'System', icon: Settings2 },
 ]
 
