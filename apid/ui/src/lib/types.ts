@@ -17,6 +17,21 @@ export interface TaskRecord {
   foldedCount: number
 }
 
+export interface TimeStatus {
+  status: 'synchronized' | 'synchronizing' | 'offline-degraded' | 'invalid-source' | 'unknown'
+  synchronized?: boolean
+  detail?: string
+  server?: { name?: string | null; address?: string | null }
+  sample?: {
+    leap: number
+    stratum: number
+    spike: boolean
+    offsetSeconds: number
+    packetCount: number
+    correction: 'step' | 'slew'
+  }
+}
+
 export interface Meta {
   api: string
   settingsSchemaVersion: number

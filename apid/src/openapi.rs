@@ -36,6 +36,7 @@ use utoipa::OpenApi;
         crate::routes::api_v1_settings,
         crate::routes::api_v1_settings_write,
         crate::routes::api_v1_state,
+        crate::routes::api_v1_time_status,
         crate::routes::api_v1_tasks_list,
         crate::routes::api_v1_task,
         crate::routes::api_v1_change_password,

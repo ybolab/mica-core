@@ -302,6 +302,14 @@ const V1_TRANSIENT_PASSWORD_PATH: &str = "/v1/actions/transient-root-password";
 const V1_TASKS_PATH: &str = "/v1/tasks";
 const V1_TASK_ROUTE: &str = "/v1/tasks/{id}";
 
+/// The read-only time-synchronization status (PLAN-044).
+///
+/// A fixed path like the action verbs, not a resource triple: the status is
+/// observed from timesyncd at request time, names no dot-path, and has no
+/// write counterpart — there is deliberately no route beside it that could
+/// pause or stop synchronization.
+const V1_TIME_STATUS_PATH: &str = "/v1/time/status";
+
 /// M8's one route.
 ///
 /// Not under `/v1/actions/`, and the reason is the reason section 2.3 item
@@ -406,6 +414,9 @@ fn api_router() -> Router<AppState> {
             get(api_v1_settings).put(api_v1_settings_write),
         )
         .route(V1_STATE_ROUTE, get(api_v1_state))
+        // GET only: the status is observed, and pausing synchronization is a
+        // control this API deliberately does not have.
+        .route(V1_TIME_STATUS_PATH, get(api_v1_time_status))
         .route(V1_TASKS_PATH, get(api_v1_tasks_list))
         .route(V1_TASK_ROUTE, get(api_v1_task))
         .route(V1_CHANGE_PASSWORD_PATH, post(api_v1_change_password))
@@ -1245,19 +1256,26 @@ pub(crate) async fn api_v1_settings(
 
 /// What the value at a writable dot-path has to be.
 ///
-/// Two shapes and not one validator per path, because the write surface admits
-/// exactly four paths on one ground: each value is *"a scalar whose validity
-/// depends on nothing else in the tree"*. A hostname, which
-/// `valid_hostname` decides on its own, and three switches, which *"cannot be
-/// invalid at all"*. Anything relational is a later milestone by construction,
-/// because a third shape here would be the first thing to need the rest of the
-/// tree to decide.
+/// Four shapes and not one validator per path, because the write surface
+/// admits its paths on one ground: each value's validity *"depends on nothing
+/// else in the tree"*. A hostname, which `valid_hostname` decides on its own;
+/// three switches, which *"cannot be invalid at all"*; and the two `time`
+/// values, whose rules ([`mosd_settings::validate_timezone_name`] and
+/// [`mosd_settings::validate_ntp_servers`]) are each self-contained — stated
+/// once, in the crate that owns the model, and only CALLED here, so this
+/// surface cannot drift from what `Settings::set` enforces. Anything
+/// relational is a later milestone by construction.
 #[derive(Clone, Copy)]
 enum ScalarShape {
     /// A JSON string [`valid_hostname`] accepts.
     Hostname,
     /// A JSON boolean, and nothing else.
     Flag,
+    /// A JSON string [`mosd_settings::validate_timezone_name`] accepts.
+    Timezone,
+    /// A JSON array of strings [`mosd_settings::validate_ntp_servers`]
+    /// accepts, written whole — the dot-path syntax has no array indexing.
+    NtpServers,
 }
 
 /// The dot-paths `PUT /api/v1/settings/{path}` writes, and the shape each
@@ -1274,11 +1292,13 @@ enum ScalarShape {
 /// undeclared `wg9` writes a physical-kind `network.wg9` carrying a WireGuard
 /// block. Every path this list does not carry is refused by
 /// [`settings_write_refusal`] before any bus call is made.
-const WRITABLE_SETTINGS: [(&str, ScalarShape); 4] = [
+const WRITABLE_SETTINGS: [(&str, ScalarShape); 6] = [
     ("hostname", ScalarShape::Hostname),
     ("access.ssh.enabled", ScalarShape::Flag),
     ("container.enabled", ScalarShape::Flag),
     ("mqtt.enabled", ScalarShape::Flag),
+    ("time.ntp.servers", ScalarShape::NtpServers),
+    ("time.timezone", ScalarShape::Timezone),
 ];
 
 /// The resource the write route's not-found envelope names, being the settings
@@ -1288,7 +1308,7 @@ const SETTINGS_COLLECTION: &str = "settings";
 /// The sentence a refusal carries when nothing more specific is true of the
 /// path: it is a real part of the tree, and this route is not how it is
 /// written.
-const WRITES_FOUR: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled` and `mqtt.enabled` and no other dot-path; every other subtree is written through its own resource route";
+const WRITES_SIX: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and `time.timezone` and no other dot-path; every other subtree is written through its own resource route";
 
 /// The shape `path` is written with, when this route writes it at all.
 fn writable_shape(path: &str) -> Option<ScalarShape> {
@@ -1315,6 +1335,27 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
             valid_hostname(name)
                 .then_some(())
                 .ok_or_else(|| HOSTNAME_RULES.to_string())
+        }
+        ScalarShape::Timezone => {
+            let zone = value
+                .as_str()
+                .ok_or_else(|| "this setting is text: the body is a JSON string".to_string())?;
+            mosd_settings::validate_timezone_name(zone)
+        }
+        ScalarShape::NtpServers => {
+            let servers: Vec<String> = value
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .ok_or_else(|| {
+                    "this setting is a list: the body is a JSON array of server strings"
+                        .to_string()
+                })?;
+            mosd_settings::validate_ntp_servers(&servers)
         }
     }
 }
@@ -1362,7 +1403,7 @@ fn settings_write_refusal(path: &str) -> Response {
     // `""` and `"."` as replacing the root. It is a real path this route
     // refuses, so it takes the refusal rather than the 422 below.
     if path == "." {
-        return refused(WRITES_FOUR.to_string());
+        return refused(WRITES_SIX.to_string());
     }
     let Some(segments) = mosd_settings::path_segments(path) else {
         return api_response(
@@ -1389,7 +1430,7 @@ fn settings_write_refusal(path: &str) -> Response {
         // the subtree where a passthrough is actively destructive rather than
         // merely wrong.
         "network" => "the `network` subtree is not written through this route: it is written through the typed network routes — `PUT /api/v1/network/{iface}` and the `DELETE` beside it, `PUT /api/v1/network` for the whole map, and the peer collection under each interface. A raw write here would create an entry of the default kind for an interface that has none, and would run none of the relational rules: a bridge naming a port that does not exist would be accepted".to_string(),
-        _ => WRITES_FOUR.to_string(),
+        _ => WRITES_SIX.to_string(),
     })
 }
 
@@ -1398,8 +1439,9 @@ fn settings_write_refusal(path: &str) -> Response {
 /// A bare JSON value, the same shape `GET` answers.
 ///
 /// The schema is wide because the dot-path decides what is acceptable. What
-/// is actually accepted is narrow: a JSON string for `hostname`, `true` or
-/// `false` for the three switches. Anything else is **422**.
+/// is actually accepted is narrow: a JSON string for `hostname` and
+/// `time.timezone`, `true` or `false` for the three switches, and a JSON
+/// array of server strings for `time.ntp.servers`. Anything else is **422**.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(transparent)]
 pub(crate) struct SettingsWrite(Value);
@@ -1408,8 +1450,9 @@ pub(crate) struct SettingsWrite(Value);
 // which would invite a client to trust the echo over its own GET.
 /// Write one scalar setting by dot-path.
 ///
-/// Accepts four paths and no others: `hostname`, `access.ssh.enabled`,
-/// `container.enabled` and `mqtt.enabled`. Any other path is refused.
+/// Accepts six paths and no others: `hostname`, `access.ssh.enabled`,
+/// `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and
+/// `time.timezone`. Any other path is refused.
 ///
 /// Answers **202** with the queued task id on success. Takes a bearer token.
 #[utoipa::path(
@@ -1417,7 +1460,7 @@ pub(crate) struct SettingsWrite(Value);
     path = V1_SETTINGS_DOC,
     context_path = API,
     tag = "resources",
-    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled` or `mqtt.enabled`")),
+    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` or `time.timezone`")),
     request_body = SettingsWrite,
     responses(
         (status = 202, description = "The value was persisted and its scoped reconciliation was queued", body = TaskAccepted),
@@ -1572,6 +1615,40 @@ pub(crate) async fn api_v1_state(
 ) -> Response {
     let value = state.api.get_state(&path).await;
     resource_response(value, &path)
+}
+
+/// Read the time-synchronization status.
+///
+/// Observed from timesyncd at request time and classified by mosd:
+/// `synchronized`, `synchronizing`, `offline-degraded` (no reachable server;
+/// retries continue on the pinned 30-second policy), `invalid-source` (a
+/// server answered and its replies cannot be used), or `unknown` (timesyncd
+/// itself is not observable). Read-only: there is no route that pauses or
+/// stops synchronization.
+#[utoipa::path(
+    get,
+    path = V1_TIME_STATUS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The classified status with the evidence it rests on: the selected server, the kernel's synchronized bit, and the last sample with its offset and a `correction` member telling a clock step from ordinary drift", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_time_status(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    // No dot-path: the status names no setting, so a failure envelope carries
+    // no `path` member — the power actions' shape.
+    match state.api.get_time_status().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
 }
 
 /// The body of a successful key rotation: the public half, and nothing else.

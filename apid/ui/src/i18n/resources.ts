@@ -60,6 +60,7 @@ export const en = {
       network: 'Network',
       services: 'Services',
       access: 'Access',
+      time: 'Time',
       system: 'System',
     },
   },
@@ -309,7 +310,7 @@ export const zhCN: TranslationShape<typeof en> = {
     navigationLabel: '主导航',
     builtInUi: '内置界面',
     signOut: '退出登录',
-    nav: { overview: '概览', network: '网络', services: '服务', access: '访问', system: '系统' },
+    nav: { overview: '概览', network: '网络', services: '服务', access: '访问', time: '时间', system: '系统' },
   },
   auth: {
     login: {
