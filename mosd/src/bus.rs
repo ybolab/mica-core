@@ -22,6 +22,7 @@ use crate::rauc::{self, RaucClient};
 use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
+use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 
 /// Well-known bus name owned by the daemon.
@@ -100,6 +101,9 @@ pub struct MosdService {
     /// Read-only live network observation. The default is unavailable so
     /// tests and dry-run instances never inspect the host network.
     network_state: Arc<dyn NetworkState>,
+    /// Read-only time-synchronization observation, on the same default for
+    /// the same reason.
+    time_status: Arc<dyn TimeStatusSource>,
 }
 
 /// The rotation a daemon with no key store has: none.
@@ -144,6 +148,7 @@ impl MosdService {
             registry: None,
             wireguard: Arc::new(NoRotation),
             network_state: Arc::new(UnavailableNetworkState),
+            time_status: Arc::new(UnavailableTimeStatus),
         }
     }
 
@@ -162,6 +167,13 @@ impl MosdService {
     #[must_use]
     pub fn with_network_state(mut self, network_state: Arc<dyn NetworkState>) -> Self {
         self.network_state = network_state;
+        self
+    }
+
+    /// Attach the production time-synchronization observer.
+    #[must_use]
+    pub fn with_time_status(mut self, time_status: Arc<dyn TimeStatusSource>) -> Self {
+        self.time_status = time_status;
         self
     }
 
@@ -819,6 +831,22 @@ impl MosdService {
         let value = json_path_get(&inner.state, path)
             .ok_or_else(|| SettingsFault::NotFound(format!("state path not found: `{path}`")))?;
         Ok(value.to_string())
+    }
+
+    /// JSON time-synchronization status, observed from timesyncd at call
+    /// time and classified by [`crate::time_status::classify`].
+    ///
+    /// Observed rather than stored, the `uptime` reasoning: synchronization
+    /// moves without any settings write, so a cached copy would only ever be
+    /// stale. Read-only — there is deliberately no method beside it that
+    /// could pause or stop synchronization.
+    async fn get_time_status(&self) -> Result<String, SettingsFault> {
+        let evidence = self.time_status.observe().await.map_err(|err| {
+            SettingsFault::Fdo(fdo::Error::Failed(format!(
+                "observe time synchronization: {err:#}"
+            )))
+        })?;
+        Ok(status_json(&evidence).to_string())
     }
 
     /// JSON snapshot returned by systemd-networkd's live `Describe` method.
