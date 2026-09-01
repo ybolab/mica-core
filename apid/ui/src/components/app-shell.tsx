@@ -1,19 +1,22 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Activity, Boxes, Cable, KeyRound, LogOut, Settings2 } from 'lucide-react'
 import { api, rememberSession } from '@/lib/api'
 import { sessionKey } from '@/components/auth'
 import { Button } from '@/components/ui/button'
+import { Preferences } from '@/components/preferences'
 
 const nav = [
-  { to: '/' as const, label: 'Overview', icon: Activity },
-  { to: '/network' as const, label: 'Network', icon: Cable },
-  { to: '/services' as const, label: 'Services', icon: Boxes },
-  { to: '/access' as const, label: 'Access', icon: KeyRound },
-  { to: '/system' as const, label: 'System', icon: Settings2 },
+  { to: '/' as const, label: 'shell.nav.overview' as const, icon: Activity },
+  { to: '/network' as const, label: 'shell.nav.network' as const, icon: Cable },
+  { to: '/services' as const, label: 'shell.nav.services' as const, icon: Boxes },
+  { to: '/access' as const, label: 'shell.nav.access' as const, icon: KeyRound },
+  { to: '/system' as const, label: 'shell.nav.system' as const, icon: Settings2 },
 ]
 
 export function AppShell() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const path = useRouterState({ select: (state) => state.location.pathname })
   const logout = useMutation({
@@ -27,24 +30,25 @@ export function AppShell() {
   return (
     <div className="app-grid">
       <aside className="sidebar">
-        <Link to="/" className="brand" aria-label="mos console home">
+        <Link to="/" className="brand" aria-label={t('shell.homeLabel')}>
           <span className="brand-mark">m</span>
-          <span><strong>mos</strong><small>device console</small></span>
+          <span><strong>{t('shell.product')}</strong><small>{t('shell.subtitle')}</small></span>
         </Link>
-        <nav aria-label="Primary navigation">
+        <nav aria-label={t('shell.navigationLabel')}>
           {nav.map(({ to, label, icon: Icon }) => {
             const active = to === '/' ? path === '/ui/' || path === '/ui' : path.startsWith(`/ui${to}`)
             return (
-              <Link key={to} to={to} className="nav-link" data-active={active || undefined}>
-                <Icon className="size-[18px]" aria-hidden="true" /> {label}
+              <Link key={to} to={to} className="nav-link" data-active={active || undefined} aria-current={active ? 'page' : undefined}>
+                <Icon className="size-[18px]" aria-hidden="true" /> {t(label)}
               </Link>
             )
           })}
         </nav>
         <div className="sidebar-foot">
-          <p>Built-in UI</p>
+          <p>{t('shell.builtInUi')}</p>
+          <Preferences compact />
           <Button variant="ghost" className="w-full justify-start" onClick={() => logout.mutate()} disabled={logout.isPending}>
-            <LogOut className="size-4" /> Sign out
+            <LogOut className="size-4" /> {t('shell.signOut')}
           </Button>
         </div>
       </aside>

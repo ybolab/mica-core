@@ -63,6 +63,6 @@ export function json(method: string, body?: unknown): RequestInit {
   return { method, body: body === undefined ? undefined : JSON.stringify(body) }
 }
 
-export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'The request could not be completed.'
+export function errorMessage(error: unknown, fallback = 'The request could not be completed.') {
+  return error instanceof Error ? error.message : fallback
 }

@@ -1,16 +1,19 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { KeyRound, ShieldCheck } from 'lucide-react'
 import { api, errorMessage, json, rememberSession, type SessionStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Field, Input } from '@/components/ui/field'
+import { Preferences } from '@/components/preferences'
 
 export const sessionKey = ['session'] as const
 
 function AuthFrame({ eyebrow, title, copy, children }: { eyebrow: string; title: string; copy: string; children: React.ReactNode }) {
   return (
     <main className="auth-shell">
+      <div className="auth-preferences"><Preferences compact /></div>
       <div className="auth-brand" aria-hidden="true">
         <span>mos</span>
         <div className="auth-orbit" />
@@ -26,6 +29,7 @@ function AuthFrame({ eyebrow, title, copy, children }: { eyebrow: string; title:
 }
 
 export function LoginView() {
+  const { t } = useTranslation()
   const [password, setPassword] = useState('')
   const queryClient = useQueryClient()
   const login = useMutation({
@@ -40,14 +44,14 @@ export function LoginView() {
     login.mutate()
   }
   return (
-    <AuthFrame eyebrow="Device console" title="Welcome back" copy="Sign in with the appliance administrator password. The session stays on this device and is never exposed to JavaScript.">
+    <AuthFrame eyebrow={t('auth.login.eyebrow')} title={t('auth.login.title')} copy={t('auth.login.copy')}>
       <form className="grid gap-5" onSubmit={submit}>
-        <Field label="Admin password">
+        <Field label={t('auth.login.password')}>
           <Input autoFocus autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
         </Field>
-        {login.error ? <p className="callout error" role="alert">{errorMessage(login.error)}</p> : null}
+        {login.error ? <p className="callout error" role="alert">{errorMessage(login.error, t('common.requestFailed'))}</p> : null}
         <Button size="lg" type="submit" disabled={login.isPending}>
-          <KeyRound className="size-4" /> {login.isPending ? 'Signing in…' : 'Sign in'}
+          <KeyRound className="size-4" /> {login.isPending ? t('auth.login.pending') : t('auth.login.submit')}
         </Button>
       </form>
     </AuthFrame>
@@ -60,6 +64,7 @@ interface SetupResult {
 }
 
 export function SetupView() {
+  const { t } = useTranslation()
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [hostname, setHostname] = useState('')
@@ -82,30 +87,30 @@ export function SetupView() {
       queryClient.setQueryData(sessionKey, session)
     }
     return (
-      <AuthFrame eyebrow="Setup complete" title="Save your API token" copy="This token is shown once. Store it in your password manager before entering the console.">
+      <AuthFrame eyebrow={t('auth.complete.eyebrow')} title={t('auth.complete.title')} copy={t('auth.complete.copy')}>
         <div className="grid gap-5">
           <div className="token-box"><code>{setup.data.token}</code></div>
-          <Button size="lg" onClick={finish}><ShieldCheck className="size-4" /> I saved the token</Button>
+          <Button size="lg" onClick={finish}><ShieldCheck className="size-4" /> {t('auth.complete.submit')}</Button>
         </div>
       </AuthFrame>
     )
   }
   return (
-    <AuthFrame eyebrow="First run" title="Make this device yours" copy="Set the administrator password and, optionally, a hostname. Network interfaces can be inspected from the console next.">
+    <AuthFrame eyebrow={t('auth.setup.eyebrow')} title={t('auth.setup.title')} copy={t('auth.setup.copy')}>
       <form className="grid gap-5" onSubmit={submit}>
-        <Field label="Hostname" hint="Optional; letters, numbers and hyphens.">
-          <Input autoFocus autoComplete="off" value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder="mos" />
+        <Field label={t('auth.setup.hostname')} hint={t('auth.setup.hostnameHint')}>
+          <Input autoFocus autoComplete="off" value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder={t('auth.setup.hostnamePlaceholder')} />
         </Field>
-        <Field label="Admin password" hint="At least 8 characters.">
+        <Field label={t('auth.setup.password')} hint={t('auth.setup.passwordHint')}>
           <Input autoComplete="new-password" minLength={8} type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
         </Field>
-        <Field label="Confirm password">
+        <Field label={t('auth.setup.confirmPassword')}>
           <Input autoComplete="new-password" minLength={8} type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} required />
         </Field>
-        {password && confirm && password !== confirm ? <p className="callout error" role="alert">Passwords do not match.</p> : null}
-        {setup.error ? <p className="callout error" role="alert">{errorMessage(setup.error)}</p> : null}
+        {password && confirm && password !== confirm ? <p className="callout error" role="alert">{t('auth.setup.mismatch')}</p> : null}
+        {setup.error ? <p className="callout error" role="alert">{errorMessage(setup.error, t('common.requestFailed'))}</p> : null}
         <Button size="lg" type="submit" disabled={setup.isPending || password !== confirm}>
-          {setup.isPending ? 'Configuring…' : 'Configure device'}
+          {setup.isPending ? t('auth.setup.pending') : t('auth.setup.submit')}
         </Button>
       </form>
     </AuthFrame>

@@ -28,13 +28,34 @@ export function networkRows(
   })
 }
 
-export function configuredSummary(configured?: Record<string, unknown>) {
-  if (!configured) return 'Not configured'
-  const kind = typeof configured.kind === 'string' ? configured.kind : 'physical'
+interface ConfiguredSummaryLabels {
+  notConfigured: string
+  physical: string
+  dhcp: string
+  static: string
+  noAddressing: string
+  format: (kind: string, method: string) => string
+}
+
+const englishSummaryLabels: ConfiguredSummaryLabels = {
+  notConfigured: 'Not configured',
+  physical: 'physical',
+  dhcp: 'DHCP',
+  static: 'Static',
+  noAddressing: 'No addressing',
+  format: (kind, method) => `${kind} · ${method}`,
+}
+
+export function configuredSummary(
+  configured?: Record<string, unknown>,
+  labels: ConfiguredSummaryLabels = englishSummaryLabels,
+) {
+  if (!configured) return labels.notConfigured
+  const kind = typeof configured.kind === 'string' ? configured.kind : labels.physical
   const method = configured.dhcp === true
-    ? 'DHCP'
+    ? labels.dhcp
     : configured.static && typeof configured.static === 'object'
-      ? 'Static'
-      : 'No addressing'
-  return `${kind} · ${method}`
+      ? labels.static
+      : labels.noAddressing
+  return labels.format(kind, method)
 }

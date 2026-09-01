@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { api } from '@/lib/api'
 import type { TaskRecord } from '@/lib/types'
 
 export function TaskProgress({ taskId }: { taskId?: string }) {
+  const { t } = useTranslation()
   const task = useQuery({
     queryKey: ['task', taskId],
     queryFn: () => api<TaskRecord>(`/api/v1/tasks/${encodeURIComponent(taskId!)}`),
@@ -11,7 +13,7 @@ export function TaskProgress({ taskId }: { taskId?: string }) {
   })
   if (!taskId) return null
   if (task.error) {
-    return <p className="callout warning" role="status">Change accepted; its final outcome is not confirmed yet.</p>
+    return <p className="callout warning" role="status">{t('task.unconfirmed')}</p>
   }
   const value = task.data
   const complete = value?.status === 'finished'
@@ -19,8 +21,8 @@ export function TaskProgress({ taskId }: { taskId?: string }) {
   return (
     <p className={`callout ${failed ? 'error' : complete ? 'success' : 'warning'}`} role="status">
       {complete
-        ? failed ? value.message ?? value.outcome ?? 'Apply did not complete successfully.' : 'Change applied.'
-        : value ? `Applying ${value.dotPath}…` : 'Change queued…'}
+        ? failed ? value.message ?? value.outcome ?? t('task.failed') : t('task.applied')
+        : value ? t('task.applying', { path: value.dotPath }) : t('task.queued')}
     </p>
   )
 }
