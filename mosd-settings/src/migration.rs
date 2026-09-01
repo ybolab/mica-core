@@ -81,6 +81,7 @@ impl Default for MigrationRegistry {
             Box::new(MigrateV5ToV6),
             Box::new(MigrateV6ToV7),
             Box::new(MigrateV7ToV8),
+            Box::new(MigrateV8ToV9),
         ])
     }
 }
@@ -498,6 +499,45 @@ impl Migration for MigrateV7ToV8 {
     }
 }
 
+/// v8 -> v9: adds the `time` subtree — NTP servers and the presentation
+/// timezone.
+///
+/// `up` stamps `schema_version = 9` and does nothing else —
+/// [`MigrateV7ToV8`]'s shape, for [`MigrateV6ToV7`]'s reason. Every field v9
+/// adds is defaulted (`ntp.servers = []`, `timezone = "UTC"`), so a v8
+/// document deserializes into a v9 tree unchanged, and seeding the defaults
+/// into every device's file was rejected on [`MigrateV5ToV6`]'s grounds: a
+/// written-out default is indistinguishable from an operator's choice the day
+/// a default changes.
+///
+/// `down` stamps `schema_version = 8` and removes the `time` subtree,
+/// discarding a configured server list and timezone. That is
+/// [`MigrateV4ToV5::down`]'s trade both ways: a v8 binary has no time
+/// reconciler to honour either value, and v8's `deny_unknown_fields` would
+/// refuse the whole document — hostname, credential and all — if the table
+/// were left behind. The device falls back to the fallback NTP pool and UTC,
+/// which is exactly what every v8 image already did.
+///
+/// A document with no `time` table is left untouched by `down`.
+pub struct MigrateV8ToV9;
+
+impl Migration for MigrateV8ToV9 {
+    fn target_version(&self) -> u32 {
+        9
+    }
+
+    fn up(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(9));
+        Ok(())
+    }
+
+    fn down(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(8));
+        doc.remove("time");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,5 +918,78 @@ created = 1700000000
 
         assert!(!doc.contains_key("access"), "{doc:?}");
         assert_eq!(doc["hostname"], before["hostname"]);
+    }
+
+    /// A v8 document holding a configured time subtree, the only interesting
+    /// input to the v9 step: a device on the defaults has nothing for `down`
+    /// to discard.
+    fn v8_document_with_time() -> toml::Table {
+        toml::from_str(
+            r#"
+schema_version = 8
+hostname = "cx3576"
+
+[network]
+
+[time]
+timezone = "Europe/Berlin"
+
+[time.ntp]
+servers = ["0.pool.ntp.org", "192.0.2.7"]
+"#,
+        )
+        .unwrap()
+    }
+
+    /// `up` stamps the version and touches nothing else: every v9 field is
+    /// defaulted, so a v8 document and its v9 form differ by the version
+    /// integer alone, and no dead default is seeded into any device's file.
+    #[test]
+    fn v8_to_v9_up_stamps_the_version_and_seeds_nothing() {
+        let mut doc = v8_document_with_time();
+        doc.remove("time");
+        let before = doc.clone();
+
+        MigrateV8ToV9.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(9));
+        assert!(!doc.contains_key("time"), "seeded a table: {doc:?}");
+        let mut expected = before;
+        expected.insert("schema_version".to_string(), toml::Value::Integer(9));
+        assert_eq!(doc, expected);
+
+        // And `up` over its own output changes nothing.
+        let once = doc.clone();
+        MigrateV8ToV9.up(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
+    /// `down` discards the whole subtree, configured servers and zone
+    /// included: a v8 binary has no time reconciler to honour them, and v8's
+    /// `deny_unknown_fields` would refuse the entire document if the table
+    /// were left behind.
+    #[test]
+    fn v9_document_migrates_down_discarding_the_time_subtree() {
+        let mut doc = v8_document_with_time();
+        MigrateV8ToV9.up(&mut doc).unwrap();
+
+        MigrateV8ToV9.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(8));
+        assert!(!doc.contains_key("time"), "{doc:?}");
+        assert_eq!(doc["hostname"], toml::Value::String("cx3576".to_string()));
+    }
+
+    /// The round trip is not lossless, and this pins which half is lost: the
+    /// version returns, the configured time subtree does not.
+    #[test]
+    fn v8_to_v9_and_back_returns_the_version_but_not_the_time_subtree() {
+        let mut doc = v8_document_with_time();
+        MigrateV8ToV9.up(&mut doc).unwrap();
+        MigrateV8ToV9.down(&mut doc).unwrap();
+        MigrateV8ToV9.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(9));
+        assert!(!doc.contains_key("time"), "{doc:?}");
     }
 }
