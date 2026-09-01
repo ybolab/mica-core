@@ -1,0 +1,91 @@
+[workspace]
+resolver = "3"
+members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+# The one `com.mos.*` bus-name rule, shared by every consumer of it.
+mos-busname = { path = "busname" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tracing = "0.1"
+# env-filter, so RUST_LOG still works. It pulls in regex (~1 MB in the
+# binary), and that is the right trade on a device with no shell and no
+# package manager: the journal is the only way to see what mosd did, and a
+# fixed compile-time level means a field problem cannot be looked at more
+# closely without a new image.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+ring = "0.17"
+# WireGuard key handling. base64 is the wire and file format of every key
+# (`PrivateKeyFile=` and `PublicKey=`); 0.22 is a version the dependency graph
+# already resolves, so the direct dependency adds no crate to the image.
+base64 = "0.22"
+# The public half of a WireGuard private key, derived in process. Pinned
+# exactly, the way `tough` is: a key-derivation dependency is one whose version
+# bump is read before it is taken, not one that floats. Pure Rust, so it links
+# no C; the images ship no `wireguard-tools` to shell out to instead.
+x25519-dalek = { version = "=3.0.0", features = ["static_secrets"] }
+url = "2"
+# tough 0.18 is the last release whose crypto backend is `ring`; 0.19+ hard-depend
+# on aws-lc-rs, which builds C (AWS-LC), which the workspace ban list refuses.
+tough = { version = "=0.18.0", default-features = false }
+axum = "0.8"
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+# The OpenAPI document is generated from the handlers and committed as
+# `mosd/apid/openapi.json`, so the spec cannot describe a route the code does
+# not serve. Each route's path is one constant, read by the axum declaration
+# and by the `utoipa::path` attribute that documents it.
+#
+# `axum_extras` is deliberately off: it teaches the `path` macro to read axum's
+# `Path`/`Query` extractors, and no documented route takes a path or query
+# parameter.
+#
+# `utoipa-axum` is deliberately absent. It would collect the routes straight
+# out of the router, but it depends on `paste`, which carries an unmaintained
+# advisory (RUSTSEC-2024-0436) that `deny.toml` makes an error. `context_path`
+# composes the same document without it.
+utoipa = "5.5"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+argon2 = "0.5"
+bcrypt = "0.19"
+rand = "0.8"
+maud = "0.27"
+hmac = "0.12"
+sha2 = "0.10"
+tower = { version = "0.5", features = ["util"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# rumqttc without default features is TCP-only: no TLS, and every remaining
+# dependency is pure Rust. The `use-rustls` default would pull tokio-rustls in;
+# TLS to the broker is a later decision.
+rumqttc = { version = "0.25", default-features = false }
+# The broker, used as a library rather than as its own daemon. Defaults off
+# buys three things: TCP only, so no `use-rustls` and therefore no rustls 0.22
+# with its live advisory; no websockets; and every remaining dependency pure
+# Rust. That last one is the reason this is here at all instead of Debian's
+# mosquitto, which would drag libcjson1, libmosquitto1, libdlt2 and
+# libwebsockets19t64 into a root filesystem that has no package manager to
+# maintain them.
+rumqttd = { version = "0.20", default-features = false }

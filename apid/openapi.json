@@ -1,0 +1,4078 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "apid",
+    "description": "The appliance management API served over HTTPS on the device.",
+    "version": "v1"
+  },
+  "paths": {
+    "/api/v1/actions/change-password": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Change the admin password.",
+        "description": "Requires the current password. Answers **204** on success; every session\nbut the acting one is dropped. A wrong current password is **401**, and a\nnew password below the length floor is **422**.",
+        "operationId": "api_v1_change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The password was changed; every session except the calling one was dropped"
+          },
+          "400": {
+            "description": "The body is not JSON, or not this shape (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is invalid (`csrf_invalid`), or the current password does not verify (`wrong_password`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The new password is shorter than 8 characters (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Hashing failed (`hashing_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actions/poweroff": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Power the appliance off.",
+        "description": "Answers **202**: the request is accepted and the power-off is dispatched,\nso there may be no connection left to carry a later status.",
+        "operationId": "api_v1_poweroff",
+        "responses": {
+          "202": {
+            "description": "The power-off was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actions/reboot": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Reboot the appliance.",
+        "description": "Answers **202**: the request is accepted and the reboot is dispatched, so\nthere may be no connection left to carry a later status.",
+        "operationId": "api_v1_reboot",
+        "responses": {
+          "202": {
+            "description": "The reboot was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actions/transient-root-password": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Set a transient root password.",
+        "description": "The password must be 8 to 72 bytes and contain no NUL, newline or carriage\nreturn. 72 is bcrypt's limit — a longer password would be silently\ntruncated, so it is refused instead.\n\nThe password is written into no setting, is never logged, and lasts until\nthe next reboot. A **422** states which bound was broken and never repeats\nthe password back.\n\nAnswers **202** once the password hash is written and its scoped apply is queued.",
+        "operationId": "api_v1_transient_root_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransientRootPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The transient root password hash was written and its scoped apply was queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON, or not this shape (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The password is shorter than 8 bytes, longer than 72, or contains a NUL, newline or carriage return (`validation_failed`); the message states the bound and never the password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to set it (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actions/wireguard/{iface}/rotate-key": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Rotate a WireGuard interface's private key.",
+        "description": "An action rather than a settings write: the private key lives in a\nmode-0640 file on STATE that the settings tree does not describe. mosd\ndraws a new key, tears down the device holding the old one and reconciles.\n\nAnswers **200** with the new public key — the tunnel is already running on\nit. The private half is never returned. **404** when `iface` names no\ndeclared `network` entry; **422** when the entry exists but is not of kind\n`wireguard`.",
+        "operationId": "api_v1_wireguard_rotate",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "The `network` entry to rotate, which must be one of kind `wireguard`: `wg0`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new key was drawn; the body carries its public half",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireguardRotation"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The name is not a declared `network` entry (`settings_not_found`); the URL names no interface to rotate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The entry exists and is not a WireGuard one (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to rotate (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Report whether this appliance is manageable.",
+        "description": "Answers **200 in every state**, including when mosd is unreachable — a\nfailure is reported in the body, never as a status code, so it cannot be\nconfused with this endpoint being down. mosd's state is determined by one\nlive bus call per request.\n\nAuthenticated. For plain listener liveness use the unauthenticated\n`/healthz` instead; neither answer implies the other.",
+        "operationId": "api_v1_health",
+        "responses": {
+          "200": {
+            "description": "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiHealth"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/meta": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "summary": "Report what the caller is talking to.",
+        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — the shape of the settings tree on disk, which\nmoves independently of the API version. Authenticated.",
+        "operationId": "api_v1_meta",
+        "responses": {
+          "200": {
+            "description": "What this daemon is and which schema it speaks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiMeta"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/network": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read declared network configuration together with current link state.",
+        "operationId": "api_v1_network_read",
+        "responses": {
+          "200": {
+            "description": "Configured interfaces and the current systemd-networkd observation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The configured network map could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Replace the whole interface map, validated as one tree.",
+        "description": "The only way to make two interdependent entries legal in one step: adding a\nbridge and its ports through the per-interface route means declaring the\nports first, because a bridge naming an undeclared port is refused.\n\nAnswers **422** with the failing rule's own message when the map does not\nvalidate; nothing is written in that case.",
+        "operationId": "api_v1_network_write",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/NetworkInterface"
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The map was replaced; the reconciler has re-rendered every unit from it"
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not a map of interfaces, a key is not an interface name, an entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses it -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/network/{iface}": {
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Declare or replace one interface, validated against the whole map.",
+        "description": "**A `PUT` replaces the entry entirely**, including a tunnel's peer list: a\nbody with no `wireguard` block on an interface that had one leaves it with\nnone. To change one field, send the whole entry.\n\nCreates the interface when it does not exist, so there is no 404. A name\noutside the interface charset, or a map that fails validation, is **422**.",
+        "operationId": "api_v1_network_iface_write",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "The interface to declare or replace: `eth0`, or `eth0.100` for a VLAN. Created when it does not exist",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkInterface"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The entry was written; the reconciler has re-rendered its units"
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is not an interface name, the body is not an interface, the entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses the resulting map (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Remove one interface, re-validating the rest of the map without it.",
+        "description": "Removing an interface another entry depends on — a port still listed by a\nbridge — is **422** with the failing rule's own message, and nothing is\nwritten. Remove the dependent reference first.\n\nRead-modify-write: two concurrent removals lose one.",
+        "operationId": "api_v1_network_iface_remove",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "The declared interface to remove",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The entry was removed; the reconciler has swept its units"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No `network` entry has that name (`settings_not_found`). Well-formed and absent, which is a different answer from malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is not an interface name, or removing the entry breaks a relational rule -- a bridge still lists it as a port, a VLAN still names it as a parent (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/network/{iface}/peers": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "List every peer configured on one WireGuard tunnel.",
+        "description": "Answers **404** when `iface` names no declared interface.",
+        "operationId": "api_v1_peers_list",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "A declared `network` entry of kind `wireguard`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored peers, in stored order, each with the public key that is its `DELETE` path segment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WireguardPeerEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No `network` entry has that name (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is not an interface name, or the entry is not a WireGuard one (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Add one peer to a WireGuard tunnel.",
+        "description": "Answers **404** when `iface` names no declared interface, checked before\nanything is written. A duplicate public key is **409** with code\n`peer_exists`; a malformed peer is **422**.",
+        "operationId": "api_v1_peers_add",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "A declared `network` entry of kind `wireguard`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WireguardPeerEntry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The peer was added; the body carries it back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireguardPeerEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No `network` entry has that name (`settings_not_found`); nothing is written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A stored peer already carries that public key (`peer_exists`); the key is this collection's identity, so the entry is not replaced silently",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is not an interface name, the entry is not a WireGuard one, or the peer is one the reconciler would refuse -- a public key that is not 32 bytes of base64, an allowed IP that is not a CIDR, an endpoint that is not `host:port` (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/network/{iface}/peers/{publicKey}": {
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Remove one peer from a tunnel, identified by its public key.",
+        "description": "A string that is not 32 bytes of base64 could never be a WireGuard public\nkey and is **422**. A well-formed key that no stored peer carries is\n**404**.",
+        "operationId": "api_v1_peers_remove",
+        "parameters": [
+          {
+            "name": "iface",
+            "in": "path",
+            "description": "A declared `network` entry of kind `wireguard`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publicKey",
+            "in": "path",
+            "description": "The peer's public key, as `GET /api/v1/network/{iface}/peers` returns it: 32 bytes in padded base64. Its alphabet contains `/` and `+`, so a key carrying either is percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The peer was removed; the reconciler has re-rendered the tunnel without it"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No `network` entry has that name, or no peer of it carries that key (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The interface name is not one, the entry is not a WireGuard one, or the path segment is not a WireGuard public key at all (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Report setup and browser authentication state without redirecting.",
+        "operationId": "api_v1_session_status",
+        "responses": {
+          "200": {
+            "description": "Setup and browser authentication state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The access settings could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Authenticate a browser and create its HttpOnly session cookie.",
+        "operationId": "api_v1_session_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The browser session was created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The password is incorrect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device still requires first-run setup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON body has the wrong shape",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Login attempts are temporarily throttled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Revoke the acting browser session.",
+        "operationId": "api_v1_session_delete",
+        "responses": {
+          "204": {
+            "description": "The browser session was revoked"
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is absent or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/{path}": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the settings tree at a dot-path.",
+        "description": "The dot-path is the resource identifier. Secrets are redacted in the\nresponse. An empty path returns the whole tree. Answers **404** when the\npath names nothing and **422** when it is not a well-formed dot-path.",
+        "operationId": "api_v1_settings",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The settings dot-path, verbatim: `hostname`, `access.ssh`, `wifi.ap`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The value at the dot-path, redacted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The dot-path does not exist (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "mosd rejected the dot-path (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Write one scalar setting by dot-path.",
+        "description": "Accepts four paths and no others: `hostname`, `access.ssh.enabled`,\n`container.enabled` and `mqtt.enabled`. Any other path is refused.\n\nAnswers **202** with the queued task id on success. Takes a bearer token.",
+        "operationId": "api_v1_settings_write",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled` or `mqtt.enabled`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The value was persisted and its scoped reconciliation was queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The dot-path names no root the settings schema has (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A dot-path that exists and that this route does not write (`settings_read_only`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body carries the redaction sentinel, or is the wrong shape for this setting, or the dot-path is malformed (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/setup": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "First-run setup: set the admin password, optionally a hostname and network\nentries, and mint an API token.",
+        "description": "**Unauthenticated**, because it creates the device's first credential.\nAnswers **409** once a password exists, which closes it permanently.\n\nEverything is validated before anything is written; a rejected request\nleaves the device untouched and still in setup mode. On success the writes\nrun in the order hostname, network, `access.webAdmin`, token.\n\nAnswers **200** with the minted token secret, returned once. Unlike the\nbrowser wizard, this route always mints one: a caller driving setup over\nthe API wants API access.",
+        "operationId": "api_v1_setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The device is configured; the body carries a newly minted API token, which is not recoverable afterwards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device already has an admin password, so it is not in setup mode (`already_configured`). Change the password with `POST /api/v1/actions/change-password`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not this shape, the password is under 8 bytes, the hostname is not a hostname, a `network` key is not an interface name, a static address is not IPv4 CIDR notation, or a relational rule refuses the resulting map -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected a write (`settings_rejected`). Nothing is written on any of them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Hashing the password failed (`hash_failed`), the stored token list could not be read (`settings_invalid`), no free token id was drawn (`mint_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssh/authorized-keys": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "List every authorized SSH key.",
+        "description": "Each entry carries the fingerprint that identifies it for removal. The\nresponse also carries a `notice`: every authorized key grants root.",
+        "operationId": "api_v1_ssh_keys_list",
+        "responses": {
+          "200": {
+            "description": "The stored keys, each with the fingerprint that is its `DELETE` path segment, and the notice every client of this collection is told",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizedKeyList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Authorize one SSH public key.",
+        "description": "The key line is validated as submitted; a malformed line is **422**.\n\n**Every authorized key grants root.** `AuthorizedKeysFile` is `%u`-expanded\nover one shared list, so the response carries a `notice` saying so\nalongside the created entry.",
+        "operationId": "api_v1_ssh_keys_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddAuthorizedKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The key was authorized; the body carries it canonicalised, with its fingerprint and the notice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddedAuthorizedKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON, or not this shape (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A stored key already carries that public key (`key_exists`), or the device already holds the maximum number of keys (`key_limit_reached`); the collection's current state is what refuses the request, not the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ssh/authorized-keys/{fingerprint}": {
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Remove one authorized SSH key by its fingerprint.",
+        "description": "The fingerprint is the only accepted identifier; the key text is not.\nAnswers **404** when no authorized key carries it.",
+        "operationId": "api_v1_ssh_keys_remove",
+        "parameters": [
+          {
+            "name": "fingerprint",
+            "in": "path",
+            "description": "The key's fingerprint, as `GET /api/v1/ssh/authorized-keys` returns it: `SHA256:` and 43 base64 characters. Its alphabet contains `/`, so a fingerprint carrying one is percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was removed; the reconciler has re-rendered the authorized-keys file without it"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stored key has that fingerprint (`settings_not_found`). Well-formed and absent, which is a different answer from malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The path segment is not a fingerprint at all (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/state/{path}": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the live-state tree at a dot-path.",
+        "description": "Live state is observed, not configured, and is a separate root from\nsettings. Read-only: there is no write counterpart. Answers **404** when\nthe path names nothing and **422** when it is not a well-formed dot-path.",
+        "operationId": "api_v1_state",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "description": "The live-state dot-path, verbatim: `hostname`, `network`, `power`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The value at the dot-path, redacted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The dot-path does not resolve (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "mosd rejected the dot-path (`settings_rejected`); a dot-path that does not resolve is the 404 above",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List mosd's bounded apply-task history, oldest first.",
+        "operationId": "api_v1_tasks_list",
+        "responses": {
+          "200": {
+            "description": "The bounded apply-task history, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskRecord"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd returned an invalid task record or failed to answer (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Read one apply task by the id returned with a settings or transient-password write.",
+        "operationId": "api_v1_task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The task id returned by a 202 response",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest known task record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No retained task has this id (`task_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd returned an invalid task record or failed to answer (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "List every API token this device holds.",
+        "description": "Returns each token's id, label and creation time. Secrets are not stored\nand are never returned — a token's secret is shown once, when it is\nminted.",
+        "operationId": "api_v1_tokens_list",
+        "responses": {
+          "200": {
+            "description": "The stored tokens: `id`, `name` and `created`, never the digest and never the plaintext",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiTokenSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Mint an API token.",
+        "description": "Takes either a stored bearer token or an authenticated browser session. The\nsecret is returned once, in this response, and is not retrievable\nafterwards.\n\nA signed-in browser can mint the first additional token through this API.",
+        "operationId": "api_v1_tokens_mint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MintTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The token was created; the body carries the plaintext, which is not recoverable afterwards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MintedToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON, or not this shape (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device already holds the maximum number of tokens (`token_limit_reached`); revoke one first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is empty, over 256 bytes, or holds a control character (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a token list (`settings_invalid`), no free id was drawn (`mint_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Revoke one API token by its id.",
+        "description": "Takes effect on the next request; the token set is read per request.\nAnswers **404** when no token carries that id.",
+        "operationId": "api_v1_tokens_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The token id, as `POST /api/v1/tokens` returned it: 1 to 64 lowercase hex characters",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The token was revoked; it stops being accepted on the next request"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stored token carries that id (`settings_not_found`). Well-formed and absent, which is a different answer from malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The id is not a token id at all (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ui": {
+      "get": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Report whether `/` currently selects a custom UI bundle.",
+        "operationId": "api_v1_ui_status",
+        "responses": {
+          "200": {
+            "description": "The active UI selection and custom bundle health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The bundle store could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ui/active": {
+      "put": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Select the newest retained custom bundle that still passes every safety\nand compatibility check.",
+        "operationId": "api_v1_ui_activate",
+        "responses": {
+          "200": {
+            "description": "A validated retained custom UI is now selected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is absent or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No retained custom UI passes validation (`custom_ui_unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The custom UI pointer could not be updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Deactivate the custom bundle so `/` selects the built-in UI.",
+        "operationId": "api_v1_ui_deactivate",
+        "responses": {
+          "200": {
+            "description": "The built-in UI is now selected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is absent or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The custom UI pointer could not be removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/wifi/client/networks": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "List every known WiFi network.",
+        "description": "Each entry's pre-shared key is redacted. Posting an entry back with the\nredaction sentinel still in place is refused rather than stored.",
+        "operationId": "api_v1_wifi_networks_list",
+        "responses": {
+          "200": {
+            "description": "The stored networks, in stored order, each `psk` replaced by `\"<redacted>\"`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WifiNetworkEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Add one known WiFi network.",
+        "description": "The redaction sentinel is rejected before anything else: a client that read\nthis list and posted an entry back would otherwise store the literal\n`\"<redacted>\"` as the `psk` and destroy a working key.\n\nAnswers **422** for a malformed entry or a redacted `psk`.",
+        "operationId": "api_v1_wifi_networks_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WifiNetworkEntry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The network was stored; the body carries it back with its `psk` redacted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WifiNetworkEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A stored network already carries that SSID (`ssid_exists`); the SSID is this collection's identity, so the entry is not replaced silently",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body carries the redaction sentinel, is not a network the settings model holds, or carries a `psk` outside IEEE 802.11i's 8..63 characters that is not a 64-digit hex PMK either (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/wifi/client/networks/{ssid}": {
+      "delete": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Forget one known WiFi network by its SSID.",
+        "description": "Answers **404** when no stored network carries that SSID. There is no\nmalformed-SSID case: any non-empty path segment is a possible name.",
+        "operationId": "api_v1_wifi_networks_remove",
+        "parameters": [
+          {
+            "name": "ssid",
+            "in": "path",
+            "description": "The network name, as `GET /api/v1/wifi/client/networks` returns it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The network was forgotten; the station reconciler has re-rendered its configuration without it"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stored network carries that SSID (`settings_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/versions": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "summary": "List the API major versions this build serves.",
+        "operationId": "api_versions",
+        "responses": {
+          "200": {
+            "description": "The major API versions this device serves",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiVersions"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddAuthorizedKeyRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/ssh/authorized-keys` request body.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "One authorized-key line, `<type> <blob>` with an optional trailing\ncomment: exactly what the pane's field takes, handed to exactly the\nsame parser."
+          }
+        }
+      },
+      "AddedAuthorizedKey": {
+        "type": "object",
+        "description": "`POST /api/v1/ssh/authorized-keys` response body.",
+        "required": [
+          "key",
+          "notice"
+        ],
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/AuthorizedKeyEntry",
+            "description": "The entry as it was stored, canonicalised by the parser, carrying the\nfingerprint that is now its `DELETE` path segment."
+          },
+          "notice": {
+            "type": "string",
+            "description": "The same sentence the listing carries."
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "description": "The one shape every failure under `/api/` takes.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorDetail"
+          }
+        }
+      },
+      "ApiErrorDetail": {
+        "type": "object",
+        "description": "The API error envelope payload.",
+        "required": [
+          "code",
+          "message",
+          "source"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiHealth": {
+        "type": "object",
+        "description": "The body of `GET /api/v1/health`.\n\n`apid` and `mosd` are always present. `checkedAt` is present only on the\nreachable answer and `detail` only on the unreachable one.",
+        "required": [
+          "apid",
+          "mosd"
+        ],
+        "properties": {
+          "apid": {
+            "type": "string",
+            "description": "Always `\"ok\"`: a request that got a body was served by an apid that is\nup."
+          },
+          "checkedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Whole seconds since boot, at the moment the probe answered.\n\nThe same value and spelling `GET /api/v1/state/uptime` serves.",
+            "minimum": 0
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the probe did not complete, in the words of whatever refused it."
+          },
+          "mosd": {
+            "type": "string",
+            "description": "`\"ok\"` when the probe completed, `\"unreachable\"` when it did not."
+          }
+        }
+      },
+      "ApiMeta": {
+        "type": "object",
+        "description": "`GET /api/v1/meta` response.",
+        "required": [
+          "api",
+          "settingsSchemaVersion",
+          "daemon"
+        ],
+        "properties": {
+          "api": {
+            "type": "string"
+          },
+          "daemon": {
+            "type": "string"
+          },
+          "settingsSchemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ApiTokenSummary": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/tokens`.\n\nCarries no secret: the token's plaintext appears in exactly one response,\nwhen it is minted, and never again.",
+        "required": [
+          "id",
+          "name",
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds since the UNIX epoch as the device clock read them at the mint.\n\n**A label, never a deadline.** No unit on this image syncs a clock, so\nthe reading may be wrong by any amount and 0 means the clock was unset.\nTokens do not expire; revocation is the whole lifecycle (§3.2).",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "The token's stable identity, which is also its `DELETE` path segment.\nNot secret: it is a lookup key, and §3.2 puts it on the wire for that."
+          },
+          "name": {
+            "type": "string",
+            "description": "The operator's label, the only thing that tells one token from another."
+          }
+        }
+      },
+      "ApiVersions": {
+        "type": "object",
+        "description": "`GET /api/versions` response.",
+        "required": [
+          "versions",
+          "current"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AuthorizedKeyEntry": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/ssh/authorized-keys`.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The operator's label, absent when the key was stored without one."
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This entry's `DELETE` path segment: `SHA256:` followed by the unpadded\nbase64 of the SHA-256 digest of the decoded blob — the string\n`ssh-keygen -lf` prints.\n\n`null` for a stored line whose blob does not decode. Nothing this route\nwrites can be in that state -- `parse_authorized_key` refuses it -- but\nthe settings file is an editable file on STATE, so a list read back is\nnot necessarily a list this API wrote."
+          },
+          "key": {
+            "type": "string",
+            "description": "Canonical `<type> <blob>` key text, with the comment in its own field\n-- what the parser stored, and not what was submitted."
+          }
+        }
+      },
+      "AuthorizedKeyList": {
+        "type": "object",
+        "description": "`GET /api/v1/ssh/authorized-keys` response body.\n\nAn object and not a bare array, because of `notice`: the sentence is a\nproperty of the collection rather than of any entry, and the contract\nrequires it on the listing **and** on the add. A client that only ever adds keys must still be told what a key\ngrants.",
+        "required": [
+          "keys",
+          "notice"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuthorizedKeyEntry"
+            },
+            "description": "Every stored key, in stored order."
+          },
+          "notice": {
+            "type": "string",
+            "description": "Why a key added here is not a key with limited access."
+          }
+        }
+      },
+      "AvailableCustomUiStatus": {
+        "type": "object",
+        "required": [
+          "generation",
+          "indexReadable",
+          "usable"
+        ],
+        "properties": {
+          "compatible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "digestMatches": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "indexReadable": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unavailableReason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CustomUiUnavailableReason"
+              }
+            ]
+          },
+          "usable": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BridgeParameters": {
+        "type": "object",
+        "description": "The parameters of a software bridge.",
+        "required": [
+          "ports"
+        ],
+        "properties": {
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the `network` entries enslaved to this bridge. **Each must be\na declared entry, must carry no addressing of its own, and must not be\na port of another bridge**; a body breaking any of those is refused at\n422 with the rule's own sentence."
+          }
+        }
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/actions/change-password` request body.",
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ],
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "description": "The password being replaced, verified before anything is written."
+          },
+          "newPassword": {
+            "type": "string",
+            "description": "The replacement; at least 8 characters."
+          }
+        }
+      },
+      "CustomUiStatus": {
+        "type": "object",
+        "required": [
+          "generation",
+          "indexReadable"
+        ],
+        "properties": {
+          "compatible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "digestMatches": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "indexReadable": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CustomUiUnavailableReason": {
+        "type": "string",
+        "enum": [
+          "missingActivationRecord",
+          "unsafeTree",
+          "indexUnavailable",
+          "manifestInvalid",
+          "digestMismatch",
+          "incompatible"
+        ]
+      },
+      "MintTokenRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/tokens` request body.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The label the new token is listed under."
+          }
+        }
+      },
+      "MintedToken": {
+        "type": "object",
+        "description": "`POST /api/v1/tokens` response body: the one place a plaintext token\nappears.",
+        "required": [
+          "id",
+          "name",
+          "token"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The new token's identity, for a later `DELETE`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The label as it was submitted."
+          },
+          "token": {
+            "type": "string",
+            "description": "The whole token, `mos_<id>_<secret>`.\n\n**It appears here and nowhere else, ever.** Only the SHA-256 digest is\nstored, so a token that is lost is replaced and never recovered -- the\nposture `access.device` already takes."
+          }
+        }
+      },
+      "NetworkInterface": {
+        "type": "object",
+        "description": "One `network` entry, as the document describes it.",
+        "required": [
+          "kind",
+          "dhcp"
+        ],
+        "properties": {
+          "bridge": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BridgeParameters",
+                "description": "Bridge parameters, for `kind = \"bridge\"`."
+              }
+            ]
+          },
+          "dhcp": {
+            "type": "boolean",
+            "description": "Whether the interface acquires its address via DHCP."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`physical`, `vlan`, `bridge` or `wireguard`. Absent means `physical`.\n\nThe block below is authoritative and the interface name is not:\n`eth0.100` is a convention, not a declaration."
+          },
+          "static": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StaticAddressing",
+                "description": "Static addressing, used when `dhcp` is false. Absent is an interface\nwith no addressing at all, which is what a bridge port must be."
+              }
+            ]
+          },
+          "vlan": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VlanParameters",
+                "description": "VLAN parameters, for `kind = \"vlan\"`."
+              }
+            ]
+          },
+          "wireguard": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WireguardParameters",
+                "description": "WireGuard parameters, for `kind = \"wireguard\"`."
+              }
+            ]
+          }
+        }
+      },
+      "NetworkOverview": {
+        "type": "object",
+        "required": [
+          "configured",
+          "configuredCount",
+          "observed"
+        ],
+        "properties": {
+          "configured": {
+            "description": "The declared settings map. This is desired configuration, not proof of\nlink health."
+          },
+          "configuredCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observed": {
+            "$ref": "#/components/schemas/ObservedNetwork",
+            "description": "The current view reported by systemd-networkd."
+          }
+        }
+      },
+      "ObservedInterface": {
+        "type": "object",
+        "properties": {
+          "addressState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "addresses": {
+            "type": "array",
+            "items": {}
+          },
+          "administrativeState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "carrierState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dns": {
+            "type": "array",
+            "items": {}
+          },
+          "driver": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hardwareAddress": {},
+          "index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "ipv4AddressState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ipv6AddressState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mtu": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "onlineState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operationalState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "routes": {
+            "type": "array",
+            "items": {}
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ObservedNetwork": {
+        "type": "object",
+        "required": [
+          "available",
+          "interfaceCount",
+          "interfaces"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interfaceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObservedInterface"
+            }
+          }
+        }
+      },
+      "ResourceValue": {
+        "description": "The body of a resource `GET`: the value at the dot-path, as mosd holds it.\n\nAny JSON value: a dot-path can name a subtree, an array or a scalar.\n\nSecrets are replaced by the string `\"<redacted>\"`, which a client can\nreceive anywhere inside the body. Every field named `psk`, `passwordHash`,\n`password_hash`, `hash` or `privateKey` carries the sentinel instead of its\nvalue, at any depth and inside arrays, and so does the whole body when the\ndot-path names one of those fields directly.\n\nThe sentinel is read-only: writing it back is refused at **422** rather\nthan stored, because storing it would destroy the credential."
+      },
+      "SessionLoginRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionStatus": {
+        "type": "object",
+        "description": "The browser's current authentication state.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "csrfToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Returned only for an authenticated browser session."
+          },
+          "state": {
+            "type": "string",
+            "description": "`setup`, `unauthenticated`, or `authenticated`."
+          }
+        }
+      },
+      "SettingsWrite": {
+        "description": "The body of a settings `PUT`: the value to write, and nothing around it.\n\nA bare JSON value, the same shape `GET` answers.\n\nThe schema is wide because the dot-path decides what is acceptable. What\nis actually accepted is narrow: a JSON string for `hostname`, `true` or\n`false` for the three switches. Anything else is **422**."
+      },
+      "SetupRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/setup` request body.\n\nNo `confirm` member, unlike the form the wizard posts: that field exists so\na human who mistyped a password into a box they cannot read is told before\nit becomes the only credential on the device. A client that built a JSON\nbody knows what it sent, and a second copy of the same string proves\nnothing about it.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hostname to apply. Absent leaves the stored one alone.\n\nNot trimmed, for the reason `PUT /api/v1/settings/hostname` gives: a\nclient that built a JSON string chose its bytes, and silently writing\nsomething other than what it sent is the worse answer."
+          },
+          "network": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`network` entries to declare, merged into the stored map by name.\n\nAn entry whose name is already declared is replaced whole; one that is\nnot is added. Entries the body does not name are left alone.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkInterface"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "password": {
+            "type": "string",
+            "description": "The admin password to set. At least 8 bytes, the floor the wizard and\nthe change-password route enforce."
+          }
+        }
+      },
+      "SetupToken": {
+        "type": "object",
+        "description": "`POST /api/v1/setup` response body.",
+        "required": [
+          "token",
+          "csrfToken"
+        ],
+        "properties": {
+          "csrfToken": {
+            "type": "string",
+            "description": "CSRF token for the browser session created by setup."
+          },
+          "token": {
+            "type": "string",
+            "description": "The whole token, `mos_<id>_<secret>`.\n\n**It appears here and nowhere else, ever**, exactly as the mint route's\ndoes: only the SHA-256 digest is stored. The id is not a separate\nmember because it is the token's own second segment, so a caller that\nholds this string can address it for a later `DELETE` without being\ntold it twice."
+          }
+        }
+      },
+      "StaticAddressing": {
+        "type": "object",
+        "description": "`static` addressing.",
+        "required": [
+          "address",
+          "dns"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Interface address in CIDR notation, e.g. `192.168.1.10/24`."
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "DNS server addresses."
+          },
+          "gateway": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default gateway address; absent for a link with no route of its own."
+          }
+        }
+      },
+      "TaskAccepted": {
+        "type": "object",
+        "description": "A persisted settings write whose reconciliation continues asynchronously.",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "description": "Poll this id at `GET /api/v1/tasks/{id}`."
+          }
+        }
+      },
+      "TaskRecord": {
+        "type": "object",
+        "description": "One queued apply lifecycle, shared by the D-Bus client and HTTP surface.",
+        "required": [
+          "id",
+          "operation",
+          "dotPath",
+          "source",
+          "status",
+          "enqueuedAt",
+          "foldedCount"
+        ],
+        "properties": {
+          "dotPath": {
+            "type": "string"
+          },
+          "enqueuedAt": {
+            "type": "string"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "foldedCount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "TransientRootPasswordRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/actions/transient-root-password` request body.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The password to open the channel with: 8 to 72 bytes, and no NUL,\nnewline or carriage return."
+          }
+        }
+      },
+      "UiStatus": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "availableCustom": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AvailableCustomUiStatus",
+                "description": "The newest usable retained generation, or the newest unusable one with\na reason when no generation passes validation."
+              }
+            ]
+          },
+          "custom": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CustomUiStatus"
+              }
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "description": "`builtIn` when no custom bundle is active, otherwise `custom`."
+          }
+        }
+      },
+      "VlanParameters": {
+        "type": "object",
+        "description": "The 802.1Q parameters of a VLAN interface.",
+        "required": [
+          "parent",
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "802.1Q VLAN id.",
+            "minimum": 0
+          },
+          "parent": {
+            "type": "string",
+            "description": "Name of the `network` entry this VLAN sits on. **It must be a declared\nentry**; a body naming one that is not is refused at 422."
+          }
+        }
+      },
+      "WifiNetworkEntry": {
+        "type": "object",
+        "description": "One known WiFi network, in both directions.\n\n\n`psk` differs by direction. On the way **in** it is the pre-shared key. On\nthe way **out** it is `\"<redacted>\"` whenever a key is stored. A body\ncarrying the sentinel back is refused at **422** rather than written.",
+        "required": [
+          "ssid",
+          "hidden",
+          "priority"
+        ],
+        "properties": {
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether the network hides its SSID."
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Selection preference; higher wins."
+          },
+          "psk": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pre-shared key; absent for an open network, `\"<redacted>\"` on\nevery read of a network that has one."
+          },
+          "ssid": {
+            "type": "string",
+            "description": "The network name, which is also this entry's `DELETE` path segment."
+          }
+        }
+      },
+      "WireguardParameters": {
+        "type": "object",
+        "description": "The parameters of a WireGuard tunnel.\n\nThere is no private-key member and there never will be: this subtree is\nserved over `GET /api/v1/settings/network`, so a key in it is a key\npublished to every client. The private key lives in a mode-0640 file on the\ndevice and only its public half is surfaced, through\n`GET /api/v1/state/network` and the rotate action.",
+        "required": [
+          "peers"
+        ],
+        "properties": {
+          "listenPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "UDP port to listen on; absent lets the kernel pick one.",
+            "minimum": 0
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WireguardPeerEntry"
+            },
+            "description": "The far ends of the tunnel. A `PUT` of this interface replaces them;\nthe peer collection route edits them one at a time."
+          }
+        }
+      },
+      "WireguardPeerEntry": {
+        "type": "object",
+        "description": "One far end of a WireGuard tunnel, in both directions.",
+        "required": [
+          "publicKey",
+          "allowedIps"
+        ],
+        "properties": {
+          "allowedIps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDRs routed to this peer."
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`host:port` to send to, for a peer this end initiates to."
+          },
+          "persistentKeepalive": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Keepalive interval in seconds, for a peer behind NAT.",
+            "minimum": 0
+          },
+          "publicKey": {
+            "type": "string",
+            "description": "The peer's X25519 public key: 32 bytes in padded base64. It is also\nthis entry's `DELETE` path segment, and its alphabet contains `/`, so a\nkey carrying one is percent-encoded there."
+          }
+        }
+      },
+      "WireguardRotation": {
+        "type": "object",
+        "description": "The body of a successful key rotation: the public half, and nothing else.\n\nThere is no `privateKey` member here and there will not be one. The private\nhalf never leaves mosd — there is no read-back route for the private key,\never; not redacted-on-read, nonexistent — so this struct is the whole of\nwhat a rotation can answer.",
+        "required": [
+          "publicKey"
+        ],
+        "properties": {
+          "publicKey": {
+            "type": "string",
+            "description": "The new base64 X25519 public key, which is what the far end needs."
+          }
+        }
+      }
+    }
+  }
+}

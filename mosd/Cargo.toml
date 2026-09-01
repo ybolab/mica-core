@@ -1,0 +1,38 @@
+[package]
+name = "mosd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mosd-settings = { path = "../mosd-settings" }
+# The one `com.mos.*` bus-name rule: the service registry takes
+# it rather than restating it.
+mos-busname = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+bcrypt = { workspace = true }
+ring = { workspace = true }
+hex = { workspace = true }
+# The WireGuard keystore: base64 is the key format on disk and on the wire,
+# x25519-dalek derives the public half of a private key without a `wg` binary.
+base64 = { workspace = true }
+x25519-dalek = { workspace = true }
+# `process` for the `ip link del` teardown the network reconciler runs when a
+# virtual device's unit goes away; networkd does not reap devices it created.
+tokio = { workspace = true, features = ["process", "signal", "time"] }
+zbus = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml = { workspace = true }

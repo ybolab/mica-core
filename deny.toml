@@ -1,0 +1,54 @@
+# cargo-deny 0.19.x configuration for the mosd workspace.
+
+[licenses]
+# All workspace crates are publish = false; skip license checks for them.
+private = { ignore = true }
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # tiny-keccak 2.0.2, and only tiny-keccak. CC0-1.0 is a public-domain
+    # dedication rather than a licence with obligations, and it is reached
+    # here through a proc macro's build-time dependency, not through anything
+    # linked into a shipped binary. It is also a dedication that explicitly
+    # does NOT grant patent rights, which is the consideration that actually
+    # applies to a device shipped to customers and the reason this entry names
+    # one crate on one chain rather than opening the list to a licence:
+    #
+    #   rumqttd -> config -> rust-ini -> ordered-multimap -> dlv-list
+    #           -> const-random -> const-random-macro -> tiny-keccak
+    #
+    # `config` is a mandatory dependency of rumqttd, so no feature flag drops
+    # the chain. Reversing this allowance therefore starts upstream, not here:
+    # ask first whether rumqttd can be driven without its `config`-based
+    # loader, and only if that answer is no does the alternative become not
+    # using the broker.
+    "CC0-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+# The workspace's no-C-dependency posture, enforced by the gate rather than
+# by a comment. docs/design/dashboard.md §5.1.2 records the decision: the
+# crypto backend is ring, pure Rust; `tough` is pinned to `=0.18.0` in
+# Cargo.toml because 0.19+ hard-depends on aws-lc-rs, which builds C
+# (AWS-LC). The workspace refuses a C-building crypto backend.
+deny = [
+    { crate = "aws-lc-rs", reason = "builds C (AWS-LC); the workspace's crypto backend is ring, pure Rust" },
+    { crate = "tough@>=0.19.0", reason = "0.19+ hard-depends on aws-lc-rs; 0.18 is the last ring-backed release" },
+]
+
+[advisories]
+# Vulnerabilities are errors by default in the version-2 schema;
+# unmaintained advisories only warn.
+unmaintained = "all"
+ignore = [
+    # rustls-pemfile is archived but is a thin wrapper around the identical
+    # PEM parsing code in rustls-pki-types; it is a mandatory dependency of
+    # axum-server's tls-rustls feature and carries no vulnerability.
+    { id = "RUSTSEC-2025-0134", reason = "unmaintained thin wrapper pulled in by axum-server tls-rustls" },
+]

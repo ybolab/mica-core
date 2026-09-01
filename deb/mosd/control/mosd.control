@@ -1,0 +1,15 @@
+Package: mosd
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: mos build <mos@example.invalid>
+Section: admin
+Priority: optional
+Depends: default-dbus-system-bus | dbus-system-bus, mos-profile, mos-system (= @VERSION@), ${shlibs:Depends}
+Description: mos management daemon
+ Owns the com.mos.mosd D-Bus interface: the settings tree, device health,
+ power actions and update state. Ships the root-only bus policy for that name
+ alongside the binary, so the daemon's access boundary travels with it.
+ .
+ The package owns its enablement: mosd.service and the
+ multi-user.target.wants symlink that starts it are both payload, so
+ installing this package is what makes the daemon run.

@@ -1,0 +1,6 @@
+node_modules/
+
+# The machine-readable result APID_RESULT_JSON points at. Written per run;
+# never a source artefact.
+result.json
+*.result.json

@@ -1,0 +1,7 @@
+# The build context is this producer's own directory; see the mosd producer's
+# Dockerfile.dockerignore beside it. This one also copies the maintainer scripts,
+# which pack.sh installs into each package's control archive.
+*
+!control/*.control
+!maintainer
+!maintainer/**

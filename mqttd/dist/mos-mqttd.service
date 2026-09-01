@@ -1,0 +1,94 @@
+[Unit]
+Description=mos MQTT bridge (publishes explicitly enrolled application item trees)
+Documentation=file:///usr/share/doc/mos/bus.md
+After=network.target mosd.service
+Wants=mosd.service
+# mosd renders this before starting the bridge. A missing identity skips the
+# unit instead of making mqttd invent one or call back into mosd.
+ConditionPathExists=/run/mos/mqttd-device.env
+
+[Service]
+Type=simple
+
+# WHERE THE BROKER IS CONFIGURED, AND WHY IT IS NOT THIS FILE.
+# The root filesystem is an immutable dm-verity squashfs: this unit cannot be
+# edited on the device, and `systemctl edit` has nowhere to write. A broker
+# address baked in here would be a broker address fixed at image build time,
+# identical on every device flashed with the image. So the address is read
+# from STATE instead, and this file carries only the fallbacks.
+#
+# To point the bridge at a broker, write /var/lib/mos/mqttd.env (a STATE-backed
+# bind, so it survives a reboot and an A/B update) and restart the unit:
+#
+#     MOS_MQTT_BROKER_HOST=10.0.0.2
+#     MOS_MQTT_BROKER_PORT=1883
+#     MOS_MQTT_CLIENT_ID=mos-<serial>
+#     MOS_MQTT_MODE=read-only
+#
+# The leading `-` on EnvironmentFile makes an absent file a non-error: an
+# unconfigured device runs on the defaults below rather than failing to start.
+Environment=MOS_MQTT_BROKER_HOST=localhost
+Environment=MOS_MQTT_BROKER_PORT=1883
+Environment=MOS_MQTT_CLIENT_ID=mos-mqttd
+Environment=MOS_MQTT_MODE=read-only
+EnvironmentFile=-/var/lib/mos/mqttd.env
+# Root-rendered, one-purpose runtime input. It carries only the topic identity
+# and is deliberately separate from the management settings document.
+EnvironmentFile=/run/mos/mqttd-device.env
+
+# Read-only by default: the bridge is a data publisher unless someone
+# deliberately makes it a control path (MOS_MQTT_MODE=full carries W topics
+# through to SetValue). The default is restated in the binary's own clap
+# default, so a wiped environment cannot silently promote the bridge.
+ExecStart=/usr/bin/mos-mqttd \
+    --device-id ${MOS_MQTT_DEVICE_ID} \
+    --mode ${MOS_MQTT_MODE} \
+    --broker-host ${MOS_MQTT_BROKER_HOST} \
+    --broker-port ${MOS_MQTT_BROKER_PORT} \
+    --client-id ${MOS_MQTT_CLIENT_ID}
+Restart=on-failure
+RestartSec=5
+
+# IDENTITY: a STATIC system user, not DynamicUser.
+#
+# The bridge has ZERO access to com.mos.mosd. Application packages enroll one
+# exact com.mos.<class>[.<suffix>] name and grant this stable user only that
+# destination's Item1 members. A D-Bus grant therefore needs a stable identity
+# to name.
+#
+# <policy user="..."> resolves its user when dbus-daemon reads the file at
+# startup, which is before any dynamic user for this unit exists, so a
+# DynamicUser name can be granted nothing: the rule parses, loads, and matches
+# nothing. A rule that cannot match is worse than a missing rule -- it reads,
+# in a diff and in a review, exactly like a working grant.
+#
+# So: a static system user with a pinned uid/gid. Application-owned policy
+# files can name it exactly; no mosd-owned policy grants it a system member.
+# Everything DynamicUser would provide implicitly is stated below instead.
+User=mos-mqttd
+Group=mos-mqttd
+
+# Sandboxing. The bridge observes bus ownership only for package-enrolled
+# application names and has one outbound TCP connection: it owns no state,
+# writes no files, execs nothing, and needs neither root nor any capability.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# DynamicUser=yes would imply these two; they are stated explicitly.
+RemoveIPC=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
