@@ -181,8 +181,9 @@ impl AppState {
 /// total. Rules 1-3 are `.route`/`.nest` declarations and rule 4 is the
 /// `.fallback`; axum matches declared routes before it consults a fallback, so
 /// a bundle that ships a file at `api/v1/settings`, at `healthz` or at `login`
-/// cannot capture any of them. No handler re-checks a prefix to make that
-/// true.
+/// cannot capture any of them. The custom asset resolver additionally rejects
+/// ambiguous encoded or repeated-separator spellings of the reserved roots;
+/// those aliases fail closed instead of being normalised into another domain.
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve::root))
@@ -190,9 +191,7 @@ pub fn app(state: AppState) -> Router {
             "/ui",
             Router::new()
                 .route("/", get(crate::assets::builtin::index))
-                .route("/assets/app.js", get(crate::assets::builtin::app_js))
-                .route("/assets/app.css", get(crate::assets::builtin::app_css))
-                .fallback(crate::assets::builtin::fallback),
+                .route("/{*path}", get(crate::assets::builtin::serve)),
         )
         .route("/ui/", get(crate::assets::builtin::index))
         .route("/healthz", get(healthz))

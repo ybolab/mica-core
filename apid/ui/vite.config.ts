@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [
     tanstackRouter({
       target: 'react',
-      autoCodeSplitting: false,
+      autoCodeSplitting: true,
       routesDirectory: './src/app/routes',
       generatedRouteTree: './src/routeTree.gen.ts',
     }),
@@ -20,12 +20,12 @@ export default defineConfig({
     assetsInlineLimit: 0,
     rollupOptions: {
       output: {
-        entryFileNames: 'assets/app.js',
-        chunkFileNames: 'assets/chunk-[hash].js',
-        assetFileNames: (asset) =>
-          asset.names.some((name) => name.endsWith('.css'))
-            ? 'assets/app.css'
-            : 'assets/[name][extname]',
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]',
+        manualChunks(id) {
+          return id.includes('/node_modules/') ? 'vendor' : undefined
+        },
       },
     },
   },

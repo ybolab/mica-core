@@ -4,11 +4,11 @@
 //! [`fallback`] is mounted as the router's fallback, which is what makes §4.1's
 //! precedence structural: axum matches declared routes before it consults a
 //! fallback, so a bundle shipping a file at `api/v1/settings` or at `healthz`
-//! cannot capture either — not because anything here checks the prefix, but
-//! because this function is never called for a path the router matched. Nothing
-//! below re-derives that rule, and nothing below may: "a rule enforced by the
-//! dispatch mechanism is worth more than a rule enforced by a check somebody
-//! can forget to write" (§4.1). [`root`] is `GET /`, §4.1's single declared
+//! cannot capture either because this function is never called for a path the
+//! router matched. [`super::path::resolve`] also rejects repeated-separator and
+//! encoded aliases of the reserved `api` and `ui` roots; this is the boundary
+//! guard for spellings Axum did not structurally claim, not a fallback into
+//! either reserved domain. [`root`] is `GET /`, §4.1's single declared
 //! exception: the active bundle's `index.html` when a bundle is active and its
 //! index is readable, and a redirect to the reserved built-in `/ui` otherwise.
 //!
@@ -129,7 +129,7 @@ fn active_root(store: &Store) -> Option<PathBuf> {
 /// "index is not a regular file", answered by the site-root redirect or a
 /// custom-fallback 404, depending on which path was requested.
 fn serve_index(root: &Path) -> Option<Response> {
-    let index = asset_path::resolve(INDEX, root).ok()?;
+    let index = asset_path::resolve_relative(INDEX, root).ok()?;
     serve_file(root, &index)
 }
 

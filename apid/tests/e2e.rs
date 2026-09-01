@@ -101,6 +101,12 @@ fn location(response: &reqwest::Response) -> &str {
         .unwrap_or("(no Location header)")
 }
 
+fn module_script_src(html: &str) -> Option<&str> {
+    let source = html.split_once("<script type=\"module\"")?.1;
+    let source = source.split_once("src=\"")?.1;
+    source.split_once('"').map(|(path, _)| path)
+}
+
 async fn response_json(response: reqwest::Response) -> anyhow::Result<serde_json::Value> {
     serde_json::from_str(&response.text().await?).context("parse JSON response")
 }
@@ -206,12 +212,27 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
                 .contains("<title>mos console</title>")
         );
     }
-    let response = admin
-        .get(format!("{https_base}/ui/assets/app.js"))
+    let index = admin
+        .get(format!("{https_base}/ui"))
         .send()
+        .await?
+        .text()
         .await?;
+    let script = module_script_src(&index).context("built-in index has no module script")?;
+    anyhow::ensure!(
+        script.starts_with("/ui/assets/") && script.ends_with(".js"),
+        "built-in module script is not a hashed /ui asset: {script}"
+    );
+    let response = admin.get(format!("{https_base}{script}")).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(response.text().await?.contains("/api/v1/session"));
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/javascript; charset=utf-8")
+    );
+    assert!(!response.bytes().await?.is_empty());
 
     let response = anonymous
         .get(format!("{https_base}/api/v1/session"))

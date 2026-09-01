@@ -1,9 +1,10 @@
 //! Request-path resolution for a static asset bundle (`docs/design/api.md`
 //! §4.4).
 //!
-//! [`resolve`] is a pure function from a request target and an
-//! **already-resolved** bundle root to a path inside that root. It performs
-//! §4.4's five rules in order:
+//! [`resolve`] is a pure function from a root-UI request target and an
+//! **already-resolved** bundle root to a path inside that root. [`LogicalPath`]
+//! is the shared prefix-stripped representation used by both custom and
+//! built-in assets. Together they enforce §4.4's rules:
 //!
 //! 1. Reject before touching the filesystem — percent-decode, parse the
 //!    decoded form into components, and require every component to be an
@@ -12,10 +13,11 @@
 //!    are never re-scanned for escapes; a `%` that survives one decode is a
 //!    rejection ([`Rejection::ResidualEscape`]) rather than an invitation to
 //!    decode again.
-//! 3. Strip *all* leading separators, then require every remaining component
-//!    to be an ordinary name, so a root component anywhere is a rejection.
-//! 4. Reject NUL explicitly, at the same place as `..`, rather than leaving
-//!    the answer to a platform's `EINVAL`.
+//! 3. Require a prefix-stripped relative key. A repeated leading separator,
+//!    encoded separator, empty segment, `.` or `..` is rejected rather than
+//!    normalized into a second spelling of another route namespace.
+//! 4. Reject NUL, controls and backslashes explicitly rather than leaving the
+//!    answer to a platform-dependent filesystem call.
 //! 5. Canonicalise the opened path and assert it is the path that was asked
 //!    for, inside the root. This is §4.4's defence in depth; the primary
 //!    defence is the unpacker refusing non-regular entries at install time
@@ -29,7 +31,7 @@
 //! [`Rejection::OutsideRoot`] or [`Rejection::Symlink`] depending on the
 //! shape.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Why a request path did not resolve to a path inside the bundle.
 ///
@@ -42,8 +44,13 @@ pub enum Rejection {
     MalformedEscape,
     /// The decoded bytes are not valid UTF-8.
     NotUtf8,
+    /// A percent escape decoded to `/` or `\`; separators must be literal so
+    /// routing and asset parsing see the same component boundaries.
+    EncodedSeparator,
     /// The decoded path contains a NUL byte (rule 4).
     Nul,
+    /// The decoded path contains another ASCII control byte.
+    Control,
     /// A `%` survived the single decode pass — the request was encoded twice
     /// (`%252e`, `%2500`). Decoding it again is exactly what rule 2 forbids.
     ResidualEscape,
@@ -52,10 +59,17 @@ pub enum Rejection {
     /// Windows it is a separator, and a rule beats a platform-dependent
     /// answer. No asset in a bundle needs one.
     Backslash,
+    /// The prefix-stripped key begins with `/`, including a repeated leading
+    /// separator in an original request.
+    RootOrPrefix,
+    /// Two literal separators produced an empty path component.
+    EmptySegment,
+    /// A `.` component, which would create a second URL spelling.
+    CurrentDir,
     /// A `..` component, at any position (rules 1 and 3).
     ParentDir,
-    /// A root or prefix component, at any position (rules 1 and 3).
-    RootOrPrefix,
+    /// A root-UI request decoded to the reserved `api` or `ui` first segment.
+    ReservedRoot,
     /// The path resolved through a symlink that stays inside the bundle. The
     /// rule is "no symlinks in bundle contents" (§5.3 requirement 2), not "no
     /// escaping symlinks".
@@ -65,6 +79,88 @@ pub enum Rejection {
     /// Nothing exists at the requested path. The request itself was
     /// well-formed.
     NotFound,
+}
+
+/// One canonical, prefix-stripped asset key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalPath {
+    key: String,
+    relative: PathBuf,
+}
+
+impl LogicalPath {
+    /// Decode and validate a path relative to an already-selected route root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact guard that rejected an ambiguous or hostile key.
+    pub fn parse(relative: &str) -> Result<Self, Rejection> {
+        if relative.starts_with('/') {
+            return Err(Rejection::RootOrPrefix);
+        }
+        let (decoded, encoded_separator) = decode_once(relative)?;
+        if decoded.as_bytes().contains(&0) {
+            return Err(Rejection::Nul);
+        }
+        if decoded.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(Rejection::Control);
+        }
+        if decoded.contains('%') {
+            return Err(Rejection::ResidualEscape);
+        }
+        if encoded_separator {
+            return Err(Rejection::EncodedSeparator);
+        }
+        if decoded.contains('\\') {
+            return Err(Rejection::Backslash);
+        }
+
+        let mut path = PathBuf::new();
+        let mut segments = decoded.split('/');
+        let first = segments.next().unwrap_or_default();
+        if first.is_empty() {
+            return Err(Rejection::EmptySegment);
+        }
+        push_segment(&mut path, first)?;
+        for segment in segments {
+            if segment.is_empty() {
+                return Err(Rejection::EmptySegment);
+            }
+            push_segment(&mut path, segment)?;
+        }
+
+        Ok(Self {
+            key: decoded,
+            relative: path,
+        })
+    }
+
+    /// Canonical URL key, with literal `/` separators.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.key
+    }
+
+    /// Filesystem-relative form assembled from validated ordinary segments.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.relative
+    }
+
+    fn first_segment(&self) -> &str {
+        self.key.split('/').next().unwrap_or_default()
+    }
+}
+
+fn push_segment(path: &mut PathBuf, segment: &str) -> Result<(), Rejection> {
+    match segment {
+        "." => Err(Rejection::CurrentDir),
+        ".." => Err(Rejection::ParentDir),
+        _ => {
+            path.push(segment);
+            Ok(())
+        }
+    }
 }
 
 impl Rejection {
@@ -92,44 +188,28 @@ impl Rejection {
 ///
 /// Returns the [`Rejection`] naming the single guard that fired.
 pub fn resolve(request_path: &str, bundle_root: &Path) -> Result<PathBuf, Rejection> {
-    // Rule 2: exactly one decode pass. `decoded` is never fed back in.
-    let decoded = decode_once(request_path)?;
-
-    // Rule 4, and the two byte-level rules that share its reasoning. Checked
-    // on the decoded form, before the filesystem is touched.
-    if decoded.as_bytes().contains(&0) {
-        return Err(Rejection::Nul);
+    let relative = request_path
+        .strip_prefix('/')
+        .ok_or(Rejection::RootOrPrefix)?;
+    let logical = LogicalPath::parse(relative)?;
+    if matches!(logical.first_segment(), "api" | "ui") {
+        return Err(Rejection::ReservedRoot);
     }
-    if decoded.contains('%') {
-        return Err(Rejection::ResidualEscape);
-    }
-    if decoded.contains('\\') {
-        return Err(Rejection::Backslash);
-    }
+    resolve_logical(&logical, bundle_root)
+}
 
-    // Rule 3: strip *all* leading separators.
-    let trimmed = decoded.trim_start_matches('/');
+/// Resolve an application-owned relative name such as `index.html`.
+///
+/// # Errors
+///
+/// Returns the same validation and containment failures as [`resolve`].
+pub fn resolve_relative(relative: &str, bundle_root: &Path) -> Result<PathBuf, Rejection> {
+    let logical = LogicalPath::parse(relative)?;
+    resolve_logical(&logical, bundle_root)
+}
 
-    // Rule 1: every remaining component must be an ordinary name.
-    let mut relative = PathBuf::new();
-    for component in Path::new(trimmed).components() {
-        match component {
-            Component::Normal(name) => relative.push(name),
-            Component::CurDir => {}
-            Component::ParentDir => return Err(Rejection::ParentDir),
-            // On Unix this arm is unreachable given the strip above, and no
-            // test can distinguish its presence — the two halves of rule 3
-            // are mutually redundant here. It is kept because §4.4 states it
-            // as a rule and because it is what catches `/etc/passwd` if the
-            // strip is ever weakened to a single separator.
-            Component::RootDir | Component::Prefix(_) => return Err(Rejection::RootOrPrefix),
-        }
-    }
-
-    // `join` of a relative path built from `Component::Normal` only; never
-    // string concatenation, and never a push that an absolute path could
-    // replace.
-    let candidate = bundle_root.join(&relative);
+fn resolve_logical(logical: &LogicalPath, bundle_root: &Path) -> Result<PathBuf, Rejection> {
+    let candidate = bundle_root.join(logical.as_path());
 
     // Rule 5, defence in depth: what the kernel resolves must be what was
     // asked for.
@@ -147,9 +227,10 @@ pub fn resolve(request_path: &str, bundle_root: &Path) -> Result<PathBuf, Reject
 ///
 /// The output is returned without being re-scanned for `%`, which is the half
 /// of rule 2 that a general-purpose decoder cannot promise.
-fn decode_once(raw: &str) -> Result<String, Rejection> {
+fn decode_once(raw: &str) -> Result<(String, bool), Rejection> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
+    let mut encoded_separator = false;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
@@ -157,7 +238,9 @@ fn decode_once(raw: &str) -> Result<String, Rejection> {
             let lo = bytes.get(i + 2).copied().and_then(hex_nibble);
             match (hi, lo) {
                 (Some(hi), Some(lo)) => {
-                    out.push((hi << 4) | lo);
+                    let decoded = (hi << 4) | lo;
+                    encoded_separator |= matches!(decoded, b'/' | b'\\');
+                    out.push(decoded);
                     i += 3;
                 }
                 _ => return Err(Rejection::MalformedEscape),
@@ -167,7 +250,9 @@ fn decode_once(raw: &str) -> Result<String, Rejection> {
             i += 1;
         }
     }
-    String::from_utf8(out).map_err(|_| Rejection::NotUtf8)
+    String::from_utf8(out)
+        .map(|decoded| (decoded, encoded_separator))
+        .map_err(|_| Rejection::NotUtf8)
 }
 
 const fn hex_nibble(b: u8) -> Option<u8> {
@@ -269,8 +354,8 @@ mod tests {
             // Validating the raw string for a literal `..` lets this through.
             (
                 "/%2e%2e%2fetc%2fpasswd",
-                Rejection::ParentDir,
-                "rule 2: single-encoded `..`, decoded before parsing",
+                Rejection::EncodedSeparator,
+                "rule 2: an encoded separator is never normalized",
             ),
             (
                 "/%2e%2e",
@@ -305,9 +390,10 @@ mod tests {
             ("/a\\b.js", Rejection::Backslash, "backslash, raw"),
             (
                 "/%5cetc%5cpasswd",
-                Rejection::Backslash,
+                Rejection::EncodedSeparator,
                 "backslash, encoded",
             ),
+            ("/line%0afeed", Rejection::Control, "ASCII control byte"),
             // The decode itself.
             ("/%", Rejection::MalformedEscape, "truncated escape `%`"),
             ("/%2", Rejection::MalformedEscape, "truncated escape `%2`"),
@@ -374,42 +460,27 @@ mod tests {
         );
     }
 
-    /// Rule 3 stated as its own property: an absolute-looking decoded path is
-    /// joined under the root, never concatenated and never allowed to replace
-    /// it.
-    ///
-    /// `PathBuf::push` of an absolute path discards everything before it, so a
-    /// single misplaced `push` turns this request into a read of the real
-    /// `/etc/passwd`. The decoy inside the fixture is what makes the
-    /// difference observable.
+    /// Rule 3 stated as its own property: leading and encoded separators are
+    /// refused instead of creating aliases for another route namespace.
     #[test]
-    fn a_decoded_leading_separator_stays_under_the_root() {
+    fn ambiguous_separators_are_rejected() {
         let f = fixture();
         assert_eq!(
             resolve("/%2fetc%2fpasswd", &f.root),
-            Ok(f.root.join("etc/passwd")),
-            "must resolve to the decoy inside the bundle, not to /etc/passwd"
+            Err(Rejection::EncodedSeparator)
         );
         assert_eq!(
             resolve("///etc/passwd", &f.root),
-            Ok(f.root.join("etc/passwd")),
-            "all leading separators are stripped, not just the first"
-        );
-        // The same request with no decoy present is a plain miss, not an
-        // escape: the real /etc/shadow is not reachable from here.
-        assert_eq!(
-            resolve("/%2fetc%2fshadow", &f.root),
-            Err(Rejection::NotFound)
+            Err(Rejection::RootOrPrefix)
         );
     }
 
-    /// An encoded separator is decoded before the component parse, so it
-    /// becomes a separator — it is not smuggled through as part of a name.
-    /// This is the same ordering rule 2 relies on, observed without any `..`.
+    /// Literal separators are the only component boundaries. Their encoded
+    /// spellings are rejected so the router and resolver cannot disagree.
     #[test]
-    fn an_encoded_separator_becomes_a_separator() {
+    fn encoded_separators_do_not_create_components() {
         let f = fixture();
-        assert_eq!(resolve("/a%2fb", &f.root), Ok(f.root.join("a/b")));
+        assert_eq!(resolve("/a%2fb", &f.root), Err(Rejection::EncodedSeparator));
         assert_eq!(resolve("/a/b", &f.root), Ok(f.root.join("a/b")));
     }
 
@@ -425,9 +496,6 @@ mod tests {
             // content-hashed name is the shape §4.3's immutable class exists
             // for.
             ("/assets/app.a1b2c3.js", "assets/app.a1b2c3.js"),
-            ("/./index.html", "index.html"),
-            ("//index.html", "index.html"),
-            ("/assets/", "assets"),
         ] {
             assert_eq!(
                 resolve(input, &f.root),
@@ -435,7 +503,16 @@ mod tests {
                 "{input:?} is an ordinary request and must resolve"
             );
         }
-        assert_eq!(resolve("/", &f.root), Ok(f.root.clone()));
+        for (input, expected) in [
+            ("/./index.html", Rejection::CurrentDir),
+            ("//index.html", Rejection::RootOrPrefix),
+            ("/assets/", Rejection::EmptySegment),
+            ("/", Rejection::EmptySegment),
+            ("/api/versions", Rejection::ReservedRoot),
+            ("/%75i/index.html", Rejection::ReservedRoot),
+        ] {
+            assert_eq!(resolve(input, &f.root), Err(expected), "{input:?}");
+        }
     }
 
     /// A miss is not a hostile request, and it is the one outcome §4.2's

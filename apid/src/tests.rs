@@ -592,19 +592,94 @@ async fn ui_boundary_selects_custom_at_root_and_always_reserves_builtin_ui() {
         builtin.headers().get(CONTENT_TYPE).unwrap(),
         "text/html; charset=utf-8"
     );
-    assert!(body_string(builtin).await.contains("/ui/assets/app.js"));
+    assert!(body_string(builtin).await.contains("/ui/assets/"));
+
+    let builtin_js = crate::assets::builtin::embedded_paths()
+        .find(|path| path.ends_with(".js"))
+        .expect("the built-in VFS contains JavaScript");
+    let custom_shadow = format!("ui/{builtin_js}");
+    let builtin_url = format!("/ui/{builtin_js}");
 
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom-root</title>"),
-        ("ui/assets/app.js", "CUSTOM-SHADOW"),
+        (&custom_shadow, "CUSTOM-SHADOW"),
     ]);
     let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::OK);
     assert!(body_string(root).await.contains("custom-root"));
-    let builtin_js = get(&router, "/ui/assets/app.js", None).await;
-    assert_eq!(builtin_js.status(), StatusCode::OK);
-    assert!(!body_string(builtin_js).await.contains("CUSTOM-SHADOW"));
+    let response = get(&router, &builtin_url, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body_string(response).await.contains("CUSTOM-SHADOW"));
+}
+
+#[test]
+fn built_in_vfs_contains_sorted_split_output() {
+    let paths = crate::assets::builtin::embedded_paths().collect::<Vec<_>>();
+    assert!(paths.contains(&"index.html"), "{paths:?}");
+    assert!(
+        paths.len() > 3,
+        "the built-in VFS must not regress to a fixed three-file set: {paths:?}"
+    );
+    assert!(
+        paths.windows(2).all(|pair| pair[0] < pair[1]),
+        "generated VFS paths must be sorted: {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.starts_with("assets/zh-cn-") && path.ends_with(".js")),
+        "the Chinese catalog must remain a lazy chunk: {paths:?}"
+    );
+    for path in paths {
+        assert!(
+            crate::assets::path::LogicalPath::parse(path).is_ok(),
+            "generated asset is not a safe logical path: {path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn built_in_vfs_serves_every_asset_with_owner_local_cache_rules() {
+    let empty = TempDir::new().unwrap();
+    let router = test_app_serving(configured_tree("hunter2secret"), empty.path());
+
+    for path in crate::assets::builtin::embedded_paths() {
+        let response = get(&router, &format!("/ui/{path}"), None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert!(response.headers().contains_key(CONTENT_TYPE), "{path}");
+        assert_eq!(
+            header_value(&response, CACHE_CONTROL),
+            if path == "index.html" {
+                "no-store"
+            } else if path.starts_with("assets/") {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            },
+            "{path}"
+        );
+        assert_eq!(
+            header_value(&response, HeaderName::from_static("x-content-type-options")),
+            "nosniff",
+            "{path}"
+        );
+    }
+
+    let fallback = get(&router, "/ui/network", None).await;
+    assert_eq!(fallback.status(), StatusCode::OK);
+    assert_eq!(
+        header_value(&fallback, CONTENT_TYPE),
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(header_value(&fallback, CACHE_CONTROL), "no-store");
+
+    for path in ["/ui/assets/missing.js", "/ui/%252e%252e"] {
+        let response = get(&router, path, None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(header_value(&response, CACHE_CONTROL), "no-cache", "{path}");
+        assert_eq!(body_string(response).await, "", "{path}");
+    }
 }
 
 #[tokio::test]
@@ -851,13 +926,11 @@ async fn legacy_form_mutations_are_not_routes() {
     assert!(fake.set_paths().is_empty());
 }
 
-// The asset router with **§4.1 rule 1 deleted**, and nothing else.
+// The root asset router without the structural `/api` declaration.
 //
-// This is the control that makes the reservation's test bidirectional in the
-// sense §4.1 means. A test that asks for `/api/foo` and asserts 404 proves
-// nothing when no file was ever placed there — the 404 is indistinguishable
-// from an unhandled path. Here the same bundle, reached through the same
-// asset handler with the reservation removed, serves the file's bytes.
+// The shared path layer still refuses a literal or encoded reserved first
+// segment. This is intentional defence in depth for ambiguous spellings that
+// Axum did not classify, not a route to API content.
 fn asset_router_without_the_api_reservation(bundle_root: &Path) -> Router {
     let fake = Arc::new(FakeSettings::new(configured_tree("hunter2secret")));
     let state = AppState::new(fake, SIGNING_KEY).with_bundle_root(bundle_root);
@@ -971,33 +1044,67 @@ async fn a_bundle_cannot_shadow_the_reserved_api_subtree() {
     }
 }
 
-// The other direction of the same guard: with §4.1 rule 1 removed, the very
-// same bundle serves its own file at `/api/versions`.
-//
-// Without this the test above would pass against a router that had no
-// reservation and simply no bundle.
+// Reserved ownership is based on one canonical URL spelling. Repeated
+// leading separators and percent-encoded reserved names must be rejected,
+// never decoded by the root asset resolver into a second spelling of `/api`
+// or `/ui`. Prefix lookalikes remain ordinary custom-UI paths.
 #[tokio::test]
-async fn without_the_reservation_the_bundle_does_shadow_the_api() {
-    const VERSIONS_BYTES: &str = "BUNDLE-SHADOWS-API-VERSIONS";
-
+async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom</title>"),
-        ("api/versions", VERSIONS_BYTES),
+        ("api/versions", "CUSTOM-API-ALIAS"),
+        ("ui/assets/app.js", "CUSTOM-UI-ALIAS"),
+        ("apiary/asset.js", "CUSTOM-APIARY"),
+        ("uikit/asset.js", "CUSTOM-UIKIT"),
+    ]);
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
+    let cookie = login(&router, "hunter2secret").await;
+
+    for path in [
+        "//api/versions",
+        "/%61pi/versions",
+        "/%75i/assets/app.js",
+        "/ui/%252e%252e",
+        "/ui/%2e%2e/api",
+    ] {
+        let response = request(&router, "GET", path, Some(&cookie), Some(BROWSER_ACCEPT)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must terminate in its originally selected ownership domain"
+        );
+        let body = body_string(response).await;
+        assert!(!body.contains("CUSTOM-"), "{path} crossed into custom UI");
+        assert!(
+            !body.contains("<title>mos console</title>"),
+            "{path} used a guarded miss as built-in SPA navigation"
+        );
+    }
+
+    for (path, expected) in [
+        ("/apiary/asset.js", "CUSTOM-APIARY"),
+        ("/uikit/asset.js", "CUSTOM-UIKIT"),
+    ] {
+        let response = request(&router, "GET", path, Some(&cookie), None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(body_string(response).await, expected, "{path}");
+    }
+}
+
+// Even if a caller constructs the root asset router without the structural
+// `/api` reservation, the shared logical-path guard will not expose a bundle's
+// reserved first segment.
+#[tokio::test]
+async fn root_asset_resolver_fails_closed_without_the_api_router() {
+    let bundle = install_bundle(&[
+        ("index.html", "<!doctype html><title>custom</title>"),
+        ("api/versions", "BUNDLE-SHADOWS-API-VERSIONS"),
     ]);
     let unreserved = asset_router_without_the_api_reservation(bundle.path());
 
     let response = request(&unreserved, "GET", "/api/versions", None, None).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "without the reservation the asset router answers under /api/"
-    );
-    assert_eq!(
-        body_string(response).await,
-        VERSIONS_BYTES,
-        "and it answers with the bundle's own bytes, which is the failure the \
-         reservation prevents"
-    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_string(response).await, "");
 }
 
 // The reservation covers the subtree and every method, for every path the
