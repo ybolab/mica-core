@@ -57,6 +57,10 @@ pub trait SettingsApi: Send + Sync {
     async fn get_network_state(&self) -> anyhow::Result<Value> {
         self.get_state("network").await
     }
+    /// Time-synchronization status observed from timesyncd, classified by
+    /// mosd. Read-only: there is deliberately no method beside it that could
+    /// pause or stop synchronization.
+    async fn get_time_status(&self) -> anyhow::Result<Value>;
     /// Ask mosd to reboot the appliance.
     async fn reboot(&self) -> anyhow::Result<()>;
     /// Ask mosd to power the appliance off.
@@ -82,6 +86,8 @@ pub trait SettingsApi: Send + Sync {
 pub struct FakeSettings {
     tree: std::sync::Mutex<Value>,
     state: std::sync::Mutex<Value>,
+    /// What `get_time_status` answers; the shape mosd's `status_json` serves.
+    time_status: std::sync::Mutex<Value>,
     get_log: std::sync::Mutex<Vec<String>>,
     set_log: std::sync::Mutex<Vec<String>>,
     power_log: std::sync::Mutex<Vec<String>>,
@@ -108,6 +114,10 @@ impl FakeSettings {
         Self {
             tree: std::sync::Mutex::new(tree),
             state: std::sync::Mutex::new(Value::Object(serde_json::Map::new())),
+            time_status: std::sync::Mutex::new(serde_json::json!({
+                "status": "synchronized",
+                "synchronized": true,
+            })),
             get_log: std::sync::Mutex::new(Vec::new()),
             set_log: std::sync::Mutex::new(Vec::new()),
             power_log: std::sync::Mutex::new(Vec::new()),
@@ -146,6 +156,11 @@ impl FakeSettings {
     /// Rotations requested, as `(iface, public key answered)`, in call order.
     pub fn rotations(&self) -> Vec<(String, String)> {
         self.rotations.lock().unwrap().clone()
+    }
+
+    /// Replace what `get_time_status` answers.
+    pub fn set_time_status(&self, value: Value) {
+        *self.time_status.lock().unwrap() = value;
     }
 
     /// Insert `value` at top-level `key` of the live-state tree.
@@ -278,6 +293,10 @@ impl SettingsApi for FakeSettings {
             }
         }
         Ok(state)
+    }
+
+    async fn get_time_status(&self) -> anyhow::Result<Value> {
+        Ok(self.time_status.lock().unwrap().clone())
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {

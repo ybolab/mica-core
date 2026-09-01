@@ -1521,13 +1521,13 @@
           "resources"
         ],
         "summary": "Write one scalar setting by dot-path.",
-        "description": "Accepts four paths and no others: `hostname`, `access.ssh.enabled`,\n`container.enabled` and `mqtt.enabled`. Any other path is refused.\n\nAnswers **202** with the queued task id on success. Takes a bearer token.",
+        "description": "Accepts six paths and no others: `hostname`, `access.ssh.enabled`,\n`container.enabled`, `mqtt.enabled`, `time.ntp.servers` and\n`time.timezone`. Any other path is refused.\n\nAnswers **202** with the queued task id on success. Takes a bearer token.",
         "operationId": "api_v1_settings_write",
         "parameters": [
           {
             "name": "path",
             "in": "path",
-            "description": "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled` or `mqtt.enabled`",
+            "description": "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` or `time.timezone`",
             "required": true,
             "schema": {
               "type": "string"
@@ -2296,6 +2296,78 @@
           },
           "500": {
             "description": "mosd returned an invalid task record or failed to answer (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/time/status": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the time-synchronization status.",
+        "description": "Observed from timesyncd at request time and classified by mosd:\n`synchronized`, `synchronizing`, `offline-degraded` (no reachable server;\nretries continue on the pinned 30-second policy), `invalid-source` (a\nserver answered and its replies cannot be used), or `unknown` (timesyncd\nitself is not observable). Read-only: there is no route that pauses or\nstops synchronization.",
+        "operationId": "api_v1_time_status",
+        "responses": {
+          "200": {
+            "description": "The classified status with the evidence it rests on: the selected server, the kernel's synchronized bit, and the last sample with its offset and a `correction` member telling a clock step from ordinary drift",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to observe (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3745,7 +3817,7 @@
         }
       },
       "SettingsWrite": {
-        "description": "The body of a settings `PUT`: the value to write, and nothing around it.\n\nA bare JSON value, the same shape `GET` answers.\n\nThe schema is wide because the dot-path decides what is acceptable. What\nis actually accepted is narrow: a JSON string for `hostname`, `true` or\n`false` for the three switches. Anything else is **422**."
+        "description": "The body of a settings `PUT`: the value to write, and nothing around it.\n\nA bare JSON value, the same shape `GET` answers.\n\nThe schema is wide because the dot-path decides what is acceptable. What\nis actually accepted is narrow: a JSON string for `hostname` and\n`time.timezone`, `true` or `false` for the three switches, and a JSON\narray of server strings for `time.ntp.servers`. Anything else is **422**."
       },
       "SetupRequest": {
         "type": "object",
