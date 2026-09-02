@@ -131,6 +131,11 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let shadow_path = dir.path().join("shadow");
     let marker_path = dir.path().join("transient-root-password");
     std::fs::write(&shadow_path, SHADOW)?;
+    // The update workspace: installs are admitted only from its verified/,
+    // so the daemon is pointed at one inside the tempdir (the client's own
+    // override variable, which mosd forwards to it).
+    let update_root = dir.path().join("updates");
+    std::fs::create_dir_all(update_root.join("verified"))?;
     // MOSD_DRY_RUN=1 is a hard safety requirement: production reconcilers
     // must never be constructed in tests.
     let _mosd_guard = ChildGuard(
@@ -140,6 +145,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
             .env("MOSD_DRY_RUN", "1")
             .env("MOSD_SETTINGS_PATH", &settings_path)
             .env("MOSD_SHADOW_PATH", &shadow_path)
+            .env("RAUC_UPDATE_ROOT", &update_root)
             .spawn()?,
     );
 
@@ -445,9 +451,18 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
             .is_err(),
         "a missing bundle must be refused"
     );
+    // ...refuses a regular file that is not inside the workspace's verified/
+    // (only a verified bundle is handed to RAUC, whoever names the path)...
+    let outside = dir.path().join("outside.raucb");
+    std::fs::write(&outside, b"bundle bytes")?;
+    let err = proxy
+        .install_update(outside.to_str().expect("utf-8"))
+        .await
+        .expect_err("a bundle outside verified/ must be refused");
+    assert_eq!(error_name(&err), "org.freedesktop.DBus.Error.InvalidArgs");
     // ...and a valid request is admitted, runs in the background, and records
     // its outcome where GetState can see it.
-    let bundle_path = dir.path().join("ok.raucb");
+    let bundle_path = update_root.join("verified").join("ok.raucb");
     std::fs::write(&bundle_path, b"bundle bytes")?;
     proxy
         .install_update(bundle_path.to_str().expect("utf-8"))

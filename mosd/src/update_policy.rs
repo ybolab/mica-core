@@ -5,9 +5,12 @@
 //! (`update-policy.toml` in the STATE directory) rather than in the settings
 //! tree. Deliberate: adding settings keys means a schema bump plus a
 //! migration, and a concurrent workstream owns the next bump — a second
-//! bumper would hand the merge an unresolvable version conflict. The file is
-//! operator-edited, read fresh on every policy decision, and a missing file
-//! is the default policy. A file that exists but does not parse is NOT the
+//! bumper would hand the merge an unresolvable version conflict. STATE is
+//! the right tier for it, too: PLAN-061 keeps small authoritative metadata on
+//! STATE and sends only large bytes to the `/mos` DATA workspace, and a
+//! policy file is a few hundred bytes whose loss would make the workspace
+//! ambiguous. The file is operator-edited, read fresh on every policy
+//! decision, and a missing file is the default policy. A file that exists but does not parse is NOT the
 //! default policy: every action the policy could restrict is refused until
 //! the file is fixed, because "unreadable" silently becoming "unrestricted"
 //! is how a metered device downloads a 500 MB bundle.
@@ -48,9 +51,12 @@ pub struct UpdatePolicy {
     pub reboot_gate: RebootGatePolicy,
 }
 
-/// Where updates come from and where they are staged. The paths default to
-/// the deployment contract `docs/design/updates.md` records; `url` has no
-/// default because there is no fleet mirror to assume.
+/// Where updates come from and how much of the `/mos/updates` workspace
+/// they may hold. The paths default to the deployment contract
+/// `docs/design/updates.md` records; `url` has no default because there is
+/// no fleet mirror to assume. Where bundles are staged is NOT a policy
+/// knob: the client's workspace is `/mos/updates` and nothing else
+/// (PLAN-061/063), so there is no key that could point it elsewhere.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SourcePolicy {
@@ -69,11 +75,9 @@ pub struct SourcePolicy {
     /// Persistent rollback state (`rauc-update --state`).
     #[serde(default = "default_state_path")]
     pub state_path: String,
-    /// Bounded reserve directory bundles are staged into
-    /// (`rauc-update fetch --reserve-dir`).
-    #[serde(default = "default_reserve_dir")]
-    pub reserve_dir: String,
-    /// Byte budget for the reserve directory (`--max-bytes`).
+    /// Byte budget for the workspace — downloads/, verified/ and staging/
+    /// together (`rauc-update --max-bytes`); readiness also requires the
+    /// DATA pool to back what is unspent of it.
     #[serde(default = "default_max_bytes")]
     pub max_bytes: u64,
 }
@@ -90,13 +94,10 @@ fn default_root_path() -> String {
 fn default_state_path() -> String {
     "/var/lib/mos/update/uptane-state.json".to_string()
 }
-fn default_reserve_dir() -> String {
-    "/var/lib/mos/update/reserve".to_string()
-}
 fn default_max_bytes() -> u64 {
-    // Half a gigabyte: comfortably one compressed rootfs bundle, small
-    // enough not to contest the STATE partition. The operator overrides this
-    // to match whatever partition backs the reserve directory.
+    // Half a gigabyte: comfortably one compressed rootfs bundle, a small
+    // share of the growable DATA pool the workspace lives on. The operator
+    // raises it deliberately for larger bundles; PLAN-049 owns the quota.
     500_000_000
 }
 
@@ -108,7 +109,6 @@ impl Default for SourcePolicy {
             repo_dir: default_repo_dir(),
             root_path: default_root_path(),
             state_path: default_state_path(),
-            reserve_dir: default_reserve_dir(),
             max_bytes: default_max_bytes(),
         }
     }
@@ -248,6 +248,7 @@ pub struct LoadedPolicy {
 /// Reads the policy file fresh per decision. A handful of bytes per action
 /// is cheaper than a watch, and an operator edit takes effect on the next
 /// decision with no restart and no reload verb.
+#[derive(Clone)]
 pub struct PolicyStore {
     /// `None` = no file to read (dry-run daemons): defaults, always.
     path: Option<PathBuf>,

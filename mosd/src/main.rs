@@ -232,6 +232,14 @@ async fn serve() -> anyhow::Result<()> {
         transient::production_shadow_path(),
         Value::Object(state),
     );
+    // The `/mos/updates` workspace: the client's own `RAUC_UPDATE_ROOT`
+    // relocates it (tests only) — read here, before the update client is
+    // attached, so the lifecycle and the subprocess that inherits the
+    // variable agree about where verified/ is. Applied under dry-run too:
+    // the install admission rule does not depend on having a client.
+    if let Some(root) = std::env::var_os(update_lifecycle::WORKSPACE_ROOT_ENV) {
+        service = service.with_update_workspace(PathBuf::from(root));
+    }
     // Same shape as the power control: under dry-run the production RAUC
     // client is never constructed, so a daemon started by a test cannot
     // install a bundle on — or mark a slot of — the host it runs on. The

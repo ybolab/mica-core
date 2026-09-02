@@ -23,7 +23,9 @@ use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
 use crate::transient;
-use crate::update_lifecycle::{LifecycleHost, NoClient, Refusal, UpdateClient, UpdateLifecycle};
+use crate::update_lifecycle::{
+    DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, UpdateClient, UpdateLifecycle,
+};
 use crate::update_policy::PolicyStore;
 
 /// Well-known bus name owned by the daemon.
@@ -167,6 +169,7 @@ impl MosdService {
             PolicyStore::defaults(),
             Arc::new(InnerLifecycleHost(Arc::clone(&inner))),
             Arc::clone(&installing),
+            PathBuf::from(DEFAULT_WORKSPACE_ROOT),
         ));
         Self {
             store,
@@ -196,6 +199,23 @@ impl MosdService {
             policy,
             Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
             Arc::clone(&self.installing),
+            self.update.workspace_root().to_path_buf(),
+        ));
+        self
+    }
+
+    /// Relocate the `/mos/updates` workspace the lifecycle records `ready`
+    /// paths from and admits installs from. Tests only (the client's
+    /// `RAUC_UPDATE_ROOT`, which `main.rs` forwards); the default is the
+    /// contract.
+    #[must_use]
+    pub fn with_update_workspace(mut self, root: PathBuf) -> Self {
+        self.update = Arc::new(UpdateLifecycle::new(
+            self.update.client(),
+            self.update.policy(),
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+            root,
         ));
         self
     }
@@ -392,6 +412,12 @@ impl MosdService {
             return Err(fdo::Error::AccessDenied(refusal));
         }
         let bundle = rauc::validate_bundle_path(bundle_path).map_err(fdo::Error::InvalidArgs)?;
+        // Only a verified bundle is handed to RAUC: a regular file inside
+        // /mos/updates/verified, never a `.part`, never a file anywhere else
+        // — the same rule for the staged path and an operator's explicit one.
+        self.update
+            .installable(&bundle)
+            .map_err(fdo::Error::InvalidArgs)?;
         // The in-flight flag is taken BEFORE anything is recorded, in one
         // compare-exchange, so two racing calls cannot both proceed. It is
         // released only by the background task — including on install failure —
@@ -1035,7 +1061,9 @@ impl MosdService {
     /// validated, recorded and handed to a background task; progress and the
     /// outcome are read back through `GetUpdateState` (or the `update` subtree
     /// of `GetState`). Refuses a relative path, a path that does not name an
-    /// existing regular file, and a second install while one runs.
+    /// existing regular file, a path outside `/mos/updates/verified` or a
+    /// `.part` (`InvalidArgs`: only a verified bundle is handed to RAUC), and
+    /// a second install while one runs.
     async fn install_update(
         &self,
         #[zbus(header)] header: Header<'_>,
@@ -1330,8 +1358,20 @@ mod tests {
             shadow_path,
             serde_json::json!({}),
         )
-        .with_rauc(Arc::new(rauc));
+        .with_rauc(Arc::new(rauc))
+        // Installs are admitted only from <workspace>/verified; the tests'
+        // bundles are placed there by `verified_bundle`.
+        .with_update_workspace(dir.path().join("updates"));
         (service, calls, rauc_calls, dir)
+    }
+
+    /// A bundle file inside the test service's `verified/`, as a string path.
+    fn verified_bundle(dir: &tempfile::TempDir, name: &str) -> String {
+        let verified = dir.path().join("updates").join("verified");
+        std::fs::create_dir_all(&verified).expect("verified/");
+        let bundle = verified.join(name);
+        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        bundle.to_str().expect("utf-8").to_string()
     }
 
     /// [`service_with_rauc`] over a default (idle, slotless) RAUC mock.
@@ -1709,6 +1749,33 @@ mod tests {
             .await
             .expect_err("a directory must be refused");
 
+        // A regular file outside <workspace>/verified, a `.part` inside it,
+        // and a symbolic link inside it are all refused: nothing but a
+        // verified bundle is handed to RAUC, whoever names the path.
+        let outside = dir.path().join("outside.raucb");
+        std::fs::write(&outside, b"bundle bytes").expect("seed");
+        let refused = service
+            .request_install(":1.5", outside.to_str().expect("utf-8"))
+            .await
+            .expect_err("a file outside verified/ must be refused");
+        assert!(refused.to_string().contains("verified"), "{refused}");
+        let part = verified_bundle(&dir, "half.raucb.part");
+        let refused = service
+            .request_install(":1.5", &part)
+            .await
+            .expect_err("a partial must be refused");
+        assert!(refused.to_string().contains("partial"), "{refused}");
+        let link = dir
+            .path()
+            .join("updates")
+            .join("verified")
+            .join("link.raucb");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+        service
+            .request_install(":1.5", link.to_str().expect("utf-8"))
+            .await
+            .expect_err("a symbolic link must be refused");
+
         assert!(
             rauc_calls.lock().expect("lock").is_empty(),
             "no invalid request may reach the installer"
@@ -1726,9 +1793,8 @@ mod tests {
             install_gate: Some(Arc::clone(&gate)),
             ..MockRauc::default()
         });
-        let bundle = dir.path().join("ok.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        let bundle = bundle.to_str().expect("utf-8");
+        let bundle = verified_bundle(&dir, "ok.raucb");
+        let bundle = bundle.as_str();
 
         // Returns while the install is still gated: the bus call cannot be
         // blocked by a slow installer.
@@ -1778,9 +1844,8 @@ mod tests {
             install_error: Some("signature verification failed".to_string()),
             ..MockRauc::default()
         });
-        let bundle = dir.path().join("bad.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        let bundle = bundle.to_str().expect("utf-8");
+        let bundle = verified_bundle(&dir, "bad.raucb");
+        let bundle = bundle.as_str();
 
         service
             .request_install(":1.9", bundle)
@@ -1809,8 +1874,7 @@ mod tests {
             install_gate: Some(Arc::clone(&gate)),
             ..MockRauc::default()
         });
-        let bundle = dir.path().join("ok.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
         service
             .request_install(":1.6", bundle.to_str().expect("utf-8"))
             .await
@@ -1892,8 +1956,7 @@ mod tests {
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path),
         );
-        let bundle = dir.path().join("ok.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
 
         let refused = service
             .request_install(":1.5", bundle.to_str().expect("utf-8"))

@@ -89,7 +89,7 @@ fn body_rejection(rejection: axum::extract::rejection::JsonRejection) -> Respons
     context_path = API,
     tag = "update",
     responses(
-        (status = 200, description = "The update state: `lifecycle` (state machine with reason strings, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`", body = UpdateState),
+        (status = 200, description = "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`", body = UpdateState),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to answer, e.g. RAUC unreachable (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
@@ -190,8 +190,11 @@ pub(crate) struct InstallRequest {
 /// With no body (or no `bundlePath`), installs the bundle the lifecycle has
 /// staged as `ready` — the path `rauc-update` verified. With `bundlePath`,
 /// forwards that explicit operator path to `InstallUpdate` unchanged, which
-/// is the existing manual/offline escape hatch. Answers **202**: the install
-/// runs on mosd's background task; poll the state document.
+/// is the manual/offline route after `rauc-update import`; mosd admits it
+/// only when it is a regular file inside `/mos/updates/verified` and not a
+/// `.part`, so a partial or a file anywhere else is never handed to RAUC.
+/// Answers **202**: the install runs on mosd's background task; poll the
+/// state document.
 #[utoipa::path(
     post,
     path = V1_UPDATE_INSTALL_PATH,
@@ -204,7 +207,7 @@ pub(crate) struct InstallRequest {
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "Outside the maintenance window or the policy file is unreadable (`policy_refused`); or nothing is staged and no path was given (`no_staged_bundle`)", body = ApiError),
-        (status = 422, description = "The bundle path is not an absolute existing regular file (`validation_failed`)", body = ApiError),
+        (status = 422, description = "The bundle path is not an absolute existing regular file inside `/mos/updates/verified`, or is a `.part` partial (`validation_failed`)", body = ApiError),
         (status = 500, description = "An install is already running, or mosd failed (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),

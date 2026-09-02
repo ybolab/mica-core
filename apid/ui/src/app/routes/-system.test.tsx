@@ -148,7 +148,7 @@ describe('update status panel', () => {
       lifecycle: {
         state: 'ready',
         reason: 'a verified bundle is staged for install',
-        bundle: '/var/lib/mos/update/reserve/abc.update-1.1.0.raucb',
+        bundle: '/mos/updates/verified/abc.update-1.1.0.raucb',
         client: { available: true },
         reboot_gate: { safe: false, reasons: ['health.exporter reports `blocking`: mid-transaction'] },
       },
@@ -158,9 +158,25 @@ describe('update status panel', () => {
     renderUpdatePanel()
 
     expect(await screen.findByText('ready')).toBeTruthy()
-    expect(screen.getByText('/var/lib/mos/update/reserve/abc.update-1.1.0.raucb')).toBeTruthy()
+    expect(screen.getByText('/mos/updates/verified/abc.update-1.1.0.raucb')).toBeTruthy()
     expect(screen.getByText(/Reboot blocked/)).toBeTruthy()
     expect(screen.getByText(/mid-transaction/)).toBeTruthy()
+  })
+
+  it('shows an unready update workspace as its named state with the reason', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      lifecycle: {
+        state: 'update-unavailable',
+        reason: 'degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)',
+        workspace: { root: '/mos/updates', status: 'degraded', kind: 'read-only' },
+        client: { available: true },
+        reboot_gate: { safe: true, reasons: [] },
+      },
+    })))
+    renderUpdatePanel()
+
+    expect(await screen.findByText('update-unavailable')).toBeTruthy()
+    expect(screen.getByText('degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)')).toBeTruthy()
   })
 
   it('reports an absent update client instead of hiding it', async () => {

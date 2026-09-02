@@ -7,9 +7,15 @@
 //!
 //! The states, and who produces them:
 //!
-//! - `idle`, `checking`, `downloading`, `ready`, `failed` — this module's own
-//!   machine, driven by `CheckUpdate`/`FetchUpdate` running the device-side
-//!   client `rauc-update` as a bounded subprocess.
+//! - `idle`, `checking`, `downloading`, `ready`, `update-unavailable`,
+//!   `failed` — this module's own machine, driven by `CheckUpdate`/
+//!   `FetchUpdate` running the device-side client `rauc-update` as a bounded
+//!   subprocess. `update-unavailable` is the PLAN-061 readiness verdict: the
+//!   `/mos/updates` DATA workspace is probed (`rauc-update probe`) BEFORE
+//!   every check and fetch, and a workspace that is `unavailable` (not
+//!   mounted, not the DATA pool) or `degraded` (read-only, exhausted, probe
+//!   failed) is that named state with its reason, entered before any
+//!   acquisition starts and cleared by the next probe that passes.
 //! - `installing` — mirrored from the bus layer's install flag; the install
 //!   itself stays on the existing `InstallUpdate` path.
 //! - `reboot-required`, `validating`, `succeeded`, `rolled-back` — derived
@@ -18,11 +24,13 @@
 //!
 //! Verify-before-install stays in `rauc-update`: the only bundle path this
 //! module ever records as `ready` is the verified path the client printed,
-//! and mosd's install surface remains `InstallUpdate` — an explicit operator
-//! action against a named path. No mosd lock is held across a subprocess or
-//! an install.
+//! and it must be a bundle inside `/mos/updates/verified` (never a `.part`,
+//! never a file anywhere else); mosd's install surface remains
+//! `InstallUpdate` — an explicit operator action against a named path, held
+//! to the same rule by [`UpdateLifecycle::installable`]. No mosd lock is held
+//! across a subprocess or an install.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -39,6 +47,26 @@ use crate::update_policy::{self, GateVerdict, LoadedPolicy, PolicyStore, UpdateP
 /// says otherwise. Shipping the binary there is the image side's half of the
 /// contract; its absence is reported, never panicked over.
 pub const DEFAULT_CLIENT_PATH: &str = "/usr/bin/rauc-update";
+
+/// The `/mos/updates` workspace the client acquires into (PLAN-061/063):
+/// partials in `downloads/`, verified bundles in `verified/`. The client's
+/// own default; restated here because this module decides what may be
+/// recorded as `ready` and what may be installed.
+pub const DEFAULT_WORKSPACE_ROOT: &str = "/mos/updates";
+
+/// The environment variable that relocates the workspace — the client's
+/// `RAUC_UPDATE_ROOT`, read by `main.rs` so that mosd and the subprocess it
+/// spawns (which inherits it) can never disagree about where `verified/`
+/// is. Tests only; production is the default.
+pub const WORKSPACE_ROOT_ENV: &str = "RAUC_UPDATE_ROOT";
+
+/// `rauc-update`'s exit code for "the workspace is not ready": the one exit
+/// that names a state rather than a failure.
+const EXIT_UNREADY: i32 = 3;
+
+/// Bound on one `probe` subprocess: a handful of stat calls and one fsync;
+/// a minute is a wedged disk, not a slow one.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Bound on one `sync` or `check` subprocess: metadata is a handful of files
 /// capped at 1 MiB each, so ten minutes is generous slack for a slow link,
@@ -246,20 +274,156 @@ pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, String> {
     }
 }
 
+/// The workspace is not ready, as `rauc-update` named it: `status` is
+/// `unavailable` (`/mos` not mounted, or not the DATA pool) or `degraded`
+/// (the pool, but read-only, exhausted, or the probe itself failed); `kind`
+/// is the specific reason (`mount-missing`, `not-data`, `read-only`,
+/// `exhausted`, `probe-failed`). Both refuse acquisition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unready {
+    pub status: String,
+    pub kind: String,
+    pub detail: String,
+}
+
+impl Unready {
+    /// The reason string recorded beside `update-unavailable`.
+    pub fn reason(&self) -> String {
+        format!("{} {}: {}", self.status, self.kind, self.detail)
+    }
+}
+
+/// Parse one `<status> <kind>: <detail>` line, with or without the binary's
+/// `rauc-update: ` stderr prefix. `None` for any other line.
+pub fn parse_unready(line: &str) -> Option<Unready> {
+    let line = line.trim();
+    let line = line.strip_prefix("rauc-update: ").unwrap_or(line);
+    let (status, rest) = line.split_once(' ')?;
+    if !matches!(status, "unavailable" | "degraded") {
+        return None;
+    }
+    let (kind, detail) = rest.split_once(": ")?;
+    if kind.is_empty() || kind.contains(' ') {
+        return None;
+    }
+    Some(Unready {
+        status: status.to_string(),
+        kind: kind.to_string(),
+        detail: detail.trim().to_string(),
+    })
+}
+
+/// The unready line an exit-3 client left, on stdout (`probe`) or stderr
+/// (`fetch`), newest first.
+fn unready_in(output: &ClientOutput) -> Option<Unready> {
+    output
+        .stdout
+        .lines()
+        .rev()
+        .find_map(parse_unready)
+        .or_else(|| output.stderr.lines().rev().find_map(parse_unready))
+}
+
+/// What a finished `probe` said.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The workspace is ready; the report's `key=value` pairs as an object
+    /// (`pool`, `source`, `free`, `used`, `budget`, ...), numbers as numbers.
+    Ready(Value),
+    Unready(Unready),
+}
+
+/// Parse `rauc-update probe` output by its printed contract: `ready k=v ...`
+/// on exit 0, `<status> <kind>: <detail>` on exit 3.
+pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, String> {
+    match output.code {
+        Some(0) => {
+            let Some(line) = output
+                .stdout
+                .lines()
+                .rev()
+                .find(|line| line.starts_with("ready "))
+            else {
+                return Err(format!(
+                    "probe exited 0 without a `ready` line; stdout: {}",
+                    output.stdout.trim()
+                ));
+            };
+            let mut report = serde_json::Map::new();
+            for pair in line["ready ".len()..].split_whitespace() {
+                if let Some((key, value)) = pair.split_once('=') {
+                    let value = value
+                        .parse::<u64>()
+                        .map_or_else(|_| json!(value), |number| json!(number));
+                    report.insert(key.to_string(), value);
+                }
+            }
+            Ok(ProbeOutcome::Ready(Value::Object(report)))
+        }
+        Some(EXIT_UNREADY) => unready_in(output)
+            .map(ProbeOutcome::Unready)
+            .ok_or_else(|| {
+                format!(
+                    "probe exited {EXIT_UNREADY} without naming the unready state; stdout: {} \
+                     stderr: {}",
+                    output.stdout.trim(),
+                    output.stderr.trim()
+                )
+            }),
+        code => Err(exit_reason("probe", code, &output.stderr)),
+    }
+}
+
+/// What a finished `fetch` said.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FetchOutcome {
+    /// A verified bundle at this path, inside `verified/`.
+    Staged(String),
+    /// Exit 2: nothing compatible.
+    NoneCompatible,
+    /// Exit 3: the workspace refused the acquisition.
+    Unready(Unready),
+}
+
 /// Parse `rauc-update fetch` output: the last stdout line of a successful
 /// fetch is the verified local bundle path — the one path this module will
-/// ever record as `ready`.
-pub fn parse_fetch(output: &ClientOutput) -> Result<Option<String>, String> {
+/// ever record as `ready`, and only when it is a bundle directly inside
+/// `verified_dir` (a `.part`, or a path anywhere else, is a client bug, not
+/// something to install).
+pub fn parse_fetch(output: &ClientOutput, verified_dir: &Path) -> Result<FetchOutcome, String> {
     match output.code {
         Some(0) => match output.stdout.lines().last() {
-            Some(path) if path.starts_with('/') => Ok(Some(path.to_string())),
+            Some(line)
+                if line.starts_with('/')
+                    && Path::new(line).parent() == Some(verified_dir)
+                    && !line.ends_with(".part") =>
+            {
+                Ok(FetchOutcome::Staged(line.to_string()))
+            }
             other => Err(format!(
-                "fetch exited 0 without a bundle path as its last line, got {other:?}"
+                "fetch exited 0 with {other:?} as its last line, which is not a bundle inside \
+                 {}; only a verified path is recorded as ready",
+                verified_dir.display()
             )),
         },
-        Some(2) => Ok(None),
+        Some(2) => Ok(FetchOutcome::NoneCompatible),
+        Some(EXIT_UNREADY) => unready_in(output)
+            .map(FetchOutcome::Unready)
+            .ok_or_else(|| {
+                format!(
+                    "fetch exited {EXIT_UNREADY} without naming the unready state; stderr: {}",
+                    output.stderr.trim()
+                )
+            }),
         code => Err(exit_reason("fetch", code, &output.stderr)),
     }
+}
+
+/// How a client operation did not produce its outcome: the workspace refused
+/// it (a state), or it failed (a reason).
+enum Failure {
+    Unready(Unready),
+    Error(String),
 }
 
 fn exit_reason(verb: &str, code: Option<i32>, stderr: &str) -> String {
@@ -363,6 +527,11 @@ struct Machine {
     operation: Option<&'static str>,
     /// Why the last operation failed; cleared when the next one starts.
     failed: Option<String>,
+    /// The workspace's refusal, when the last probe did not pass; cleared
+    /// when the next operation starts and stays clear when its probe passes.
+    unready: Option<Unready>,
+    /// The last passing probe's report (`pool`, `free`, `used`, ...).
+    workspace: Option<Value>,
     available: Option<Available>,
     /// The verified bundle path the last fetch staged.
     bundle: Option<String>,
@@ -379,6 +548,9 @@ pub struct UpdateLifecycle {
     /// The bus layer's install-in-flight flag, shared so `installing` here
     /// and the install refusal there can never disagree.
     installing: Arc<AtomicBool>,
+    /// The `/mos/updates` workspace root; `verified/` below it is the only
+    /// place a recorded or installed bundle may be.
+    workspace_root: PathBuf,
     machine: Mutex<Machine>,
 }
 
@@ -388,13 +560,68 @@ impl UpdateLifecycle {
         policy: PolicyStore,
         host: Arc<dyn LifecycleHost>,
         installing: Arc<AtomicBool>,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             client,
             policy,
             host,
             installing,
+            workspace_root,
             machine: Mutex::new(Machine::default()),
+        }
+    }
+
+    /// The client this lifecycle runs, for a rebuild around a new workspace.
+    pub fn client(&self) -> Arc<dyn UpdateClient> {
+        Arc::clone(&self.client)
+    }
+
+    /// The policy store, for the same rebuild.
+    pub fn policy(&self) -> PolicyStore {
+        self.policy.clone()
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    /// `<workspace>/verified`: the one directory an installable bundle is in.
+    pub fn verified_dir(&self) -> PathBuf {
+        self.workspace_root.join("verified")
+    }
+
+    /// Why `path` must not be handed to RAUC, or `Ok` when it is a regular
+    /// file (not a symbolic link) directly inside `verified/` and not a
+    /// `.part`. The bus layer's `InstallUpdate` asks this for every path,
+    /// including an operator's explicit one: a partial, or a file outside
+    /// `verified/`, is never installable by filename alone.
+    pub fn installable(&self, path: &Path) -> Result<(), String> {
+        let verified = self.verified_dir();
+        if !path.is_absolute() || path.parent() != Some(verified.as_path()) {
+            return Err(format!(
+                "bundle path `{}` is not inside {}; only a verified bundle is handed to RAUC",
+                path.display(),
+                verified.display()
+            ));
+        }
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_none_or(|name| name.ends_with(".part"))
+        {
+            return Err(format!(
+                "bundle path `{}` is a partial download, not a verified bundle",
+                path.display()
+            ));
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_file() => Ok(()),
+            Ok(_) => Err(format!(
+                "bundle path `{}` is not a regular file (a symbolic link is not followed)",
+                path.display()
+            )),
+            Err(err) => Err(format!("bundle path `{}`: {err}", path.display())),
         }
     }
 
@@ -418,7 +645,6 @@ impl UpdateLifecycle {
             let result = this.run_check(&loaded.policy).await;
             let mut machine = this.machine.lock().await;
             machine.operation = None;
-            machine.last_check = Some(now_rfc3339());
             match result {
                 Ok(CheckOutcome::Selected(available)) => {
                     tracing::info!(
@@ -426,14 +652,21 @@ impl UpdateLifecycle {
                         version = %available.version,
                         "update check selected a candidate"
                     );
+                    machine.last_check = Some(now_rfc3339());
                     machine.available = Some(available);
                 }
                 Ok(CheckOutcome::NoneCompatible) => {
                     tracing::info!("update check found no compatible target");
+                    machine.last_check = Some(now_rfc3339());
                     machine.available = None;
                 }
-                Err(reason) => {
+                Err(Failure::Unready(unready)) => {
+                    tracing::warn!(reason = %unready.reason(), "update workspace not ready; check not started");
+                    machine.unready = Some(unready);
+                }
+                Err(Failure::Error(reason)) => {
                     tracing::warn!(reason, "update check failed");
+                    machine.last_check = Some(now_rfc3339());
                     machine.failed = Some(reason);
                 }
             }
@@ -464,15 +697,19 @@ impl UpdateLifecycle {
             let mut machine = this.machine.lock().await;
             machine.operation = None;
             match result {
-                Ok(Some(path)) => {
+                Ok(FetchOutcome::Staged(path)) => {
                     tracing::info!(bundle = %path, "update fetch staged a verified bundle");
                     machine.bundle = Some(path);
                 }
-                Ok(None) => {
+                Ok(FetchOutcome::NoneCompatible) => {
                     tracing::info!("update fetch found no compatible target");
                     machine.available = None;
                 }
-                Err(reason) => {
+                Ok(FetchOutcome::Unready(unready)) | Err(Failure::Unready(unready)) => {
+                    tracing::warn!(reason = %unready.reason(), "update workspace not ready; fetch not started");
+                    machine.unready = Some(unready);
+                }
+                Err(Failure::Error(reason)) => {
                     tracing::warn!(reason, "update fetch failed");
                     machine.failed = Some(reason);
                 }
@@ -498,12 +735,37 @@ impl UpdateLifecycle {
         }
         machine.operation = Some(operation);
         machine.failed = None;
+        machine.unready = None;
         drop(machine);
         self.record_snapshot().await;
         Ok(())
     }
 
-    async fn run_check(&self, policy: &UpdatePolicy) -> Result<CheckOutcome, String> {
+    /// The PLAN-061 readiness probe, before any acquisition: `rauc-update
+    /// probe` against the policy's budget. A passing probe records the
+    /// workspace report; a failing one is the `update-unavailable` state.
+    async fn probe(&self, policy: &UpdatePolicy) -> Result<(), Failure> {
+        let args = vec![
+            "probe".to_string(),
+            "--max-bytes".to_string(),
+            policy.source.max_bytes.to_string(),
+        ];
+        let output = self
+            .client
+            .run(&args, PROBE_TIMEOUT)
+            .await
+            .map_err(|err| Failure::Error(format!("probe: {err:#}")))?;
+        match parse_probe(&output).map_err(Failure::Error)? {
+            ProbeOutcome::Ready(report) => {
+                self.machine.lock().await.workspace = Some(report);
+                Ok(())
+            }
+            ProbeOutcome::Unready(unready) => Err(Failure::Unready(unready)),
+        }
+    }
+
+    async fn run_check(&self, policy: &UpdatePolicy) -> Result<CheckOutcome, Failure> {
+        self.probe(policy).await?;
         let source = &policy.source;
         if let Some(url) = &source.url {
             let sync_args = vec![
@@ -517,33 +779,38 @@ impl UpdateLifecycle {
                 .client
                 .run(&sync_args, CHECK_TIMEOUT)
                 .await
-                .map_err(|err| format!("sync: {err:#}"))?;
+                .map_err(|err| Failure::Error(format!("sync: {err:#}")))?;
             if output.code != Some(0) {
-                return Err(exit_reason("sync", output.code, &output.stderr));
+                return Err(Failure::Error(exit_reason(
+                    "sync",
+                    output.code,
+                    &output.stderr,
+                )));
             }
         }
         let output = self
             .client
             .run(&check_args(source), CHECK_TIMEOUT)
             .await
-            .map_err(|err| format!("check: {err:#}"))?;
-        parse_check(&output)
+            .map_err(|err| Failure::Error(format!("check: {err:#}")))?;
+        parse_check(&output).map_err(Failure::Error)
     }
 
-    async fn run_fetch(&self, policy: &UpdatePolicy) -> Result<Option<String>, String> {
+    async fn run_fetch(&self, policy: &UpdatePolicy) -> Result<FetchOutcome, Failure> {
+        self.probe(policy).await?;
         let source = &policy.source;
         let Some(url) = &source.url else {
             // Unreachable through `request_fetch` (the policy refusal caught
             // it), kept as an error rather than a panic all the same.
-            return Err("no update source configured".to_string());
+            return Err(Failure::Error("no update source configured".to_string()));
         };
+        // No `--reserve-dir`: the client's default is the workspace's
+        // downloads/, and there is no other place a partial may go.
         let mut args = check_args(source);
         args[0] = "fetch".to_string();
         args.extend([
             "--url".to_string(),
             url.clone(),
-            "--reserve-dir".to_string(),
-            source.reserve_dir.clone(),
             "--max-bytes".to_string(),
             source.max_bytes.to_string(),
         ]);
@@ -551,8 +818,8 @@ impl UpdateLifecycle {
             .client
             .run(&args, FETCH_TIMEOUT)
             .await
-            .map_err(|err| format!("fetch: {err:#}"))?;
-        parse_fetch(&output)
+            .map_err(|err| Failure::Error(format!("fetch: {err:#}")))?;
+        parse_fetch(&output, &self.verified_dir()).map_err(Failure::Error)
     }
 
     /// Refresh the boot-derived phase from a fresh slot query and re-record.
@@ -678,6 +945,7 @@ impl UpdateLifecycle {
             self.client.unavailable(),
             self.policy.path(),
             last_refusal,
+            &self.workspace_root,
         );
         drop(machine);
         self.host.record(entry).await;
@@ -714,8 +982,10 @@ fn check_args(source: &crate::update_policy::SourcePolicy) -> Vec<String> {
 }
 
 /// The one place the recorded entry is shaped, so the state precedence —
-/// installing over a running client operation over a failure over a staged
-/// bundle over the boot-derived phase over idle — is written once.
+/// installing over a running client operation over an unready workspace
+/// over a failure over a staged bundle over the boot-derived phase over
+/// idle — is written once.
+#[allow(clippy::too_many_arguments)]
 fn render_entry(
     machine: &Machine,
     loaded: &LoadedPolicy,
@@ -724,11 +994,14 @@ fn render_entry(
     client_unavailable: Option<String>,
     policy_path: Option<&std::path::Path>,
     last_refusal: Option<String>,
+    workspace_root: &Path,
 ) -> Value {
     let (state, reason): (&str, Option<String>) = if installing {
         ("installing", None)
     } else if let Some(operation) = machine.operation {
         (operation, None)
+    } else if let Some(unready) = &machine.unready {
+        ("update-unavailable", Some(unready.reason()))
     } else if let Some(failed) = &machine.failed {
         ("failed", Some(failed.clone()))
     } else if machine.bundle.is_some() {
@@ -772,6 +1045,33 @@ fn render_entry(
             Some(reason) => json!({ "available": false, "reason": reason }),
         },
     );
+    // The workspace as the last probe saw it: `status` is the vocabulary
+    // the storage surface shares (`ready`, `degraded`, `unavailable`), or
+    // `unprobed` before any check/fetch has run. Capacity figures are the
+    // DATA pool's, stated once.
+    let mut workspace = serde_json::Map::new();
+    workspace.insert("root".into(), json!(workspace_root.display().to_string()));
+    match (&machine.unready, &machine.workspace) {
+        (Some(unready), _) => {
+            workspace.insert("status".into(), json!(unready.status));
+            workspace.insert("kind".into(), json!(unready.kind));
+            workspace.insert("detail".into(), json!(unready.detail));
+        }
+        (None, Some(report)) => {
+            workspace.insert("status".into(), json!("ready"));
+            if let Some(report) = report.as_object() {
+                for (key, value) in report {
+                    if key != "root" {
+                        workspace.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (None, None) => {
+            workspace.insert("status".into(), json!("unprobed"));
+        }
+    }
+    entry.insert("workspace".into(), Value::Object(workspace));
     let policy = &loaded.policy;
     let windows: Vec<Value> = policy
         .maintenance
@@ -900,25 +1200,123 @@ mod tests {
     }
 
     #[test]
-    fn fetch_output_is_the_last_stdout_line_and_nothing_else() {
+    fn fetch_output_is_a_verified_path_or_nothing() {
+        let verified = Path::new("/mos/updates/verified");
         let staged = output(
             0,
             "selected update-1.1.0.raucb version 1.1.0 channel stable (12 bytes)\n\
-             /var/lib/mos/update/reserve/abc.update-1.1.0.raucb\n",
+             /mos/updates/verified/update-1.1.0.raucb\n",
             "",
         );
         assert_eq!(
-            parse_fetch(&staged),
-            Ok(Some(
-                "/var/lib/mos/update/reserve/abc.update-1.1.0.raucb".to_string()
+            parse_fetch(&staged, verified),
+            Ok(FetchOutcome::Staged(
+                "/mos/updates/verified/update-1.1.0.raucb".to_string()
             ))
         );
-        assert_eq!(parse_fetch(&output(2, "none\n", "")), Ok(None));
+        assert_eq!(
+            parse_fetch(&output(2, "none\n", ""), verified),
+            Ok(FetchOutcome::NoneCompatible)
+        );
         assert!(
-            parse_fetch(&output(0, "not-a-path\n", "")).is_err(),
+            parse_fetch(&output(0, "not-a-path\n", ""), verified).is_err(),
             "a relative last line must not be recorded as a bundle"
         );
-        assert!(parse_fetch(&output(1, "", "budget exceeded\n")).is_err());
+        // A path anywhere but verified/, or a partial even there, is never
+        // recorded as ready — whatever exit code came with it.
+        for outside in [
+            "/mos/updates/downloads/update-1.1.0.raucb.part",
+            "/mos/updates/downloads/update-1.1.0.raucb",
+            "/mos/updates/staging/update-1.1.0.raucb",
+            "/mos/updates/verified/update-1.1.0.raucb.part",
+            "/mos/updates/verified/nested/update-1.1.0.raucb",
+            "/var/lib/mos/update/reserve/update-1.1.0.raucb",
+        ] {
+            let err =
+                parse_fetch(&output(0, &format!("{outside}\n"), ""), verified).expect_err(outside);
+            assert!(err.contains("verified"), "{outside}: {err}");
+        }
+        assert!(parse_fetch(&output(1, "", "budget exceeded\n"), verified).is_err());
+        // Exit 3 carries the workspace's refusal, from stderr.
+        assert_eq!(
+            parse_fetch(
+                &output(
+                    3,
+                    "",
+                    "rauc-update: degraded exhausted: free space is 0 bytes\n"
+                ),
+                verified
+            ),
+            Ok(FetchOutcome::Unready(Unready {
+                status: "degraded".to_string(),
+                kind: "exhausted".to_string(),
+                detail: "free space is 0 bytes".to_string(),
+            }))
+        );
+        assert!(parse_fetch(&output(3, "", "something else\n"), verified).is_err());
+    }
+
+    #[test]
+    fn probe_output_parses_ready_reports_and_unready_lines() {
+        let ready = output(
+            0,
+            "ready root=/mos/updates pool=/mnt/data source=/dev/mmcblk0p7 fs_root=/mos \
+             fstype=ext4 free=123456789 used=100 budget=500000000\n",
+            "",
+        );
+        let ProbeOutcome::Ready(report) = parse_probe(&ready).expect("parses") else {
+            panic!("ready expected");
+        };
+        assert_eq!(report["pool"], "/mnt/data");
+        assert_eq!(report["source"], "/dev/mmcblk0p7");
+        assert_eq!(report["free"], 123_456_789u64);
+        assert_eq!(report["used"], 100);
+        assert_eq!(report["budget"], 500_000_000u64);
+        for (line, status, kind) in [
+            (
+                "unavailable mount-missing: /mos is not a mount point",
+                "unavailable",
+                "mount-missing",
+            ),
+            (
+                "unavailable not-data: /mos is mounted from tmpfs",
+                "unavailable",
+                "not-data",
+            ),
+            (
+                "degraded read-only: /mos is mounted read-only (/dev/x)",
+                "degraded",
+                "read-only",
+            ),
+            (
+                "degraded exhausted: the reserve budget is spent",
+                "degraded",
+                "exhausted",
+            ),
+            (
+                "degraded probe-failed: statvfs failed",
+                "degraded",
+                "probe-failed",
+            ),
+        ] {
+            let outcome = parse_probe(&output(3, &format!("{line}\n"), "")).expect("parses");
+            let ProbeOutcome::Unready(unready) = outcome else {
+                panic!("unready expected for {line}");
+            };
+            assert_eq!(unready.status, status);
+            assert_eq!(unready.kind, kind);
+            assert_eq!(unready.reason(), line);
+        }
+        assert!(parse_probe(&output(0, "nothing useful\n", "")).is_err());
+        assert!(parse_probe(&output(3, "not a verdict\n", "")).is_err());
+        assert!(parse_probe(&output(1, "", "rauc-update: boom\n")).is_err());
+        // The binary's stderr prefix is stripped; other words are not verdicts.
+        assert_eq!(
+            parse_unready("rauc-update: degraded read-only: ro").map(|u| u.kind),
+            Some("read-only".to_string())
+        );
+        assert_eq!(parse_unready("failed read-only: ro"), None);
+        assert_eq!(parse_unready("degraded: no kind"), None);
     }
 
     #[test]
@@ -1064,8 +1462,22 @@ mod tests {
                 policy,
                 host,
                 Arc::clone(&installing),
+                PathBuf::from(DEFAULT_WORKSPACE_ROOT),
             )),
             installing,
+        )
+    }
+
+    /// The probe answer of a healthy workspace, first in every script.
+    fn ready_probe() -> (&'static str, Result<ClientOutput, String>) {
+        (
+            "probe",
+            Ok(output(
+                0,
+                "ready root=/mos/updates pool=/mnt/data source=/dev/data fs_root=/mos \
+                 fstype=ext4 free=1000000000 used=0 budget=500000000\n",
+                "",
+            )),
         )
     }
 
@@ -1087,6 +1499,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
         let client = MockClient::new(vec![
+            ready_probe(),
             ("sync", Ok(output(0, "synced root v1 ...\n", ""))),
             (
                 "check",
@@ -1107,14 +1520,25 @@ mod tests {
         assert_eq!(recorded["available"]["version"], "1.1.0");
         assert!(recorded["last_check"].is_string());
         assert_eq!(recorded["client"]["available"], true);
+        // The passing probe's report, the pool's figures stated once.
+        assert_eq!(recorded["workspace"]["status"], "ready");
+        assert_eq!(recorded["workspace"]["root"], "/mos/updates");
+        assert_eq!(recorded["workspace"]["pool"], "/mnt/data");
+        assert_eq!(recorded["workspace"]["free"], 1_000_000_000u64);
 
         let calls = calls.lock().expect("calls").clone();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0][0], "sync");
-        assert!(calls[0].contains(&"http://mirror/tuf".to_string()));
-        assert_eq!(calls[1][0], "check");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0][0], "probe");
         assert!(
-            calls[1].contains(&"--channel".to_string()) && calls[1].contains(&"stable".to_string()),
+            calls[0].contains(&"--max-bytes".to_string())
+                && calls[0].contains(&"500000000".to_string()),
+            "the probe carries the policy budget: {calls:?}"
+        );
+        assert_eq!(calls[1][0], "sync");
+        assert!(calls[1].contains(&"http://mirror/tuf".to_string()));
+        assert_eq!(calls[2][0], "check");
+        assert!(
+            calls[2].contains(&"--channel".to_string()) && calls[2].contains(&"stable".to_string()),
             "check must carry the policy channel: {calls:?}"
         );
     }
@@ -1123,31 +1547,212 @@ mod tests {
     async fn a_fetch_records_the_verified_path_as_ready() {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
-        let client = MockClient::new(vec![(
-            "fetch",
-            Ok(output(
-                0,
-                "selected x version 1 channel stable (9 bytes)\n/data/x.raucb\n",
-                "",
-            )),
-        )]);
+        let client = MockClient::new(vec![
+            ready_probe(),
+            (
+                "fetch",
+                Ok(output(
+                    0,
+                    "selected x version 1 channel stable (9 bytes)\n\
+                     /mos/updates/verified/x.raucb\n",
+                    "",
+                )),
+            ),
+        ]);
+        let calls = Arc::clone(&client.calls);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
 
         lifecycle.request_fetch("test").await.expect("accepted");
         let recorded = settled(&host).await;
         assert_eq!(recorded["state"], "ready");
-        assert_eq!(recorded["bundle"], "/data/x.raucb");
+        assert_eq!(recorded["bundle"], "/mos/updates/verified/x.raucb");
+        let calls = calls.lock().expect("calls").clone();
+        assert_eq!(calls[1][0], "fetch");
+        assert!(
+            !calls[1].contains(&"--reserve-dir".to_string()),
+            "mosd names no reserve directory; the workspace's downloads/ is the only one: {calls:?}"
+        );
+        assert!(calls[1].contains(&"--max-bytes".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_fetch_path_outside_verified_is_never_recorded_as_ready() {
+        for printed in [
+            "/mos/updates/downloads/x.raucb.part",
+            "/mos/updates/downloads/x.raucb",
+            "/mos/updates/verified/x.raucb.part",
+            "/var/lib/mos/update/reserve/x.raucb",
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+            let client = MockClient::new(vec![
+                ready_probe(),
+                ("fetch", Ok(output(0, &format!("{printed}\n"), ""))),
+            ]);
+            let host = TestHost::new();
+            let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
+            lifecycle.request_fetch("test").await.expect("accepted");
+            let recorded = settled(&host).await;
+            assert_eq!(recorded["state"], "failed", "{printed}: {recorded}");
+            assert!(recorded.get("bundle").is_none(), "{printed}: {recorded}");
+            assert!(
+                recorded["reason"]
+                    .as_str()
+                    .expect("reason")
+                    .contains("verified"),
+                "{printed}: {recorded}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unready_workspace_is_a_named_state_before_any_acquisition() {
+        for (status, kind) in [
+            ("unavailable", "mount-missing"),
+            ("unavailable", "not-data"),
+            ("degraded", "read-only"),
+            ("degraded", "exhausted"),
+            ("degraded", "probe-failed"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+            let verdict = format!("{status} {kind}: the detail for {kind}\n");
+            // The probe refuses; then, on the second request, passes — and
+            // only then are sync and check ever asked for.
+            let client = MockClient::new(vec![
+                ("probe", Ok(output(3, &verdict, ""))),
+                ready_probe(),
+                ("sync", Ok(output(0, "", ""))),
+                ("check", Ok(output(2, "none\n", ""))),
+            ]);
+            let calls = Arc::clone(&client.calls);
+            let host = TestHost::new();
+            let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
+
+            lifecycle.request_check("test").await.expect("accepted");
+            let recorded = settled(&host).await;
+            assert_eq!(
+                recorded["state"], "update-unavailable",
+                "{kind}: {recorded}"
+            );
+            assert_eq!(
+                recorded["reason"],
+                format!("{status} {kind}: the detail for {kind}"),
+                "{recorded}"
+            );
+            assert_eq!(recorded["workspace"]["status"], status);
+            assert_eq!(recorded["workspace"]["kind"], kind);
+            assert_eq!(recorded["workspace"]["root"], "/mos/updates");
+            assert!(
+                recorded.get("last_check").is_none(),
+                "no check ran: {recorded}"
+            );
+            assert_eq!(
+                calls.lock().expect("calls").len(),
+                1,
+                "{kind}: nothing beyond the probe may run"
+            );
+
+            // The next probe passes: the state clears, the check runs, and
+            // the workspace report replaces the verdict.
+            lifecycle.request_check("test").await.expect("accepted");
+            let recorded = settled(&host).await;
+            assert_eq!(
+                recorded["state"], "idle",
+                "{kind}: the second probe passed: {recorded}"
+            );
+            assert!(recorded["last_check"].is_string(), "{recorded}");
+            assert_eq!(recorded["workspace"]["status"], "ready");
+            assert_eq!(recorded["workspace"]["pool"], "/mnt/data");
+            assert!(recorded["workspace"].get("kind").is_none(), "{recorded}");
+            assert_eq!(calls.lock().expect("calls").len(), 4, "{kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fetch_the_workspace_refuses_is_the_same_named_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let client = MockClient::new(vec![
+            ready_probe(),
+            (
+                "fetch",
+                Ok(output(
+                    3,
+                    "selected x version 1 channel stable (9 bytes)\n",
+                    "rauc-update: degraded exhausted: free space on the DATA pool (/mnt/data) \
+                     is 10 bytes, below the 9000 bytes needed\n",
+                )),
+            ),
+        ]);
+        let host = TestHost::new();
+        let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
+        lifecycle.request_fetch("test").await.expect("accepted");
+        let recorded = settled(&host).await;
+        assert_eq!(recorded["state"], "update-unavailable", "{recorded}");
+        assert!(
+            recorded["reason"]
+                .as_str()
+                .expect("reason")
+                .starts_with("degraded exhausted: free space on the DATA pool"),
+            "{recorded}"
+        );
+        assert_eq!(recorded["workspace"]["status"], "degraded");
+        assert!(recorded.get("bundle").is_none());
+    }
+
+    #[test]
+    fn only_a_verified_regular_file_is_installable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("updates");
+        let verified = root.join("verified");
+        std::fs::create_dir_all(&verified).expect("verified/");
+        std::fs::create_dir_all(root.join("downloads")).expect("downloads/");
+        let lifecycle = UpdateLifecycle::new(
+            Arc::new(MockClient::new(vec![])),
+            PolicyStore::defaults(),
+            TestHost::new(),
+            Arc::new(AtomicBool::new(false)),
+            root.clone(),
+        );
+        assert_eq!(lifecycle.verified_dir(), verified);
+
+        let good = verified.join("mos-cx3576-1.1.0.raucb");
+        std::fs::write(&good, b"verified bytes").expect("seed");
+        assert_eq!(lifecycle.installable(&good), Ok(()));
+
+        let refused = |path: &Path, needle: &str| {
+            let err = lifecycle.installable(path).expect_err(needle);
+            assert!(err.contains(needle), "{}: {err}", path.display());
+        };
+        let part = verified.join("mos-cx3576-1.2.0.raucb.part");
+        std::fs::write(&part, b"partial").expect("seed");
+        refused(&part, "partial download");
+        let in_downloads = root.join("downloads").join("mos-cx3576-1.2.0.raucb");
+        std::fs::write(&in_downloads, b"unverified").expect("seed");
+        refused(&in_downloads, "not inside");
+        let elsewhere = dir.path().join("mos-cx3576-1.2.0.raucb");
+        std::fs::write(&elsewhere, b"unverified").expect("seed");
+        refused(&elsewhere, "not inside");
+        let link = verified.join("link.raucb");
+        std::os::unix::fs::symlink(&elsewhere, &link).expect("symlink");
+        refused(&link, "not a regular file");
+        refused(&verified.join("absent.raucb"), "No such file");
+        refused(Path::new("relative.raucb"), "not inside");
     }
 
     #[tokio::test]
     async fn a_failed_check_is_a_failed_state_with_its_reason() {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
-        let client = MockClient::new(vec![(
-            "sync",
-            Ok(output(1, "", "rauc-update: connection refused\n")),
-        )]);
+        let client = MockClient::new(vec![
+            ready_probe(),
+            (
+                "sync",
+                Ok(output(1, "", "rauc-update: connection refused\n")),
+            ),
+        ]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
 
@@ -1198,6 +1803,7 @@ mod tests {
             "[source]\nurl = \"http://mirror/tuf\"\n[network]\nmode = \"metered\"\n",
         );
         let client = MockClient::new(vec![
+            ready_probe(),
             ("sync", Ok(output(0, "", ""))),
             ("check", Ok(output(2, "none\n", ""))),
         ]);
@@ -1258,6 +1864,7 @@ mod tests {
             policy,
             Arc::clone(&host) as Arc<dyn LifecycleHost>,
             Arc::clone(&installing),
+            PathBuf::from(DEFAULT_WORKSPACE_ROOT),
         ));
         lifecycle
             .request_check("test")
@@ -1385,7 +1992,8 @@ mod tests {
             "#!/bin/sh\n\
              case \"$1\" in\n\
              check) echo 'selected u.raucb version 2.0 channel stable (5 bytes)'; exit 0 ;;\n\
-             fetch) echo /data/u.raucb; exit 0 ;;\n\
+             fetch) echo /mos/updates/verified/u.raucb; exit 0 ;;\n\
+             probe) echo 'unavailable mount-missing: /mos is not a mount point'; exit 3 ;;\n\
              none) echo none; exit 2 ;;\n\
              *) echo 'boom' >&2; exit 1 ;;\n\
              esac\n",
@@ -1412,7 +2020,23 @@ mod tests {
             })
         );
         let fetched = run("fetch").await.expect("fetch runs");
-        assert_eq!(parse_fetch(&fetched), Ok(Some("/data/u.raucb".to_string())));
+        assert_eq!(
+            parse_fetch(&fetched, Path::new("/mos/updates/verified")),
+            Ok(FetchOutcome::Staged(
+                "/mos/updates/verified/u.raucb".to_string()
+            ))
+        );
+        let probed = run("probe")
+            .await
+            .expect("exit 3 is an output, not an error");
+        assert_eq!(
+            parse_probe(&probed),
+            Ok(ProbeOutcome::Unready(Unready {
+                status: "unavailable".to_string(),
+                kind: "mount-missing".to_string(),
+                detail: "/mos is not a mount point".to_string(),
+            }))
+        );
         let none = run("none")
             .await
             .expect("exit 2 is an output, not an error");

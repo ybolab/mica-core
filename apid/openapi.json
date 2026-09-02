@@ -3006,7 +3006,7 @@
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
-            "description": "The update state: `lifecycle` (state machine with reason strings, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`",
+            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3244,7 +3244,7 @@
           "update"
         ],
         "summary": "Install a bundle through mosd.",
-        "description": "With no body (or no `bundlePath`), installs the bundle the lifecycle has\nstaged as `ready` — the path `rauc-update` verified. With `bundlePath`,\nforwards that explicit operator path to `InstallUpdate` unchanged, which\nis the existing manual/offline escape hatch. Answers **202**: the install\nruns on mosd's background task; poll the state document.",
+        "description": "With no body (or no `bundlePath`), installs the bundle the lifecycle has\nstaged as `ready` — the path `rauc-update` verified. With `bundlePath`,\nforwards that explicit operator path to `InstallUpdate` unchanged, which\nis the manual/offline route after `rauc-update import`; mosd admits it\nonly when it is a regular file inside `/mos/updates/verified` and not a\n`.part`, so a partial or a file anywhere else is never handed to RAUC.\nAnswers **202**: the install runs on mosd's background task; poll the\nstate document.",
         "operationId": "api_v1_update_install",
         "requestBody": {
           "content": {
@@ -3311,7 +3311,7 @@
             }
           },
           "422": {
-            "description": "The bundle path is not an absolute existing regular file (`validation_failed`)",
+            "description": "The bundle path is not an absolute existing regular file inside `/mos/updates/verified`, or is a `.part` partial (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
