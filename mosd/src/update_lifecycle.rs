@@ -33,9 +33,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::rauc::SlotStatus;
-use crate::update_policy::{
-    self, GateVerdict, LoadedPolicy, PolicyStore, UpdatePolicy,
-};
+use crate::update_policy::{self, GateVerdict, LoadedPolicy, PolicyStore, UpdatePolicy};
 
 /// Where the device-side update client lives unless `MOSD_RAUC_UPDATE_BIN`
 /// says otherwise. Shipping the binary there is the image side's half of the
@@ -105,7 +103,10 @@ impl UpdateClient for SubprocessClient {
         if self.binary.is_file() {
             None
         } else {
-            Some(format!("{} is not present on this image", self.binary.display()))
+            Some(format!(
+                "{} is not present on this image",
+                self.binary.display()
+            ))
         }
     }
 
@@ -591,11 +592,7 @@ impl UpdateLifecycle {
 
     /// Arm the administrative reboot-gate override for `seconds`, bounded by
     /// the policy's ceiling. Answers the recorded override as JSON.
-    pub async fn set_reboot_override(
-        &self,
-        sender: &str,
-        seconds: u64,
-    ) -> Result<Value, Refusal> {
+    pub async fn set_reboot_override(&self, sender: &str, seconds: u64) -> Result<Value, Refusal> {
         let loaded = self.policy.load();
         let ceiling = loaded.policy.reboot_gate.override_ceiling();
         if seconds == 0 {
@@ -735,7 +732,10 @@ fn render_entry(
     } else if let Some(failed) = &machine.failed {
         ("failed", Some(failed.clone()))
     } else if machine.bundle.is_some() {
-        ("ready", Some("a verified bundle is staged for install".to_string()))
+        (
+            "ready",
+            Some("a verified bundle is staged for install".to_string()),
+        )
     } else if let Some((phase, why)) = &machine.boot_phase {
         (phase.name(), Some(why.clone()))
     } else {
@@ -942,7 +942,10 @@ mod tests {
         let (phase, why) =
             derive_boot_phase(&fallen, Some("rootfs.1"), None).expect("fallback derives");
         assert_eq!(phase, BootPhase::RolledBack);
-        assert!(why.contains("rootfs.1") && why.contains("rootfs.0"), "got: {why}");
+        assert!(
+            why.contains("rootfs.1") && why.contains("rootfs.0"),
+            "got: {why}"
+        );
         // The health gate's report is what splits validating from succeeded.
         let (phase, _) = derive_boot_phase(&converged, Some("rootfs.0"), Some("ok"))
             .expect("a confirmed boot derives");
@@ -1111,8 +1114,7 @@ mod tests {
         assert!(calls[0].contains(&"http://mirror/tuf".to_string()));
         assert_eq!(calls[1][0], "check");
         assert!(
-            calls[1].contains(&"--channel".to_string())
-                && calls[1].contains(&"stable".to_string()),
+            calls[1].contains(&"--channel".to_string()) && calls[1].contains(&"stable".to_string()),
             "check must carry the policy channel: {calls:?}"
         );
     }
@@ -1123,7 +1125,11 @@ mod tests {
         let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
         let client = MockClient::new(vec![(
             "fetch",
-            Ok(output(0, "selected x version 1 channel stable (9 bytes)\n/data/x.raucb\n", "")),
+            Ok(output(
+                0,
+                "selected x version 1 channel stable (9 bytes)\n/data/x.raucb\n",
+                "",
+            )),
         )]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
@@ -1199,7 +1205,10 @@ mod tests {
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
         let refusal = lifecycle.request_fetch("test").await.expect_err("refused");
         assert!(refusal.message().contains("metered"));
-        lifecycle.request_check("test").await.expect("check admitted");
+        lifecycle
+            .request_check("test")
+            .await
+            .expect("check admitted");
         let recorded = settled(&host).await;
         assert_eq!(recorded["state"], "idle");
         assert!(recorded.get("available").is_none(), "none selected");
@@ -1250,7 +1259,10 @@ mod tests {
             Arc::clone(&host) as Arc<dyn LifecycleHost>,
             Arc::clone(&installing),
         ));
-        lifecycle.request_check("test").await.expect("first accepted");
+        lifecycle
+            .request_check("test")
+            .await
+            .expect("first accepted");
         let refusal = lifecycle.request_fetch("test").await.expect_err("busy");
         assert!(matches!(refusal, Refusal::Busy(_)));
         assert!(refusal.message().contains("checking"));
@@ -1352,14 +1364,13 @@ mod tests {
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
         let now = Utc::now();
-        let inside = now.weekday().num_days_from_monday() == 0 && now.hour() == 0 && now.minute() == 0;
+        let inside =
+            now.weekday().num_days_from_monday() == 0 && now.hour() == 0 && now.minute() == 0;
         let refusal = lifecycle.install_refusal().await;
         if inside {
             assert_eq!(refusal, None);
         } else {
-            assert!(
-                refusal.expect("outside the window").contains("maintenance"),
-            );
+            assert!(refusal.expect("outside the window").contains("maintenance"),);
         }
     }
 
@@ -1402,7 +1413,9 @@ mod tests {
         );
         let fetched = run("fetch").await.expect("fetch runs");
         assert_eq!(parse_fetch(&fetched), Ok(Some("/data/u.raucb".to_string())));
-        let none = run("none").await.expect("exit 2 is an output, not an error");
+        let none = run("none")
+            .await
+            .expect("exit 2 is an output, not an error");
         assert_eq!(none.code, Some(2));
         let failed = run("explode").await.expect("exit 1 is an output too");
         assert_eq!(failed.code, Some(1));

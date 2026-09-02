@@ -161,7 +161,10 @@ async fn a_mark_answers_raucs_slot_and_message_and_bad_vocabulary_is_422() {
     // mosd's InvalidArgs (a state or slot outside the offered vocabulary)
     // is 422 `validation_failed`, not the settings-flavoured code.
     let (router, fake, token) = update_app(json!({}));
-    fake.refuse_updates(INVALID_ARGS, "mark state must be `good` or `bad`, got `active`");
+    fake.refuse_updates(
+        INVALID_ARGS,
+        "mark state must be `good` or `bad`, got `active`",
+    );
     let response = bearer_json(
         &router,
         "POST",

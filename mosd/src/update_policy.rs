@@ -377,7 +377,11 @@ fn window_contains(window: &MaintenanceWindow, now: DateTime<Utc>) -> bool {
     let days: Vec<u32> = if window.days.is_empty() {
         (0..7).collect()
     } else {
-        window.days.iter().filter_map(|day| day_index(day)).collect()
+        window
+            .days
+            .iter()
+            .filter_map(|day| day_index(day))
+            .collect()
     };
     for day in days {
         let open = day * 1440 + start;
@@ -487,9 +491,8 @@ pub fn evaluate_gate(
 ) -> GateVerdict {
     let mut reasons = Vec::new();
     if installing {
-        reasons.push(
-            "an update install is writing the other slot; wait for it to finish".to_string(),
-        );
+        reasons
+            .push("an update install is writing the other slot; wait for it to finish".to_string());
     }
     let mut health_blocks = Vec::new();
     if let Some(entries) = health.as_object() {

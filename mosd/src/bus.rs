@@ -1880,10 +1880,7 @@ mod tests {
             .await
             .expect("override armed");
         service.request_reboot(":1.4").await.expect("overridden");
-        assert_eq!(
-            *power_calls.lock().expect("lock"),
-            vec!["reboot", "reboot"]
-        );
+        assert_eq!(*power_calls.lock().expect("lock"), vec!["reboot", "reboot"]);
     }
 
     #[tokio::test]

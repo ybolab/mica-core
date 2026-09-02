@@ -374,7 +374,8 @@ impl SettingsApi for BusSettings {
 
     async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
         let proxy = self.proxy().await?;
-        self.call("MarkUpdate", proxy.mark_update(state, slot)).await
+        self.call("MarkUpdate", proxy.mark_update(state, slot))
+            .await
     }
 
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
