@@ -42,6 +42,7 @@ mod provisioning;
 mod provisioning_doc;
 mod rauc;
 mod reconciler;
+mod reset;
 mod scan;
 mod storage_status;
 mod system_info;
@@ -182,6 +183,32 @@ async fn serve() -> anyhow::Result<()> {
         tracing::info!("dry run: first-boot provisioning skipped");
     } else {
         let state_dir = state_dir_for(&settings_path);
+        // BEFORE both of the steps below, and before every reconciler: a
+        // staged reset is what the operator asked this boot to do, so the rest
+        // of the boot has to see the device the reset produced rather than
+        // reconcile settings that are about to be taken away. Tiers 1 and 3
+        // hand the seeded values back to `ensure_provisioned` below by putting
+        // `provisioning.state` to `Pending`, which is why this call comes
+        // first and not merely early.
+        //
+        // A device that is factory-reset here and then offered a provisioning
+        // document is claimed by it on this same boot. That is the document
+        // channel doing exactly what it is for — the reset made the device
+        // unclaimed, and an unclaimed device with a stick in it is the case
+        // `provisioning_doc` exists to serve.
+        //
+        // Its failure never stops the daemon, for `provisioning_doc`'s reason
+        // and one more: the intent stays staged, so the next boot retries the
+        // same tier rather than the operator losing the request
+        // (`docs/design/recovery.md` §2.2).
+        match reset::apply_pending(&store, &mut settings, &reset::Roots::from_env()) {
+            Ok(outcome) => tracing::info!(?outcome, "staged reset checked"),
+            Err(err) => tracing::error!(
+                error = %err,
+                "the staged reset could not be applied; it stays staged and the next boot \
+                 retries the same tier"
+            ),
+        }
         // BEFORE seeding, and that order is the point: a factory-injected
         // `provisioning.deviceId` has to be in the tree when `ensure_identity`
         // decides whether to mint one, and when the hostname is derived from
