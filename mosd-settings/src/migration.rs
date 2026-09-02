@@ -84,6 +84,7 @@ impl Default for MigrationRegistry {
             Box::new(MigrateV8ToV9),
             Box::new(MigrateV9ToV10),
             Box::new(MigrateV10ToV11),
+            Box::new(MigrateV11ToV12),
         ])
     }
 }
@@ -633,6 +634,50 @@ impl Migration for MigrateV10ToV11 {
         if let Some(toml::Value::Table(access)) = doc.get_mut("access") {
             access.remove("claim");
         }
+        Ok(())
+    }
+}
+
+/// v11 -> v12: adds `reset`, the staged reset intent
+/// (`docs/design/recovery.md` §2.2) that one writer commits and another
+/// applies.
+///
+/// `up` stamps `schema_version = 12` and does nothing else —
+/// [`MigrateV10ToV11`]'s shape, for [`MigrateV6ToV7`]'s reason. The one field
+/// v12 adds is `#[serde(default, skip_serializing_if = "Option::is_none")]`,
+/// so a v11 document and its v12 form differ by the version integer alone
+/// until a reset is staged.
+///
+/// `down` stamps `schema_version = 11` and removes the record, and removes
+/// NOTHING else — [`MigrateV10ToV11::down`]'s reasoning, applied to the one
+/// key v12 owns. Every other root key is a key a v11 binary owns and must not
+/// lose.
+///
+/// **What a rollback costs here is a staged reset, and it fails SAFE.** A v11
+/// binary has no reset applier at all, so a record it kept would sit unread;
+/// dropping it means an operator who staged a reset, rolled the system back
+/// and rolled forward again finds the reset did not happen and stages it
+/// again. That is one repeated request, made by an operator who is present and
+/// watching. The alternative direction — keeping a record a rollback made
+/// invisible — is a device that reboots into a factory reset nobody asked for
+/// at the moment it rolls forward, which is data loss caused by an update
+/// decision. A reset must be caused by the operator who asked for it, so the
+/// asymmetry falls this way.
+pub struct MigrateV11ToV12;
+
+impl Migration for MigrateV11ToV12 {
+    fn target_version(&self) -> u32 {
+        12
+    }
+
+    fn up(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(12));
+        Ok(())
+    }
+
+    fn down(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(11));
+        doc.remove("reset");
         Ok(())
     }
 }
@@ -1355,6 +1400,102 @@ hostname = \"mos\"\n",
 
         assert_eq!(doc["schema_version"], toml::Value::Integer(10));
         assert!(!doc.contains_key("access"), "{doc:?}");
+    }
+
+    /// A v11 document as a claimed, fielded device carries it.
+    fn v11_document() -> toml::Table {
+        let mut doc = v10_document_with_a_credential();
+        MigrateV10ToV11.up(&mut doc).unwrap();
+        doc.get_mut("access")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert(
+                "claim".to_string(),
+                toml::Value::Table(
+                    toml::from_str(
+                        r#"
+via = "setup"
+at = 1700000000
+rotationRequired = false
+"#,
+                    )
+                    .unwrap(),
+                ),
+            );
+        doc
+    }
+
+    /// `up` stamps the version and touches nothing else: the field v12 adds is
+    /// `skip_serializing_if`, so a v11 document and its v12 form differ by the
+    /// version integer alone until a reset is staged.
+    #[test]
+    fn v11_to_v12_up_stamps_the_version_and_seeds_nothing() {
+        let mut doc = v11_document();
+        let before = doc.clone();
+
+        MigrateV11ToV12.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(12));
+        let mut expected = before;
+        expected.insert("schema_version".to_string(), toml::Value::Integer(12));
+        assert_eq!(doc, expected);
+
+        // And `up` over its own output changes nothing.
+        let once = doc.clone();
+        MigrateV11ToV12.up(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
+    /// `down` drops the staged intent and KEEPS every other root key. The
+    /// distinction is [`MigrateV10ToV11::down`]'s, one level up: `access` and
+    /// `provisioning` are what a v11 binary authenticates and identifies the
+    /// device with, and a rollback that took them would reopen an
+    /// unauthenticated write route.
+    #[test]
+    fn v12_document_migrates_down_dropping_only_the_staged_reset() {
+        let mut doc = v11_document();
+        MigrateV11ToV12.up(&mut doc).unwrap();
+        doc.insert(
+            "reset".to_string(),
+            toml::Value::Table(
+                toml::from_str(
+                    r#"
+tier = "full-factory"
+requested = 1700000000
+presence = "console-attach"
+"#,
+                )
+                .unwrap(),
+            ),
+        );
+
+        MigrateV11ToV12.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(11));
+        assert!(!doc.contains_key("reset"), "{doc:?}");
+        let access = doc["access"].as_table().unwrap();
+        assert!(
+            access["webAdmin"]["password_hash"].as_str().is_some(),
+            "the credential a v11 binary authenticates with must survive the rollback"
+        );
+        assert!(access.contains_key("claim"), "{access:?}");
+        assert_eq!(access["apiTokens"].as_array().unwrap().len(), 1);
+    }
+
+    /// The round trip, and which half is lost: the version returns, the staged
+    /// reset does not. A device that rolled back and forward again did not get
+    /// the reset — which is the safe direction, because the alternative is a
+    /// device that factory-resets itself the moment an update rolls forward.
+    #[test]
+    fn v11_to_v12_and_back_returns_the_version_but_not_the_staged_reset() {
+        let mut doc = v11_document();
+        MigrateV11ToV12.up(&mut doc).unwrap();
+        doc.insert("reset".to_string(), toml::Value::Table(toml::Table::new()));
+        MigrateV11ToV12.down(&mut doc).unwrap();
+        MigrateV11ToV12.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(12));
+        assert!(!doc.contains_key("reset"), "{doc:?}");
     }
 
     /// The registry walks the whole ladder in both directions, which is what

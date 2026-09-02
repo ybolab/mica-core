@@ -9,10 +9,10 @@ use mosd_settings::{
     ConsoleSettings, ContainerSettings, DEFAULT_PATH, DeviceCredentialSettings, IfaceKind,
     IfaceSettings, MigrateV0ToV1, MigrateV3ToV4, Migration, MigrationRegistry, MqttAuthSettings,
     MqttListenSettings, MqttSettings, NtpSettings, ProvisioningSettings, ProvisioningState,
-    SCHEMA_VERSION, Settings, SettingsError, SshSettings, StaticConfig, Store, TimeSettings,
-    VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
-    WireguardConfig, WireguardPeer, encode_base64_nopad, json_path_get, migrate,
-    parse_authorized_key, validate_api_tokens, validate_authorized_keys,
+    ResetSettings, ResetTier, SCHEMA_VERSION, Settings, SettingsError, SshSettings, StaticConfig,
+    Store, TimeSettings, VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings,
+    WifiNetwork, WifiSettings, WireguardConfig, WireguardPeer, encode_base64_nopad, json_path_get,
+    migrate, parse_authorized_key, validate_api_tokens, validate_authorized_keys,
 };
 
 fn populated() -> Settings {
@@ -475,6 +475,10 @@ fn v3_populated() -> Settings {
             },
             timezone: "Europe/Berlin".to_string(),
         },
+        // No staged reset: this fixture is a v3 tree, and `MigrateV11ToV12::down`
+        // drops the record on the way to one, so a populated value here would
+        // assert nothing the round trip could keep.
+        reset: None,
     }
 }
 
@@ -1190,11 +1194,11 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// clock) and a version stamp one ahead of ours.
 ///
 /// A document from a build one schema AHEAD of this one -- the A/B rollback
-/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move eight
+/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move nine
 /// times, to 6 when the container switch landed, to 7 for the mqtt switch, to
 /// 8 for the interface kinds, to 9 for the API token list, to 10 for the time
-/// subtree, to 11 for the provisioning-document record and to 12 for the claim
-/// record: left behind, it stops
+/// subtree, to 11 for the provisioning-document record, to 12 for the claim
+/// record and to 13 for the staged reset: left behind, it stops
 /// being "newer", the strip path stops running, and the test goes on passing
 /// while asserting nothing about rollback. Hence the assertion below that the
 /// stamp really is ahead of us.
@@ -1203,8 +1207,8 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// which this schema now knows, so the fixture would have asserted nothing:
 /// the whole subtree would have loaded rather than been stripped.
 fn newer_additive_document() -> String {
-    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
-    r#"schema_version = 12
+    assert_eq!(SCHEMA_VERSION + 1, 13, "the fixture stamp must stay ahead");
+    r#"schema_version = 13
 hostname = "rolled-back"
 
 [network.eth0]
@@ -1263,7 +1267,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // No amount of unknown-key stripping can make v4 parse this.
     fs::write(
         &path,
-        "schema_version = 12\n\n[hostname]\nname = \"x\"\n\n[network]\n",
+        "schema_version = 13\n\n[hostname]\nname = \"x\"\n\n[network]\n",
     )
     .unwrap();
 
@@ -1334,10 +1338,10 @@ fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
     // The same unknown key at two depths. The strip is by name, everywhere:
     // both go, and the report records the name once per strip pass. The stamp
     // has to stay one ahead of us or the tolerant path never runs.
-    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 13, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        r#"schema_version = 12
+        r#"schema_version = 13
 hostname = "h"
 extra = "top"
 
@@ -1398,9 +1402,9 @@ endpoint = "vpn.example.net:51820"
 persistentKeepalive = 25
 "#;
 
-/// A key only a schema AFTER v11 could carry, appended to the fixture above to
+/// A key only a schema AFTER v12 could carry, appended to the fixture above to
 /// make it a genuine rollback document rather than a re-stamped one.
-const V12_ONLY_KEY: &str = r#"
+const V13_ONLY_KEY: &str = r#"
 [network.wg0.wireguard.obfuscation]
 mode = "none"
 "#;
@@ -1630,10 +1634,10 @@ fn the_wireguard_subtree_holds_no_secret() {
 fn a_newer_document_keeps_every_v7_interface_kind() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 13, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 12") + V12_ONLY_KEY,
+        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 13") + V13_ONLY_KEY,
     )
     .unwrap();
 
@@ -2028,6 +2032,109 @@ fn the_claim_channels_have_kebab_case_wire_names() {
         assert_eq!(access["claim"]["via"], json!(expected));
         assert_eq!(access["claim"]["rotationRequired"], json!(true));
     }
+}
+
+// --- The staged reset intent (schema v12) ----------------------------------
+
+/// A device with no reset staged carries no `reset` key at all, and the
+/// serialized tree has none to mistake for one.
+///
+/// The property `MigrateV11ToV12` depends on: a v11 document and its v12 form
+/// differ by the version integer alone until a reset is staged.
+#[test]
+fn a_tree_with_no_reset_staged_carries_no_reset_key() {
+    let settings = Settings::default();
+    assert_eq!(settings.reset, None);
+
+    let text = toml::to_string(&settings).unwrap();
+    assert!(!text.contains("reset"), "{text}");
+}
+
+/// The record round-trips through the store, so an intent committed before a
+/// power loss is still there for the boot that applies it. That survival is
+/// the whole mechanism `docs/design/recovery.md` §2.2 asks for.
+#[test]
+fn the_reset_intent_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    let settings = Settings {
+        reset: Some(ResetSettings {
+            tier: ResetTier::FullFactory,
+            requested: 1_700_000_000,
+            presence: Some("console-attach".to_string()),
+        }),
+        ..Settings::default()
+    };
+
+    let store = Store::new(&path);
+    store.save(&settings).unwrap();
+    let loaded = store.load().unwrap();
+
+    assert_eq!(loaded.reset, settings.reset);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("[reset]"), "{text}");
+}
+
+/// The wire spelling every tier serializes to, pinned: apid writes these three
+/// strings through `SetSettings("reset")` and mosd reads them back, so a
+/// rename here would strand an intent a device already committed.
+///
+/// **`secure-wipe` is not among them, and the assertion is that no spelling of
+/// it parses.** Tier 4 is not implemented anywhere (`docs/design/recovery.md`
+/// §2 footnote `[^wipe]`, §7), and a tier a device could accept but not keep
+/// is worse than one it refuses.
+#[test]
+fn the_reset_tiers_have_kebab_case_wire_names_and_there_is_no_fourth() {
+    let mut settings = Settings::default();
+    for (tier, expected) in [
+        (ResetTier::Configuration, "configuration"),
+        (ResetTier::ApplicationData, "application-data"),
+        (ResetTier::FullFactory, "full-factory"),
+    ] {
+        settings.reset = Some(ResetSettings {
+            tier,
+            requested: 0,
+            presence: None,
+        });
+        let staged = settings.get("reset").unwrap();
+        assert_eq!(staged["tier"], json!(expected));
+        assert!(staged.get("presence").is_none(), "{staged}");
+    }
+
+    for spelling in ["secure-wipe", "secureWipe", "secure_wipe", "wipe"] {
+        let err = settings
+            .set("reset", json!({ "tier": spelling, "requested": 0 }))
+            .unwrap_err();
+        assert!(
+            matches!(err, SettingsError::Validation { .. }),
+            "`{spelling}` was accepted as a tier: {err:?}"
+        );
+    }
+}
+
+/// The intent is one dot-path write of one subtree, and clearing it is
+/// another — which is what makes an apply's commit a single `Store::save`.
+#[test]
+fn a_reset_intent_is_staged_and_cleared_by_one_write_each() {
+    let mut settings = Settings::default();
+
+    settings
+        .set(
+            "reset",
+            json!({ "tier": "configuration", "requested": 1_700_000_000_u64 }),
+        )
+        .unwrap();
+    assert_eq!(
+        settings.reset,
+        Some(ResetSettings {
+            tier: ResetTier::Configuration,
+            requested: 1_700_000_000,
+            presence: None,
+        })
+    );
+
+    settings.set("reset", json!(null)).unwrap();
+    assert_eq!(settings.reset, None);
 }
 
 /// The whole `access` subtree is writable in ONE dot-path write carrying the

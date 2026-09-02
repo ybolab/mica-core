@@ -1,4 +1,4 @@
-//! Typed settings tree (schema v11) and its dot-path accessors.
+//! Typed settings tree (schema v12) and its dot-path accessors.
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,9 @@ use crate::error::SettingsError;
 use crate::path::{json_path_get, json_path_set, split_path};
 
 /// Current settings schema version written by this crate.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
-/// Persistent mosd settings tree (schema v11).
+/// Persistent mosd settings tree (schema v12).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -38,6 +38,15 @@ pub struct Settings {
     /// NTP server and presentation-timezone settings.
     #[serde(default)]
     pub time: TimeSettings,
+    /// A staged reset intent (schema v12); absent unless one is waiting to be
+    /// applied — see [`ResetSettings`].
+    ///
+    /// Declared last so the TOML serializer emits this table after every other
+    /// key of the root, and `skip_serializing_if` so a device with no reset
+    /// staged carries a v12 document identical to its v11 form but for the
+    /// version integer (see [`crate::MigrateV11ToV12`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<ResetSettings>,
 }
 
 impl Default for Settings {
@@ -52,6 +61,7 @@ impl Default for Settings {
             container: ContainerSettings::default(),
             mqtt: MqttSettings::default(),
             time: TimeSettings::default(),
+            reset: None,
         }
     }
 }
@@ -649,6 +659,65 @@ pub enum ProvisioningState {
     Pending,
     /// First-boot provisioning finished; the tree is the device's own.
     Complete,
+}
+
+/// A staged reset intent (schema v12).
+///
+/// **The record IS the reset.** `docs/design/recovery.md` §2.2 requires every
+/// tier to be "staged as an intent record plus an idempotent apply, never as a
+/// sequence whose interruption is a third state": the authority is checked and
+/// the intent committed by one writer (apid), and the effects are carried out
+/// by another (mosd's `reset` module) on the next boot, replaying the same
+/// tier until the record is gone. A power loss therefore leaves the device
+/// either pre-reset — the record is not there and nothing happened — or
+/// mid-reset with the record still staged, which the next boot finishes. There
+/// is no third state, because there is nothing else to write.
+///
+/// **It holds no authority of its own.** `presence` names the mechanism that
+/// authorized a presence-gated tier so §5.3's trail and a later reader can say
+/// which door was used; nothing re-derives permission from it, and mosd does
+/// not re-check it. The gate is apid's, at the moment the record is committed,
+/// and a record on STATE is already a write only an authorized caller could
+/// have made.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetSettings {
+    /// Which tier is staged. There is no parameterless reset
+    /// (`docs/design/recovery.md` §2.2).
+    pub tier: ResetTier,
+    /// Seconds since the UNIX epoch as the device clock read them when the
+    /// intent committed, saturating at 0.
+    ///
+    /// A label, never a deadline, for [`ClaimSettings::at`]'s reason: nothing
+    /// compares it against anything, and a staged reset does not expire. An
+    /// intent that expired would be a reset an operator asked for, was told
+    /// was staged, and did not get.
+    pub requested: u64,
+    /// The presence mechanism that authorized a presence-gated tier; absent
+    /// for the tiers that are authenticated management actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<String>,
+}
+
+/// Which reset tier is staged — `docs/design/recovery.md` §2.1's table, whose
+/// rows are the whole of the vocabulary.
+///
+/// **Three members, and the fourth is deliberately absent.** §2's tier 4,
+/// secure wipe, is not here and is not implemented anywhere: its every cell is
+/// bench-dependent on a device-level erase primitive no board has evidenced
+/// (§2 footnote `[^wipe]`), and a member named here would be a request an
+/// operator could make and a device could accept without being able to keep.
+/// Until that evidence exists the honest answer is §7's — destroy the medium.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResetTier {
+    /// Tier 1: return the modelled settings to their schema defaults.
+    Configuration,
+    /// Tier 2: remove operator applications and their data.
+    ApplicationData,
+    /// Tier 3: return the device to its first-boot state, keeping identity,
+    /// calibration, META and both system slots.
+    FullFactory,
 }
 
 /// Characters a device identifier occupies: 16 bytes spelled in lowercase hex.
