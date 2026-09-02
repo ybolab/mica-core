@@ -232,6 +232,9 @@ export const zhCN: Translation = {
   applications: {
     title: '应用', description: '本设备上已安装与可安装的工作负载。',
     tabs: { installed: '已安装', catalog: '目录', activity: '活动' }, search: '搜索应用', count: '{{count}} 个应用',
+    planned: '应用功能尚无设备 API。本页内容都是临时的内存状态，刷新页面后会重置。',
+    retained: '{{count}} 个保留了数据',
+    blocked: { title: '容器运行时已停用', copy: '重新启用之前，容器应用无法启动。', action: '打开服务' },
     columns: { application: '应用', source: '来源', kind: '类型', desired: '期望', runtime: '运行', health: '健康', action: '动作', result: '结果', time: '时间' },
     sources: { catalog: '已验证目录', local: '本地签名者', system: '系统 · OS 验证' }, kinds: { container: '容器', native: '原生程序' },
     states: { running: '运行中', stopped: '已停止', blocked: '被阻止', notInstalled: '未安装', healthy: '健康', unknown: '未知', retained: '数据已保留' },

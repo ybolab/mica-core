@@ -1,6 +1,12 @@
 import { useMemo, useState } from 'react'
+import { Link } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Box, Check, ChevronRight, Download, Search, Trash2 } from 'lucide-react'
+import { api } from '@/shared/lib/http'
+import { filterApps, retainedCount, type AppFilter } from './filter'
+import { PlannedNotice } from '@/shared/simulation/planned'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { useSimulation, type SimulatedApp, type SimulatedRuntime } from '@/shared/simulation/simulation-provider'
 import { SimulationNotice } from '@/shared/simulation/simulation-notice'
 import { EmptyState, Page, PageHeader, Surface } from '@/shared/components/product-layout'
@@ -19,10 +25,14 @@ export function ApplicationsPage() {
   const { t } = useTranslation()
   const simulation = useSimulation()
   const [query, setQuery] = useState('')
+  const [source, setSource] = useState<AppFilter['source']>('all')
+  const [kind, setKind] = useState<AppFilter['kind']>('all')
   const [selected, setSelected] = useState<string>()
   const [details, setDetails] = useState<string>()
   const [step, setStep] = useState(0)
-  const installed = useMemo(() => simulation.apps.filter((app) => app.runtime !== 'not-installed' && app.name.toLowerCase().includes(query.toLowerCase())), [query, simulation.apps])
+  const installed = useMemo(() => filterApps(simulation.apps, { query, source, kind }), [query, source, kind, simulation.apps])
+  const retained = retainedCount(installed)
+  const containerRuntime = useQuery({ queryKey: ['settings', 'container.enabled'], queryFn: () => api<boolean>('/api/v1/settings/container.enabled') })
   const selectedApp = simulation.apps.find((app) => app.id === selected)
   const detailApp = simulation.apps.find((app) => app.id === details)
 
@@ -39,6 +49,13 @@ export function ApplicationsPage() {
   return (
     <Page>
       <PageHeader title={t('applications.title')} />
+      <PlannedNotice>{t('applications.planned')}</PlannedNotice>
+      {containerRuntime.data === false ? (
+        <div className="callout error blocked-banner" role="alert">
+          <div><strong>{t('applications.blocked.title')}</strong><span>{t('applications.blocked.copy')}</span></div>
+          <Link to="/services/$service" params={{ service: 'containers' }} className="text-link">{t('applications.blocked.action')}</Link>
+        </div>
+      ) : null}
       <Tabs defaultValue="installed">
         <TabsList aria-label={t('applications.title')}>
           <TabsTrigger value="installed">{t('applications.tabs.installed')}</TabsTrigger>
@@ -48,16 +65,25 @@ export function ApplicationsPage() {
         <TabsContent value="installed" className="tab-panel">
           <div className="toolbar">
             <label className="search-field"><Search aria-hidden="true" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('applications.search')} /></label>
-            <span>{t('applications.count', { count: installed.length })}</span>
+            <Select value={source} onValueChange={(value) => setSource(value as AppFilter['source'])}>
+              <SelectTrigger className="w-auto" aria-label={t('applications.columns.source')}><SelectValue /></SelectTrigger>
+              <SelectContent>{(['all', 'catalog', 'local', 'system'] as const).map((option) => <SelectItem value={option} key={option}>{option === 'all' ? t('applications.columns.source') : t(`applications.sources.${option}`)}</SelectItem>)}</SelectContent>
+            </Select>
+            <Select value={kind} onValueChange={(value) => setKind(value as AppFilter['kind'])}>
+              <SelectTrigger className="w-auto" aria-label={t('applications.columns.kind')}><SelectValue /></SelectTrigger>
+              <SelectContent>{(['all', 'container', 'native'] as const).map((option) => <SelectItem value={option} key={option}>{option === 'all' ? t('applications.columns.kind') : t(`applications.kinds.${option}`)}</SelectItem>)}</SelectContent>
+            </Select>
+            <span className="field-hint">{t('applications.count', { count: installed.length })} · {t('applications.retained', { count: retained })}</span>
           </div>
           <Surface className="table-surface">
             <Table>
-              <TableHeader><TableRow><TableHead>{t('applications.columns.application')}</TableHead><TableHead>{t('applications.columns.source')}</TableHead><TableHead>{t('applications.columns.kind')}</TableHead><TableHead>{t('applications.columns.runtime')}</TableHead><TableHead>{t('applications.columns.health')}</TableHead><TableHead /></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>{t('applications.columns.application')}</TableHead><TableHead>{t('applications.columns.source')}</TableHead><TableHead>{t('applications.columns.kind')}</TableHead><TableHead>{t('applications.columns.desired')}</TableHead><TableHead>{t('applications.columns.runtime')}</TableHead><TableHead>{t('applications.columns.health')}</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>{installed.map((app) => (
                 <TableRow key={app.id}>
                   <TableCell><button type="button" className="table-primary-link" onClick={() => setDetails(app.id)}>{app.name}</button><small className="mono">{app.version}</small></TableCell>
                   <TableCell>{t(`applications.sources.${app.source}`)}</TableCell>
                   <TableCell><StatusBadge>{t(`applications.kinds.${app.kind}`)}</StatusBadge></TableCell>
+                  <TableCell>{t(`common.states.${app.desired}`)}</TableCell>
                   <TableCell><StatusBadge tone={runtimeTone(app.runtime)}>{runtimeLabel(app.runtime, t)}</StatusBadge></TableCell>
                   <TableCell>{t(`applications.states.${app.health}`)}</TableCell>
                   <TableCell className="text-right"><AppAction app={app} onOpen={() => setDetails(app.id)} /></TableCell>

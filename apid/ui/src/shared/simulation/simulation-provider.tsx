@@ -10,6 +10,9 @@ export interface SimulatedApp {
   kind: 'container' | 'native'
   runtime: SimulatedRuntime
   health: 'healthy' | 'unknown' | 'retained'
+  /// What the operator asked for, which the prototype shows beside what is
+  /// actually running. They disagree whenever an application failed to start.
+  desired: 'enabled' | 'disabled'
 }
 
 export interface SimulatedActivity {
@@ -40,13 +43,13 @@ interface SimulationValue {
 }
 
 const initialApps: SimulatedApp[] = [
-  { id: 'node-red', name: 'Node-RED', version: '4.0.9', source: 'catalog', kind: 'container', runtime: 'running', health: 'healthy' },
-  { id: 'modbus', name: 'Modbus Gateway', version: '1.8.2', source: 'local', kind: 'container', runtime: 'running', health: 'healthy' },
-  { id: 'metrics', name: 'System Metrics', version: '2026.08', source: 'system', kind: 'native', runtime: 'running', health: 'healthy' },
-  { id: 'camera', name: 'Camera Agent', version: '2.1.0', source: 'catalog', kind: 'container', runtime: 'stopped', health: 'retained' },
-  { id: 'mqtt-bridge', name: 'MQTT Bridge', version: '2.4.0', source: 'catalog', kind: 'container', runtime: 'not-installed', health: 'unknown' },
-  { id: 'serial-bridge', name: 'Serial Bridge', version: '1.2.1', source: 'catalog', kind: 'container', runtime: 'not-installed', health: 'unknown' },
-  { id: 'device-agent', name: 'Device Agent', version: '0.9.0', source: 'catalog', kind: 'native', runtime: 'not-installed', health: 'unknown' },
+  { id: 'node-red', name: 'Node-RED', version: '4.0.9', source: 'catalog', kind: 'container', runtime: 'running', health: 'healthy', desired: 'enabled' },
+  { id: 'modbus', name: 'Modbus Gateway', version: '1.8.2', source: 'local', kind: 'container', runtime: 'running', health: 'healthy', desired: 'enabled' },
+  { id: 'metrics', name: 'System Metrics', version: '2026.08', source: 'system', kind: 'native', runtime: 'running', health: 'healthy', desired: 'enabled' },
+  { id: 'camera', name: 'Camera Agent', version: '2.1.0', source: 'catalog', kind: 'container', runtime: 'stopped', health: 'retained', desired: 'disabled' },
+  { id: 'mqtt-bridge', name: 'MQTT Bridge', version: '2.4.0', source: 'catalog', kind: 'container', runtime: 'not-installed', health: 'unknown', desired: 'disabled' },
+  { id: 'serial-bridge', name: 'Serial Bridge', version: '1.2.1', source: 'catalog', kind: 'container', runtime: 'not-installed', health: 'unknown', desired: 'disabled' },
+  { id: 'device-agent', name: 'Device Agent', version: '0.9.0', source: 'catalog', kind: 'native', runtime: 'not-installed', health: 'unknown', desired: 'disabled' },
 ]
 
 const initialActivity: SimulatedActivity[] = [
@@ -78,10 +81,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setApps((items) => items.map((app) => app.id === id ? next : app))
     record(action, next)
   }
-  const installApp = (id: string) => changeApp(id, 'install', (app) => ({ ...app, runtime: 'running', health: 'healthy' }))
-  const toggleApp = (id: string) => changeApp(id, 'changeRuntime', (app) => ({ ...app, runtime: app.runtime === 'running' ? 'stopped' : 'running' }))
+  const installApp = (id: string) => changeApp(id, 'install', (app) => ({ ...app, runtime: 'running', health: 'healthy', desired: 'enabled' }))
+  const toggleApp = (id: string) => changeApp(id, 'changeRuntime', (app) => app.runtime === 'running'
+    ? { ...app, runtime: 'stopped', desired: 'disabled' }
+    : { ...app, runtime: 'running', desired: 'enabled' })
   const updateApp = (id: string) => changeApp(id, 'update', (app) => ({ ...app, version: app.id === 'modbus' ? '1.9.0' : app.version }))
-  const removeApp = (id: string) => changeApp(id, 'remove', (app) => ({ ...app, runtime: 'not-installed', health: 'retained' }))
+  const removeApp = (id: string) => changeApp(id, 'remove', (app) => ({ ...app, runtime: 'not-installed', health: 'retained', desired: 'disabled' }))
   const advanceUpdate = () => setUpdatePhase((phase) => ({
     idle: 'checking',
     checking: 'ready',

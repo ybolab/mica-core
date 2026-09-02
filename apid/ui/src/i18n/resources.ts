@@ -366,6 +366,13 @@ export const en = {
     tabs: { installed: 'Installed', catalog: 'Catalog', activity: 'Activity' },
     search: 'Search applications',
     count: '{{count}} applications',
+    planned: 'Applications have no device API yet. Everything on this page is temporary in-memory state that resets when the page reloads.',
+    retained: '{{count}} with retained data',
+    blocked: {
+      title: 'The container runtime is disabled',
+      copy: 'Container applications cannot start until it is enabled again.',
+      action: 'Open Services',
+    },
     columns: { application: 'Application', source: 'Source', kind: 'Kind', desired: 'Desired', runtime: 'Runtime', health: 'Health', action: 'Action', result: 'Result', time: 'Time' },
     sources: { catalog: 'Verified catalog', local: 'Local signer', system: 'System · OS verified' },
     kinds: { container: 'Container', native: 'Native' },
