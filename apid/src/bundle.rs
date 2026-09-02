@@ -1,11 +1,11 @@
-//! The `/srv/ui` bundle store: layout, validation, atomic activation,
-//! deactivate, delete, prune, and the "what is installed right now?" read.
+//! The `/mos/ui` bundle store: layout, validation, atomic activation,
+//! deactivate, explicit delete, and the "what is installed right now?" read.
 //!
 //! This is `docs/design/api.md` §5.2 and §5.3 as a self-contained module. It
 //! contains no HTTP: the asset router (§4) and the start-up wiring (§6.1) are
 //! separate work and call in here.
 //!
-//! Layout, all of it under one root (`/srv/ui` on a device, a temporary
+//! Layout, all of it under one root (`/mos/ui` on a device, a temporary
 //! directory in tests):
 //!
 //! ```text
@@ -24,7 +24,6 @@
 // is a warning. The `allow`s below are per-item and carry their reason, so a
 // gap is visible in the source rather than absorbed by a file-wide suppression.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File};
 use std::io;
@@ -38,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The shipped location of the bundle store (§5.2).
-pub const DEFAULT_ROOT: &str = "/srv/ui";
+pub const DEFAULT_ROOT: &str = "/mos/ui";
 
 /// The answer the status read gives when no custom bundle is active. §5.3
 /// requires this state to be a named answer, never an empty field.
@@ -97,6 +96,12 @@ struct Record {
     digest: String,
     /// The compatibility check as it stood at activation.
     compat: CompatCheck,
+    /// Whole uploaded ZIP size; absent for legacy/manual installs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compressed_bytes: Option<u64>,
+    /// Expanded package size; absent for legacy/manual installs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expanded_bytes: Option<u64>,
 }
 
 /// The outcome of a successful activation.
@@ -155,6 +160,16 @@ pub enum Rejection {
     /// Delete was called on the generation `current` points at. Deactivate
     /// first: §5.3 never unlinks the tree `current` resolves to.
     DeleteWhileActive(u64),
+    /// The archive is byte-for-byte the same tree as an installed package.
+    DuplicatePackage(u64),
+    /// A name/version pair already identifies different installed bytes.
+    NameVersionConflict {
+        name: String,
+        version: String,
+        generation: u64,
+    },
+    /// Uploads never delete older versions implicitly.
+    RetentionLimit(usize),
 }
 
 /// What an offending entry turned out to be.
@@ -224,6 +239,22 @@ impl fmt::Display for Rejection {
             Self::DeleteWhileActive(generation) => write!(
                 f,
                 "generation {generation} is the active bundle; deactivate before deleting"
+            ),
+            Self::DuplicatePackage(generation) => write!(
+                f,
+                "the same package is already installed as generation {generation}"
+            ),
+            Self::NameVersionConflict {
+                name,
+                version,
+                generation,
+            } => write!(
+                f,
+                "{name} {version} is already generation {generation} with different content"
+            ),
+            Self::RetentionLimit(limit) => write!(
+                f,
+                "the store already retains {limit} UI packages; delete one before uploading"
             ),
         }
     }
@@ -309,6 +340,12 @@ pub struct CustomCandidate {
     /// Whether the manifest intersects the currently served API set. `None`
     /// means the bundle has no manifest and is therefore unchecked.
     pub compatible: Option<bool>,
+    /// SHA-256 recorded when the generation was installed.
+    pub digest: Option<String>,
+    /// Whole uploaded ZIP size, absent for legacy/manual generations.
+    pub compressed_bytes: Option<u64>,
+    /// Expanded package size, absent for legacy/manual generations.
+    pub expanded_bytes: Option<u64>,
     /// True only when the generation can safely be selected now.
     pub usable: bool,
     /// The first failed safety check, absent when [`Self::usable`] is true.
@@ -411,7 +448,7 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// The store at `/srv/ui` (§5.2).
+    /// The store at `/mos/ui` (§5.2).
     #[must_use]
     pub fn at_default() -> Self {
         Self::new(DEFAULT_ROOT)
@@ -482,6 +519,25 @@ impl Store {
         numbered_children(&self.bundles_dir())
     }
 
+    /// Every retained generation, newest first, revalidated for display.
+    pub fn candidates(&self, served: &[&str]) -> anyhow::Result<Vec<CustomCandidate>> {
+        self.generations()?
+            .into_iter()
+            .rev()
+            .map(|generation| self.inspect_generation(generation, served))
+            .collect()
+    }
+
+    /// The next monotonically increasing generation under the selection lock.
+    pub fn next_generation(&self) -> anyhow::Result<u64> {
+        self.generations()?
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("UI generation overflow")
+    }
+
     /// Inspect retained generations and return the newest usable candidate.
     ///
     /// If no generation is usable, the newest installed generation is still
@@ -507,6 +563,7 @@ impl Store {
     /// The server chooses the generation; callers cannot provide a path or a
     /// generation number. `Ok(None)` means installed trees are absent or all
     /// failed a safety check and leaves `current` untouched.
+    #[cfg(test)]
     pub fn select_available_custom(&self, served: &[&str]) -> anyhow::Result<Option<Selection>> {
         let Some(candidate) = self.available_custom(served)? else {
             return Ok(None);
@@ -517,6 +574,26 @@ impl Store {
         let changed = !self.current_points_at(candidate.generation)?;
         if changed {
             self.point_current_at(candidate.generation)?;
+        }
+        Ok(Some(Selection { candidate, changed }))
+    }
+
+    /// Revalidate and select one explicit retained generation.
+    pub fn select_generation(
+        &self,
+        generation: u64,
+        served: &[&str],
+    ) -> anyhow::Result<Option<Selection>> {
+        if !self.generations()?.contains(&generation) {
+            return Ok(None);
+        }
+        let candidate = self.inspect_generation(generation, served)?;
+        if !candidate.usable {
+            return Ok(None);
+        }
+        let changed = !self.current_points_at(generation)?;
+        if changed {
+            self.point_current_at(generation)?;
         }
         Ok(Some(Selection { candidate, changed }))
     }
@@ -556,6 +633,9 @@ impl Store {
             index_readable,
             digest_matches: None,
             compatible: None,
+            digest: None,
+            compressed_bytes: None,
+            expanded_bytes: None,
             usable: false,
             unavailable_reason: Some(reason),
         };
@@ -596,6 +676,9 @@ impl Store {
                 index_readable,
                 digest_matches: Some(false),
                 compatible: None,
+                digest: Some(record.digest),
+                compressed_bytes: record.compressed_bytes,
+                expanded_bytes: record.expanded_bytes,
                 usable: false,
                 unavailable_reason: Some(CandidateUnavailable::DigestMismatch),
             });
@@ -615,6 +698,9 @@ impl Store {
                     index_readable,
                     digest_matches: Some(true),
                     compatible: Some(false),
+                    digest: Some(record.digest),
+                    compressed_bytes: record.compressed_bytes,
+                    expanded_bytes: record.expanded_bytes,
                     usable: false,
                     unavailable_reason: Some(CandidateUnavailable::Incompatible),
                 });
@@ -627,6 +713,9 @@ impl Store {
             index_readable,
             digest_matches: Some(true),
             compatible,
+            digest: Some(record.digest),
+            compressed_bytes: record.compressed_bytes,
+            expanded_bytes: record.expanded_bytes,
             usable: true,
             unavailable_reason: None,
         })
@@ -676,7 +765,7 @@ impl Store {
         self.activate(generation, served).map(Some)
     }
 
-    /// Activate `.staging-<generation>`, in §5.3's five steps and that order.
+    /// Install `.staging-<generation>` without changing the active pointer.
     ///
     /// Validation runs on the staged tree and never on the live one, so every
     /// refusal leaves the previously active bundle active and untouched.
@@ -686,7 +775,13 @@ impl Store {
     /// Returns a downcastable [`Rejection`] when the staged tree is refused,
     /// and an I/O error otherwise. In both cases nothing an operator can see
     /// has changed.
-    pub fn activate(&self, generation: u64, served: &[&str]) -> anyhow::Result<Activation> {
+    fn install_staged(
+        &self,
+        generation: u64,
+        served: &[&str],
+        enforce_upload_policy: bool,
+        package_sizes: Option<(u64, u64)>,
+    ) -> anyhow::Result<Activation> {
         let staging = self.staging_dir(generation);
 
         // Step 1 is the operator's or the upload path's: the tree is already
@@ -702,6 +797,10 @@ impl Store {
         if fs::symlink_metadata(&target).is_ok() {
             bail!(Rejection::GenerationExists(generation));
         }
+        let generations = self.generations()?;
+        if enforce_upload_policy && generations.len() >= 32 {
+            bail!(Rejection::RetentionLimit(32));
+        }
 
         // Step 2: validate the staged tree, completely.
         let entries = validate_tree(&staging)?;
@@ -710,6 +809,55 @@ impl Store {
 
         apply_modes(&staging, &entries)?;
         let digest = digest_tree(&staging, &entries)?;
+
+        for installed in generations {
+            let installed_dir = self.bundle_dir(installed);
+            let identity_conflict = if enforce_upload_policy {
+                match (manifest.as_ref(), read_manifest(&installed_dir)) {
+                    (Some(new), Ok(Some(old))) => {
+                        new.name == old.name && new.version == old.version
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            let installed_entries = match validate_tree(&installed_dir) {
+                Ok(entries) => entries,
+                Err(_) if !identity_conflict => continue,
+                Err(_) => {
+                    let new = manifest.as_ref().context("missing upload manifest")?;
+                    bail!(Rejection::NameVersionConflict {
+                        name: new.name.clone(),
+                        version: new.version.clone(),
+                        generation: installed,
+                    });
+                }
+            };
+            let installed_digest = match digest_tree(&installed_dir, &installed_entries) {
+                Ok(digest) => digest,
+                Err(_) if !identity_conflict => continue,
+                Err(_) => {
+                    let new = manifest.as_ref().context("missing upload manifest")?;
+                    bail!(Rejection::NameVersionConflict {
+                        name: new.name.clone(),
+                        version: new.version.clone(),
+                        generation: installed,
+                    });
+                }
+            };
+            if enforce_upload_policy && installed_digest == digest {
+                bail!(Rejection::DuplicatePackage(installed));
+            }
+            if identity_conflict {
+                let new = manifest.as_ref().context("missing upload manifest")?;
+                bail!(Rejection::NameVersionConflict {
+                    name: new.name.clone(),
+                    version: new.version.clone(),
+                    generation: installed,
+                });
+            }
+        }
 
         // Step 3: fsync the staged tree and its parent, then rename.
         fsync_tree(&staging, &entries)?;
@@ -723,14 +871,10 @@ impl Store {
             &Record {
                 digest: digest.clone(),
                 compat: compat.clone(),
+                compressed_bytes: package_sizes.map(|sizes| sizes.0),
+                expanded_bytes: package_sizes.map(|sizes| sizes.1),
             },
         )?;
-
-        // Step 4: flip the pointer with a rename, so `current` is never absent.
-        self.point_current_at(generation)?;
-
-        // Step 5: keep the current generation and the previous one.
-        self.prune()?;
 
         Ok(Activation {
             generation,
@@ -738,6 +882,29 @@ impl Store {
             compat,
             manifest,
         })
+    }
+
+    /// Install an uploaded staged tree without changing the active pointer.
+    pub fn install(
+        &self,
+        generation: u64,
+        served: &[&str],
+        compressed_bytes: u64,
+        expanded_bytes: u64,
+    ) -> anyhow::Result<Activation> {
+        self.install_staged(
+            generation,
+            served,
+            true,
+            Some((compressed_bytes, expanded_bytes)),
+        )
+    }
+
+    /// Install and activate a manually staged tree.
+    pub fn activate(&self, generation: u64, served: &[&str]) -> anyhow::Result<Activation> {
+        let activation = self.install_staged(generation, served, false, None)?;
+        self.point_current_at(generation)?;
+        Ok(activation)
     }
 
     /// §5.3's deactivate, which is also §6.3's escape: remove `current`. The
@@ -785,27 +952,6 @@ impl Store {
             Err(err) => {
                 return Err(anyhow::Error::new(err))
                     .with_context(|| format!("remove {}", record.display()));
-            }
-        }
-        Ok(())
-    }
-
-    /// §5.3 step 5: keep the current generation and the previous one, delete
-    /// older ones. "Previous" is the newest generation that is not the active
-    /// one, so pruning a store with no active pointer keeps the newest two.
-    pub fn prune(&self) -> anyhow::Result<()> {
-        let generations = self.generations()?;
-        let active = self.active_generation()?;
-        let mut keep = BTreeSet::new();
-        if let Some(active) = active {
-            keep.insert(active);
-        }
-        if let Some(previous) = generations.iter().rev().find(|g| Some(**g) != active) {
-            keep.insert(*previous);
-        }
-        for generation in generations {
-            if !keep.contains(&generation) {
-                self.delete(generation)?;
             }
         }
         Ok(())
@@ -877,7 +1023,7 @@ impl Store {
     }
 
     /// Create the root, `bundles/` and `records/` with mode 0755. Called from
-    /// the install path only: §5.2 requires that nothing create `/srv/ui` at
+    /// the install path only: §5.2 requires that nothing create `/mos/ui` at
     /// start-up.
     fn ensure_layout(&self) -> anyhow::Result<()> {
         for dir in [self.root.clone(), self.bundles_dir(), self.records_dir()] {
@@ -1718,20 +1864,59 @@ mod tests {
         assert_eq!(custom(&store.status().expect("status")).generation, 1);
     }
 
-    /// §5.3 step 5: keep the current generation and the previous one.
+    /// Installed versions remain until an operator explicitly deletes them.
     #[test]
-    fn prune_keeps_exactly_two_generations() {
+    fn activation_never_prunes_retained_generations() {
         let (_dir, store) = store();
         for generation in 1..=4 {
             stage_valid(&store, generation);
             store.activate(generation, &SERVED).expect("activate");
         }
-        assert_eq!(store.generations().expect("generations"), vec![3, 4]);
+        assert_eq!(store.generations().expect("generations"), vec![1, 2, 3, 4]);
         assert_eq!(custom(&store.status().expect("status")).generation, 4);
         assert!(store.bundle_dir(3).join(INDEX_NAME).exists());
-        // The pruned generations take their activation records with them.
-        assert!(!store.record_path(2).exists());
+        assert!(store.record_path(2).exists());
         assert!(store.record_path(3).exists());
+    }
+
+    #[test]
+    fn upload_refuses_a_reused_name_and_version_with_different_content() {
+        let (_dir, store) = store();
+        let first = stage_valid(&store, 1);
+        write_manifest(&first, &["v1"]);
+        store.install(1, &SERVED, 100, 200).expect("install first");
+
+        let second = stage_valid(&store, 2);
+        write_manifest(&second, &["v1"]);
+        fs::write(second.join("assets/app.js"), b"different").expect("change second package");
+        let err = store
+            .install(2, &SERVED, 100, 200)
+            .expect_err("same identity with different content must fail");
+        assert_eq!(
+            rejection(&err),
+            Rejection::NameVersionConflict {
+                name: "demo".to_string(),
+                version: "1.2.3".to_string(),
+                generation: 1,
+            }
+        );
+        assert!(!store.bundle_dir(2).exists());
+    }
+
+    #[test]
+    fn upload_refuses_a_thirty_third_retained_generation() {
+        let (_dir, store) = store();
+        fs::create_dir_all(store.bundles_dir()).expect("create retained root");
+        for generation in 1..=32 {
+            fs::create_dir(store.bundle_dir(generation)).expect("create retained generation");
+        }
+        let staging = stage_valid(&store, 33);
+        write_manifest(&staging, &["v1"]);
+        let err = store
+            .install(33, &SERVED, 100, 200)
+            .expect_err("retention limit must fail closed");
+        assert_eq!(rejection(&err), Rejection::RetentionLimit(32));
+        assert!(!store.bundle_dir(33).exists());
     }
 
     /// §6.1 class 3: a corruption written in over a root shell is detected by

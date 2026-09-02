@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { loadLocale } from './load'
 import { detectLocale, normalizeLocale } from './locale'
-import { en, zhCN } from './resources'
+import { en } from './resources'
 
 function keyPaths(value: Record<string, unknown>, prefix = ''): string[] {
   return Object.entries(value).flatMap(([key, child]) => {
@@ -25,7 +26,8 @@ describe('locale preferences', () => {
     expect(detectLocale(null, ['fr-FR'])).toBe('en')
   })
 
-  it('keeps English and Chinese resource keys in exact parity', () => {
+  it('loads Chinese on demand while keeping exact key parity', async () => {
+    const zhCN = await loadLocale('zh-CN')
     expect(keyPaths(zhCN)).toEqual(keyPaths(en))
   })
 })

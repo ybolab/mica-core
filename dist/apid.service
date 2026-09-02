@@ -7,7 +7,7 @@ Wants=mosd.service
 # not start against an unmounted STATE — counters written to a tmpfs standing
 # in for an unmounted STATE would reset on the next power cycle, which is the
 # exact bypass the persistence exists to close.
-RequiresMountsFor=/var/lib/mos
+RequiresMountsFor=/var/lib/mos /mos
 
 [Service]
 Type=simple
@@ -40,15 +40,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 # The filesystem, read-only independently of dm-verity. apid writes exactly
 # two trees: its StateDirectory (TLS material, the session signing key, the
-# login-backoff counters, the audit ring) and the /srv/ui bundle store.
+# login-backoff counters, the audit ring) and the /mos/ui bundle store.
 # StateDirectory=mos/apid above already exempts /var/lib/mos/apid from
-# strict, so the list is /srv/ui alone. The leading '-' matters: apid never
-# creates /srv/ui (the store requires an operator to), so on a device where
-# no bundle was ever installed the path is absent and an unprefixed entry
-# would fail the unit's namespace setup. Installing a bundle ends in an apid
-# restart, which picks the directory up.
+# strict, so the list is /mos/ui alone.
 ProtectSystem=strict
-ReadWritePaths=-/srv/ui
+ReadWritePaths=/mos/ui
 
 [Install]
 WantedBy=multi-user.target

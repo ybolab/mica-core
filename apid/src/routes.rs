@@ -1,15 +1,19 @@
 //! HTTP routing for the JSON management API and its two UI entry points.
 //!
-//! `/api/` owns every management read and mutation. `/ui` is the built-in SPA
+//! `/api/` owns every management read and mutation. `/_ui` is the built-in SPA
 //! embedded in the binary. `/` serves a valid active custom bundle and
-//! otherwise redirects to `/ui`; custom assets are considered only by the
+//! otherwise redirects to `/_ui/`; custom assets are considered only by the
 //! final fallback, so neither UI can shadow the API or health endpoint.
 
 use std::net::IpAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{FromRequestParts, OriginalUri, Path, Request, State};
-use axum::http::header::{CACHE_CONTROL, HOST, LOCATION, RETRY_AFTER, SET_COOKIE};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HOST, LOCATION, RETRY_AFTER, SET_COOKIE,
+};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -20,6 +24,7 @@ use axum::routing::delete;
 use axum::routing::put;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use mosd_settings::{
     ApiToken, AuthorizedKey, IfaceKind, IfaceSettings, SettingsError, WifiNetwork, WireguardPeer,
     parse_authorized_key, quote_path_segment, validate_api_tokens, validate_authorized_keys,
@@ -32,7 +37,7 @@ use crate::assets::mime::CacheClass;
 use crate::assets::serve;
 use crate::audit::{Audit, Source};
 use crate::auth::{self, GuardStore};
-use crate::bundle::{CandidateUnavailable, CustomCandidate, Installed, Store};
+use crate::bundle::{CandidateUnavailable, CustomCandidate, Installed, Rejection, Store};
 use crate::redact;
 use crate::session::{self, SessionStore};
 use crate::settings_api::{InvalidTaskPayload, SettingsApi};
@@ -153,7 +158,7 @@ impl AppState {
         self
     }
 
-    /// The `/srv/ui` bundle store the asset router reads (§5.2).
+    /// The `/mos/ui` bundle store the asset router reads (§5.2).
     pub(crate) fn bundles(&self) -> &Store {
         &self.bundles
     }
@@ -181,20 +186,19 @@ impl AppState {
 /// total. Rules 1-3 are `.route`/`.nest` declarations and rule 4 is the
 /// `.fallback`; axum matches declared routes before it consults a fallback, so
 /// a bundle that ships a file at `api/v1/settings`, at `healthz` or at `login`
-/// cannot capture any of them. No handler re-checks a prefix to make that
-/// true.
+/// cannot capture any of them. The custom asset resolver additionally rejects
+/// ambiguous encoded or repeated-separator spellings of the reserved roots;
+/// those aliases fail closed instead of being normalised into another domain.
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve::root))
         .nest(
-            "/ui",
+            "/_ui",
             Router::new()
                 .route("/", get(crate::assets::builtin::index))
-                .route("/assets/app.js", get(crate::assets::builtin::app_js))
-                .route("/assets/app.css", get(crate::assets::builtin::app_css))
-                .fallback(crate::assets::builtin::fallback),
+                .route("/{*path}", get(crate::assets::builtin::serve)),
         )
-        .route("/ui/", get(crate::assets::builtin::index))
+        .route("/_ui/", get(crate::assets::builtin::index))
         .route("/healthz", get(healthz))
         .nest(API, api_router())
         .route("/api/", any(api_not_found))
@@ -316,6 +320,8 @@ const V1_SETUP_PATH: &str = "/v1/setup";
 const V1_SESSION_PATH: &str = "/v1/session";
 const V1_UI_PATH: &str = "/v1/ui";
 const V1_UI_ACTIVE_PATH: &str = "/v1/ui/active";
+const V1_UI_BUNDLES_PATH: &str = "/v1/ui/bundles";
+const V1_UI_BUNDLE_ROUTE: &str = "/v1/ui/bundles/{generation}";
 
 /// M5's two array collections and their item routes.
 ///
@@ -396,6 +402,11 @@ fn api_router() -> Router<AppState> {
                 .delete(api_v1_session_delete),
         )
         .route(V1_UI_PATH, get(api_v1_ui_status))
+        .route(
+            V1_UI_BUNDLES_PATH,
+            get(api_v1_ui_bundles).post(api_v1_ui_upload),
+        )
+        .route(V1_UI_BUNDLE_ROUTE, delete(api_v1_ui_delete))
         .route(
             V1_UI_ACTIVE_PATH,
             put(api_v1_ui_activate).delete(api_v1_ui_deactivate),
@@ -819,6 +830,44 @@ pub(crate) struct AvailableCustomUiStatus {
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UiBundleList {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_generation: Option<u64>,
+    bundles: Vec<UiBundleDetails>,
+    retention_limit: usize,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UiBundleDetails {
+    generation: u64,
+    index_readable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compressed_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expanded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest_matches: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatible: Option<bool>,
+    usable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_reason: Option<CustomUiUnavailableReason>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub(crate) struct ActivateUiRequest {
+    generation: u64,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum CustomUiUnavailableReason {
     MissingActivationRecord,
     UnsafeTree,
@@ -851,6 +900,27 @@ impl From<CustomCandidate> for AvailableCustomUiStatus {
             index_readable: candidate.index_readable,
             name,
             version,
+            digest_matches: candidate.digest_matches,
+            compatible: candidate.compatible,
+            usable: candidate.usable,
+            unavailable_reason: candidate.unavailable_reason.map(Into::into),
+        }
+    }
+}
+
+impl From<CustomCandidate> for UiBundleDetails {
+    fn from(candidate: CustomCandidate) -> Self {
+        let (name, version) = candidate.manifest.map_or((None, None), |manifest| {
+            (Some(manifest.name), Some(manifest.version))
+        });
+        Self {
+            generation: candidate.generation,
+            index_readable: candidate.index_readable,
+            name,
+            version,
+            digest: candidate.digest,
+            compressed_bytes: candidate.compressed_bytes,
+            expanded_bytes: candidate.expanded_bytes,
             digest_matches: candidate.digest_matches,
             compatible: candidate.compatible,
             usable: candidate.usable,
@@ -904,6 +974,377 @@ async fn load_ui_status(state: &AppState) -> anyhow::Result<UiStatus> {
     }
 }
 
+fn ui_bundle_list(store: &Store) -> anyhow::Result<UiBundleList> {
+    Ok(UiBundleList {
+        active_generation: store.active_generation()?,
+        bundles: store
+            .candidates(&SERVED_VERSIONS)?
+            .into_iter()
+            .map(UiBundleDetails::from)
+            .collect(),
+        retention_limit: 32,
+    })
+}
+
+async fn load_ui_bundles(state: &AppState) -> anyhow::Result<UiBundleList> {
+    let bundles = Arc::clone(&state.bundles);
+    tokio::task::spawn_blocking(move || ui_bundle_list(&bundles))
+        .await
+        .map_err(anyhow::Error::new)?
+}
+
+/// List every retained custom UI generation.
+#[utoipa::path(
+    get,
+    path = V1_UI_BUNDLES_PATH,
+    context_path = API,
+    tag = "ui",
+    responses(
+        (status = 200, description = "Every retained UI version and the active generation", body = UiBundleList),
+        (status = 401, description = "No API credential was supplied", body = ApiError),
+        (status = 500, description = "The bundle store could not be read", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_ui_bundles(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    match load_ui_bundles(&state).await {
+        Ok(list) => api_response(StatusCode::OK, list),
+        Err(err) => ui_status_error(&err),
+    }
+}
+
+/// Stream a `.mos-ui.zip` to DATA, validate and extract it off the async worker,
+/// then install it without changing the active generation.
+#[utoipa::path(
+    post,
+    path = V1_UI_BUNDLES_PATH,
+    context_path = API,
+    tag = "ui",
+    request_body(content = String, content_type = "application/zip"),
+    responses(
+        (status = 201, description = "The package was installed but not activated", body = UiBundleList),
+        (status = 401, description = "No API credential was supplied", body = ApiError),
+        (status = 403, description = "The browser CSRF token is absent or invalid", body = ApiError),
+        (status = 409, description = "The package duplicates, conflicts with, or is incompatible with retained versions", body = ApiError),
+        (status = 413, description = "The compressed package exceeds 64 MiB", body = ApiError),
+        (status = 415, description = "The body is not application/zip", body = ApiError),
+        (status = 422, description = "The ZIP or manifest violates the UI package contract", body = ApiError),
+        (status = 507, description = "Writable /mos storage or required headroom is unavailable", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_ui_upload(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    request: Request<Body>,
+) -> Response {
+    let content_type = request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if content_type != Some("application/zip") {
+        return ui_upload_refusal(
+            &state,
+            &source,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "ui_package_type",
+            "upload a .mos-ui.zip as application/zip",
+        );
+    }
+    if request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > mos_ui_bundle::MAX_COMPRESSED_BYTES)
+    {
+        return ui_upload_refusal(
+            &state,
+            &source,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "ui_package_too_large",
+            "the compressed package limit is 64 MiB",
+        );
+    }
+
+    let upload_dir = state.bundles.root().join("staging");
+    match tokio::fs::create_dir(&upload_dir).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let real_directory = tokio::fs::symlink_metadata(&upload_dir)
+                .await
+                .is_ok_and(|metadata| metadata.file_type().is_dir());
+            if !real_directory {
+                tracing::error!("UI upload staging path is not a real directory");
+                return ui_upload_refusal(
+                    &state,
+                    &source,
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "ui_storage_unavailable",
+                    "writable /mos UI storage is unavailable",
+                );
+            }
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "creating UI upload staging directory failed");
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INSUFFICIENT_STORAGE,
+                "ui_storage_unavailable",
+                "writable /mos UI storage is unavailable",
+            );
+        }
+    }
+    if let Err(err) =
+        tokio::fs::set_permissions(&upload_dir, std::fs::Permissions::from_mode(0o700)).await
+    {
+        tracing::error!(error = %err, "protecting UI upload staging directory failed");
+        return ui_upload_refusal(
+            &state,
+            &source,
+            StatusCode::INSUFFICIENT_STORAGE,
+            "ui_storage_unavailable",
+            "writable /mos UI storage is unavailable",
+        );
+    }
+    let upload = upload_dir.join(format!("{:032x}", rand::random::<u128>()));
+    let mut file = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&upload)
+        .await
+    {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::error!(error = %err, "creating UI upload file failed");
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INSUFFICIENT_STORAGE,
+                "ui_storage_unavailable",
+                "the upload staging file could not be created",
+            );
+        }
+    };
+    let mut stream = request.into_body().into_data_stream();
+    let mut compressed = 0_u64;
+    use tokio::io::AsyncWriteExt as _;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&upload).await;
+                tracing::warn!(error = %err, "UI package upload was interrupted");
+                return ui_upload_refusal(
+                    &state,
+                    &source,
+                    StatusCode::BAD_REQUEST,
+                    "ui_upload_interrupted",
+                    "the upload was interrupted",
+                );
+            }
+        };
+        compressed = compressed.saturating_add(chunk.len() as u64);
+        if compressed > mos_ui_bundle::MAX_COMPRESSED_BYTES {
+            let _ = tokio::fs::remove_file(&upload).await;
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "ui_package_too_large",
+                "the compressed package limit is 64 MiB",
+            );
+        }
+        if let Err(err) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&upload).await;
+            tracing::error!(error = %err, "writing UI upload failed");
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INSUFFICIENT_STORAGE,
+                "ui_storage_unavailable",
+                "the package could not be written to /mos",
+            );
+        }
+    }
+    if let Err(err) = file.sync_all().await {
+        let _ = tokio::fs::remove_file(&upload).await;
+        tracing::error!(error = %err, "syncing UI upload failed");
+        return ui_upload_refusal(
+            &state,
+            &source,
+            StatusCode::INSUFFICIENT_STORAGE,
+            "ui_storage_unavailable",
+            "the package could not be persisted to /mos",
+        );
+    }
+    drop(file);
+
+    let inspect_path = upload.clone();
+    let info =
+        match tokio::task::spawn_blocking(move || mos_ui_bundle::inspect(&inspect_path)).await {
+            Ok(Ok(info)) => info,
+            Ok(Err(err)) => {
+                let _ = tokio::fs::remove_file(&upload).await;
+                tracing::warn!(error = %err, "inspecting UI package failed");
+                return ui_upload_refusal(
+                    &state,
+                    &source,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "ui_package_invalid",
+                    "the ZIP or manifest violates the UI package contract",
+                );
+            }
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&upload).await;
+                tracing::error!(error = %err, "UI package validator did not complete");
+                return ui_upload_refusal(
+                    &state,
+                    &source,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ui_package_failed",
+                    "the package validator did not complete",
+                );
+            }
+        };
+
+    const HEADROOM: u64 = 128 * 1024 * 1024;
+    let root = state.bundles.root().to_path_buf();
+    let required = info.expanded_bytes.saturating_add(HEADROOM);
+    let free = tokio::task::spawn_blocking(move || {
+        let stat = rustix::fs::statvfs(&root)?;
+        Ok::<u64, std::io::Error>(stat.f_bavail.saturating_mul(stat.f_frsize))
+    })
+    .await;
+    match free {
+        Ok(Ok(free)) if free >= required => {}
+        Ok(Ok(_)) => {
+            let _ = tokio::fs::remove_file(&upload).await;
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INSUFFICIENT_STORAGE,
+                "ui_storage_headroom",
+                "upload refused because extraction would leave less than 128 MiB free",
+            );
+        }
+        Ok(Err(err)) => {
+            let _ = tokio::fs::remove_file(&upload).await;
+            tracing::error!(error = %err, "reading UI storage capacity failed");
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INSUFFICIENT_STORAGE,
+                "ui_storage_unavailable",
+                "free space under /mos could not be measured",
+            );
+        }
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&upload).await;
+            tracing::error!(error = %err, "UI storage capacity check did not complete");
+            return ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ui_package_failed",
+                "the storage capacity check did not complete",
+            );
+        }
+    }
+
+    let _selection_guard = state.ui_selection.lock().await;
+    let store = Arc::clone(&state.bundles);
+    let upload_for_install = upload.clone();
+    let package_sizes = (info.compressed_bytes, info.expanded_bytes);
+    let installed = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
+        let generation = store.next_generation()?;
+        let staging = store.staging_dir(generation);
+        let extraction = mos_ui_bundle::extract(&upload_for_install, &staging);
+        if let Err(err) = extraction {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(err);
+        }
+        if let Err(err) = store.install(
+            generation,
+            &SERVED_VERSIONS,
+            package_sizes.0,
+            package_sizes.1,
+        ) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(err);
+        }
+        Ok(generation)
+    })
+    .await;
+    let _ = tokio::fs::remove_file(&upload).await;
+    match installed {
+        Ok(Ok(_generation)) => {
+            state.audit.record("custom-ui-upload", "installed", &source);
+            match load_ui_bundles(&state).await {
+                Ok(list) => api_response(StatusCode::CREATED, list),
+                Err(err) => ui_status_error(&err),
+            }
+        }
+        Ok(Err(err)) => {
+            let (status, code, message) = match err.downcast_ref::<Rejection>() {
+                Some(
+                    Rejection::DuplicatePackage(_)
+                    | Rejection::NameVersionConflict { .. }
+                    | Rejection::RetentionLimit(_)
+                    | Rejection::Incompatible { .. },
+                ) => (
+                    StatusCode::CONFLICT,
+                    "ui_package_conflict",
+                    "the package duplicates, conflicts with, or is incompatible with retained versions",
+                ),
+                Some(_) => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "ui_package_rejected",
+                    "the package tree or manifest violates the UI package contract",
+                ),
+                None => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ui_package_failed",
+                    "the package could not be installed",
+                ),
+            };
+            tracing::warn!(error = %err, "installing UI package failed");
+            ui_upload_refusal(&state, &source, status, code, message)
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "UI package installer did not complete");
+            ui_upload_refusal(
+                &state,
+                &source,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ui_package_failed",
+                "the package installer did not complete",
+            )
+        }
+    }
+}
+
+fn ui_upload_refusal(
+    state: &AppState,
+    source: &str,
+    status: StatusCode,
+    code: &'static str,
+    message: &str,
+) -> Response {
+    state.audit.record("custom-ui-upload", "refused", source);
+    ui_upload_error(status, code, message)
+}
+
+fn ui_upload_error(status: StatusCode, code: &'static str, message: &str) -> Response {
+    api_response(status, ApiError::apid(code, message.to_string()))
+}
+
 /// Report whether `/` currently selects a custom UI bundle.
 #[utoipa::path(
     get,
@@ -935,13 +1376,14 @@ pub(crate) async fn api_v1_ui_status(
     }
 }
 
-/// Select the newest retained custom bundle that still passes every safety
-/// and compatibility check.
+/// Select one exact retained custom bundle after repeating every safety and
+/// compatibility check.
 #[utoipa::path(
     put,
     path = V1_UI_ACTIVE_PATH,
     context_path = API,
     tag = "ui",
+    request_body = ActivateUiRequest,
     responses(
         (status = 200, description = "A validated retained custom UI is now selected", body = UiStatus),
         (status = 401, description = "No API credential was supplied", body = ApiError),
@@ -954,11 +1396,12 @@ pub(crate) async fn api_v1_ui_activate(
     _credential: ApiCredential,
     State(state): State<AppState>,
     Source(source): Source,
+    Json(request): Json<ActivateUiRequest>,
 ) -> Response {
     let _selection_guard = state.ui_selection.lock().await;
     let bundles = Arc::clone(&state.bundles);
     let selection = match tokio::task::spawn_blocking(move || {
-        bundles.select_available_custom(&SERVED_VERSIONS)
+        bundles.select_generation(request.generation, &SERVED_VERSIONS)
     })
     .await
     {
@@ -997,6 +1440,66 @@ pub(crate) async fn api_v1_ui_activate(
                     "ui_activation_failed",
                     "the custom UI pointer could not be updated".to_string(),
                 ),
+            )
+        }
+    }
+}
+
+/// Delete one inactive retained custom UI generation.
+#[utoipa::path(
+    delete,
+    path = V1_UI_BUNDLE_ROUTE,
+    context_path = API,
+    tag = "ui",
+    params(("generation" = u64, Path, description = "The retained generation to delete")),
+    responses(
+        (status = 204, description = "The inactive retained generation was deleted"),
+        (status = 401, description = "No API credential was supplied", body = ApiError),
+        (status = 403, description = "The browser CSRF token is absent or invalid", body = ApiError),
+        (status = 409, description = "The generation is active", body = ApiError),
+        (status = 500, description = "The generation could not be deleted", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_ui_delete(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    Path(generation): Path<u64>,
+) -> Response {
+    let _selection_guard = state.ui_selection.lock().await;
+    let bundles = Arc::clone(&state.bundles);
+    let deleted = tokio::task::spawn_blocking(move || bundles.delete(generation)).await;
+    match deleted {
+        Ok(Ok(())) => {
+            state.audit.record("custom-ui-delete", "deleted", &source);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(err))
+            if matches!(
+                err.downcast_ref::<Rejection>(),
+                Some(Rejection::DeleteWhileActive(_))
+            ) =>
+        {
+            ui_upload_error(
+                StatusCode::CONFLICT,
+                "ui_bundle_active",
+                "deactivate this UI version before deleting it",
+            )
+        }
+        Ok(Err(err)) => {
+            tracing::error!(error = %err, generation, "deleting custom UI failed");
+            ui_upload_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ui_delete_failed",
+                "the custom UI version could not be deleted",
+            )
+        }
+        Err(err) => {
+            tracing::error!(error = %err, generation, "custom UI deletion task did not complete");
+            ui_upload_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ui_delete_failed",
+                "the custom UI version could not be deleted",
             )
         }
     }

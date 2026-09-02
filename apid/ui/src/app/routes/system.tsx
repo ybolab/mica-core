@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ExternalLink, MonitorCog, PackageSearch, Power, RefreshCcw } from 'lucide-react'
+import { ExternalLink, MonitorCog, PackageSearch, Power, RefreshCcw, Settings2 } from 'lucide-react'
 import { api, errorMessage, json } from '@/lib/api'
 import type { TaskAccepted, UiStatus } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -97,7 +97,7 @@ export function UiPanel() {
   const queryClient = useQueryClient()
   const status = useQuery({ queryKey: ['ui-status'], queryFn: () => api<UiStatus>('/api/v1/ui') })
   const activate = useMutation({
-    mutationFn: () => api<UiStatus>('/api/v1/ui/active', { method: 'PUT' }),
+    mutationFn: (generation: number) => api<UiStatus>('/api/v1/ui/active', json('PUT', { generation })),
     onSuccess: (value) => queryClient.setQueryData(['ui-status'], value),
   })
   const deactivate = useMutation({
@@ -111,7 +111,7 @@ export function UiPanel() {
   const mutationError = activate.error ?? deactivate.error
   const selectorDisabled = status.isPending || status.isError || mutationPending || (!active && !candidate?.usable)
   const select = (checked: boolean) => {
-    if (checked) activate.mutate()
+    if (checked && candidate) activate.mutate(candidate.generation)
     else deactivate.mutate()
   }
   return (
@@ -131,6 +131,7 @@ export function UiPanel() {
       {candidate && !candidate.usable ? <p className="callout warning" role="status">{t('system.ui.cannotSelect', { reason: unavailableMessage(candidate.unavailableReason, t) })}</p> : null}
       {custom ? <dl className="details"><div><dt>{t('system.ui.bundle')}</dt><dd>{custom.name ?? t('system.ui.generation', { generation: custom.generation })} {custom.version}</dd></div><div><dt>{t('system.ui.index')}</dt><dd>{custom.indexReadable ? t('system.ui.readable') : t('system.ui.unreadable')}</dd></div><div><dt>{t('system.ui.digest')}</dt><dd>{digestMessage(custom.digestMatches, t)}</dd></div></dl> : null}
       {active ? <a className="text-link" href="/">{t('system.ui.openCustom')} <ExternalLink className="size-4" /></a> : null}
+      <a className="text-link" href="/_ui/system/ui">{t('system.ui.manage')} <Settings2 className="size-4" /></a>
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
       {mutationError ? <p className="callout error" role="alert">{errorMessage(mutationError, t('common.requestFailed'))}</p> : null}
     </Card>

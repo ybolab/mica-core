@@ -417,10 +417,7 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     } else {
         zbus::Connection::system().await?
     };
-    let source = Bounded::new(
-        BusSource::new(connection.clone()),
-        APPLICATION_CALL_TIMEOUT,
-    );
+    let source = Bounded::new(BusSource::new(connection.clone()), APPLICATION_CALL_TIMEOUT);
 
     let owner_rule = mos_owner_rule()?;
     let mut owners = Box::pin(MessageStream::for_match_rule(owner_rule, &connection, None).await?);
@@ -693,7 +690,10 @@ mod tests {
             },
         );
         assert_eq!(effects, crate::bridge::Effects::default());
-        assert!(!resweep, "a report from a superseded watcher changes nothing");
+        assert!(
+            !resweep,
+            "a report from a superseded watcher changes nothing"
+        );
         assert_eq!(active.len(), 1);
     }
 
@@ -710,6 +710,9 @@ mod tests {
         assert!(forward(&tx, message()));
         assert!(forward(&tx, message()));
         assert!(rx.try_recv().is_ok(), "the first request is queued");
-        assert!(rx.try_recv().is_err(), "the second request was dropped, not awaited");
+        assert!(
+            rx.try_recv().is_err(),
+            "the second request was dropped, not awaited"
+        );
     }
 }

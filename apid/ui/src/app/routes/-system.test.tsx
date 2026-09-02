@@ -89,6 +89,7 @@ describe('custom UI selector', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
     expect(fetch.mock.calls[1][0]).toBe('/api/v1/ui/active')
     expect((fetch.mock.calls[1][1] as RequestInit).method).toBe('PUT')
+    expect((fetch.mock.calls[1][1] as RequestInit).body).toBe('{"generation":7}')
     expect((await screen.findByRole('link', { name: 'Open custom UI at root' })).getAttribute('href')).toBe('/')
   })
 

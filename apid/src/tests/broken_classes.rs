@@ -44,7 +44,7 @@ async fn a_bundle_that_intersects_the_served_set_remains_the_root_ui() {
         CUSTOM_INDEX
     );
 
-    let built_in = get(&router, "/ui", None).await;
+    let built_in = get(&router, "/_ui/", None).await;
     assert_eq!(built_in.status(), StatusCode::OK);
     assert!(
         body_string(built_in)

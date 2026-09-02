@@ -964,10 +964,15 @@ async fn a_hung_application_is_bounded_by_the_call_timeout() {
 
     let started = std::time::Instant::now();
     let items = source.get_items(&application).await;
-    let outcome = source.set_value(&application, "/Enabled", json!(true)).await;
+    let outcome = source
+        .set_value(&application, "/Enabled", json!(true))
+        .await;
     let elapsed = started.elapsed();
 
-    assert!(items.is_err(), "a hung GetItems must be an error, not a wait");
+    assert!(
+        items.is_err(),
+        "a hung GetItems must be an error, not a wait"
+    );
     assert!(
         matches!(outcome, WriteOutcome::Unreachable { .. }),
         "a hung SetValue is an unreachable write: {outcome:?}"
