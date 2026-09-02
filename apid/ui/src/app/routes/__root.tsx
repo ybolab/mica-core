@@ -2,7 +2,7 @@ import { createRootRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { api, rememberSession, type SessionStatus } from '@/lib/api'
-import { AppShell } from '@/components/app-shell'
+import { AppShell } from '@/features/shell/app-shell'
 import { LoginView, sessionKey, SetupView } from '@/components/auth'
 
 function RootComponent() {

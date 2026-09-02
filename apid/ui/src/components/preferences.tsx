@@ -9,8 +9,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+} from '@/shared/components/ui/select'
+import { cn } from '@/shared/lib/utils'
 
 const localeOptions: Locale[] = ['en', 'zh-CN']
 const themeOptions: ThemeMode[] = ['system', 'light', 'dark']

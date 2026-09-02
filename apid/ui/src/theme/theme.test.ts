@@ -37,12 +37,12 @@ describe('theme preferences', () => {
     expect(document.documentElement.classList.contains('dark')).toBe(true)
     expect(document.documentElement.classList.contains('light')).toBe(false)
     expect(document.documentElement.style.colorScheme).toBe('dark')
-    expect(meta.content).toBe('#1d1d1d')
+    expect(meta.content).toBe('oklch(0.15 0.035 270)')
 
     applyResolvedTheme('light')
 
     expect(document.documentElement.classList.contains('light')).toBe(true)
     expect(document.documentElement.classList.contains('dark')).toBe(false)
-    expect(meta.content).toBe('#f8f8f8')
+    expect(meta.content).toBe('oklch(0.961 0.011 95)')
   })
 })

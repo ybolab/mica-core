@@ -6,8 +6,8 @@ export type ResolvedTheme = Exclude<ThemeMode, 'system'>
 export const THEME_STORAGE_KEY = 'mos.ui.theme'
 
 const themeColors: Record<ResolvedTheme, string> = {
-  light: '#f8f8f8',
-  dark: '#1d1d1d',
+  light: 'oklch(0.961 0.011 95)',
+  dark: 'oklch(0.15 0.035 270)',
 }
 
 export function normalizeThemeMode(value: string | null | undefined): ThemeMode {

@@ -4,18 +4,20 @@ import { useTranslation } from 'react-i18next'
 import { ArrowLeft, Check, ExternalLink, MonitorCog, PackageOpen, Trash2, Upload } from 'lucide-react'
 import { api, errorMessage, json, uploadZip } from '@/lib/api'
 import type { UiBundleDetails, UiBundleList, UiStatus } from '@/lib/types'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/shared/components/ui/button'
 import { Card, CardHeader } from '@/components/ui/card'
 import { Status } from '@/components/ui/status'
 import {
   AlertDialog,
-  AlertDialogActions,
-  AlertDialogClose,
+  AlertDialogAction,
+  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
+} from '@/shared/components/ui/alert-dialog'
 
 export function UiManagementPage() {
   const { t } = useTranslation()
@@ -142,12 +144,14 @@ function BundleRow({ bundle, active, pending, onActivate, onDeactivate, onDelete
             render={<Button size="sm" variant="ghost" disabled={pending || active} aria-label={t('system.uiManager.deleteVersion', { generation: bundle.generation })} />}
           ><Trash2 className="size-4" /></AlertDialogTrigger>
           <AlertDialogContent>
-            <AlertDialogTitle>{t('system.uiManager.deleteVersion', { generation: bundle.generation })}</AlertDialogTitle>
-            <AlertDialogDescription>{t('system.uiManager.confirmDelete', { generation: bundle.generation })}</AlertDialogDescription>
-            <AlertDialogActions>
-              <AlertDialogClose render={<Button variant="secondary" />}>{t('common.actions.cancel')}</AlertDialogClose>
-              <AlertDialogClose render={<Button variant="danger" onClick={onDelete} />}>{t('common.actions.delete')}</AlertDialogClose>
-            </AlertDialogActions>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('system.uiManager.deleteVersion', { generation: bundle.generation })}</AlertDialogTitle>
+              <AlertDialogDescription>{t('system.uiManager.confirmDelete', { generation: bundle.generation })}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel>
+              <AlertDialogAction variant="destructive" onClick={onDelete}>{t('common.actions.delete')}</AlertDialogAction>
+            </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       </div></td>

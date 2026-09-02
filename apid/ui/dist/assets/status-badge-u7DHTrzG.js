@@ -1,0 +1,1 @@
+import{l as e,t}from"./utils-CYTY21Pd.js";var n=e();function r({tone:e=`neutral`,className:r,...i}){return(0,n.jsx)(`span`,{className:t(`status-badge`,`status-${e}`,r),...i})}export{r as t};

@@ -3,9 +3,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { KeyRound, ShieldCheck } from 'lucide-react'
 import { api, errorMessage, json, rememberSession, type SessionStatus } from '@/lib/api'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Field, Input } from '@/components/ui/field'
+import { Field } from '@/shared/components/field'
+import { Input } from '@/shared/components/ui/input'
 import { Preferences } from '@/components/preferences'
 
 export const sessionKey = ['session'] as const

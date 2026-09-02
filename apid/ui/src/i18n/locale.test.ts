@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import type { TFunction } from 'i18next'
+import { formatKnownState } from './format'
 import { loadLocale } from './load'
 import { detectLocale, normalizeLocale } from './locale'
 import { en } from './resources'
@@ -29,5 +31,11 @@ describe('locale preferences', () => {
   it('loads Chinese on demand while keeping exact key parity', async () => {
     const zhCN = await loadLocale('zh-CN')
     expect(keyPaths(zhCN)).toEqual(keyPaths(en))
+  })
+
+  it('translates known states and preserves device-specific values', () => {
+    const translate = ((key: string) => `translated:${key}`) as unknown as TFunction
+    expect(formatKnownState('running', translate)).toBe('translated:common.states.running')
+    expect(formatKnownState('vendor-state', translate)).toBe('vendor-state')
   })
 })
