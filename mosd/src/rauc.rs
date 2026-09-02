@@ -863,12 +863,7 @@ mod tests {
     /// A slot that has been written: RAUC records both of these into a slot
     /// it installed into. `stamp` is the install instant, which the
     /// backward-only step orders the two slots by.
-    fn installed_at(
-        name: &str,
-        state: &str,
-        boot_status: Option<&str>,
-        stamp: &str,
-    ) -> SlotStatus {
+    fn installed_at(name: &str, state: &str, boot_status: Option<&str>, stamp: &str) -> SlotStatus {
         SlotStatus {
             bundle_version: Some("2026.08".to_string()),
             installed_timestamp: Some(stamp.to_string()),
@@ -1019,7 +1014,10 @@ mod tests {
             ),
         ];
         for (booted, target) in cases {
-            let label = format!("{:?} / {:?}", booted.installed_timestamp, target.installed_timestamp);
+            let label = format!(
+                "{:?} / {:?}",
+                booted.installed_timestamp, target.installed_timestamp
+            );
             let slots = [booted, target];
             let decision = rollback_eligibility(&slots, Some("rootfs.0"));
             assert!(!decision.permitted(), "{label} must not permit a rollback");

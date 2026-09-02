@@ -4284,7 +4284,7 @@
           "update"
         ],
         "summary": "Roll back to the alternate slot, if the guard permits it.",
-        "description": "The guard is mosd's `rollback_eligibility`, read out of the same\n`GetUpdateState` document `GET /api/v1/update` serves — one derivation of\nthe slot state, not a second one here. It refuses when there is no\nalternate slot, when the alternate is the booted slot, when the alternate\nwas never written or is marked bad, and when the booted slot is itself\npending-not-confirmed (that window belongs to the bootloader's attempt\ncounter, and a manual rollback inside it races the credit being spent).\n\nWhat it then does is ONE mark: `bad` on the **booted** slot. That is what\nmakes the bootloader pick the other one, and it is why this route cannot\nconfirm the slot it rolls back to — PLAN-048's \"cannot mark an unverified\nslot good\" holds structurally, not by review. The unguarded\n`POST /api/v1/update/mark` remains the operator escape hatch beside it;\nthis route is the guarded one.\n\nIt does NOT reboot. A rollback is a boot-order change, and the reboot that\nrealises it goes through the safe-to-reboot gate like every other\n(`docs/design/updates.md` §4) — folding it in here would either bypass\nthat gate or duplicate its override semantics. The answer names the next\nstep instead.",
+        "description": "The guard is mosd's `rollback_eligibility`, read out of the same\n`GetUpdateState` document `GET /api/v1/update` serves — one derivation of\nthe slot state, not a second one here. It refuses when there is no\nalternate slot, when the alternate is the booted slot, when the alternate\nwas never written or is marked bad, when the alternate is NOT the older of\nthe two installs (a rollback goes backward; a newer or unorderable target\nis a pending update, not a rollback target), and when the booted slot is\nitself pending-not-confirmed (that window belongs to the bootloader's\nattempt counter, and a manual rollback inside it races the credit being\nspent).\n\nWhat it then does is ONE mark: `bad` on the **booted** slot. That is what\nmakes the bootloader pick the other one, and it is why this route cannot\nconfirm the slot it rolls back to — PLAN-048's \"cannot mark an unverified\nslot good\" holds structurally, not by review. The unguarded\n`POST /api/v1/update/mark` remains the operator escape hatch beside it;\nthis route is the guarded one.\n\nIt does NOT reboot. A rollback is a boot-order change, and the reboot that\nrealises it goes through the safe-to-reboot gate like every other\n(`docs/design/updates.md` §4) — folding it in here would either bypass\nthat gate or duplicate its override semantics. The answer names the next\nstep instead.",
         "operationId": "api_v1_update_rollback",
         "responses": {
           "200": {
@@ -4328,7 +4328,7 @@
             }
           },
           "409": {
-            "description": "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know",
+            "description": "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know",
             "content": {
               "application/json": {
                 "schema": {
