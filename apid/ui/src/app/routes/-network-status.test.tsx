@@ -45,7 +45,10 @@ describe('observed network state', () => {
         resolverServers: ['192.0.2.53'],
         probe: { name: '0.debian.pool.ntp.org', reachable: false, result: 'timeout', detail: 'resolver did not answer' },
       },
-      wifi: { available: false, detail: 'no wireless interface', associations: [] },
+      wifi: {
+        available: true,
+        associations: [{ interface: 'wlan0', state: 'completed', associated: true, ssid: '<redacted>', rssiDbm: -42, linkSpeedMbps: 144 }],
+      },
       capabilities: {
         wifi: { supported: false, interfaces: [] },
         bluetooth: { supported: false, adapters: [] },
@@ -68,6 +71,7 @@ describe('observed network state', () => {
     expect(screen.getByText('192.0.2.10/24 · DHCPv4')).toBeTruthy()
     expect(screen.getByText('No default route')).toBeTruthy()
     expect(screen.getByText('timeout · resolver did not answer')).toBeTruthy()
+    expect(screen.getByText('completed · associated · <redacted> · -42 dBm · 144 Mbps')).toBeTruthy()
     expect(screen.getAllByText('unsupported')).toHaveLength(3)
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
     expect(fetch).toHaveBeenCalledWith('/api/v1/network/status', expect.anything())

@@ -20,6 +20,12 @@ const nav = [
   { to: '/system' as const, label: 'shell.nav.system' as const, icon: Settings2 },
 ]
 
+export function isNavActive(path: string, to: string) {
+  if (to === '/') return path === '/_ui' || path === '/_ui/'
+  const target = `/_ui${to}`
+  return path === target || path.startsWith(`${target}/`)
+}
+
 export function AppShell() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -41,7 +47,7 @@ export function AppShell() {
         </Link>
         <nav aria-label={t('shell.navigationLabel')}>
           {nav.map(({ to, label, icon: Icon }) => {
-            const active = to === '/' ? path === '/_ui/' || path === '/_ui' : path.startsWith(`/_ui${to}`)
+            const active = isNavActive(path, to)
             return (
               <Link key={to} to={to} className="nav-link" data-active={active || undefined} aria-current={active ? 'page' : undefined}>
                 <Icon className="size-[18px]" aria-hidden="true" /> {t(label)}

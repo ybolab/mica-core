@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { Cable, Radio, Route as RouteIcon } from 'lucide-react'
-import type { AvailableFact, ObservedNetworkInterface } from '@/lib/types'
+import type { AvailableFact, ObservedNetworkInterface, ObservedNetworkState } from '@/lib/types'
 import { useObservedNetwork } from '@/lib/diagnostics'
 import { errorMessage } from '@/lib/api'
 import { Card, CardHeader } from '@/components/ui/card'
@@ -45,17 +45,46 @@ export function ObservedNetworkPage() {
               )}
             </Card>
           </div>
-          <Card>
-            <CardHeader title={t('observedNetwork.capabilities.title')} description={t('observedNetwork.capabilities.description')} action={<Radio className="size-5 text-muted-foreground" />} />
-            <dl className="details">
-              <Capability label={t('observedNetwork.capabilities.wifi')} supported={value.capabilities.wifi.supported} entries={value.capabilities.wifi.interfaces} />
-              <Capability label={t('observedNetwork.capabilities.bluetooth')} supported={value.capabilities.bluetooth.supported} entries={value.capabilities.bluetooth.adapters} />
-              <Capability label={t('observedNetwork.capabilities.cellular')} supported={value.capabilities.cellular.supported} entries={value.capabilities.cellular.interfaces} />
-            </dl>
-          </Card>
+          <div className="split-grid">
+            <WifiAssociations value={value.wifi} />
+            <Card>
+              <CardHeader title={t('observedNetwork.capabilities.title')} description={t('observedNetwork.capabilities.description')} action={<Radio className="size-5 text-muted-foreground" />} />
+              <dl className="details">
+                <Capability label={t('observedNetwork.capabilities.wifi')} supported={value.capabilities.wifi.supported} entries={value.capabilities.wifi.interfaces} />
+                <Capability label={t('observedNetwork.capabilities.bluetooth')} supported={value.capabilities.bluetooth.supported} entries={value.capabilities.bluetooth.adapters} />
+                <Capability label={t('observedNetwork.capabilities.cellular')} supported={value.capabilities.cellular.supported} entries={value.capabilities.cellular.interfaces} />
+              </dl>
+            </Card>
+          </div>
         </>
       ) : null}
     </div>
+  )
+}
+
+function WifiAssociations({ value }: { value: ObservedNetworkState['wifi'] }) {
+  const { t } = useTranslation()
+  return (
+    <Card>
+      <CardHeader title={t('observedNetwork.wifi.title')} description={t('observedNetwork.wifi.description')} action={<Radio className="size-5 text-muted-foreground" />} />
+      {!value.available ? <Unavailable fact={value} /> : (
+        <dl className="details">
+          {value.associations.map((association, index) => (
+            <div key={`${association.interface ?? 'wifi'}-${index}`}>
+              <dt>{association.interface ?? t('observedNetwork.wifi.interfaceFallback')}</dt>
+              <dd>{join([
+                association.state,
+                association.associated ? t('observedNetwork.wifi.associated') : t('observedNetwork.wifi.notAssociated'),
+                association.ssid,
+                association.rssiDbm === undefined ? undefined : `${association.rssiDbm} dBm`,
+                association.linkSpeedMbps === undefined ? undefined : `${association.linkSpeedMbps} Mbps`,
+              ])}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {value.available && value.associations.length === 0 ? <p className="callout" role="status">{t('observedNetwork.wifi.empty')}</p> : null}
+    </Card>
   )
 }
 

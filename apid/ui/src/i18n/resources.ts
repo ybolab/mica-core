@@ -200,6 +200,14 @@ export const en = {
       link: 'Link servers',
       resolver: 'Resolver servers',
     },
+    wifi: {
+      title: 'Wi-Fi associations',
+      description: 'Association and radio evidence reported by wpa_supplicant.',
+      interfaceFallback: 'Wireless interface',
+      associated: 'associated',
+      notAssociated: 'not associated',
+      empty: 'No Wi-Fi associations were reported.',
+    },
     capabilities: {
       title: 'Capabilities',
       description: 'Radio and modem support is stated explicitly; absence never reads as healthy.',

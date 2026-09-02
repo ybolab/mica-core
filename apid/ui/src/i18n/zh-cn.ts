@@ -129,6 +129,14 @@ export const zhCN: Translation = {
       link: '链路服务器',
       resolver: '解析器服务器',
     },
+    wifi: {
+      title: 'Wi-Fi 关联',
+      description: 'wpa_supplicant 报告的关联和无线电证据。',
+      interfaceFallback: '无线接口',
+      associated: '已关联',
+      notAssociated: '未关联',
+      empty: '未报告 Wi-Fi 关联。',
+    },
     capabilities: {
       title: '能力',
       description: '明确报告无线和调制解调器支持情况；缺失不会被显示为健康。',
