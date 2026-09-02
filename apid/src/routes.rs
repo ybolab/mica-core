@@ -310,6 +310,16 @@ const V1_TASK_ROUTE: &str = "/v1/tasks/{id}";
 /// pause or stop synchronization.
 const V1_TIME_STATUS_PATH: &str = "/v1/time/status";
 
+/// The read-only storage status (PLAN-049).
+///
+/// A fixed path on the time status's reasoning, and one more besides: this is
+/// the whole of the storage surface. There is no sibling constant here for a
+/// format, repartition, resize, wipe or mount action, and
+/// [`crate::tests`]'s route-surface scan asserts that there is not — the
+/// layout is fixed by the image assembler, and an API that could rewrite it
+/// would be a remote destructive surface with no product use.
+const V1_STORAGE_STATUS_PATH: &str = "/v1/storage/status";
+
 /// M8's one route.
 ///
 /// Not under `/v1/actions/`, and the reason is the reason section 2.3 item
@@ -417,6 +427,9 @@ fn api_router() -> Router<AppState> {
         // GET only: the status is observed, and pausing synchronization is a
         // control this API deliberately does not have.
         .route(V1_TIME_STATUS_PATH, get(api_v1_time_status))
+        // GET only, and alone: the layout is fixed, so there is no verb here
+        // that could format or repartition anything.
+        .route(V1_STORAGE_STATUS_PATH, get(api_v1_storage_status))
         .route(V1_TASKS_PATH, get(api_v1_tasks_list))
         .route(V1_TASK_ROUTE, get(api_v1_task))
         .route(V1_CHANGE_PASSWORD_PATH, post(api_v1_change_password))
@@ -1646,6 +1659,46 @@ pub(crate) async fn api_v1_time_status(
     // No dot-path: the status names no setting, so a failure envelope carries
     // no `path` member — the power actions' shape.
     match state.api.get_time_status().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// Read the storage status.
+///
+/// Observed by mosd at request time: every fixed tier of the layout (the A/B
+/// rootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA/`srv`) with its
+/// device, size, mount and read-only state, its space accounting including
+/// the filesystem's reserved pool, and whatever the system recorded about its
+/// last check; every physical medium with normalized wear where the device
+/// exports it and an explicit `unsupported` with a reason where it does not;
+/// the low-space thresholds with their hysteresis band; the reserved update
+/// workspace; and the explicit lifecycle decisions.
+///
+/// Read-only. There is no route that formats, repartitions, resizes, mounts
+/// or erases storage, and adding one is a product decision this surface does
+/// not anticipate.
+#[utoipa::path(
+    get,
+    path = V1_STORAGE_STATUS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_storage_status(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    // No dot-path: the status names no setting, so a failure envelope carries
+    // no `path` member — the time status's shape.
+    match state.api.get_storage_status().await {
         Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
         Err(err) => bus_api_error(&err, None),
     }

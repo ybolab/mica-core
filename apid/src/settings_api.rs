@@ -61,6 +61,14 @@ pub trait SettingsApi: Send + Sync {
     /// mosd. Read-only: there is deliberately no method beside it that could
     /// pause or stop synchronization.
     async fn get_time_status(&self) -> anyhow::Result<Value>;
+    /// Storage status observed by mosd: the fixed tiers, their space and
+    /// check evidence, the physical media and the low-space policy.
+    ///
+    /// Read-only, and deliberately alone: there is no method here that
+    /// formats, repartitions or erases anything, because the layout is fixed
+    /// by the image assembler and a management API that could rewrite it
+    /// would be a remote destructive surface with no product use.
+    async fn get_storage_status(&self) -> anyhow::Result<Value>;
     /// Ask mosd to reboot the appliance.
     async fn reboot(&self) -> anyhow::Result<()>;
     /// Ask mosd to power the appliance off.
@@ -88,6 +96,9 @@ pub struct FakeSettings {
     state: std::sync::Mutex<Value>,
     /// What `get_time_status` answers; the shape mosd's `status_json` serves.
     time_status: std::sync::Mutex<Value>,
+    /// What `get_storage_status` answers; the shape mosd's storage
+    /// `status_json` serves.
+    storage_status: std::sync::Mutex<Value>,
     get_log: std::sync::Mutex<Vec<String>>,
     set_log: std::sync::Mutex<Vec<String>>,
     power_log: std::sync::Mutex<Vec<String>>,
@@ -117,6 +128,12 @@ impl FakeSettings {
             time_status: std::sync::Mutex::new(serde_json::json!({
                 "status": "synchronized",
                 "synchronized": true,
+            })),
+            storage_status: std::sync::Mutex::new(serde_json::json!({
+                "tiers": [],
+                "media": [],
+                "policy": {},
+                "lifecycle": {},
             })),
             get_log: std::sync::Mutex::new(Vec::new()),
             set_log: std::sync::Mutex::new(Vec::new()),
@@ -161,6 +178,11 @@ impl FakeSettings {
     /// Replace what `get_time_status` answers.
     pub fn set_time_status(&self, value: Value) {
         *self.time_status.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_storage_status` answers.
+    pub fn set_storage_status(&self, value: Value) {
+        *self.storage_status.lock().unwrap() = value;
     }
 
     /// Insert `value` at top-level `key` of the live-state tree.
@@ -297,6 +319,10 @@ impl SettingsApi for FakeSettings {
 
     async fn get_time_status(&self) -> anyhow::Result<Value> {
         Ok(self.time_status.lock().unwrap().clone())
+    }
+
+    async fn get_storage_status(&self) -> anyhow::Result<Value> {
+        Ok(self.storage_status.lock().unwrap().clone())
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {

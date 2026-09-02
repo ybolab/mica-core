@@ -2161,6 +2161,78 @@
         }
       }
     },
+    "/api/v1/storage/status": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the storage status.",
+        "description": "Observed by mosd at request time: every fixed tier of the layout (the A/B\nrootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA/`srv`) with its\ndevice, size, mount and read-only state, its space accounting including\nthe filesystem's reserved pool, and whatever the system recorded about its\nlast check; every physical medium with normalized wear where the device\nexports it and an explicit `unsupported` with a reason where it does not;\nthe low-space thresholds with their hysteresis band; the reserved update\nworkspace; and the explicit lifecycle decisions.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
+        "operationId": "api_v1_storage_status",
+        "responses": {
+          "200": {
+            "description": "The fixed tiers with their space, mount and check evidence; the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to observe (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "tags": [
