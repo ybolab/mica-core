@@ -146,7 +146,7 @@ TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
 RELEASE_DIR="${TARGET_DIR}/${TRIPLE}/release"
 
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
-mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git"
+mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${TARGET_DIR}"
 
 mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MOS_BUILD_RUST=LOCAL_MOS_BUILD_RUST)
 [ "${#RUST_FROM[@]}" -eq 2 ] || {
@@ -157,12 +157,15 @@ RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
 
 # Only the producer that owns APID needs the frontend. Finish that separate
 # producer before entering the Rust-only cross-build image.
-APID_UI_ENV=()
+APID_UI_ARGS=()
 for name in "${BINARIES[@]}"; do
     if [ "${name}" = apid ]; then
-        APID_UI_DIST="${WORKSPACE}/apid/ui/dist"
-        bash "${WORKSPACE}/apid/ui/build.sh" --container --out-dir "${APID_UI_DIST}"
-        APID_UI_ENV=(-e "MOS_APID_UI_DIST_DIR=/src/pkgs/mosd/apid/ui/dist")
+        APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
+        bash "${WORKSPACE}/apid/ui/build.sh"
+        APID_UI_ARGS=(
+            -v "${APID_UI_DIST}:/build/apid-ui:ro"
+            -e "MOS_APID_UI_DIST_DIR=/build/apid-ui"
+        )
         break
     fi
 done
@@ -174,16 +177,17 @@ done
 docker run --rm \
     --label ai-agent=true \
     --platform linux/amd64 \
-    -v "${REPO_ROOT}:/src" \
+    -v "${REPO_ROOT}:/src:ro" \
+    -v "${TARGET_DIR}:/target" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \
     -v "${CARGO_CACHE}/git:/usr/local/cargo/git" \
     -w /src/pkgs/mosd \
     -e "TARGET=${TRIPLE}" \
     -e "ELF_ARCH=${ELF_ARCH}" \
     -e "CRATES=${BINARIES[*]}" \
-    -e "CARGO_TARGET_DIR=/src/pkgs/mosd/target-deb/${PRODUCER}" \
+    -e "CARGO_TARGET_DIR=/target" \
     -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
-    "${APID_UI_ENV[@]}" \
+    "${APID_UI_ARGS[@]}" \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
         set -euo pipefail

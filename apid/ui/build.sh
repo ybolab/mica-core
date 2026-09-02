@@ -3,96 +3,93 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../../.." && pwd)"
-OUTPUT="${HERE}/dist"
-USE_CONTAINER=0
+BUILD_ROOT="${REPO_ROOT}/_out/apid-ui"
+OUTPUT="${BUILD_ROOT}/dist"
+RUN_CHECKS=0
 
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-    --container)
-        USE_CONTAINER=1
-        shift
-        ;;
-    --out-dir)
-        OUTPUT="${2-}"
-        [ -n "${OUTPUT}" ] || {
-            echo "error: --out-dir takes a directory" >&2
-            exit 1
-        }
-        shift 2
-        ;;
-    *)
-        echo "usage: bash pkgs/mosd/apid/ui/build.sh [--container] [--out-dir DIR]" >&2
-        exit 1
-        ;;
-    esac
-done
-
-case "${OUTPUT}" in
-/*) ;;
-*) OUTPUT="$(pwd)/${OUTPUT}" ;;
-esac
-
-[ ! -L "${OUTPUT}" ] || {
-    echo "error: refusing the symlinked UI output directory ${OUTPUT}" >&2
-    exit 1
-}
-OUTPUT="$(realpath -m -- "${OUTPUT}")"
-[ ! -e "${OUTPUT}" ] || [ -d "${OUTPUT}" ] || {
-    echo "error: the UI output path ${OUTPUT} exists but is not a directory" >&2
-    exit 1
-}
-
-[ "${OUTPUT}" != "/" ] || {
-    echo "error: refusing to use / as the UI output directory" >&2
-    exit 1
-}
-case "${HERE}/" in
-"${OUTPUT%/}/"*)
-    echo "error: refusing UI output directory ${OUTPUT} because it contains the source tree" >&2
-    exit 1
-    ;;
-esac
-case "${OUTPUT}" in
-"${HERE}/dist" | "${HERE}/dist/"* | "${REPO_ROOT}/_out/"*) ;;
+case "${1-}" in
+"") ;;
+--check) RUN_CHECKS=1 ;;
 *)
-    echo "error: UI output must be ui/dist or a directory below ${REPO_ROOT}/_out" >&2
+    echo "usage: bash pkgs/mosd/apid/ui/build.sh [--check]" >&2
     exit 1
     ;;
 esac
+[ "$#" -le 1 ] || {
+    echo "usage: bash pkgs/mosd/apid/ui/build.sh [--check]" >&2
+    exit 1
+}
 
-if [ "${USE_CONTAINER}" = 1 ] || ! command -v bun >/dev/null 2>&1; then
-    command -v docker >/dev/null 2>&1 || {
-        echo "error: building the apid UI needs bun or docker" >&2
+command -v docker >/dev/null 2>&1 || {
+    echo "error: docker is required to build the apid UI" >&2
+    exit 1
+}
+
+for path in \
+    "${REPO_ROOT}/_out" \
+    "${BUILD_ROOT}" \
+    "${BUILD_ROOT}/home" \
+    "${BUILD_ROOT}/work" \
+    "${OUTPUT}"
+do
+    [ ! -L "${path}" ] || {
+        echo "error: refusing symlinked UI build path ${path}" >&2
         exit 1
     }
-    case "${OUTPUT}" in
-    "${REPO_ROOT}"/*) container_output="/workspace/${OUTPUT#"${REPO_ROOT}"/}" ;;
-    *)
-        echo "error: --out-dir must be below ${REPO_ROOT} when Bun is supplied by Docker" >&2
+    [ ! -e "${path}" ] || [ -d "${path}" ] || {
+        echo "error: UI build path ${path} exists but is not a directory" >&2
         exit 1
-        ;;
-    esac
-    image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_BUN_1)"
-    if [ "${USE_CONTAINER}" = 1 ]; then
-        echo "apid UI build: ${image} (pinned container requested)"
-    else
-        echo "apid UI build: ${image} (no bun on this host)"
-    fi
-    exec docker run --rm \
-        --label ai-agent=true \
-        -v "${REPO_ROOT}:/workspace" \
-        -w /workspace/pkgs/mosd/apid/ui \
-        "${image}" bash ./build.sh --out-dir "${container_output}"
+    }
+done
+
+mkdir -p "${BUILD_ROOT}/home" "${BUILD_ROOT}/work" "${OUTPUT}"
+image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_BUN_1)"
+
+if [ "${RUN_CHECKS}" = 1 ]; then
+    echo "apid UI checks: ${image} -> ${OUTPUT}"
+else
+    echo "apid UI build: ${image} -> ${OUTPUT}"
 fi
 
-cd "${HERE}"
-echo "apid UI build: bun $(bun --version) -> ${OUTPUT}"
-bun install --frozen-lockfile
-bun run build -- --outDir "${OUTPUT}" --emptyOutDir
+docker run --rm \
+    --label ai-agent=true \
+    --user "$(id -u):$(id -g)" \
+    -v "${HERE}:/source:ro" \
+    -v "${BUILD_ROOT}:/build" \
+    -e HOME=/build/home \
+    -e "MOS_APID_UI_RUN_CHECKS=${RUN_CHECKS}" \
+    --entrypoint /bin/bash \
+    "${image}" -c '
+        set -euo pipefail
 
-[ -s "${OUTPUT}/index.html" ] || {
-    echo "error: the apid UI build did not produce a non-empty index.html in ${OUTPUT}" >&2
-    exit 1
-}
+        find /build/work -mindepth 1 -delete
+        find /build/dist -mindepth 1 -delete
+        tar -C /source \
+            --exclude=./coverage \
+            --exclude=./dist \
+            --exclude=./node_modules \
+            --exclude=./playwright-report \
+            --exclude=./test-results \
+            -cf - . | tar -C /build/work -xf -
 
-echo "APID UI BUILD PASSED"
+        cd /build/work
+        bun install --frozen-lockfile
+        if [ "${MOS_APID_UI_RUN_CHECKS}" = 1 ]; then
+            bun run lint
+            bun run typecheck
+            bun run test
+        fi
+        bun run build -- --outDir /build/dist --emptyOutDir
+
+        [ -s /build/dist/index.html ] || {
+            echo "error: the apid UI build did not produce a non-empty index.html" >&2
+            exit 1
+        }
+        find /build/work -mindepth 1 -delete
+    '
+
+if [ "${RUN_CHECKS}" = 1 ]; then
+    echo "APID UI CHECKS PASSED"
+else
+    echo "APID UI BUILD PASSED"
+fi

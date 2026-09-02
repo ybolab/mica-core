@@ -56,10 +56,10 @@ mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MOS_BUILD_RUST=LOCA
 }
 IMAGE="${FROM_ARGS[1]#MOS_BUILD_RUST=}"
 
-# The frontend is a separate producer. Finish it on the host (or in the pinned
-# Bun container) before Cargo enters the Rust-only cross-build image.
-APID_UI_DIST="${WORKSPACE}/apid/ui/dist"
-bash "${WORKSPACE}/apid/ui/build.sh" --container --out-dir "${APID_UI_DIST}"
+# The frontend is a separate, container-only producer. Its source is mounted
+# read-only and its generated tree stays outside the source checkout.
+APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
+bash "${WORKSPACE}/apid/ui/build.sh"
 
 # The cargo caches are repo-local bind mounts, not docker volumes and not
 # $HOME/.cargo: `make clean` and `rm -rf _out` then mean what they say, and the
@@ -68,7 +68,7 @@ bash "${WORKSPACE}/apid/ui/build.sh" --container --out-dir "${APID_UI_DIST}"
 # the two Rust builds here warm the same directory layout without sharing the
 # cache itself.
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
-mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git"
+mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${WORKSPACE}/target"
 
 # The commit the binaries report is resolved on the host and handed in as an
 # environment variable. mosd and apid answer `--version` with `<name> <crate
@@ -162,13 +162,16 @@ done < <(sed -n 's/^members = \[\(.*\)\]/\1/p' "${WORKSPACE}/Cargo.toml" | tr ',
 # container's default network, and the only thing bound in is this repository.
 docker run --rm \
     --platform "linux/${IMAGE_ARCH}" \
-    -v "${REPO_ROOT}:/src" \
+    -v "${REPO_ROOT}:/src:ro" \
+    -v "${WORKSPACE}/target:/target" \
+    -v "${APID_UI_DIST}:/build/apid-ui:ro" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \
     -v "${CARGO_CACHE}/git:/usr/local/cargo/git" \
     -w /src/pkgs/mosd \
     -e "TARGET=${TARGET}" \
+    -e "CARGO_TARGET_DIR=/target" \
     -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
-    -e "MOS_APID_UI_DIST_DIR=/src/pkgs/mosd/apid/ui/dist" \
+    -e "MOS_APID_UI_DIST_DIR=/build/apid-ui" \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(cd "${HERE}/.." && pwd)"
+REPO_ROOT="$(cd "${WORKSPACE}/../.." && pwd)"
+cd "${WORKSPACE}"
 export PATH="$HOME/.cargo/bin:$PATH"
 
 if [ -z "${MOS_APID_UI_DIST_DIR:-}" ]; then
-    bash apid/ui/build.sh --out-dir "${PWD}/apid/ui/dist"
-    export MOS_APID_UI_DIST_DIR="${PWD}/apid/ui/dist"
+    bash apid/ui/build.sh
+    export MOS_APID_UI_DIST_DIR="${REPO_ROOT}/_out/apid-ui/dist"
 fi
 
 cargo fmt --all --check
