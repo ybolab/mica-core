@@ -3703,11 +3703,11 @@
           "update"
         ],
         "summary": "Read the complete update state.",
-        "description": "Asks mosd's `GetUpdateState`, which queries RAUC and re-derives the\nlifecycle first — this is the polling surface for a UI watching a check,\ndownload or install, and it is never answered from a stale record.",
+        "description": "Asks mosd's `GetUpdateState`, which queries RAUC and re-derives the\nlifecycle first — this is the polling surface for a UI watching a check,\ndownload or install, and it is never answered from a stale record. The\n`rollback` object is derived from the same fresh slot list, so an operator\ndeciding whether to roll back reads the verdict and the slots it came from\nin one answer.",
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
-            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`",
+            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`), `install`, `last_mark`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4247,6 +4247,98 @@
           },
           "500": {
             "description": "mosd failed to arm it (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/update/rollback": {
+      "post": {
+        "tags": [
+          "update"
+        ],
+        "summary": "Roll back to the alternate slot, if the guard permits it.",
+        "description": "The guard is mosd's `rollback_eligibility`, read out of the same\n`GetUpdateState` document `GET /api/v1/update` serves — one derivation of\nthe slot state, not a second one here. It refuses when there is no\nalternate slot, when the alternate is the booted slot, when the alternate\nwas never written or is marked bad, and when the booted slot is itself\npending-not-confirmed (that window belongs to the bootloader's attempt\ncounter, and a manual rollback inside it races the credit being spent).\n\nWhat it then does is ONE mark: `bad` on the **booted** slot. That is what\nmakes the bootloader pick the other one, and it is why this route cannot\nconfirm the slot it rolls back to — PLAN-048's \"cannot mark an unverified\nslot good\" holds structurally, not by review. The unguarded\n`POST /api/v1/update/mark` remains the operator escape hatch beside it;\nthis route is the guarded one.\n\nIt does NOT reboot. A rollback is a boot-order change, and the reboot that\nrealises it goes through the safe-to-reboot gate like every other\n(`docs/design/updates.md` §4) — folding it in here would either bypass\nthat gate or duplicate its override semantics. The answer names the next\nstep instead.",
+        "operationId": "api_v1_update_rollback",
+        "responses": {
+          "200": {
+            "description": "The booted slot was marked bad; the next boot comes from `target`. Reboot with `POST /api/v1/actions/reboot`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "RAUC refused or failed the mark, or mosd could not read the slot state (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5325,6 +5417,34 @@
       "ResourceValue": {
         "description": "The body of a resource `GET`: the value at the dot-path, as mosd holds it.\n\nAny JSON value: a dot-path can name a subtree, an array or a scalar.\n\nSecrets are replaced by the string `\"<redacted>\"`, which a client can\nreceive anywhere inside the body. Every field named `psk`, `passwordHash`,\n`password_hash`, `hash` or `privateKey` carries the sentinel instead of its\nvalue, at any depth and inside arrays, and so does the whole body when the\ndot-path names one of those fields directly.\n\nThe sentinel is read-only: writing it back is refused at **422** rather\nthan stored, because storing it would destroy the credential."
       },
+      "RollbackResponse": {
+        "type": "object",
+        "description": "What a rollback did: RAUC's answer to the mark, and the slot the next boot\nwill therefore come from.",
+        "required": [
+          "slotName",
+          "message",
+          "target",
+          "nextStep"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "RAUC's own message for the mark."
+          },
+          "nextStep": {
+            "type": "string",
+            "description": "What the operator must still do; this route deliberately does not."
+          },
+          "slotName": {
+            "type": "string",
+            "description": "RAUC's resolved name for the slot that was marked bad — the one this\nsystem is running from."
+          },
+          "target": {
+            "type": "string",
+            "description": "The slot the next boot comes from."
+          }
+        }
+      },
       "SessionLoginRequest": {
         "type": "object",
         "required": [
@@ -5814,7 +5934,7 @@
         }
       },
       "UpdateState": {
-        "description": "The update state document, verbatim from mosd: `lifecycle` (state machine,\npolicy, reboot gate), per-slot status, `booted_slot`, `primary`,\n`pending_not_confirmed`, `install` and `last_mark`."
+        "description": "The update state document, verbatim from mosd: `lifecycle` (state machine,\npolicy, reboot gate), per-slot status, `booted_slot`, `primary`,\n`pending_not_confirmed`, `rollback`, `install` and `last_mark`.\n\n`rollback` is the one place slot state is offered as a decision: mosd's\n`rollback_eligibility` resolves the alternate slot, says whether a manual\nrollback is permitted, and names the refusal otherwise. There is no second\nread route for it — this document is the single writer of that fact."
       },
       "VlanParameters": {
         "type": "object",

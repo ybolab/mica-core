@@ -228,7 +228,10 @@ async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step(
     // BOOTED slot. Nothing here marks the target good, and nothing reboots.
     assert_eq!(
         fake.update_calls(),
-        vec!["get_update_state".to_string(), "mark bad booted".to_string()],
+        vec![
+            "get_update_state".to_string(),
+            "mark bad booted".to_string()
+        ],
     );
 }
 
@@ -258,7 +261,11 @@ async fn every_guard_refusal_is_a_409_carrying_its_own_reason() {
             "the reason must reach the caller: {body}"
         );
         // A refused rollback reads the state and stops there.
-        assert_eq!(fake.update_calls(), vec!["get_update_state".to_string()], "{reason}");
+        assert_eq!(
+            fake.update_calls(),
+            vec!["get_update_state".to_string()],
+            "{reason}"
+        );
     }
 }
 
@@ -276,7 +283,10 @@ async fn a_verdict_this_surface_does_not_know_is_refused_rather_than_renamed() {
         let (router, fake, token) = update_app(update);
         let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(body_json(response).await["error"]["code"], "rollback_refused");
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "rollback_refused"
+        );
         assert_eq!(fake.update_calls(), vec!["get_update_state".to_string()]);
     }
 }
@@ -296,8 +306,15 @@ async fn a_rauc_failure_on_the_rollback_mark_is_500_like_the_mark_route() {
 async fn a_rollback_from_a_browser_session_needs_its_csrf_token() {
     let (router, fake, _token) = update_app(permitted_rollback());
     let cookie = login(&router, "hunter2secret").await;
-    let response =
-        json_request(&router, "POST", ROLLBACK_PATH, json!({}), Some(&cookie), None).await;
+    let response = json_request(
+        &router,
+        "POST",
+        ROLLBACK_PATH,
+        json!({}),
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(
         fake.update_calls().is_empty(),
