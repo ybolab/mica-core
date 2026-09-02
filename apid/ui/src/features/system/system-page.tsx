@@ -19,6 +19,9 @@ import { InformationPanel } from '@/features/system/information-panel'
 import { TimePanel } from '@/features/system/time-panel'
 import { StoragePanel } from '@/features/system/storage-panel'
 import { DiagnosticsPanel } from '@/features/system/diagnostics-panel'
+import { RollbackPanel } from '@/features/system/rollback-panel'
+import { CredentialRecoveryPanel } from '@/features/recovery/credential-recovery-panel'
+import { ResetPanel } from '@/features/recovery/reset-panel'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -51,7 +54,7 @@ export function SystemPage() {
         <TabsContent value="general" className="tab-panel"><div className="split-grid"><HostnamePanel /><UiPanel /></div><PowerPanel /></TabsContent>
         <TabsContent value="information" className="tab-panel"><InformationPanel /></TabsContent>
         <TabsContent value="time" className="tab-panel"><TimePanel /></TabsContent>
-        <TabsContent value="update" className="tab-panel"><UpdatePanel /><UpdateActions /></TabsContent>
+        <TabsContent value="update" className="tab-panel"><UpdatePanel /><RollbackPanel /><UpdateActions /></TabsContent>
         <TabsContent value="storage" className="tab-panel"><StoragePanel /></TabsContent>
         <TabsContent value="diagnostics" className="tab-panel"><DiagnosticsPanel /></TabsContent>
         <TabsContent value="recovery" className="tab-panel"><RecoveryPanel /></TabsContent>
@@ -114,11 +117,14 @@ function UpdateActions() {
   return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="ui-selector"><div><strong>{t('system.update.automatic')}</strong><small>{t('system.update.automaticCopy')}</small></div><Switch aria-label={t('system.update.automatic')} checked={simulation.automaticUpdates} onCheckedChange={simulation.setAutomaticUpdates} /></div><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={action.isPending}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={action.isPending}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={action.isPending}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
 }
 
+/// The reset tiers and credential recovery bind REAL routes and are their own
+/// area; the two cards beside them are still simulated and stay behind the
+/// page's simulation notice.
 function RecoveryPanel() {
   const { t } = useTranslation()
   const simulation = useSimulation()
   const [message, setMessage] = useState('')
-  return <div className="stack"><Card><CardHeader title={t('system.recovery.backupTitle')} description={t('system.recovery.backupDescription')} action={<Database className="size-5 text-muted-foreground" />} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => setMessage(t('system.recovery.created'))}>{t('system.recovery.create')}</Button><Button variant="secondary" onClick={() => setMessage(t('system.recovery.restored'))}>{t('system.recovery.restore')}</Button></div>{message ? <p className="callout success">{message}</p> : null}</Card><Card><CardHeader title={t('system.recovery.supportTitle')} description={t('system.recovery.supportDescription')} action={<Stethoscope className="size-5 text-muted-foreground" />} /><div className="ui-selector"><div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div><Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} /></div><Status ok={!simulation.supportAccess}>{t(simulation.supportAccess ? 'system.recovery.supportExpires' : 'system.recovery.supportDisabled')}</Status></Card><Card><CardHeader title={t('system.recovery.resetTitle')} description={t('system.recovery.resetDescription')} action={<RefreshCcw className="size-5 text-danger" />} /><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>{t('system.recovery.reset')}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('system.recovery.confirmTitle')}</AlertDialogTitle><AlertDialogDescription>{t('system.recovery.confirmDescription')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => setMessage(t('system.recovery.resetQueued'))}>{t('system.recovery.reset')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>{message ? <p className="callout warning">{message}</p> : null}</Card></div>
+  return <div className="stack"><ResetPanel /><CredentialRecoveryPanel /><Card><CardHeader title={t('system.recovery.backupTitle')} description={t('system.recovery.backupDescription')} action={<Database className="size-5 text-muted-foreground" />} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => setMessage(t('system.recovery.created'))}>{t('system.recovery.create')}</Button><Button variant="secondary" onClick={() => setMessage(t('system.recovery.restored'))}>{t('system.recovery.restore')}</Button></div>{message ? <p className="callout success">{message}</p> : null}</Card><Card><CardHeader title={t('system.recovery.supportTitle')} description={t('system.recovery.supportDescription')} action={<Stethoscope className="size-5 text-muted-foreground" />} /><div className="ui-selector"><div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div><Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} /></div><Status ok={!simulation.supportAccess}>{t(simulation.supportAccess ? 'system.recovery.supportExpires' : 'system.recovery.supportDisabled')}</Status></Card></div>
 }
 
 function HostnamePanel() {

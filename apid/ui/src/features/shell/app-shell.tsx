@@ -10,6 +10,7 @@ import { Button } from '@/shared/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/shared/components/ui/dropdown-menu'
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/shared/components/ui/sheet'
 import type { Meta } from '@/lib/types'
+import { RotationNotice } from '@/features/onboarding/rotation-notice'
 
 const nav = [
   { to: '/' as const, label: 'shell.nav.overview' as const, icon: Activity },
@@ -83,7 +84,7 @@ export function AppShell() {
           </div>
         </div>
       </header>
-      <main className="app-main"><Outlet /></main>
+      <main className="app-main"><RotationNotice /><Outlet /></main>
       <footer className="app-footer">
         <div className="footer-row">
           <div className="connection-state">

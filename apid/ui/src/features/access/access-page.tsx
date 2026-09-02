@@ -11,6 +11,8 @@ import { Status } from '@/components/ui/status'
 import { TaskProgress } from '@/shared/components/task-progress'
 import type { TaskAccepted } from '@/lib/types'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/shared/components/ui/alert-dialog'
+import { ClaimPanel } from '@/features/onboarding/claim-panel'
+import { ProvisioningPanel } from '@/features/onboarding/provisioning-panel'
 
 interface TokenSummary { id: string; name: string; created: number }
 interface MintedToken extends TokenSummary { token: string }
@@ -22,6 +24,7 @@ export function AccessPage() {
   return (
     <div className="page">
       <header className="page-head"><div><p className="eyebrow">{t('access.eyebrow')}</p><h1>{t('access.title')}</h1><p>{t('access.description')}</p></div></header>
+      <div className="split-grid"><ClaimPanel /><ProvisioningPanel /></div>
       <TokenPanel />
       <div className="split-grid"><SshPanel /><PasswordPanel /></div>
     </div>

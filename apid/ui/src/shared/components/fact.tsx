@@ -28,3 +28,10 @@ export function formatBytes(bytes: number) {
   }
   return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`
 }
+
+/// A device-clock reading, seconds since the UNIX epoch, rendered in UTC.
+/// The device clock IS UTC, so presenting one in the reader's own zone would
+/// silently restate a value the device never held. The caller labels it.
+export function formatDeviceClock(seconds: number, locale: string) {
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(seconds * 1000))
+}
