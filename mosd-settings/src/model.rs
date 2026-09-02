@@ -1,4 +1,4 @@
-//! Typed settings tree (schema v9) and its dot-path accessors.
+//! Typed settings tree (schema v10) and its dot-path accessors.
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,9 @@ use crate::error::SettingsError;
 use crate::path::{json_path_get, json_path_set, split_path};
 
 /// Current settings schema version written by this crate.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
-/// Persistent mosd settings tree (schema v9).
+/// Persistent mosd settings tree (schema v10).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -487,6 +487,86 @@ pub struct ProvisioningSettings {
     /// Seeding revision that produced this tree.
     #[serde(rename = "seededGeneration")]
     pub seeded_generation: u32,
+    /// The provisioning-document record (schema v10); absent until a document
+    /// has been offered to this device.
+    ///
+    /// Declared last so the TOML serializer emits this table after every
+    /// scalar key of `provisioning`, and `skip_serializing_if` so a device
+    /// that has never seen a document carries a v10 document identical to its
+    /// v9 form but for the version integer — what makes the v9 -> v10 bump
+    /// additive and the A/B rollback survivable (see [`crate::MigrateV9ToV10`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<ProvisioningDocumentSettings>,
+}
+
+/// What the last provisioning document did to this device.
+///
+/// **It holds no value the document carried.** The version and the digest
+/// identify a document; the import record says where one came from and how it
+/// ended. A field of the document itself — an administrator password, a
+/// pre-shared key — is applied into the subtree that owns it and is never
+/// copied here, because this subtree is served by
+/// `GET /api/v1/provisioning/status` and by `GetSettings("provisioning")`,
+/// neither of which has a reason to carry a secret.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProvisioningDocumentSettings {
+    /// `version` of the document last APPLIED, absent when none ever was.
+    ///
+    /// The DOCUMENT's own schema version, which moves independently of
+    /// [`SCHEMA_VERSION`]: a document format revision does not reshape the
+    /// settings tree and a settings bump does not invalidate a document.
+    #[serde(
+        rename = "appliedVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub applied_version: Option<u32>,
+    /// Digest of the document last applied, lowercase hex.
+    ///
+    /// The short-circuit that makes a re-apply a no-op: an offered document
+    /// whose digest equals this one is not applied again. Over a CANONICAL
+    /// rendering of the parsed document, so a comment, a reordered key or a
+    /// changed indentation in the source file is the same document.
+    #[serde(
+        rename = "appliedDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub applied_digest: Option<String>,
+    /// The last import ATTEMPT, applied or not.
+    ///
+    /// Distinct from the two fields above on purpose: a rejected document
+    /// leaves them exactly as they were and lands only here, so a bad file on
+    /// a stick can never make a device look configured by it.
+    #[serde(
+        rename = "lastImport",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_import: Option<ProvisioningImport>,
+}
+
+/// One provisioning-document import attempt.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningImport {
+    /// Which transport offered the document: `boot` or `media`.
+    pub source: String,
+    /// How it ended: `applied`, `unchanged` or `rejected`.
+    pub outcome: String,
+    /// Why it was rejected, naming the offending KEY PATH and never its value;
+    /// absent for an outcome that is not a rejection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Seconds since the UNIX epoch as the device clock read them, saturating
+    /// at 0.
+    ///
+    /// **A label, never a deadline**, for [`ApiToken::created`]'s reason: the
+    /// import runs before any time source has been consulted, so this reading
+    /// is whatever the clock happened to say. It is displayed and ordered by,
+    /// and compared against nothing.
+    pub at: u64,
 }
 
 /// Stage of first-boot self-provisioning.
@@ -498,6 +578,54 @@ pub enum ProvisioningState {
     Pending,
     /// First-boot provisioning finished; the tree is the device's own.
     Complete,
+}
+
+/// Characters a device identifier occupies: 16 bytes spelled in lowercase hex.
+pub const DEVICE_ID_LEN: usize = 32;
+
+/// The shortest administrator bootstrap password a provisioning document may
+/// carry.
+///
+/// The same floor apid enforces on `POST /api/v1/setup` and
+/// `POST /api/v1/actions/change-password` (its `MIN_PASSWORD_BYTES`). It is
+/// stated here because those two are spelled inside apid, which mosd does not
+/// link; this crate is the one both binaries do share, so it is the place a
+/// later change can fold them onto one constant. Until that happens there are
+/// two statements of one rule, and this comment is the record of it.
+pub const MIN_ADMIN_PASSWORD_LEN: usize = 8;
+
+/// Refuse a `provisioning.deviceId` that is not the identifier
+/// `mosd`'s `identity` module mints.
+///
+/// **This is the one statement of the predicate.** Exactly
+/// [`DEVICE_ID_LEN`] LOWERCASE hex characters — the rendering
+/// `identity::ensure_identity` writes — because the identifier is the input to
+/// the seeded hostname and to anything else keyed off device identity, and two
+/// spellings of one identity (`AB` and `ab`) would be two devices to every
+/// consumer that compares the string.
+///
+/// Not enforced in `Deserialize`, deliberately, for [`validate_wifi_psk`]'s
+/// reason: a bound enforced at load would turn one bad value already on disk
+/// into a device whose every unrelated write fails. It is checked where an
+/// identifier is accepted from a file the device did not write — the
+/// provisioning document.
+///
+/// # Errors
+///
+/// Returns the sentence the refusal carries. It names neither the offending
+/// value nor its length: a device identifier arrives in the same document as
+/// the administrator credential, and a refusal is a string that reaches a log.
+pub fn validate_device_id(device_id: &str) -> Result<(), String> {
+    if device_id.len() != DEVICE_ID_LEN
+        || !device_id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!(
+            "a device identifier is exactly {DEVICE_ID_LEN} lowercase hexadecimal characters"
+        ));
+    }
+    Ok(())
 }
 
 /// WiFi settings, reconciled by connd into wpa_supplicant and hostapd.

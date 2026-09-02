@@ -82,6 +82,7 @@ impl Default for MigrationRegistry {
             Box::new(MigrateV6ToV7),
             Box::new(MigrateV7ToV8),
             Box::new(MigrateV8ToV9),
+            Box::new(MigrateV9ToV10),
         ])
     }
 }
@@ -534,6 +535,54 @@ impl Migration for MigrateV8ToV9 {
     fn down(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
         doc.insert("schema_version".to_string(), toml::Value::Integer(8));
         doc.remove("time");
+        Ok(())
+    }
+}
+
+/// v9 -> v10: adds `provisioning.document`, the provisioning-document record —
+/// the applied document's version and digest, and the last import attempt.
+///
+/// `up` stamps `schema_version = 10` and does nothing else —
+/// [`MigrateV8ToV9`]'s shape, for [`MigrateV6ToV7`]'s reason. The one field
+/// v10 adds is `#[serde(default, skip_serializing_if = "Option::is_none")]`,
+/// so a v9 document and its v10 form differ by the version integer alone until
+/// a document is actually offered to the device, and no dead default is seeded
+/// into any device's file.
+///
+/// `down` stamps `schema_version = 9` and removes the record, keeping every
+/// other key of `provisioning` — `state`, `deviceId` and `seededGeneration`
+/// are v3 and v9 keys a v9 binary owns and must not lose. That asymmetry is
+/// the whole difference from [`MigrateV8ToV9::down`], which could drop its
+/// subtree whole because v9 introduced all of it.
+///
+/// What a rollback costs here is bounded and self-repairing, unlike the token
+/// and time subtrees: the record is a MEMO about a document, not the
+/// configuration the document wrote. The settings the document applied stay
+/// applied. What is lost is the digest, so the v9 binary — which has no
+/// importer at all — cannot short-circuit; rolling forward again finds no
+/// digest and re-applies the same document, which is a no-op by construction
+/// because applying it a second time produces the tree it produced the first
+/// time. A re-apply is therefore the correct behaviour after a rollback and
+/// not a defect of it.
+///
+/// A document with no `provisioning` table is left untouched by `down`.
+pub struct MigrateV9ToV10;
+
+impl Migration for MigrateV9ToV10 {
+    fn target_version(&self) -> u32 {
+        10
+    }
+
+    fn up(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(10));
+        Ok(())
+    }
+
+    fn down(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(9));
+        if let Some(toml::Value::Table(provisioning)) = doc.get_mut("provisioning") {
+            provisioning.remove("document");
+        }
         Ok(())
     }
 }
@@ -991,5 +1040,158 @@ servers = ["0.pool.ntp.org", "192.0.2.7"]
 
         assert_eq!(doc["schema_version"], toml::Value::Integer(9));
         assert!(!doc.contains_key("time"), "{doc:?}");
+    }
+
+    /// A v9 document as a provisioned device carries it: the three
+    /// `provisioning` keys v3 and v9 own, and no document record of any kind.
+    fn v9_document_with_provisioning() -> toml::Table {
+        toml::from_str(
+            r#"
+schema_version = 9
+hostname = "mos-0123abcd"
+
+[network]
+
+[provisioning]
+state = "complete"
+deviceId = "0123abcd0123abcd0123abcd0123abcd"
+seededGeneration = 1
+"#,
+        )
+        .unwrap()
+    }
+
+    /// `up` stamps the version and touches nothing else: the field v10 adds is
+    /// `skip_serializing_if`, so a v9 document and its v10 form differ by the
+    /// version integer alone until a document is offered.
+    #[test]
+    fn v9_to_v10_up_stamps_the_version_and_seeds_nothing() {
+        let mut doc = v9_document_with_provisioning();
+        let before = doc.clone();
+
+        MigrateV9ToV10.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(10));
+        let mut expected = before;
+        expected.insert("schema_version".to_string(), toml::Value::Integer(10));
+        assert_eq!(doc, expected);
+
+        // And `up` over its own output changes nothing.
+        let once = doc.clone();
+        MigrateV9ToV10.up(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
+    /// `down` drops the record and KEEPS the rest of `provisioning`. The
+    /// distinction is the point: `state`, `deviceId` and `seededGeneration`
+    /// are keys a v9 binary owns, and removing the table wholesale would tell
+    /// that binary the device had never provisioned itself — which would
+    /// re-seed a fielded device's identity.
+    #[test]
+    fn v10_document_migrates_down_dropping_only_the_document_record() {
+        let mut doc = v9_document_with_provisioning();
+        MigrateV9ToV10.up(&mut doc).unwrap();
+        let provisioning = doc
+            .get_mut("provisioning")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        provisioning.insert(
+            "document".to_string(),
+            toml::Value::Table(
+                toml::from_str(
+                    r#"
+appliedVersion = 1
+appliedDigest = "c0ffee"
+
+[lastImport]
+source = "media"
+outcome = "applied"
+at = 0
+"#,
+                )
+                .unwrap(),
+            ),
+        );
+
+        MigrateV9ToV10.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(9));
+        let provisioning = doc["provisioning"].as_table().unwrap();
+        assert!(!provisioning.contains_key("document"), "{provisioning:?}");
+        assert_eq!(
+            provisioning["deviceId"],
+            toml::Value::String("0123abcd0123abcd0123abcd0123abcd".to_string()),
+            "the identity a v9 binary owns must survive the rollback"
+        );
+        assert_eq!(
+            provisioning["state"],
+            toml::Value::String("complete".to_string())
+        );
+        assert_eq!(provisioning["seededGeneration"], toml::Value::Integer(1));
+        assert_eq!(
+            doc["hostname"],
+            toml::Value::String("mos-0123abcd".to_string())
+        );
+    }
+
+    /// The round trip, and which half is lost: the version returns, the
+    /// document record does not. Rolling forward finds no digest and re-applies
+    /// the same document, which is a no-op by construction.
+    #[test]
+    fn v9_to_v10_and_back_returns_the_version_but_not_the_document_record() {
+        let mut doc = v9_document_with_provisioning();
+        MigrateV9ToV10.up(&mut doc).unwrap();
+        doc.get_mut("provisioning")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert(
+                "document".to_string(),
+                toml::Value::Table(toml::Table::new()),
+            );
+        MigrateV9ToV10.down(&mut doc).unwrap();
+        MigrateV9ToV10.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(10));
+        assert!(
+            !doc["provisioning"]
+                .as_table()
+                .unwrap()
+                .contains_key("document"),
+            "{doc:?}"
+        );
+    }
+
+    /// A document with no `provisioning` table at all — a v9 tree written
+    /// before anything provisioned it — passes through `down` untouched rather
+    /// than gaining an empty table.
+    #[test]
+    fn v9_to_v10_down_leaves_a_document_without_provisioning_untouched() {
+        let mut doc: toml::Table = toml::from_str(
+            "schema_version = 10
+hostname = \"mos\"\n",
+        )
+        .unwrap();
+
+        MigrateV9ToV10.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(9));
+        assert!(!doc.contains_key("provisioning"), "{doc:?}");
+    }
+
+    /// The registry walks the whole ladder in both directions, which is what
+    /// makes `Store::load` able to read any fielded document. Driven from v0
+    /// so a missing step anywhere fails here rather than on a device.
+    #[test]
+    fn the_registry_walks_v0_to_the_current_schema_and_back() {
+        let mut doc: toml::Table = toml::from_str("hostname = \"mos\"\n").unwrap();
+
+        migrate(&mut doc, 0, crate::SCHEMA_VERSION).unwrap();
+        assert_eq!(
+            doc["schema_version"],
+            toml::Value::Integer(i64::from(crate::SCHEMA_VERSION))
+        );
+
+        migrate(&mut doc, crate::SCHEMA_VERSION, 0).unwrap();
+        assert!(!doc.contains_key("schema_version"), "{doc:?}");
     }
 }

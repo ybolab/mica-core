@@ -10,6 +10,9 @@
 //! - `MOSD_SHADOW_PATH` — the shadow file a transient root password is written
 //!   into (default `/etc/shadow`, a symlink onto STATE on the mos image); the
 //!   sshd reconciler honours the same variable.
+//! - `MOSD_PROVISIONING_ROOT` — where the offline provisioning transport
+//!   stages the media it found (default `/run/mos/provisioning`); tests point
+//!   it at a temporary directory. See [`provisioning_doc`].
 //! - `MOSD_DRY_RUN` — when `1`, first-boot provisioning is skipped, no
 //!   reconcilers or service scan are constructed, power actions go to a no-op
 //!   control, and the live-state root carries `{"dry_run": true}`; used by
@@ -36,6 +39,7 @@ mod identity;
 mod network_state;
 mod power;
 mod provisioning;
+mod provisioning_doc;
 mod rauc;
 mod reconciler;
 mod scan;
@@ -178,6 +182,30 @@ async fn serve() -> anyhow::Result<()> {
         tracing::info!("dry run: first-boot provisioning skipped");
     } else {
         let state_dir = state_dir_for(&settings_path);
+        // BEFORE seeding, and that order is the point: a factory-injected
+        // `provisioning.deviceId` has to be in the tree when `ensure_identity`
+        // decides whether to mint one, and when the hostname is derived from
+        // it. Applied the other way round the device would mint an identity,
+        // name itself after it, and only then be handed the identity the
+        // factory recorded.
+        //
+        // Its failure NEVER stops the daemon, unlike the seeding below: a bad
+        // document on a stick must leave a working, unclaimed appliance and a
+        // legible record, not a device that will not boot. Only a failure to
+        // WRITE reaches this arm — a refused document is a recorded outcome,
+        // not an error.
+        match provisioning_doc::import(
+            &store,
+            &mut settings,
+            &provisioning_doc::staging_root_from_env(),
+        ) {
+            Ok(outcome) => tracing::info!(?outcome, "provisioning document checked"),
+            Err(err) => tracing::error!(
+                error = %err,
+                "the provisioning document import could not be recorded; the device is \
+                 unchanged and the next boot retries"
+            ),
+        }
         // Hard failure on purpose: an unwritable STATE means no device identity
         // and no device credential, so there is no usable device to serve. A
         // loud exit is better than a daemon that quietly serves an

@@ -421,6 +421,7 @@ fn v3_populated() -> Settings {
             state: ProvisioningState::Complete,
             device_id: Some("a1b2c3d4e5f6".to_string()),
             seeded_generation: 7,
+            document: None,
         },
         wifi: WifiSettings {
             client: WifiClientSettings {
