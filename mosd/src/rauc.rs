@@ -251,9 +251,9 @@ pub const ROLLBACK_ALTERNATE_MARKED_BAD: &str = "alternate_marked_bad";
 /// target: it is a pending or skipped update, and switching the boot order to
 /// it is "apply the untested thing" rather than "go back to the tested one".
 ///
-/// This orders the two INSTALLS. It does not establish that the older one
-/// ever booted — see [`rollback_eligibility`] for what that does and does not
-/// cover.
+/// This orders the two INSTALLS, and that the older one therefore booted is a
+/// derivation, not a reading — see [`rollback_eligibility`] for the premise
+/// it stands on.
 pub const ROLLBACK_ALTERNATE_IS_NEWER: &str = "alternate_is_newer";
 /// A manual rollback is refused because the two slots' install timestamps
 /// cannot be ordered — one is absent, unparseable, or they are equal — so
@@ -369,24 +369,27 @@ fn older_install(target: &SlotStatus, booted: &SlotStatus) -> Option<bool> {
 /// is taken rather than an ambiguity being invented for a shape the image
 /// cannot have.
 ///
-/// # What the install-order step checks, and what it does NOT
+/// # What the install-order step checks, and the premise it stands on
 ///
 /// The rule this enforces is "**a rollback goes backward**": the target must
-/// be the strictly older of the two installs. That is NOT the same property
-/// as `docs/design/recovery.md` §3 node 2's precondition, "the other slot
-/// holds a system that booted successfully before", and this comment says so
-/// rather than letting the two be read as one.
+/// be the strictly older of the two installs.
 ///
-/// They coincide on the normal path, because an install writes the inactive
-/// slot and a never-booted slot is therefore normally also the newest. They
-/// come apart wherever that does not hold — the running slot re-installed in
-/// place, or install metadata restored. Concretely: target installed at t=20
-/// and never booted, booted slot re-installed at t=30, and this step permits
-/// a rollback into a system that has never run. That case is NOT caught here.
+/// THE PREMISE, written down here because it is the only defence available:
+/// this refusal derives `docs/design/recovery.md` §3 node 2's precondition —
+/// "the other slot holds a system that booted successfully before" — from
+/// RAUC's invariant that **an install never writes the running slot**. Given
+/// that, a booted slot installed AFTER the target means the device was
+/// running the target when that install happened, which is a successful boot
+/// of the target. IF THAT INVARIANT EVER STOPS HOLDING — a future install
+/// path able to target the booted slot, or an out-of-band flash that also
+/// rewrites the status file's `installed.timestamp` — THE DERIVATION DOES
+/// NOT, and the guard silently weakens. The invariant belongs to RAUC and to
+/// the image pipeline, not to this tree, so nothing here goes red if it
+/// changes: this paragraph is the warning, deliberately not a check.
 ///
-/// The stronger property is not observable on this surface, and the check was
-/// made rather than assumed — RAUC v1.13, the version `pkgs/rauc/versions.env`
-/// pins, does not persist it anywhere mosd can read:
+/// Why the property is derived rather than read: RAUC v1.13, the version
+/// `pkgs/rauc/versions.env` pins, records no boot anywhere mosd can see, and
+/// that was checked rather than assumed:
 /// - `RaucSlotStatus` (`include/slot.h`) — everything the status file holds —
 ///   has no mark field at all: bundle metadata, `status`, checksum,
 ///   `installed.*` and `activated.*`, and nothing else.
@@ -402,10 +405,9 @@ fn older_install(target: &SlotStatus, booted: &SlotStatus) -> Option<bool> {
 ///   installer, `pending` -> `update` -> `ok` (`src/install.c`). It records an
 ///   install, never a boot.
 ///
-/// So a never-booted but OLDER slot is not distinguishable from a
-/// confirmed-good one, and remains a permitted rollback target. Closing that
-/// needs mosd to record its own confirmed-boot fact; it is a separate design,
-/// not something to approximate here.
+/// A direct confirmed-boot record would make the guard independent of the
+/// premise above; it needs mosd to record its own, and is a separate design
+/// rather than something to approximate here.
 ///
 /// Everything that cannot be ordered refuses. Equal timestamps are the shape
 /// of a factory flash that wrote both slots in one operation; an absent or
