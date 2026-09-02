@@ -266,13 +266,20 @@ pub struct RollbackEligibility {
     /// The alternate slot a rollback would boot into, or `None` when the slot
     /// state names none.
     pub target: Option<String>,
-    /// Whether a manual rollback is permitted right now.
-    pub permitted: bool,
-    /// The stable refusal reason, `None` when `permitted`.
+    /// The stable refusal reason, `None` when the rollback is permitted.
+    ///
+    /// The only field a refusal is carried in: there is no separate
+    /// `permitted` flag to disagree with it, so "permitted, and here is why
+    /// not" is not a state this type can hold.
     pub reason: Option<&'static str>,
 }
 
 impl RollbackEligibility {
+    /// Permitted exactly when nothing refused it.
+    pub fn permitted(&self) -> bool {
+        self.reason.is_none()
+    }
+
     /// The mark a permitted rollback emits, or `None` when it is refused.
     ///
     /// `bad` on `booted`, always: condemning the slot we are running from is
@@ -281,7 +288,7 @@ impl RollbackEligibility {
     /// vocabulary is [`validate_mark`]'s, unchanged — there is no second slot
     /// state machine here, and no way to express "mark the target good".
     pub fn mark(&self) -> Option<(&'static str, &'static str)> {
-        self.permitted.then_some(("bad", "booted"))
+        self.permitted().then_some(("bad", "booted"))
     }
 
     /// The `rollback` object recorded under live-state `update`: `target`,
@@ -290,7 +297,10 @@ impl RollbackEligibility {
     pub fn to_json(&self) -> Value {
         json!({
             "target": self.target.as_ref().map_or(Value::Null, |name| Value::String(name.clone())),
-            "permitted": self.permitted,
+            // Written as "there is a mark to emit" rather than as a flag of
+            // its own, so the document an operator reads and the action they
+            // then take cannot disagree about whether a rollback is offered.
+            "permitted": self.mark().is_some(),
             "reason": self.reason.map_or(Value::Null, |reason| Value::String(reason.to_string())),
         })
     }
@@ -298,7 +308,6 @@ impl RollbackEligibility {
     fn refused(target: Option<&str>, reason: &'static str) -> Self {
         Self {
             target: target.map(str::to_string),
-            permitted: false,
             reason: Some(reason),
         }
     }
@@ -356,7 +365,6 @@ pub fn rollback_eligibility(slots: &[SlotStatus], primary: Option<&str>) -> Roll
     }
     RollbackEligibility {
         target: Some(target.name.clone()),
-        permitted: true,
         reason: None,
     }
 }
@@ -802,7 +810,7 @@ mod tests {
         ];
         let decision = rollback_eligibility(&slots, Some("rootfs.0"));
         assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
-        assert!(decision.permitted);
+        assert!(decision.permitted());
         assert_eq!(decision.reason, None);
         assert_eq!(decision.mark(), Some(("bad", "booted")));
     }
@@ -819,7 +827,7 @@ mod tests {
         ] {
             let decision = rollback_eligibility(&slots, None);
             assert_eq!(decision.target, None);
-            assert!(!decision.permitted);
+            assert!(!decision.permitted());
             assert_eq!(decision.reason, Some(ROLLBACK_NO_ALTERNATE_SLOT));
             assert_eq!(decision.mark(), None);
         }
@@ -850,7 +858,7 @@ mod tests {
         ];
         let decision = rollback_eligibility(&slots, Some("rootfs.0"));
         assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
-        assert!(!decision.permitted);
+        assert!(!decision.permitted());
         assert_eq!(decision.reason, Some(ROLLBACK_ALTERNATE_NEVER_INSTALLED));
         assert_eq!(decision.mark(), None);
     }
@@ -920,7 +928,7 @@ mod tests {
                                     match decision.mark() {
                                         None => {
                                             refused_seen += 1;
-                                            assert!(!decision.permitted);
+                                            assert!(!decision.permitted());
                                             assert!(decision.reason.is_some());
                                         }
                                         Some(mark) => {
