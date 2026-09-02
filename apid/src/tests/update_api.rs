@@ -237,13 +237,15 @@ async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step(
 
 #[tokio::test]
 async fn every_guard_refusal_is_a_409_carrying_its_own_reason() {
-    // The five reasons `rollback_eligibility` produces, each with the state
+    // Every reason `rollback_eligibility` produces, each with the state
     // document mosd writes for it.
     let cases = [
         ("no_alternate_slot", json!(null)),
         ("alternate_is_booted_slot", json!(null)),
         ("alternate_never_installed", json!("rootfs.1")),
         ("alternate_marked_bad", json!("rootfs.1")),
+        ("alternate_is_newer", json!("rootfs.1")),
+        ("install_order_unknown", json!("rootfs.1")),
         ("booted_slot_not_confirmed", json!("rootfs.1")),
     ];
     for (reason, target) in cases {

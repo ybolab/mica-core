@@ -342,11 +342,13 @@ pub(crate) async fn api_v1_update_mark(
 /// reason outside it is answered as the generic `rollback_refused` carrying
 /// mosd's word verbatim, so a renamed reason degrades to something honest
 /// instead of being silently reported as one of these.
-const ROLLBACK_REASONS: [&str; 5] = [
+const ROLLBACK_REASONS: [&str; 7] = [
     "no_alternate_slot",
     "alternate_is_booted_slot",
     "alternate_never_installed",
     "alternate_marked_bad",
+    "alternate_is_newer",
+    "install_order_unknown",
     "booted_slot_not_confirmed",
 ];
 
@@ -400,9 +402,12 @@ fn rollback_refused(reason: Option<&str>) -> Response {
 /// `GetUpdateState` document `GET /api/v1/update` serves — one derivation of
 /// the slot state, not a second one here. It refuses when there is no
 /// alternate slot, when the alternate is the booted slot, when the alternate
-/// was never written or is marked bad, and when the booted slot is itself
-/// pending-not-confirmed (that window belongs to the bootloader's attempt
-/// counter, and a manual rollback inside it races the credit being spent).
+/// was never written or is marked bad, when the alternate is NOT the older of
+/// the two installs (a rollback goes backward; a newer or unorderable target
+/// is a pending update, not a rollback target), and when the booted slot is
+/// itself pending-not-confirmed (that window belongs to the bootloader's
+/// attempt counter, and a manual rollback inside it races the credit being
+/// spent).
 ///
 /// What it then does is ONE mark: `bad` on the **booted** slot. That is what
 /// makes the bootloader pick the other one, and it is why this route cannot
@@ -425,7 +430,7 @@ fn rollback_refused(reason: Option<&str>) -> Response {
         (status = 200, description = "The booted slot was marked bad; the next boot comes from `target`. Reboot with `POST /api/v1/actions/reboot`", body = RollbackResponse),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 409, description = "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know", body = ApiError),
+        (status = 409, description = "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know", body = ApiError),
         (status = 500, description = "RAUC refused or failed the mark, or mosd could not read the slot state (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
