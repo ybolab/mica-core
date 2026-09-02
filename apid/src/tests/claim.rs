@@ -533,8 +533,10 @@ async fn a_bootstrap_claim_refuses_every_mutation_but_the_rotation() {
         StatusCode::OK
     );
 
-    // Signing in is open: a bound that locked the operator out of their own
-    // device would be the brick this design exists to avoid.
+    // Signing in and out are open: a bound that locked the operator out of
+    // their own device would be the brick this design exists to avoid, and a
+    // logout the device refuses would be a rule about the credential forcing a
+    // live session to stay open.
     let session = json_request(
         &router,
         "POST",
@@ -545,6 +547,21 @@ async fn a_bootstrap_claim_refuses_every_mutation_but_the_rotation() {
     )
     .await;
     assert_eq!(session.status(), StatusCode::CREATED);
+    let cookie = session_cookie_value(&session);
+    let csrf = body_json(session).await["csrfToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let logout = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/session",
+        json!({}),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
     // Every mutation is refused, with the same stable code and no write.
     for (method, path, body) in [

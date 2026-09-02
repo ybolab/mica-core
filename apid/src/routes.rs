@@ -4762,13 +4762,13 @@ impl FromRequestParts<AppState> for ApiCredential {
                 "this route requires a stored bearer token or an authenticated browser session",
             ));
         };
-        if mutation && parts.uri.path() != V1_CHANGE_PASSWORD_PATH && rotation_required(state).await
-        {
-            // Reads stay open, and the password change stays open. Those two
-            // exemptions are what make the bound impossible to brick a device
-            // with: the operator holding the bootstrap credential can always
-            // see WHY they were refused (`GET /api/v1/claim`) and can always
-            // do the one thing that clears it. Everything else waits.
+        if mutation && bound_by_rotation(parts.uri.path()) && rotation_required(state).await {
+            // Reads stay open, and so do the two mutations that write nothing
+            // to the DEVICE. Those exemptions are what make the bound
+            // impossible to brick a device with: the operator holding the
+            // bootstrap credential can always sign in and out, can always see
+            // WHY they were refused (`GET /api/v1/claim`), and can always do
+            // the one thing that clears it. Everything else waits.
             //
             // The rejection is built here rather than by the handler because
             // the handler is never reached; a refused mutation writes nothing
@@ -5524,6 +5524,26 @@ const CLAIM_EVENT: &str = "claim";
 /// Outcomes: `completed` when the bootstrap credential is replaced, `refused`
 /// when a mutation is turned away because it has not been.
 const CLAIM_ROTATION_EVENT: &str = "claim-rotation";
+
+/// Whether a mutation on `path` is one the forced rotation holds back.
+///
+/// Two exemptions, and they are the whole list. Both are mutations that write
+/// nothing to the device:
+///
+/// - `POST /api/v1/actions/change-password` is the rotation itself, so holding
+///   it back would make the bound unclearable;
+/// - `/v1/session` is login and logout. A session lives in apid's memory and
+///   is a fact about a browser, not about the appliance. An operator who
+///   cannot sign in has no way to reach the exemption above, and one who
+///   cannot sign OUT is being made to keep a live session by a rule that
+///   exists to protect the credential behind it.
+///
+/// Stated as an exemption list rather than as an enforcement list on purpose:
+/// a route added later is bound by default, which is the direction that fails
+/// safe.
+fn bound_by_rotation(path: &str) -> bool {
+    path != V1_CHANGE_PASSWORD_PATH && path != V1_SESSION_PATH
+}
 
 /// The claim record stored under `access.claim`, when the subtree carries one
 /// this build can read.
