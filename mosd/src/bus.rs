@@ -2081,9 +2081,7 @@ mod tests {
     #[tokio::test]
     async fn an_install_is_refused_when_the_reserved_workspace_is_gone() {
         let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
-        let bundle = dir.path().join("ok.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        let bundle = bundle.to_str().expect("utf-8").to_string();
+        let bundle = verified_bundle(&dir, "ok.raucb");
 
         let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(0))));
         let refused = service
