@@ -370,6 +370,16 @@ pub struct WebAdminSettings {
 #[serde(deny_unknown_fields)]
 pub struct ClaimSettings {
     /// Which channel minted the first administrator credential.
+    ///
+    /// An ABSENT record reads as [`ClaimChannel::ProvisioningDocument`], and
+    /// that reading holds because only the setup route and the document
+    /// importer can create a first `access.webAdmin`; **a third writer would
+    /// make the silence ambiguous**, because a device claimed by it would be
+    /// indistinguishable from one claimed by a document. The premise is stated
+    /// rather than asserted by a check: a count of writers is a claim about
+    /// the shape of the source, and a third one arrives with its own code
+    /// review rather than by drift. `docs/design/access.md` §4.4 carries the
+    /// same premise and the same consequence.
     pub via: ClaimChannel,
     /// Seconds since the UNIX epoch as the device clock read them when the
     /// claim committed, saturating at 0.
