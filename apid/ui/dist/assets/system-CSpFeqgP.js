@@ -1,1 +1,0 @@
-import{n as e,r as t,t as n}from"./index-wrp5JTak.js";var r=n;export{e as UiPanel,t as UpdatePanel,r as component};

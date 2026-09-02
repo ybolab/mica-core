@@ -56,6 +56,11 @@ mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MOS_BUILD_RUST=LOCA
 }
 IMAGE="${FROM_ARGS[1]#MOS_BUILD_RUST=}"
 
+# The frontend is a separate producer. Finish it on the host (or in the pinned
+# Bun container) before Cargo enters the Rust-only cross-build image.
+APID_UI_DIST="${WORKSPACE}/apid/ui/dist"
+bash "${WORKSPACE}/apid/ui/build.sh" --container --out-dir "${APID_UI_DIST}"
+
 # The cargo caches are repo-local bind mounts, not docker volumes and not
 # $HOME/.cargo: `make clean` and `rm -rf _out` then mean what they say, and the
 # host carries no Rust state at all. CARGO_HOME=/usr/local/cargo is the image's
@@ -163,6 +168,7 @@ docker run --rm \
     -w /src/pkgs/mosd \
     -e "TARGET=${TARGET}" \
     -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
+    -e "MOS_APID_UI_DIST_DIR=/src/pkgs/mosd/apid/ui/dist" \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail

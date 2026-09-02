@@ -155,6 +155,18 @@ mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MOS_BUILD_RUST=LOCAL_MOS
 }
 RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
 
+# Only the producer that owns APID needs the frontend. Finish that separate
+# producer before entering the Rust-only cross-build image.
+APID_UI_ENV=()
+for name in "${BINARIES[@]}"; do
+    if [ "${name}" = apid ]; then
+        APID_UI_DIST="${WORKSPACE}/apid/ui/dist"
+        bash "${WORKSPACE}/apid/ui/build.sh" --container --out-dir "${APID_UI_DIST}"
+        APID_UI_ENV=(-e "MOS_APID_UI_DIST_DIR=/src/pkgs/mosd/apid/ui/dist")
+        break
+    fi
+done
+
 # The repository at the fixed path /src, not where it happens to live, for the
 # reason build-target.sh gives: rustc records the paths it is given, so mounting
 # the checkout at its own path would make the binaries depend on the directory
@@ -171,6 +183,7 @@ docker run --rm \
     -e "CRATES=${BINARIES[*]}" \
     -e "CARGO_TARGET_DIR=/src/pkgs/mosd/target-deb/${PRODUCER}" \
     -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
+    "${APID_UI_ENV[@]}" \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
         set -euo pipefail

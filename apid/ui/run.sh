@@ -12,6 +12,7 @@ if ! command -v bun >/dev/null 2>&1; then
     image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_BUN_1)"
     echo "apid UI: ${image} (no bun on this host)"
     exec docker run --rm \
+        --label ai-agent=true \
         -v "${REPO_ROOT}:/workspace" \
         -w /workspace/pkgs/mosd/apid/ui \
         "${image}" bash ./run.sh
@@ -23,15 +24,6 @@ bun install --frozen-lockfile
 bun run lint
 bun run typecheck
 bun run test
-
-build_root="$(mktemp -d)"
-trap 'rm -rf "${build_root}"' EXIT
-bun x vite build --outDir "${build_root}/dist"
-
-diff -ruN dist "${build_root}/dist" || {
-    echo "error: apid/ui/dist differs from a clean production build" >&2
-    echo "       run 'bun run build' in pkgs/mosd/apid/ui and commit the result" >&2
-    exit 1
-}
+bash ./build.sh --out-dir "${HERE}/dist"
 
 echo "APID UI CHECKS PASSED"
