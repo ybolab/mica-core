@@ -1,6 +1,6 @@
 //! Settings library for mosd.
 //!
-//! Provides the typed settings tree (schema v10), a Venus-style dot-path
+//! Provides the typed settings tree (schema v11), a Venus-style dot-path
 //! get/set API, atomic TOML persistence on STATE, and a Bottlerocket-style
 //! bidirectional migration framework.
 
@@ -21,13 +21,13 @@ pub use authorized_key::{
 pub use error::SettingsError;
 pub use migration::{
     MigrateV0ToV1, MigrateV1ToV2, MigrateV2ToV3, MigrateV3ToV4, MigrateV4ToV5, MigrateV5ToV6,
-    MigrateV6ToV7, MigrateV7ToV8, MigrateV8ToV9, MigrateV9ToV10, Migration, MigrationRegistry,
-    migrate,
+    MigrateV6ToV7, MigrateV7ToV8, MigrateV8ToV9, MigrateV9ToV10, MigrateV10ToV11, Migration,
+    MigrationRegistry, migrate,
 };
 pub use model::{
-    AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ConsoleSettings,
-    ContainerSettings, DEVICE_ID_LEN, DeviceCredentialSettings, IfaceKind, IfaceSettings,
-    MAX_NTP_SERVERS, MAX_PASSPHRASE_LEN, MIN_ADMIN_PASSWORD_LEN, MIN_PASSPHRASE_LEN,
+    AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ClaimChannel, ClaimSettings,
+    ConsoleSettings, ContainerSettings, DEVICE_ID_LEN, DeviceCredentialSettings, IfaceKind,
+    IfaceSettings, MAX_NTP_SERVERS, MAX_PASSPHRASE_LEN, MIN_ADMIN_PASSWORD_LEN, MIN_PASSPHRASE_LEN,
     MqttAuthSettings, MqttListenSettings, MqttSettings, NtpSettings, ProvisioningDocumentSettings,
     ProvisioningImport, ProvisioningSettings, ProvisioningState, RAW_PMK_LEN, SCHEMA_VERSION,
     Settings, SshSettings, StaticConfig, TimeSettings, VlanConfig, WebAdminSettings,

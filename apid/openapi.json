@@ -426,6 +426,68 @@
         }
       }
     },
+    "/api/v1/claim": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Report how this device was claimed and whether its credential must still be\nrotated.",
+        "description": "**Authenticated, deliberately.** `GET /api/v1/session` already tells an\nunauthenticated caller whether the device is in setup mode, and that is all\nan unauthenticated caller learns here too — \"this device was claimed from a\nmedium and is still holding the password that was on it\" is a sentence an\nattacker would act on, and the operator who needs to read it is signed in\nby construction.\n\nThis is the surface that makes the bound observable BEFORE it bites: the\noperator who claimed a device with a provisioning document sees\n`rotationRequired` here, and can see it the moment they sign in rather than\non the first mutation the device turns away.",
+        "operationId": "api_v1_claim",
+        "responses": {
+          "200": {
+            "description": "How the device was claimed and whether its credential must be rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The access settings could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unavailable (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/diagnostics/snapshots": {
       "get": {
         "tags": [
@@ -5011,6 +5073,40 @@
           "newPassword": {
             "type": "string",
             "description": "The replacement; at least 8 characters."
+          }
+        }
+      },
+      "ClaimStatus": {
+        "type": "object",
+        "description": "`GET /api/v1/claim` response body.",
+        "required": [
+          "state",
+          "rotationRequired"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The device clock's reading when the claim committed, seconds since the\nUNIX epoch. **A label, never a deadline** — the reading\n`access.apiTokens[].created` is. Absent while the device is unclaimed,\nand absent for a claim by document that predates any recorded import.",
+            "minimum": 0
+          },
+          "rotationRequired": {
+            "type": "boolean",
+            "description": "Whether the claiming credential is still the bootstrap secret it\narrived as. While this is true the device serves reads and refuses\nevery authenticated mutation but the password change that clears it."
+          },
+          "state": {
+            "type": "string",
+            "description": "`unclaimed` or `claimed`."
+          },
+          "via": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which channel minted the administrator credential: `setup` or\n`provisioning-document`. Absent while the device is unclaimed."
           }
         }
       },

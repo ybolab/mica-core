@@ -1,4 +1,4 @@
-//! Typed settings tree (schema v10) and its dot-path accessors.
+//! Typed settings tree (schema v11) and its dot-path accessors.
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,9 @@ use crate::error::SettingsError;
 use crate::path::{json_path_get, json_path_set, split_path};
 
 /// Current settings schema version written by this crate.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
-/// Persistent mosd settings tree (schema v10).
+/// Persistent mosd settings tree (schema v11).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -296,6 +296,17 @@ pub struct AccessSettings {
     /// Web admin credentials; absent until apid sets them.
     #[serde(rename = "webAdmin", default, skip_serializing_if = "Option::is_none")]
     pub web_admin: Option<WebAdminSettings>,
+    /// How this device was claimed (schema v11); absent until it is, and
+    /// absent on one claimed device by design — see [`ClaimSettings`].
+    ///
+    /// Under `access` and not beside it for [`AccessSettings::api_tokens`]'s
+    /// reason twice over: apid's gate already reads this subtree on every
+    /// request, so the record is in hand where the rotation bound is enforced;
+    /// and it is what lets a claim commit `webAdmin`, this record and the
+    /// minted token through ONE `SetSettings` call, which is ONE
+    /// [`crate::Store::save`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<ClaimSettings>,
     /// SSH channel policy.
     #[serde(default)]
     pub ssh: SshSettings,
@@ -334,6 +345,66 @@ pub struct AccessSettings {
 pub struct WebAdminSettings {
     /// Argon2id password hash in PHC string format.
     pub password_hash: String,
+}
+
+/// How the device left the unclaimed state (schema v11).
+///
+/// **The claim is not a second opinion about whether a credential exists.**
+/// `access.webAdmin` is that, it always was, and this record never contradicts
+/// it: a tree carrying this record and no `webAdmin` is not a claimed device,
+/// it is a bug. What the record adds is the part `webAdmin` cannot state —
+/// which channel minted the credential, when, and whether that credential is
+/// still the bootstrap secret it arrived as.
+///
+/// **Absent means something, and it is not "unclaimed".** Only two writers can
+/// create the FIRST `access.webAdmin` on a device that has none: apid's
+/// `POST /api/v1/setup`, which writes this record in the same save, and
+/// [`crate::ProvisioningDocumentSettings`]'s importer, which does not. Every
+/// other writer of that path is authenticated, and on an unclaimed device
+/// there is no credential to authenticate with. So a claimed device with no
+/// record is a device claimed by a provisioning document, and that is how apid
+/// reads it — see `docs/design/access.md` §4.4. The importer is left alone
+/// deliberately: it is the one writer that could not consult this field
+/// without a second truth appearing beside `webAdmin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimSettings {
+    /// Which channel minted the first administrator credential.
+    pub via: ClaimChannel,
+    /// Seconds since the UNIX epoch as the device clock read them when the
+    /// claim committed, saturating at 0.
+    ///
+    /// **A label, never a deadline**, for [`ApiToken::created`]'s reason: the
+    /// image enables no time daemon before a device is claimed, so this
+    /// reading is whatever the clock happened to say. Nothing compares it
+    /// against anything, which is exactly why the bound this record carries is
+    /// a rotation requirement and not an expiry (`docs/design/access.md` §4.4).
+    pub at: u64,
+    /// Whether the credential that claimed the device is still a bootstrap
+    /// secret and must be rotated before the device accepts any other
+    /// authenticated write.
+    ///
+    /// False for a `setup` claim: that password was chosen by the caller at
+    /// the moment of the claim and was never written down anywhere the device
+    /// can reason about. True for a claim by provisioning document until the
+    /// rotation lands — that password sat in plaintext on a medium the device
+    /// deliberately does not erase (`docs/design/provisioning.md` §4.1.6).
+    #[serde(rename = "rotationRequired")]
+    pub rotation_required: bool,
+}
+
+/// Which channel claimed the device.
+///
+/// Exactly the two channels that can mint a first administrator credential.
+/// There is no `unknown` member: a third channel would be an unauthenticated
+/// write nobody decided to add, and naming one here would make room for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClaimChannel {
+    /// `POST /api/v1/setup`.
+    Setup,
+    /// A provisioning document (`docs/design/provisioning.md` §4.1).
+    ProvisioningDocument,
 }
 
 /// SSH channel policy, reconciled into sshd configuration.
@@ -586,12 +657,12 @@ pub const DEVICE_ID_LEN: usize = 32;
 /// The shortest administrator bootstrap password a provisioning document may
 /// carry.
 ///
-/// The same floor apid enforces on `POST /api/v1/setup` and
-/// `POST /api/v1/actions/change-password` (its `MIN_PASSWORD_BYTES`). It is
-/// stated here because those two are spelled inside apid, which mosd does not
-/// link; this crate is the one both binaries do share, so it is the place a
-/// later change can fold them onto one constant. Until that happens there are
-/// two statements of one rule, and this comment is the record of it.
+/// **The one statement of the floor**, for the provisioning document and for
+/// apid's `POST /api/v1/setup` and `POST /api/v1/actions/change-password`
+/// alike. apid used to spell its own `MIN_PASSWORD_BYTES = 8` beside this one,
+/// with each comment naming the other; it now reads this constant instead.
+/// This crate is the one both binaries link, which is why the bound lives
+/// here rather than in either of them.
 pub const MIN_ADMIN_PASSWORD_LEN: usize = 8;
 
 /// Refuse a `provisioning.deviceId` that is not the identifier

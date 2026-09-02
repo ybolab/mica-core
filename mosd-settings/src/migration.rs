@@ -83,6 +83,7 @@ impl Default for MigrationRegistry {
             Box::new(MigrateV7ToV8),
             Box::new(MigrateV8ToV9),
             Box::new(MigrateV9ToV10),
+            Box::new(MigrateV10ToV11),
         ])
     }
 }
@@ -582,6 +583,55 @@ impl Migration for MigrateV9ToV10 {
         doc.insert("schema_version".to_string(), toml::Value::Integer(9));
         if let Some(toml::Value::Table(provisioning)) = doc.get_mut("provisioning") {
             provisioning.remove("document");
+        }
+        Ok(())
+    }
+}
+
+/// v10 -> v11: adds `access.claim`, the record of how the device left the
+/// unclaimed state — the channel, the clock reading at the commit, and whether
+/// the claiming credential is still the bootstrap secret it arrived as.
+///
+/// `up` stamps `schema_version = 11` and does nothing else —
+/// [`MigrateV9ToV10`]'s shape, for [`MigrateV6ToV7`]'s reason. The one field
+/// v11 adds is `#[serde(default, skip_serializing_if = "Option::is_none")]`,
+/// so a v10 document and its v11 form differ by the version integer alone
+/// until the device is claimed through `POST /api/v1/setup`.
+///
+/// `down` stamps `schema_version = 10` and removes the record, keeping every
+/// other key of `access` — `webAdmin`, `ssh`, `console`, `device` and
+/// `apiTokens` are keys a v10 binary owns and must not lose. That is
+/// [`MigrateV9ToV10::down`]'s asymmetry for the same reason.
+///
+/// **What a rollback costs here is a bound, not a credential, and it fails
+/// SAFE.** The claim record is what tells apid a credential has already been
+/// rotated; a v10 binary has no rotation gate at all, so while it runs there is
+/// nothing for the lost record to relax. Rolling forward again finds a claimed
+/// device with no record, which
+/// [`crate::ClaimSettings`] defines as a claim by provisioning document — so
+/// the v11 binary re-asserts the rotation requirement on a credential that may
+/// already have been rotated. That is one avoidable password change, demanded
+/// of an operator who is already signed in, and it is the direction this
+/// asymmetry has to fail in: the alternative is a bootstrap secret that a
+/// rollback quietly excuses from ever being rotated.
+///
+/// A document with no `access` table is left untouched by `down`.
+pub struct MigrateV10ToV11;
+
+impl Migration for MigrateV10ToV11 {
+    fn target_version(&self) -> u32 {
+        11
+    }
+
+    fn up(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(11));
+        Ok(())
+    }
+
+    fn down(&self, doc: &mut toml::Table) -> Result<(), SettingsError> {
+        doc.insert("schema_version".to_string(), toml::Value::Integer(10));
+        if let Some(toml::Value::Table(access)) = doc.get_mut("access") {
+            access.remove("claim");
         }
         Ok(())
     }
@@ -1176,6 +1226,135 @@ hostname = \"mos\"\n",
 
         assert_eq!(doc["schema_version"], toml::Value::Integer(9));
         assert!(!doc.contains_key("provisioning"), "{doc:?}");
+    }
+
+    /// A v10 document as a claimed device carries it: an administrator
+    /// credential, a minted token, and no claim record of any kind — which is
+    /// exactly the shape v11 reads as "claimed by a provisioning document".
+    fn v10_document_with_a_credential() -> toml::Table {
+        toml::from_str(
+            r#"
+schema_version = 10
+hostname = "mos-0123abcd"
+
+[network]
+
+[access.webAdmin]
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2"
+
+[access.device]
+generation = 1
+
+[[access.apiTokens]]
+id = "3f2a9c41"
+name = "ci"
+hash = "0000000000000000000000000000000000000000000000000000000000000001"
+created = 1700000000
+"#,
+        )
+        .unwrap()
+    }
+
+    /// `up` stamps the version and touches nothing else: the field v11 adds is
+    /// `skip_serializing_if`, so a v10 document and its v11 form differ by the
+    /// version integer alone until the device is claimed through the setup
+    /// route.
+    #[test]
+    fn v10_to_v11_up_stamps_the_version_and_seeds_nothing() {
+        let mut doc = v10_document_with_a_credential();
+        let before = doc.clone();
+
+        MigrateV10ToV11.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(11));
+        let mut expected = before;
+        expected.insert("schema_version".to_string(), toml::Value::Integer(11));
+        assert_eq!(doc, expected);
+
+        // And `up` over its own output changes nothing.
+        let once = doc.clone();
+        MigrateV10ToV11.up(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
+    /// `down` drops the claim record and KEEPS the rest of `access`. The
+    /// distinction is [`MigrateV9ToV10::down`]'s: `webAdmin` and `apiTokens`
+    /// are the credentials a v10 binary authenticates with, and removing the
+    /// table wholesale would put a fielded device back into setup mode — an
+    /// unauthenticated write route reopened by a rollback.
+    #[test]
+    fn v11_document_migrates_down_dropping_only_the_claim_record() {
+        let mut doc = v10_document_with_a_credential();
+        MigrateV10ToV11.up(&mut doc).unwrap();
+        let access = doc
+            .get_mut("access")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        access.insert(
+            "claim".to_string(),
+            toml::Value::Table(
+                toml::from_str(
+                    r#"
+via = "setup"
+at = 1700000000
+rotationRequired = false
+"#,
+                )
+                .unwrap(),
+            ),
+        );
+
+        MigrateV10ToV11.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(10));
+        let access = doc["access"].as_table().unwrap();
+        assert!(!access.contains_key("claim"), "{access:?}");
+        assert!(
+            access["webAdmin"]["password_hash"].as_str().is_some(),
+            "the credential a v10 binary authenticates with must survive the rollback"
+        );
+        assert_eq!(access["apiTokens"].as_array().unwrap().len(), 1);
+        assert_eq!(access["device"]["generation"], toml::Value::Integer(1));
+    }
+
+    /// The round trip, and which half is lost: the version returns, the claim
+    /// record does not. Rolling forward finds a claimed device with no record,
+    /// which v11 reads as a claim by provisioning document and answers by
+    /// re-asserting the rotation requirement — one avoidable password change,
+    /// which is the safe direction to fail in.
+    #[test]
+    fn v10_to_v11_and_back_returns_the_version_but_not_the_claim_record() {
+        let mut doc = v10_document_with_a_credential();
+        MigrateV10ToV11.up(&mut doc).unwrap();
+        doc.get_mut("access")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert("claim".to_string(), toml::Value::Table(toml::Table::new()));
+        MigrateV10ToV11.down(&mut doc).unwrap();
+        MigrateV10ToV11.up(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(11));
+        assert!(
+            !doc["access"].as_table().unwrap().contains_key("claim"),
+            "{doc:?}"
+        );
+    }
+
+    /// A document with no `access` table at all — a tree written before
+    /// anything claimed it — passes through `down` untouched rather than
+    /// gaining an empty table.
+    #[test]
+    fn v10_to_v11_down_leaves_a_document_without_access_untouched() {
+        let mut doc: toml::Table = toml::from_str(
+            "schema_version = 11
+hostname = \"mos\"\n",
+        )
+        .unwrap();
+
+        MigrateV10ToV11.down(&mut doc).unwrap();
+
+        assert_eq!(doc["schema_version"], toml::Value::Integer(10));
+        assert!(!doc.contains_key("access"), "{doc:?}");
     }
 
     /// The registry walks the whole ladder in both directions, which is what
