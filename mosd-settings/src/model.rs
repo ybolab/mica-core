@@ -1,4 +1,4 @@
-//! Typed settings tree (schema v8) and its dot-path accessors.
+//! Typed settings tree (schema v9) and its dot-path accessors.
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,9 @@ use crate::error::SettingsError;
 use crate::path::{json_path_get, json_path_set, split_path};
 
 /// Current settings schema version written by this crate.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
-/// Persistent mosd settings tree (schema v8).
+/// Persistent mosd settings tree (schema v9).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -35,6 +35,9 @@ pub struct Settings {
     /// MQTT broker and bridge policy.
     #[serde(default)]
     pub mqtt: MqttSettings,
+    /// NTP server and presentation-timezone settings.
+    #[serde(default)]
+    pub time: TimeSettings,
 }
 
 impl Default for Settings {
@@ -48,8 +51,152 @@ impl Default for Settings {
             wifi: WifiSettings::default(),
             container: ContainerSettings::default(),
             mqtt: MqttSettings::default(),
+            time: TimeSettings::default(),
         }
     }
+}
+
+/// Time synchronization and presentation-timezone settings (PLAN-044).
+///
+/// Exactly two knobs, deliberately. There is no enable or pause switch here,
+/// in the API or in the UI — `systemd-timesyncd` is an always-running base
+/// service — and the polling, retry and saved-clock intervals are pinned base
+/// policy shipped in `/etc/systemd/timesyncd.conf.d/50-mos.conf`, never
+/// settings. Machine, RTC, API and log time stay UTC; the timezone below is
+/// presentation only.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TimeSettings {
+    /// Managed NTP servers.
+    pub ntp: NtpSettings,
+    /// IANA timezone name used for presentation and explicitly local
+    /// schedules; it never moves the machine clock off UTC.
+    pub timezone: String,
+}
+
+impl Default for TimeSettings {
+    fn default() -> Self {
+        Self {
+            ntp: NtpSettings::default(),
+            timezone: "UTC".to_string(),
+        }
+    }
+}
+
+/// The managed NTP server list.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NtpSettings {
+    /// Server names or addresses, rendered in order into timesyncd's runtime
+    /// `NTP=` list. Empty means the image's fallback pool is used — an empty
+    /// list is "no operator override", not "no time synchronization".
+    pub servers: Vec<String>,
+}
+
+/// The most servers one `time.ntp.servers` list may carry.
+///
+/// timesyncd polls one selected server at a time and steps through the list
+/// only on failure, so a longer list buys redundancy, not accuracy; eight is
+/// well past any real deployment and keeps the rendered `NTP=` line bounded.
+pub const MAX_NTP_SERVERS: usize = 8;
+
+/// RFC 1035's bound on a full domain name, which also covers any IP literal.
+const MAX_NTP_SERVER_LEN: usize = 253;
+
+/// Longest IANA zone name accepted; the longest real one is around 32 bytes.
+const MAX_TIMEZONE_LEN: usize = 64;
+
+/// Refuse a `time.ntp.servers` list timesyncd's `NTP=` line cannot carry.
+///
+/// **This is the one statement of the predicate**: the time reconciler renders
+/// the list space-separated into a `[Time]` drop-in, so a value carrying
+/// whitespace, a control character or `=`/`#` could end its own assignment or
+/// smuggle a second one. The charset is a hostname's or IP literal's — ASCII
+/// alphanumerics, `.`, `-` and `:` (IPv6) — which is also everything timesyncd
+/// itself will resolve. Bounded in count by [`MAX_NTP_SERVERS`] and per entry
+/// by RFC 1035's 253 bytes; duplicates are refused because timesyncd steps
+/// through the list on failure and a duplicate is a retry disguised as
+/// redundancy.
+///
+/// Not enforced in `Deserialize`, deliberately, for [`validate_wifi_psk`]'s
+/// reason: a bound enforced at load would turn one bad value already on disk
+/// into a device whose every unrelated write fails. [`Settings::set`] calls
+/// this for a write that changes the `time` subtree.
+///
+/// # Errors
+///
+/// Returns the sentence the refusal carries.
+pub fn validate_ntp_servers(servers: &[String]) -> Result<(), String> {
+    if servers.len() > MAX_NTP_SERVERS {
+        return Err(format!(
+            "at most {MAX_NTP_SERVERS} NTP servers are supported; timesyncd only ever polls one \
+             and steps through the rest on failure"
+        ));
+    }
+    for (index, server) in servers.iter().enumerate() {
+        if server.is_empty() {
+            return Err(format!("NTP server {} is empty", index + 1));
+        }
+        if server.len() > MAX_NTP_SERVER_LEN {
+            return Err(format!(
+                "NTP server {server:?} is longer than {MAX_NTP_SERVER_LEN} characters"
+            ));
+        }
+        if !server
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+        {
+            return Err(format!(
+                "NTP server {server:?} contains a character a host name or IP address cannot \
+                 have; use ASCII letters, digits, '.', '-' or ':'"
+            ));
+        }
+        if servers[..index].contains(server) {
+            return Err(format!("NTP server {server:?} is listed twice"));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a `time.timezone` value that is not an IANA zone name.
+///
+/// Syntactic only, and deterministically so: the rule is the tzdata NAME
+/// grammar — `/`-separated components of ASCII letters, digits, `.`, `_`,
+/// `+` and `-`, none empty, none `.` or `..`, none starting with a digit's
+/// worth of path games — and never a lookup against the host's tzdata, so the
+/// same input passes or fails on every machine a test runs on. Whether the
+/// zone actually exists on the device is checked where it can only be checked,
+/// at reconcile time against `/usr/share/zoneinfo`.
+///
+/// # Errors
+///
+/// Returns the sentence the refusal carries.
+pub fn validate_timezone_name(zone: &str) -> Result<(), String> {
+    const RULES: &str = "a timezone is an IANA zone name such as \"UTC\" or \"Europe/Berlin\": \
+                         '/'-separated components of ASCII letters, digits, '.', '_', '+' and '-'";
+    if zone.is_empty() || zone.len() > MAX_TIMEZONE_LEN {
+        return Err(format!(
+            "{RULES}, between 1 and {MAX_TIMEZONE_LEN} characters"
+        ));
+    }
+    for component in zone.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(RULES.to_string());
+        }
+        if !component
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+        {
+            return Err(RULES.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The `time` subtree's whole write rule, called by [`Settings::set`].
+fn validate_time_settings(time: &TimeSettings) -> Result<(), String> {
+    validate_ntp_servers(&time.ntp.servers)?;
+    validate_timezone_name(&time.timezone)
 }
 
 /// Container engine policy, reconciled by `ContainerReconciler`.
@@ -787,6 +934,17 @@ impl Settings {
                 message,
             })?;
         }
+        // Same rule as the network keys: a property of the write, not of the
+        // tree. A document that already loads keeps loading; only a write that
+        // CHANGES the `time` subtree has to satisfy its predicates.
+        if candidate.time != self.time {
+            validate_time_settings(&candidate.time).map_err(|message| {
+                SettingsError::Validation {
+                    path: path.to_string(),
+                    message,
+                }
+            })?;
+        }
         *self = candidate;
         Ok(())
     }
@@ -818,6 +976,143 @@ mod tests {
         assert_eq!(parsed.wifi, WifiSettings::default());
         assert_eq!(parsed.container, ContainerSettings::default());
         assert_eq!(parsed.mqtt, MqttSettings::default());
+        assert_eq!(parsed.time, TimeSettings::default());
+    }
+
+    /// The time defaults, spelled out: no managed servers (the image fallback
+    /// pool applies) and the UTC presentation zone the contract starts from.
+    #[test]
+    fn time_defaults_are_no_servers_and_utc() {
+        let settings = Settings::default();
+        assert!(settings.time.ntp.servers.is_empty());
+        assert_eq!(settings.time.timezone, "UTC");
+
+        // There is deliberately no switch to find here: timesyncd is an
+        // always-running base service, and a field named like one appearing
+        // in this subtree is the regression this pins against.
+        let time = toml::to_string(&settings.time).unwrap();
+        assert!(!time.contains("enabled"), "{time}");
+        assert!(!time.contains("Poll"), "{time}");
+    }
+
+    /// The renderer writes `NTP=` space-separated into an ini drop-in, so
+    /// everything that could end the assignment or smuggle another is refused
+    /// at the write surface rather than stored and dead at render time.
+    #[test]
+    fn an_ntp_server_the_renderer_cannot_carry_is_refused() {
+        for server in [
+            "",
+            "pool one.example",
+            "pool\tone",
+            "two\nlines",
+            "a=b",
+            "#comment",
+            "host_name.example",
+            "höst.example",
+        ] {
+            assert!(
+                validate_ntp_servers(&[server.to_string()]).is_err(),
+                "{server:?} must be refused"
+            );
+        }
+
+        assert!(
+            validate_ntp_servers(&[
+                "0.debian.pool.ntp.org".to_string(),
+                "time.example-corp.com".to_string(),
+                "192.0.2.7".to_string(),
+                "2001:db8::123".to_string(),
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_ntp_server_list_is_bounded_and_duplicate_free() {
+        let too_many: Vec<String> = (0..=MAX_NTP_SERVERS)
+            .map(|index| format!("ntp{index}.example"))
+            .collect();
+        let err = validate_ntp_servers(&too_many).unwrap_err();
+        assert!(err.contains(&MAX_NTP_SERVERS.to_string()), "{err}");
+
+        let twice = vec!["ntp.example".to_string(), "ntp.example".to_string()];
+        let err = validate_ntp_servers(&twice).unwrap_err();
+        assert!(err.contains("twice"), "{err}");
+
+        let long = "a".repeat(254);
+        assert!(validate_ntp_servers(&[long]).is_err());
+    }
+
+    /// Deterministic on every host: the rule is the tzdata name grammar and
+    /// never a lookup against the machine's own zoneinfo tree.
+    #[test]
+    fn a_timezone_is_validated_by_grammar_not_by_the_host_tzdata() {
+        for zone in [
+            "UTC",
+            "Etc/GMT+8",
+            "Europe/Berlin",
+            "America/Argentina/Buenos_Aires",
+            "America/Port-au-Prince",
+            // Grammatically fine and almost certainly not a real zone: the
+            // existence check belongs to reconcile time, not to this rule.
+            "Atlantis/Made_Up",
+        ] {
+            assert!(validate_timezone_name(zone).is_ok(), "{zone:?}");
+        }
+        for zone in [
+            "",
+            "/Etc/UTC",
+            "Etc/",
+            "Etc//UTC",
+            "../etc/shadow",
+            "Europe/..",
+            "Europe/Ber lin",
+            "Europe/Berlin\n",
+            "Europe/Bërlin",
+            &"Z/".repeat(40),
+        ] {
+            assert!(validate_timezone_name(zone).is_err(), "{zone:?}");
+        }
+    }
+
+    /// The write surface enforces the two `time` predicates through the tree
+    /// itself, so no caller of `Settings::set` can store what the reconciler
+    /// cannot render — and an unrelated write leaves a hand-edited `time`
+    /// subtree alone, the same property the network keys have.
+    #[test]
+    fn a_time_write_is_validated_and_an_unrelated_write_is_not() {
+        let mut settings = Settings::default();
+        settings
+            .set("time.timezone", Value::from("Europe/Berlin"))
+            .unwrap();
+        assert_eq!(settings.time.timezone, "Europe/Berlin");
+
+        let err = settings
+            .set("time.timezone", Value::from("Europe/Ber lin"))
+            .unwrap_err();
+        assert!(matches!(err, SettingsError::Validation { .. }), "{err:?}");
+        assert_eq!(settings.time.timezone, "Europe/Berlin");
+
+        settings
+            .set(
+                "time.ntp.servers",
+                serde_json::json!(["0.pool.ntp.org", "192.0.2.7"]),
+            )
+            .unwrap();
+        assert_eq!(settings.time.ntp.servers.len(), 2);
+        let err = settings
+            .set("time.ntp.servers", serde_json::json!(["bad server"]))
+            .unwrap_err();
+        assert!(matches!(err, SettingsError::Validation { .. }), "{err:?}");
+        assert_eq!(settings.time.ntp.servers.len(), 2);
+
+        // An unrelated write over a tree whose `time` subtree would no longer
+        // validate must still land: the rule is about the write, not the tree.
+        let mut hand_edited: Settings = settings.clone();
+        hand_edited.time.timezone = "not a zone!".to_string();
+        hand_edited.set("hostname", Value::from("edge-42")).unwrap();
+        assert_eq!(hand_edited.hostname, "edge-42");
+        assert_eq!(hand_edited.time.timezone, "not a zone!");
     }
 
     /// The MQTT defaults, spelled out: off, loopback, and no auth. The switch

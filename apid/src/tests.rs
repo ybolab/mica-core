@@ -6,6 +6,7 @@
 //! assert lives below the fake backend's trait.
 
 mod broken_classes;
+mod diagnostics;
 mod power_bus;
 mod settings_signal;
 mod update_api;
@@ -2210,6 +2211,190 @@ async fn the_state_root_answers_the_dot_paths_value_for_a_session() {
     assert_eq!(body_string(response).await, r#""mos""#);
 }
 
+// The time-status surface (PLAN-044): authenticated, read-only, and mosd's
+// classification passed through rather than re-derived here.
+#[tokio::test]
+async fn the_time_status_route_answers_mosds_classification_read_only() {
+    let (tree, token) = with_token(secret_tree("hunter2secret"));
+    let (router, fake) = test_app(tree);
+    fake.set_time_status(json!({
+        "status": "offline-degraded",
+        "synchronized": false,
+    }));
+
+    let response = bearer(&router, "GET", "/api/v1/time/status", &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_api_headers(&response, "/api/v1/time/status");
+    let status = body_json(response).await;
+    assert_eq!(status["status"], "offline-degraded");
+    assert_eq!(status["synchronized"], json!(false));
+
+    // Unauthenticated is 401 like every management read.
+    let response = send(
+        &router,
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/time/status")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(envelope(response).await["code"], "not_authenticated");
+
+    // Read-only: there is no verb here that could pause synchronization, so a
+    // write is §2.4's method_not_allowed envelope, not a 404.
+    let response = bearer_json(&router, "PUT", "/api/v1/time/status", &token, "{}").await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(envelope(response).await["code"], "method_not_allowed");
+}
+
+// The storage surface (PLAN-049): authenticated, read-only, and mosd's
+// observation passed through rather than re-derived here.
+#[tokio::test]
+async fn the_storage_status_route_answers_mosds_observation_read_only() {
+    let (tree, token) = with_token(secret_tree("hunter2secret"));
+    let (router, fake) = test_app(tree);
+    fake.set_storage_status(json!({
+        "tiers": [{
+            "name": "data",
+            "role": "ext4",
+            "present": true,
+            "mount": "/srv",
+            "readOnly": false,
+            "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 },
+            "pressure": "warning",
+            "updateWorkspace": { "reservedBytes": 268435456, "available": false },
+            "check": { "unit": "systemd-fsck@dev-mmcblk0p11.service", "result": "success", "exitStatus": 1 },
+        }],
+        "media": [{ "name": "nvme0n1", "kind": "nvme", "health": { "supported": false, "reason": "no SMART reader" } }],
+        "policy": { "warningPercent": 80, "criticalPercent": 90 },
+        "lifecycle": { "backupRestore": "unsupported", "encryption": "unsupported" },
+    }));
+
+    let response = bearer(&router, "GET", "/api/v1/storage/status", &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_api_headers(&response, "/api/v1/storage/status");
+    let status = body_json(response).await;
+    assert_eq!(status["tiers"][0]["name"], "data");
+    assert_eq!(status["tiers"][0]["pressure"], "warning");
+    assert_eq!(status["tiers"][0]["space"]["reservedBytes"], 50);
+    assert_eq!(status["tiers"][0]["updateWorkspace"]["available"], false);
+    // An unsupported metric reaches the client as unsupported, not as an
+    // omission that reads like health.
+    assert_eq!(status["media"][0]["health"]["supported"], false);
+    assert_eq!(status["lifecycle"]["encryption"], "unsupported");
+
+    // Unauthenticated is 401 like every management read.
+    let response = send(
+        &router,
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/storage/status")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(envelope(response).await["code"], "not_authenticated");
+
+    // Read-only: no verb here could rewrite the layout, so a write is
+    // §2.4's method_not_allowed envelope rather than a 404.
+    for method in ["PUT", "POST", "DELETE", "PATCH"] {
+        let response = bearer_json(&router, method, "/api/v1/storage/status", &token, "{}").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} on the storage status"
+        );
+        assert_eq!(envelope(response).await["code"], "method_not_allowed");
+    }
+}
+
+// RFCT-285's last acceptance bullet, as a gate rather than a promise: normal
+// apid exposes NO generic format or repartition action.
+//
+// Two halves, because either alone is weak. The document scan proves no
+// DECLARED route names one of these operations — and the document is asserted
+// elsewhere to be exactly what the handlers generate, so it is the route
+// table. The probe proves the paths a client would actually try are not
+// served by some route the scan's vocabulary missed.
+#[tokio::test]
+async fn normal_apid_exposes_no_format_or_repartition_action() {
+    let document: serde_json::Value =
+        serde_json::from_str(&crate::openapi::document_json()).expect("the document is JSON");
+    let paths = document["paths"].as_object().expect("paths is an object");
+
+    // The search space is populated, and it contains the storage surface
+    // this test is about: a scan over an empty or storage-less document
+    // would pass forever while proving nothing.
+    assert!(
+        paths.len() > 20,
+        "the document lists too few paths: {paths:?}"
+    );
+    assert!(
+        paths.contains_key("/api/v1/storage/status"),
+        "the storage surface is missing, so this scan is not scanning it: {paths:?}"
+    );
+
+    const FORBIDDEN: [&str; 12] = [
+        "format",
+        "repartition",
+        "partition",
+        "mkfs",
+        "fdisk",
+        "resize",
+        "wipe",
+        "erase",
+        "lvm",
+        "raid",
+        // The status surface now describes mounts, so the API must not grow
+        // a verb that moves one: PLAN-063's units own the mounts, not apid.
+        "mount",
+        "unmount",
+    ];
+    for path in paths.keys() {
+        let lowered = path.to_ascii_lowercase();
+        for word in FORBIDDEN {
+            assert!(
+                !lowered.contains(word),
+                "the API declares `{path}`, which names the `{word}` operation this product does not have"
+            );
+        }
+    }
+
+    // And the paths a client would guess are not served at all. Every method,
+    // because a route that answered a POST while refusing a GET would still
+    // be a destructive surface.
+    let (tree, token) = with_token(secret_tree("hunter2secret"));
+    let (router, _fake) = test_app(tree);
+    const GUESSES: [&str; 8] = [
+        "/api/v1/storage/format",
+        "/api/v1/storage/repartition",
+        "/api/v1/storage/partitions",
+        "/api/v1/actions/format",
+        "/api/v1/actions/factory-reset",
+        "/api/v1/storage/wipe",
+        "/api/v1/storage/mount",
+        "/api/v1/storage/namespaces",
+    ];
+    for path in GUESSES {
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            let response = bearer_json(&router, method, path, &token, "{}").await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {path} is served by something"
+            );
+            assert_eq!(
+                envelope(response).await["code"],
+                "not_found",
+                "{method} {path}"
+            );
+        }
+    }
+}
+
 // The two roots are separate: a settings dot-path is not a state dot-path,
 // and the routes do not fall back to each other.
 #[tokio::test]
@@ -2248,6 +2433,24 @@ fn the_openapi_document_covers_the_resource_routes() {
                 "{path} is missing its {status}: {document}"
             );
         }
+    }
+
+    // The two fixed-path status routes name no dot-path, so they carry no
+    // 422; every other outcome a client has to handle is still declared.
+    for path in ["/api/v1/time/status", "/api/v1/storage/status"] {
+        let responses = &document["paths"][path]["get"]["responses"];
+        for status in ["200", "401", "500", "503", "504"] {
+            assert!(
+                responses[status].is_object(),
+                "{path} is missing its {status}: {document}"
+            );
+        }
+        assert!(
+            document["paths"][path].get("put").is_none()
+                && document["paths"][path].get("post").is_none()
+                && document["paths"][path].get("delete").is_none(),
+            "{path} declares a write verb: {document}"
+        );
     }
 
     // §2.2's sentinel is a value a client can receive, so the schema of the
@@ -2498,6 +2701,30 @@ impl SettingsApi for FailingSettings {
     }
 
     async fn get_state(&self, _path: &str) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_time_status(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_storage_status(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_system_info(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_telemetry(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_observed_network(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_failure_evidence(&self) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
 
@@ -3957,16 +4184,17 @@ fn writable_tree(password: &str) -> serde_json::Value {
     tree["access"]["ssh"] = json!({ "enabled": false });
     tree["container"] = json!({ "enabled": false });
     tree["mqtt"] = json!({ "enabled": false });
+    tree["time"] = json!({ "ntp": { "servers": [] }, "timezone": "UTC" });
     tree
 }
 
-// The four dot-paths admitted, each written and
+// The six dot-paths admitted, each written and
 // each read back through the route that answers for it.
 //
 // 202 and a task id: persistence has completed, while reconciliation is a
 // separately observable lifecycle.
 #[tokio::test]
-async fn the_write_route_writes_the_four_scalar_settings() {
+async fn the_write_route_writes_the_six_scalar_settings() {
     let (tree, token) = with_token(writable_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
 
@@ -3975,6 +4203,8 @@ async fn the_write_route_writes_the_four_scalar_settings() {
         ("access.ssh.enabled", "true"),
         ("container.enabled", "true"),
         ("mqtt.enabled", "true"),
+        ("time.ntp.servers", r#"["0.pool.ntp.org","192.0.2.7"]"#),
+        ("time.timezone", r#""Europe/Berlin""#),
     ] {
         let url = format!("/api/v1/settings/{path}");
         let response = bearer_json(&router, "PUT", &url, &token, body).await;
@@ -4005,14 +4235,16 @@ async fn the_write_route_writes_the_four_scalar_settings() {
             "hostname",
             "access.ssh.enabled",
             "container.enabled",
-            "mqtt.enabled"
+            "mqtt.enabled",
+            "time.ntp.servers",
+            "time.timezone"
         ],
         "one bus write per request, at the dot-path the URL named"
     );
 
     let tasks = bearer(&router, "GET", "/api/v1/tasks", &token).await;
     assert_eq!(tasks.status(), StatusCode::OK);
-    assert_eq!(body_json(tasks).await.as_array().unwrap().len(), 4);
+    assert_eq!(body_json(tasks).await.as_array().unwrap().len(), 6);
 
     let missing = bearer(&router, "GET", "/api/v1/tasks/not-retained", &token).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -4107,6 +4339,8 @@ async fn every_dot_path_outside_the_allowlist_is_refused_with_409() {
         "container",
         "mqtt",
         "mqtt.listen.port",
+        "time",
+        "time.ntp",
         // `.` is the whole tree, not a malformed path: `Settings::set`
         // documents `""` and `"."` as replacing the root, so it is a real path
         // this route refuses rather than one it cannot parse.
@@ -4243,7 +4477,7 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
     assert!(fake.set_paths().is_empty(), "{:?}", fake.set_paths());
 }
 
-// The eight top-level keys the write route's not-found rule is derived from.
+// The nine top-level keys the write route's not-found rule is derived from.
 //
 // `is_settings_root` reads them out of `Settings::default()` rather than
 // carrying a list, so this asserts the derivation rather than a copy of it: a
@@ -4252,7 +4486,7 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
 // drop a real root out of the default tree and turn its 409 into a 404 --
 // fails here.
 #[test]
-fn the_settings_schema_has_the_eight_roots_the_write_route_knows() {
+fn the_settings_schema_has_the_nine_roots_the_write_route_knows() {
     let tree = serde_json::to_value(mosd_settings::Settings::default()).unwrap();
     let mut keys: Vec<&str> = tree
         .as_object()
@@ -4271,6 +4505,7 @@ fn the_settings_schema_has_the_eight_roots_the_write_route_knows() {
             "network",
             "provisioning",
             "schema_version",
+            "time",
             "wifi",
         ]
     );
@@ -4296,6 +4531,13 @@ async fn a_body_of_the_wrong_shape_is_refused_and_not_written() {
         ("access.ssh.enabled", r#""yes""#, "switch"),
         ("container.enabled", "1", "switch"),
         ("mqtt.enabled", "null", "switch"),
+        ("time.timezone", "true", "text"),
+        ("time.timezone", r#""Not A Zone!""#, "IANA"),
+        ("time.timezone", r#""Etc//UTC""#, "IANA"),
+        ("time.ntp.servers", r#""0.pool.ntp.org""#, "list"),
+        ("time.ntp.servers", "[7]", "list"),
+        ("time.ntp.servers", r#"["bad server"]"#, "host name"),
+        ("time.ntp.servers", r#"["a.example","a.example"]"#, "twice"),
     ] {
         let response = bearer_json(
             &router,

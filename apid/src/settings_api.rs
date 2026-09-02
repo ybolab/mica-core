@@ -57,6 +57,33 @@ pub trait SettingsApi: Send + Sync {
     async fn get_network_state(&self) -> anyhow::Result<Value> {
         self.get_state("network").await
     }
+    /// Time-synchronization status observed from timesyncd, classified by
+    /// mosd. Read-only: there is deliberately no method beside it that could
+    /// pause or stop synchronization.
+    async fn get_time_status(&self) -> anyhow::Result<Value>;
+    /// Storage status observed by mosd: the fixed tiers, their space and
+    /// check evidence, the physical media and the low-space policy.
+    ///
+    /// Read-only, and deliberately alone: there is no method here that
+    /// formats, repartitions or erases anything, because the layout is fixed
+    /// by the image assembler and a management API that could rewrite it
+    /// would be a remote destructive surface with no product use.
+    async fn get_storage_status(&self) -> anyhow::Result<Value>;
+    /// The system-information surface mosd assembles (PLAN-052): machine id,
+    /// board, kernel, release, image version with git stamp and build date,
+    /// installed packages, booted slot and uptime. Read-only.
+    async fn get_system_info(&self) -> anyhow::Result<Value>;
+    /// Board telemetry observed by mosd (PLAN-052): thermal, watchdog and
+    /// reset reason, absence explicit. Read-only.
+    async fn get_telemetry(&self) -> anyhow::Result<Value>;
+    /// The OBSERVED network state (PLAN-052): link/carrier, addresses, DHCP
+    /// lease, default routes, DNS reachability, Wi-Fi association and the
+    /// radio/modem capabilities. Distinct from `get_network_state`'s reduced
+    /// view and from the desired `network` settings. Read-only.
+    async fn get_observed_network(&self) -> anyhow::Result<Value>;
+    /// Failure evidence for the diagnostic snapshot (PLAN-052): failed units
+    /// and a bounded journal excerpt, bounded by mosd. Read-only.
+    async fn get_failure_evidence(&self) -> anyhow::Result<Value>;
     /// Ask mosd to reboot the appliance.
     async fn reboot(&self) -> anyhow::Result<()>;
     /// Ask mosd to power the appliance off.
@@ -98,6 +125,25 @@ pub trait SettingsApi: Send + Sync {
 pub struct FakeSettings {
     tree: std::sync::Mutex<Value>,
     state: std::sync::Mutex<Value>,
+    /// What `get_time_status` answers; the shape mosd's `status_json` serves.
+    time_status: std::sync::Mutex<Value>,
+    /// What `get_storage_status` answers; the shape mosd's storage
+    /// `status_json` serves.
+    storage_status: std::sync::Mutex<Value>,
+    /// What `get_system_info` answers; the shape mosd's `info_json` serves.
+    system_info: std::sync::Mutex<Value>,
+    /// What `get_telemetry` answers; the shape mosd's `telemetry_json` serves.
+    telemetry: std::sync::Mutex<Value>,
+    /// What `get_observed_network` answers; the shape mosd's `observed_json`
+    /// serves.
+    observed_network: std::sync::Mutex<Value>,
+    /// What `get_failure_evidence` answers; the shape mosd's failure
+    /// evidence serves.
+    failure_evidence: std::sync::Mutex<Value>,
+    /// When set, every PLAN-052 diagnostic read sleeps this long before
+    /// answering — how the snapshot collector's deadline is proven to be
+    /// enforced rather than hoped for.
+    diagnostic_delay: std::sync::Mutex<Option<std::time::Duration>>,
     get_log: std::sync::Mutex<Vec<String>>,
     set_log: std::sync::Mutex<Vec<String>>,
     power_log: std::sync::Mutex<Vec<String>>,
@@ -131,6 +177,50 @@ impl FakeSettings {
         Self {
             tree: std::sync::Mutex::new(tree),
             state: std::sync::Mutex::new(Value::Object(serde_json::Map::new())),
+            time_status: std::sync::Mutex::new(serde_json::json!({
+                "status": "synchronized",
+                "synchronized": true,
+            })),
+            storage_status: std::sync::Mutex::new(serde_json::json!({
+                "tiers": [],
+                "namespaces": { "sharedCapacityTier": "data", "binds": [] },
+                "media": [],
+                "policy": {},
+                "lifecycle": {},
+            })),
+            system_info: std::sync::Mutex::new(serde_json::json!({
+                "machineId": { "available": true, "id": "0123456789abcdef0123456789abcdef" },
+                "board": { "available": false, "detail": "fake" },
+                "kernel": { "available": true, "release": "6.1.0-fake", "version": "#1" },
+                "release": { "available": false, "detail": "fake" },
+                "system": { "available": false, "detail": "fake" },
+                "daemon": { "name": "mosd", "version": "0.1.0", "commit": null },
+                "packages": { "available": false, "detail": "fake" },
+                "slot": { "available": false, "detail": "fake" },
+                "uptime": { "available": true, "seconds": 7 },
+            })),
+            telemetry: std::sync::Mutex::new(serde_json::json!({
+                "thermal": { "available": false, "detail": "fake" },
+                "watchdog": { "available": false, "detail": "fake" },
+                "reset": { "available": false, "reason": "unknown", "detail": "fake",
+                           "evidence": { "watchdogBootstatus": [], "pstore": { "available": false, "detail": "fake" } } },
+            })),
+            observed_network: std::sync::Mutex::new(serde_json::json!({
+                "interfaces": { "available": false, "detail": "fake" },
+                "defaultRoutes": { "available": false, "detail": "fake" },
+                "dns": { "available": false, "detail": "fake", "linkServers": [] },
+                "wifi": { "available": false, "detail": "fake" },
+                "capabilities": {
+                    "wifi": { "supported": false, "interfaces": [], "detail": "fake" },
+                    "bluetooth": { "supported": false, "adapters": [], "detail": "fake" },
+                    "cellular": { "supported": false, "interfaces": [], "detail": "fake" },
+                },
+            })),
+            failure_evidence: std::sync::Mutex::new(serde_json::json!({
+                "journal": { "available": false, "detail": "fake" },
+                "units": { "available": false, "detail": "fake" },
+            })),
+            diagnostic_delay: std::sync::Mutex::new(None),
             get_log: std::sync::Mutex::new(Vec::new()),
             set_log: std::sync::Mutex::new(Vec::new()),
             power_log: std::sync::Mutex::new(Vec::new()),
@@ -196,6 +286,48 @@ impl FakeSettings {
     /// Rotations requested, as `(iface, public key answered)`, in call order.
     pub fn rotations(&self) -> Vec<(String, String)> {
         self.rotations.lock().unwrap().clone()
+    }
+
+    /// Replace what `get_time_status` answers.
+    pub fn set_time_status(&self, value: Value) {
+        *self.time_status.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_storage_status` answers.
+    pub fn set_storage_status(&self, value: Value) {
+        *self.storage_status.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_system_info` answers.
+    pub fn set_system_info(&self, value: Value) {
+        *self.system_info.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_telemetry` answers.
+    pub fn set_telemetry(&self, value: Value) {
+        *self.telemetry.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_observed_network` answers.
+    pub fn set_observed_network(&self, value: Value) {
+        *self.observed_network.lock().unwrap() = value;
+    }
+
+    /// Replace what `get_failure_evidence` answers.
+    pub fn set_failure_evidence(&self, value: Value) {
+        *self.failure_evidence.lock().unwrap() = value;
+    }
+
+    /// Make every diagnostic read sleep `delay` before answering.
+    pub fn set_diagnostic_delay(&self, delay: std::time::Duration) {
+        *self.diagnostic_delay.lock().unwrap() = Some(delay);
+    }
+
+    async fn diagnostic_pause(&self) {
+        let delay = *self.diagnostic_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
     }
 
     /// Insert `value` at top-level `key` of the live-state tree.
@@ -328,6 +460,35 @@ impl SettingsApi for FakeSettings {
             }
         }
         Ok(state)
+    }
+
+    async fn get_time_status(&self) -> anyhow::Result<Value> {
+        Ok(self.time_status.lock().unwrap().clone())
+    }
+
+    async fn get_storage_status(&self) -> anyhow::Result<Value> {
+        self.diagnostic_pause().await;
+        Ok(self.storage_status.lock().unwrap().clone())
+    }
+
+    async fn get_system_info(&self) -> anyhow::Result<Value> {
+        self.diagnostic_pause().await;
+        Ok(self.system_info.lock().unwrap().clone())
+    }
+
+    async fn get_telemetry(&self) -> anyhow::Result<Value> {
+        self.diagnostic_pause().await;
+        Ok(self.telemetry.lock().unwrap().clone())
+    }
+
+    async fn get_observed_network(&self) -> anyhow::Result<Value> {
+        self.diagnostic_pause().await;
+        Ok(self.observed_network.lock().unwrap().clone())
+    }
+
+    async fn get_failure_evidence(&self) -> anyhow::Result<Value> {
+        self.diagnostic_pause().await;
+        Ok(self.failure_evidence.lock().unwrap().clone())
     }
 
     async fn reboot(&self) -> anyhow::Result<()> {

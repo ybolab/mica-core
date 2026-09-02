@@ -21,15 +21,16 @@ pub use authorized_key::{
 pub use error::SettingsError;
 pub use migration::{
     MigrateV0ToV1, MigrateV1ToV2, MigrateV2ToV3, MigrateV3ToV4, MigrateV4ToV5, MigrateV5ToV6,
-    MigrateV6ToV7, MigrateV7ToV8, Migration, MigrationRegistry, migrate,
+    MigrateV6ToV7, MigrateV7ToV8, MigrateV8ToV9, Migration, MigrationRegistry, migrate,
 };
 pub use model::{
     AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ConsoleSettings,
-    ContainerSettings, DeviceCredentialSettings, IfaceKind, IfaceSettings, MAX_PASSPHRASE_LEN,
-    MIN_PASSPHRASE_LEN, MqttAuthSettings, MqttListenSettings, MqttSettings, ProvisioningSettings,
-    ProvisioningState, RAW_PMK_LEN, SCHEMA_VERSION, Settings, SshSettings, StaticConfig,
-    VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
-    WireguardConfig, WireguardPeer, is_wpa_quotable, validate_wifi_psk,
+    ContainerSettings, DeviceCredentialSettings, IfaceKind, IfaceSettings, MAX_NTP_SERVERS,
+    MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN, MqttAuthSettings, MqttListenSettings, MqttSettings,
+    NtpSettings, ProvisioningSettings, ProvisioningState, RAW_PMK_LEN, SCHEMA_VERSION, Settings,
+    SshSettings, StaticConfig, TimeSettings, VlanConfig, WebAdminSettings, WifiApSettings,
+    WifiClientSettings, WifiNetwork, WifiSettings, WireguardConfig, WireguardPeer, is_wpa_quotable,
+    validate_ntp_servers, validate_timezone_name, validate_wifi_psk,
 };
 pub use path::{json_path_get, path_segments, quote_path_segment};
 pub use store::{DEFAULT_PATH, RollbackReport, Store};

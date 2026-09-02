@@ -8,11 +8,11 @@ use mosd_settings::{
     AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ConsoleSettings,
     ContainerSettings, DEFAULT_PATH, DeviceCredentialSettings, IfaceKind, IfaceSettings,
     MigrateV0ToV1, MigrateV3ToV4, Migration, MigrationRegistry, MqttAuthSettings,
-    MqttListenSettings, MqttSettings, ProvisioningSettings, ProvisioningState, SCHEMA_VERSION,
-    Settings, SettingsError, SshSettings, StaticConfig, Store, VlanConfig, WebAdminSettings,
-    WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings, WireguardConfig, WireguardPeer,
-    encode_base64_nopad, json_path_get, migrate, parse_authorized_key, validate_api_tokens,
-    validate_authorized_keys,
+    MqttListenSettings, MqttSettings, NtpSettings, ProvisioningSettings, ProvisioningState,
+    SCHEMA_VERSION, Settings, SettingsError, SshSettings, StaticConfig, Store, TimeSettings,
+    VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
+    WireguardConfig, WireguardPeer, encode_base64_nopad, json_path_get, migrate,
+    parse_authorized_key, validate_api_tokens, validate_authorized_keys,
 };
 
 fn populated() -> Settings {
@@ -460,6 +460,15 @@ fn v3_populated() -> Settings {
                 port: 8883,
             },
             auth: MqttAuthSettings { enabled: true },
+        },
+        // Non-default for the reason `container` and `mqtt` are:
+        // MigrateV8ToV9::down discards the whole `time` table, and a fixture
+        // holding the defaults would round-trip identically either way.
+        time: TimeSettings {
+            ntp: NtpSettings {
+                servers: vec!["0.pool.ntp.org".to_string()],
+            },
+            timezone: "Europe/Berlin".to_string(),
         },
     }
 }
@@ -1178,7 +1187,8 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// A document from a build one schema AHEAD of this one -- the A/B rollback
 /// path. Its version tracks SCHEMA_VERSION + 1 and has had to move four times,
 /// to 6 when the container switch landed, to 7 for the mqtt switch, to 8 for
-/// the interface kinds and to 9 for the API token list: left behind, it stops
+/// the interface kinds, to 9 for the API token list and to 10 for the time
+/// subtree: left behind, it stops
 /// being "newer", the strip path stops running, and the test goes on passing
 /// while asserting nothing about rollback. Hence the assertion below that the
 /// stamp really is ahead of us.
@@ -1187,8 +1197,8 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// which this schema now knows, so the fixture would have asserted nothing:
 /// the whole subtree would have loaded rather than been stripped.
 fn newer_additive_document() -> String {
-    assert_eq!(SCHEMA_VERSION + 1, 9, "the fixture stamp must stay ahead");
-    r#"schema_version = 9
+    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
+    r#"schema_version = 10
 hostname = "rolled-back"
 
 [network.eth0]
@@ -1247,7 +1257,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // No amount of unknown-key stripping can make v4 parse this.
     fs::write(
         &path,
-        "schema_version = 9\n\n[hostname]\nname = \"x\"\n\n[network]\n",
+        "schema_version = 10\n\n[hostname]\nname = \"x\"\n\n[network]\n",
     )
     .unwrap();
 
@@ -1256,7 +1266,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // The written acceptance: everything is abandoned, the daemon still runs.
     assert_eq!(settings, Settings::default());
     let report = report.expect("a newer document must produce a report");
-    assert_eq!(report.from, 9);
+    assert_eq!(report.from, 10);
     assert!(report.defaulted);
 }
 
@@ -1318,10 +1328,10 @@ fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
     // The same unknown key at two depths. The strip is by name, everywhere:
     // both go, and the report records the name once per strip pass. The stamp
     // has to stay one ahead of us or the tolerant path never runs.
-    assert_eq!(SCHEMA_VERSION + 1, 9, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        r#"schema_version = 9
+        r#"schema_version = 10
 hostname = "h"
 extra = "top"
 
@@ -1384,7 +1394,7 @@ persistentKeepalive = 25
 
 /// A key only a schema AFTER v8 could carry, appended to the fixture above to
 /// make it a genuine rollback document rather than a re-stamped one.
-const V9_ONLY_KEY: &str = r#"
+const V10_ONLY_KEY: &str = r#"
 [network.wg0.wireguard.obfuscation]
 mode = "none"
 "#;
@@ -1614,10 +1624,10 @@ fn the_wireguard_subtree_holds_no_secret() {
 fn a_newer_document_keeps_every_v7_interface_kind() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    assert_eq!(SCHEMA_VERSION + 1, 9, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 9") + V9_ONLY_KEY,
+        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 10") + V10_ONLY_KEY,
     )
     .unwrap();
 

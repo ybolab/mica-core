@@ -28,7 +28,9 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use mosd_settings::{ApMode, Settings, WifiApSettings};
+use mosd_settings::{
+    ApMode, MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN, RAW_PMK_LEN, Settings, WifiApSettings,
+};
 use serde_json::json;
 
 use super::Reconciler;
@@ -80,12 +82,6 @@ const SSID_PREFIX: &str = "mos-";
 /// Characters of the device identifier a derived SSID carries; the same count
 /// the derived hostname uses.
 const SSID_ID_CHARS: usize = 8;
-/// Length of a pre-shared key given as a raw 256-bit PMK in hex.
-const RAW_PMK_LEN: usize = 64;
-/// Shortest WPA2 passphrase IEEE 802.11i allows.
-const MIN_PASSPHRASE_LEN: usize = 8;
-/// Longest WPA2 passphrase IEEE 802.11i allows.
-const MAX_PASSPHRASE_LEN: usize = 63;
 /// Highest 2.4 GHz channel number; `wifi.ap.channel` is documented as 2.4 GHz.
 const MAX_CHANNEL: u8 = 14;
 /// Shortest prefix length that still leaves a usable subnet.
@@ -263,19 +259,22 @@ fn validate_interface(interface: &str) -> Result<()> {
 ///
 /// hostapd's rules are not wpa_supplicant's: it takes the bytes after the `=`
 /// literally to the end of the line, so there is no quoting to escape into, a
-/// `"` is an ordinary character and a newline is a new directive. The predicate
-/// is therefore printable ASCII, with neither a leading nor a trailing space,
-/// because hostapd's line reader is not documented to preserve them and a
-/// silently trimmed value is a value the operator did not configure. `"` and
-/// `\` are excluded as well — neither is dangerous in a raw hostapd value, but
-/// keeping the accepted set identical to the station reconciler's means one
-/// escaping discipline across both files; the cost is that a handful of legal
-/// SSIDs take the hex form and stay just as correct.
+/// `"` is an ordinary character and a newline is a new directive. The byte set
+/// is [`mosd_settings::is_wpa_quotable`] — printable ASCII minus `"` and `\` —
+/// imported rather than restated: neither excluded byte is dangerous in a raw
+/// hostapd value, but keeping the accepted set identical to the settings
+/// validator's and the station reconciler's means one escaping discipline
+/// across both files, and a second copy of the bytes could disagree with the
+/// first. The cost is that a handful of legal SSIDs take the hex form and stay
+/// just as correct.
+///
+/// The emptiness and leading/trailing-space rules on top are AP-specific and
+/// live here: they are about hostapd's line reader, which is not documented to
+/// preserve edge spaces — a silently trimmed value is a value the operator did
+/// not configure — not about wpa_supplicant quoting.
 fn is_plain(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| (0x20..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\')
+        && mosd_settings::is_wpa_quotable(value)
         && !value.starts_with(' ')
         && !value.ends_with(' ')
 }
@@ -348,17 +347,18 @@ fn validate_country_code(country_code: &str) -> Result<()> {
 /// IEEE 802.11i defines, or contains a character a raw hostapd value cannot
 /// carry unambiguously. Unlike an SSID a passphrase has no hex form — bare hex
 /// means a raw PMK, not a passphrase — so there is nothing to fall back to.
-/// **The error deliberately does not name the value**; see the module's
-/// secret-hygiene note.
+/// **The error deliberately does not name the value, nor any property of it,
+/// its length included**: a length is a fact about a secret, and this error
+/// reaches an API client through the live-state tree and the apply-task
+/// record. See the module's secret-hygiene note.
 fn psk_directive(psk: &str) -> Result<String> {
     if psk.len() == RAW_PMK_LEN && psk.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(format!("wpa_psk={psk}"));
     }
     if !(MIN_PASSPHRASE_LEN..=MAX_PASSPHRASE_LEN).contains(&psk.len()) {
         return Err(anyhow!(
-            "the pre-shared key is {} characters; WPA2 requires \
-             {MIN_PASSPHRASE_LEN} to {MAX_PASSPHRASE_LEN}",
-            psk.len()
+            "the pre-shared key must be a WPA2 passphrase of {MIN_PASSPHRASE_LEN} to \
+             {MAX_PASSPHRASE_LEN} characters or a raw {RAW_PMK_LEN}-digit hex PMK"
         ));
     }
     if !is_plain(psk) {
@@ -1155,6 +1155,30 @@ mod tests {
                 "{good:?} is a legal WPA2 passphrase and was rejected"
             );
         }
+    }
+
+    #[test]
+    fn the_length_refusal_is_the_same_sentence_for_every_length() {
+        // Interpolating any property of the secret — its length included —
+        // would make the sentence vary with the input; an identical refusal
+        // for a short key and a long one proves the message names only the
+        // rule. The refusal reaches an API client through the live-state tree
+        // and the apply-task record, so a length in it is a disclosed fact
+        // about a secret.
+        let short = psk_directive("short7X").unwrap_err().to_string();
+        let long = psk_directive(&"y".repeat(70)).unwrap_err().to_string();
+        assert_eq!(
+            short, long,
+            "the refusal varies with the key, so it names a property of the secret"
+        );
+        assert!(
+            !short.contains('7'),
+            "the rejected key's length leaked into the refusal: {short}"
+        );
+        assert!(
+            !long.contains("70"),
+            "the rejected key's length leaked into the refusal: {long}"
+        );
     }
 
     // ---- derived SSID -----------------------------------------------------

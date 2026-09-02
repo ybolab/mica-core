@@ -68,6 +68,12 @@ trait Mosd {
     fn get_task(&self, id: &str) -> zbus::Result<String>;
     fn get_state(&self, path: &str) -> zbus::Result<String>;
     fn get_network_state(&self) -> zbus::Result<String>;
+    fn get_time_status(&self) -> zbus::Result<String>;
+    fn get_storage_status(&self) -> zbus::Result<String>;
+    fn get_system_info(&self) -> zbus::Result<String>;
+    fn get_telemetry(&self) -> zbus::Result<String>;
+    fn get_observed_network(&self) -> zbus::Result<String>;
+    fn get_failure_evidence(&self) -> zbus::Result<String>;
     fn set_transient_root_password(&self, password: &str) -> zbus::Result<String>;
     fn rotate_wireguard_key(&self, iface: &str) -> zbus::Result<String>;
     fn reboot(&self) -> zbus::Result<()>;
@@ -313,6 +319,48 @@ impl SettingsApi for BusSettings {
         let proxy = self.proxy().await?;
         let json = self
             .call("GetNetworkState", proxy.get_network_state())
+            .await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_time_status(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self.call("GetTimeStatus", proxy.get_time_status()).await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_storage_status(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call("GetStorageStatus", proxy.get_storage_status())
+            .await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_system_info(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self.call("GetSystemInfo", proxy.get_system_info()).await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_telemetry(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self.call("GetTelemetry", proxy.get_telemetry()).await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_observed_network(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call("GetObservedNetwork", proxy.get_observed_network())
+            .await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn get_failure_evidence(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call("GetFailureEvidence", proxy.get_failure_evidence())
             .await?;
         Ok(serde_json::from_str(&json)?)
     }

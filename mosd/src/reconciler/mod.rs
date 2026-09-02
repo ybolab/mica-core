@@ -9,6 +9,7 @@ mod mqtt;
 pub mod network;
 mod sshd;
 mod systemd;
+mod time;
 mod wifi_ap;
 mod wifi_client;
 
@@ -39,5 +40,6 @@ pub fn all() -> Vec<Box<dyn Reconciler>> {
         Box::new(wifi_ap::WifiApReconciler::production()),
         Box::new(container::ContainerReconciler::production()),
         Box::new(mqtt::MqttReconciler::production()),
+        Box::new(time::TimeReconciler::production()),
     ]
 }

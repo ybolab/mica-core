@@ -12,7 +12,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, OriginalUri, Path, Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, HOST, LOCATION, RETRY_AFTER, SET_COOKIE,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HOST, LOCATION, RETRY_AFTER,
+    SET_COOKIE,
 };
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
@@ -38,6 +39,7 @@ use crate::assets::serve;
 use crate::audit::{Audit, Source};
 use crate::auth::{self, GuardStore};
 use crate::bundle::{CandidateUnavailable, CustomCandidate, Installed, Rejection, Store};
+use crate::diagnostics::{self, Collector, SnapshotStore, SnapshotSummary};
 use crate::redact;
 use crate::session::{self, SessionStore};
 use crate::settings_api::{InvalidTaskPayload, SettingsApi};
@@ -62,6 +64,14 @@ pub struct AppState {
     /// Notification-fed apply-task mirror. It serves only while its
     /// `TaskChanged` subscription is live.
     task_registry: Arc<TaskRegistry>,
+    /// The diagnostic snapshot store (PLAN-052): `/mos/diagnostics` on a
+    /// device, a temporary directory in tests. A path and no syscall until
+    /// the first publish.
+    diagnostics: Arc<SnapshotStore>,
+    /// Serialises snapshot collection. One at a time: a second request while
+    /// one runs is refused (409) rather than queued, because each one reads
+    /// every mosd surface and the second would only repeat the first.
+    collecting: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -85,6 +95,8 @@ impl AppState {
             ui_selection: Arc::new(tokio::sync::Mutex::new(())),
             access_cache: Arc::new(AccessCache::new()),
             task_registry: Arc::new(TaskRegistry::new()),
+            diagnostics: Arc::new(SnapshotStore::at_default()),
+            collecting: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -176,6 +188,16 @@ impl AppState {
     #[cfg(test)]
     pub fn with_bundle_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.bundles = Arc::new(Store::new(root));
+        self
+    }
+
+    /// Root the diagnostic snapshot store somewhere else, for tests.
+    ///
+    /// Test-only for the bundle root's reason: the shipped location is
+    /// fixed and nothing configures it.
+    #[cfg(test)]
+    pub fn with_diagnostics_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.diagnostics = Arc::new(SnapshotStore::new(root));
         self
     }
 }
@@ -306,6 +328,53 @@ const V1_TRANSIENT_PASSWORD_PATH: &str = "/v1/actions/transient-root-password";
 const V1_TASKS_PATH: &str = "/v1/tasks";
 const V1_TASK_ROUTE: &str = "/v1/tasks/{id}";
 
+/// The read-only time-synchronization status (PLAN-044).
+///
+/// A fixed path like the action verbs, not a resource triple: the status is
+/// observed from timesyncd at request time, names no dot-path, and has no
+/// write counterpart — there is deliberately no route beside it that could
+/// pause or stop synchronization.
+const V1_TIME_STATUS_PATH: &str = "/v1/time/status";
+
+/// The read-only storage status (PLAN-049).
+///
+/// A fixed path on the time status's reasoning, and one more besides: this is
+/// the whole of the storage surface. There is no sibling constant here for a
+/// format, repartition, resize, wipe or mount action, and
+/// [`crate::tests`]'s route-surface scan asserts that there is not — the
+/// layout is fixed by the image assembler, and an API that could rewrite it
+/// would be a remote destructive surface with no product use.
+const V1_STORAGE_STATUS_PATH: &str = "/v1/storage/status";
+
+/// The system-information surface (PLAN-052): what this device is, in one
+/// read. A fixed path on the time status's reasoning: observed at request
+/// time, no dot-path, no write counterpart.
+const V1_SYSTEM_INFO_PATH: &str = "/v1/system/info";
+
+/// Board telemetry (PLAN-052): temperature, watchdog, reset reason. Same
+/// shape and same reasoning.
+const V1_SYSTEM_TELEMETRY_PATH: &str = "/v1/system/telemetry";
+
+/// The OBSERVED network state (PLAN-052), distinct from `/v1/network`'s
+/// desired map: carrier, addresses, lease, routes, DNS, association and the
+/// radio capabilities, and nothing from the settings tree.
+///
+/// A static segment under the prefix `/v1/network/{iface}` is declared on:
+/// the router matches the static route first, so an interface literally
+/// named `status` is not addressable through the item route. That is
+/// documented in `docs/design/diagnostics.md` and is the cost of spelling
+/// the three status surfaces the same way.
+const V1_NETWORK_STATUS_PATH: &str = "/v1/network/status";
+
+/// The diagnostic snapshot collection and its item route (PLAN-052).
+///
+/// The collection takes `GET` (list) and `POST` (collect one, bounded); the
+/// item takes `GET` (export) and `DELETE` (the explicit retention
+/// operation). There is no route that uploads a snapshot anywhere, and none
+/// that reads a source the snapshot schema does not name.
+const V1_DIAGNOSTICS_SNAPSHOTS_PATH: &str = "/v1/diagnostics/snapshots";
+const V1_DIAGNOSTICS_SNAPSHOT_ROUTE: &str = "/v1/diagnostics/snapshots/{id}";
+
 /// M8's one route.
 ///
 /// Not under `/v1/actions/`, and the reason is the reason section 2.3 item
@@ -417,6 +486,23 @@ fn api_router() -> Router<AppState> {
             get(api_v1_settings).put(api_v1_settings_write),
         )
         .route(V1_STATE_ROUTE, get(api_v1_state))
+        // GET only: the status is observed, and pausing synchronization is a
+        // control this API deliberately does not have.
+        .route(V1_TIME_STATUS_PATH, get(api_v1_time_status))
+        // GET only, and alone: the layout is fixed, so there is no verb here
+        // that could format or repartition anything.
+        .route(V1_STORAGE_STATUS_PATH, get(api_v1_storage_status))
+        .route(V1_SYSTEM_INFO_PATH, get(api_v1_system_info))
+        .route(V1_SYSTEM_TELEMETRY_PATH, get(api_v1_system_telemetry))
+        .route(V1_NETWORK_STATUS_PATH, get(api_v1_network_status))
+        .route(
+            V1_DIAGNOSTICS_SNAPSHOTS_PATH,
+            get(api_v1_diagnostics_list).post(api_v1_diagnostics_collect),
+        )
+        .route(
+            V1_DIAGNOSTICS_SNAPSHOT_ROUTE,
+            get(api_v1_diagnostics_snapshot).delete(api_v1_diagnostics_delete),
+        )
         .route(V1_TASKS_PATH, get(api_v1_tasks_list))
         .route(V1_TASK_ROUTE, get(api_v1_task))
         .route(V1_CHANGE_PASSWORD_PATH, post(api_v1_change_password))
@@ -1774,19 +1860,26 @@ pub(crate) async fn api_v1_settings(
 
 /// What the value at a writable dot-path has to be.
 ///
-/// Two shapes and not one validator per path, because the write surface admits
-/// exactly four paths on one ground: each value is *"a scalar whose validity
-/// depends on nothing else in the tree"*. A hostname, which
-/// `valid_hostname` decides on its own, and three switches, which *"cannot be
-/// invalid at all"*. Anything relational is a later milestone by construction,
-/// because a third shape here would be the first thing to need the rest of the
-/// tree to decide.
+/// Four shapes and not one validator per path, because the write surface
+/// admits its paths on one ground: each value's validity *"depends on nothing
+/// else in the tree"*. A hostname, which `valid_hostname` decides on its own;
+/// three switches, which *"cannot be invalid at all"*; and the two `time`
+/// values, whose rules ([`mosd_settings::validate_timezone_name`] and
+/// [`mosd_settings::validate_ntp_servers`]) are each self-contained — stated
+/// once, in the crate that owns the model, and only CALLED here, so this
+/// surface cannot drift from what `Settings::set` enforces. Anything
+/// relational is a later milestone by construction.
 #[derive(Clone, Copy)]
 enum ScalarShape {
     /// A JSON string [`valid_hostname`] accepts.
     Hostname,
     /// A JSON boolean, and nothing else.
     Flag,
+    /// A JSON string [`mosd_settings::validate_timezone_name`] accepts.
+    Timezone,
+    /// A JSON array of strings [`mosd_settings::validate_ntp_servers`]
+    /// accepts, written whole — the dot-path syntax has no array indexing.
+    NtpServers,
 }
 
 /// The dot-paths `PUT /api/v1/settings/{path}` writes, and the shape each
@@ -1803,11 +1896,13 @@ enum ScalarShape {
 /// undeclared `wg9` writes a physical-kind `network.wg9` carrying a WireGuard
 /// block. Every path this list does not carry is refused by
 /// [`settings_write_refusal`] before any bus call is made.
-const WRITABLE_SETTINGS: [(&str, ScalarShape); 4] = [
+const WRITABLE_SETTINGS: [(&str, ScalarShape); 6] = [
     ("hostname", ScalarShape::Hostname),
     ("access.ssh.enabled", ScalarShape::Flag),
     ("container.enabled", ScalarShape::Flag),
     ("mqtt.enabled", ScalarShape::Flag),
+    ("time.ntp.servers", ScalarShape::NtpServers),
+    ("time.timezone", ScalarShape::Timezone),
 ];
 
 /// The resource the write route's not-found envelope names, being the settings
@@ -1817,7 +1912,7 @@ const SETTINGS_COLLECTION: &str = "settings";
 /// The sentence a refusal carries when nothing more specific is true of the
 /// path: it is a real part of the tree, and this route is not how it is
 /// written.
-const WRITES_FOUR: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled` and `mqtt.enabled` and no other dot-path; every other subtree is written through its own resource route";
+const WRITES_SIX: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and `time.timezone` and no other dot-path; every other subtree is written through its own resource route";
 
 /// The shape `path` is written with, when this route writes it at all.
 fn writable_shape(path: &str) -> Option<ScalarShape> {
@@ -1844,6 +1939,26 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
             valid_hostname(name)
                 .then_some(())
                 .ok_or_else(|| HOSTNAME_RULES.to_string())
+        }
+        ScalarShape::Timezone => {
+            let zone = value
+                .as_str()
+                .ok_or_else(|| "this setting is text: the body is a JSON string".to_string())?;
+            mosd_settings::validate_timezone_name(zone)
+        }
+        ScalarShape::NtpServers => {
+            let servers: Vec<String> = value
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .ok_or_else(|| {
+                    "this setting is a list: the body is a JSON array of server strings".to_string()
+                })?;
+            mosd_settings::validate_ntp_servers(&servers)
         }
     }
 }
@@ -1891,7 +2006,7 @@ fn settings_write_refusal(path: &str) -> Response {
     // `""` and `"."` as replacing the root. It is a real path this route
     // refuses, so it takes the refusal rather than the 422 below.
     if path == "." {
-        return refused(WRITES_FOUR.to_string());
+        return refused(WRITES_SIX.to_string());
     }
     let Some(segments) = mosd_settings::path_segments(path) else {
         return api_response(
@@ -1918,7 +2033,7 @@ fn settings_write_refusal(path: &str) -> Response {
         // the subtree where a passthrough is actively destructive rather than
         // merely wrong.
         "network" => "the `network` subtree is not written through this route: it is written through the typed network routes — `PUT /api/v1/network/{iface}` and the `DELETE` beside it, `PUT /api/v1/network` for the whole map, and the peer collection under each interface. A raw write here would create an entry of the default kind for an interface that has none, and would run none of the relational rules: a bridge naming a port that does not exist would be accepted".to_string(),
-        _ => WRITES_FOUR.to_string(),
+        _ => WRITES_SIX.to_string(),
     })
 }
 
@@ -1927,8 +2042,9 @@ fn settings_write_refusal(path: &str) -> Response {
 /// A bare JSON value, the same shape `GET` answers.
 ///
 /// The schema is wide because the dot-path decides what is acceptable. What
-/// is actually accepted is narrow: a JSON string for `hostname`, `true` or
-/// `false` for the three switches. Anything else is **422**.
+/// is actually accepted is narrow: a JSON string for `hostname` and
+/// `time.timezone`, `true` or `false` for the three switches, and a JSON
+/// array of server strings for `time.ntp.servers`. Anything else is **422**.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(transparent)]
 pub(crate) struct SettingsWrite(Value);
@@ -1937,8 +2053,9 @@ pub(crate) struct SettingsWrite(Value);
 // which would invite a client to trust the echo over its own GET.
 /// Write one scalar setting by dot-path.
 ///
-/// Accepts four paths and no others: `hostname`, `access.ssh.enabled`,
-/// `container.enabled` and `mqtt.enabled`. Any other path is refused.
+/// Accepts six paths and no others: `hostname`, `access.ssh.enabled`,
+/// `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and
+/// `time.timezone`. Any other path is refused.
 ///
 /// Answers **202** with the queued task id on success. Takes a bearer token.
 #[utoipa::path(
@@ -1946,7 +2063,7 @@ pub(crate) struct SettingsWrite(Value);
     path = V1_SETTINGS_DOC,
     context_path = API,
     tag = "resources",
-    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled` or `mqtt.enabled`")),
+    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` or `time.timezone`")),
     request_body = SettingsWrite,
     responses(
         (status = 202, description = "The value was persisted and its scoped reconciliation was queued", body = TaskAccepted),
@@ -2101,6 +2218,465 @@ pub(crate) async fn api_v1_state(
 ) -> Response {
     let value = state.api.get_state(&path).await;
     resource_response(value, &path)
+}
+
+/// Read the time-synchronization status.
+///
+/// Observed from timesyncd at request time and classified by mosd:
+/// `synchronized`, `synchronizing`, `offline-degraded` (no reachable server;
+/// retries continue on the pinned 30-second policy), `invalid-source` (a
+/// server answered and its replies cannot be used), or `unknown` (timesyncd
+/// itself is not observable). Read-only: there is no route that pauses or
+/// stops synchronization.
+#[utoipa::path(
+    get,
+    path = V1_TIME_STATUS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The classified status with the evidence it rests on: the selected server, the kernel's synchronized bit, and the last sample with its offset and a `correction` member telling a clock step from ordinary drift", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_time_status(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    // No dot-path: the status names no setting, so a failure envelope carries
+    // no `path` member — the power actions' shape.
+    match state.api.get_time_status().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// Read the storage status.
+///
+/// Observed by mosd at request time: every fixed tier of the layout (the A/B
+/// rootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA at `/mnt/data`)
+/// with its device, size, mount and read-only state, its space accounting
+/// including the filesystem's reserved pool, and whatever the system recorded
+/// about its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,
+/// each with its readiness against the DATA tier it must live on; every
+/// physical medium with normalized wear where the device exports it and an
+/// explicit `unsupported` with a reason where it does not; the low-space
+/// thresholds with their hysteresis band; the reserved update workspace under
+/// `/mos/updates`; and the explicit lifecycle decisions.
+///
+/// `/mos` and `/srv` are two namespaces of ONE filesystem and share its
+/// capacity pool, so their bytes are reported once, on the `data` tier, and
+/// never a second time under each bind.
+///
+/// Read-only. There is no route that formats, repartitions, resizes, mounts
+/// or erases storage, and adding one is a product decision this surface does
+/// not anticipate.
+#[utoipa::path(
+    get,
+    path = V1_STORAGE_STATUS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_storage_status(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    // No dot-path: the status names no setting, so a failure envelope carries
+    // no `path` member — the time status's shape.
+    match state.api.get_storage_status().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// Read the system-information surface.
+///
+/// One read answers what this device is: the machine id, the board, the
+/// kernel, the distribution release, the image version with its git stamp
+/// and build date, every installed package with its version (from the
+/// shipped manifest), the booted slot and the uptime. mosd assembles it at
+/// request time from the seams that already carry each fact; nothing is
+/// restated. Every member carries `available`, and an absent fact says why.
+#[utoipa::path(
+    get,
+    path = V1_SYSTEM_INFO_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `buildDate`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_system_info(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    match state.api.get_system_info().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// Read the board telemetry.
+///
+/// Temperature (thermal zones and hwmon inputs), every watchdog device with
+/// its boot status, and the reset reason as far as the kernel's generic
+/// sources tell it: a watchdog's `cardReset` flag or a crash record in
+/// pstore. Absence is explicit — a board that exports no source reports
+/// `available: false` with the reason, never a healthy reading.
+#[utoipa::path(
+    get,
+    path = V1_SYSTEM_TELEMETRY_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "`thermal`, `watchdog` and `reset`, each carrying `available`; `reset.reason` is `watchdog`, `kernel-crash` or `unknown`, with the evidence beside it", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_system_telemetry(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    match state.api.get_telemetry().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// Read the observed network state.
+///
+/// What the network stack actually sees, distinct from the desired map at
+/// `/v1/network`: per interface the link and carrier state, the addresses
+/// with where each came from, the DHCP lease, the DNS servers, and the
+/// Wi-Fi association; the default routes; DNS reachability by a single
+/// bounded probe through resolved; and the radio and modem capabilities,
+/// with cellular explicitly unsupported. Nothing from the settings tree is
+/// in this answer, so a configured interface with no carrier reads as
+/// exactly that.
+#[utoipa::path(
+    get,
+    path = V1_NETWORK_STATUS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "`interfaces`, `defaultRoutes`, `dns`, `wifi` and `capabilities`, each carrying `available` or `supported`; absent evidence carries the reason", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_network_status(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    match state.api.get_observed_network().await {
+        Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, ""))),
+        Err(err) => bus_api_error(&err, None),
+    }
+}
+
+/// The retention and schema facts a client needs to read the collection.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotRetention {
+    /// The most snapshots kept; publishing one more removes the oldest.
+    max_snapshots: usize,
+    /// The most bytes kept across all snapshots.
+    max_total_bytes: u64,
+    /// The most bytes one snapshot may be; larger is refused.
+    max_snapshot_bytes: usize,
+    /// The snapshot schema version this build produces.
+    schema_version: u64,
+    /// The redaction schema version this build applies.
+    redaction_schema_version: u64,
+}
+
+/// The snapshot collection.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotList {
+    /// Every stored snapshot, oldest first.
+    snapshots: Vec<SnapshotSummary>,
+    /// The bounds the store enforces.
+    retention: SnapshotRetention,
+}
+
+/// The answer to a collection: the stored snapshot and how collecting went.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotCollected {
+    /// The snapshot as the list describes it.
+    snapshot: SnapshotSummary,
+    /// Wall time the collection took.
+    elapsed_millis: u64,
+    /// Per source, `ok`, `unavailable` or `timeout`.
+    sections: std::collections::BTreeMap<String, String>,
+    /// Fields the redaction schema did not name and therefore dropped.
+    dropped_fields: usize,
+    /// Fields and strings the redaction pass replaced.
+    redacted_fields: usize,
+}
+
+fn snapshot_retention() -> SnapshotRetention {
+    SnapshotRetention {
+        max_snapshots: diagnostics::MAX_SNAPSHOTS,
+        max_total_bytes: diagnostics::MAX_TOTAL_BYTES,
+        max_snapshot_bytes: diagnostics::MAX_SNAPSHOT_BYTES,
+        schema_version: diagnostics::SCHEMA_VERSION,
+        redaction_schema_version: diagnostics::REDACTION_SCHEMA_VERSION,
+    }
+}
+
+/// A store failure, as §2.4's envelope: apid's own, 500.
+fn diagnostics_io_error(err: &anyhow::Error, doing: &str) -> Response {
+    tracing::error!(error = %err, "diagnostics store: {doing} failed");
+    api_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ApiError::apid("diagnostics_io", format!("{doing} failed: {err:#}")),
+    )
+}
+
+fn snapshot_not_found(id: &str) -> Response {
+    api_response(
+        StatusCode::NOT_FOUND,
+        ApiError::apid(
+            "snapshot_not_found",
+            format!("no diagnostic snapshot `{id}`"),
+        ),
+    )
+}
+
+/// List the stored diagnostic snapshots.
+///
+/// Oldest first, each with its id, size, `collectedAt`, schema version and
+/// machine id, plus the retention bounds the store enforces.
+#[utoipa::path(
+    get,
+    path = V1_DIAGNOSTICS_SNAPSHOTS_PATH,
+    context_path = API,
+    tag = "resources",
+    responses(
+        (status = 200, description = "The stored snapshots and the retention bounds", body = SnapshotList),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "The store could not be read (`diagnostics_io`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_diagnostics_list(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    let store = Arc::clone(&state.diagnostics);
+    match tokio::task::spawn_blocking(move || store.list()).await {
+        Ok(Ok(snapshots)) => api_response(
+            StatusCode::OK,
+            SnapshotList {
+                snapshots,
+                retention: snapshot_retention(),
+            },
+        ),
+        Ok(Err(err)) => diagnostics_io_error(&err, "listing snapshots"),
+        Err(err) => diagnostics_io_error(&anyhow::anyhow!(err), "listing snapshots"),
+    }
+}
+
+/// Collect a diagnostic snapshot.
+///
+/// Reads every mosd surface the schema names — system information,
+/// telemetry, failure evidence, storage, time, observed network, live
+/// state — under a per-section timeout inside one deadline, assembles the
+/// versioned snapshot, redacts it against the allowlist schema (a field the
+/// schema does not name does not ship), and publishes it whole to the store
+/// or not at all. A source that does not answer is an absent member with
+/// the reason; the snapshot is produced regardless. Bounded on disk: the
+/// oldest snapshots are removed to stay under the retention caps.
+///
+/// Answers **201** with the stored snapshot's summary and the collection
+/// report. **409** while another collection is running.
+#[utoipa::path(
+    post,
+    path = V1_DIAGNOSTICS_SNAPSHOTS_PATH,
+    context_path = API,
+    tag = "actions",
+    responses(
+        (status = 201, description = "The snapshot was collected, redacted and published", body = SnapshotCollected),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "A collection is already running (`diagnostics_busy`)", body = ApiError),
+        (status = 500, description = "The snapshot could not be published (`diagnostics_io`): the store is unwritable or the snapshot is above the size cap; nothing was written", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_diagnostics_collect(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+) -> Response {
+    let Ok(_guard) = state.collecting.try_lock() else {
+        return api_response(
+            StatusCode::CONFLICT,
+            ApiError::apid(
+                "diagnostics_busy",
+                "a snapshot is being collected; retry when it has been published".to_string(),
+            ),
+        );
+    };
+    let collected = Collector::new(state.api.as_ref()).collect().await;
+    let store = Arc::clone(&state.diagnostics);
+    let snapshot = collected.snapshot;
+    let report = collected.report;
+    let published = tokio::task::spawn_blocking(move || store.publish(&snapshot)).await;
+    match published {
+        Ok(Ok(summary)) => {
+            state
+                .audit
+                .record("diagnostics-snapshot", "collected", &source);
+            api_response(
+                StatusCode::CREATED,
+                SnapshotCollected {
+                    snapshot: summary,
+                    elapsed_millis: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
+                    sections: report
+                        .sections
+                        .iter()
+                        .map(|(name, status)| ((*name).to_string(), status.as_str().to_string()))
+                        .collect(),
+                    dropped_fields: report.redaction.dropped_fields,
+                    redacted_fields: report.redaction.redacted_fields,
+                },
+            )
+        }
+        Ok(Err(err)) => {
+            state
+                .audit
+                .record("diagnostics-snapshot", "refused", &source);
+            diagnostics_io_error(&err, "publishing the snapshot")
+        }
+        Err(err) => diagnostics_io_error(&anyhow::anyhow!(err), "publishing the snapshot"),
+    }
+}
+
+/// Export one diagnostic snapshot.
+///
+/// The stored bytes, verbatim and already redacted, as an attachment named
+/// `mos-diagnostics-<machine id prefix>-<id>.json` so a browser saves it
+/// under a name support can file. Never cached.
+#[utoipa::path(
+    get,
+    path = V1_DIAGNOSTICS_SNAPSHOT_ROUTE,
+    context_path = API,
+    tag = "resources",
+    params(("id" = String, Path, description = "The snapshot id from the collection listing")),
+    responses(
+        (status = 200, description = "The snapshot document (`schemaVersion` names its shape); `Content-Disposition: attachment`", body = ResourceValue),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 404, description = "No such snapshot (`snapshot_not_found`)", body = ApiError),
+        (status = 500, description = "The store could not be read (`diagnostics_io`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_diagnostics_snapshot(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Ok(snapshot_id) = id.parse::<u64>() else {
+        return snapshot_not_found(&id);
+    };
+    let store = Arc::clone(&state.diagnostics);
+    match tokio::task::spawn_blocking(move || store.read(snapshot_id)).await {
+        Ok(Ok(Some(bytes))) => {
+            let machine: String = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/system/machineId/id")
+                        .and_then(Value::as_str)
+                        .map(|id| id.chars().take(8).collect())
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let disposition =
+                format!("attachment; filename=\"mos-diagnostics-{machine}-{snapshot_id}.json\"");
+            (
+                StatusCode::OK,
+                [
+                    (CONTENT_TYPE, "application/json"),
+                    (CACHE_CONTROL, CacheClass::NoStore.header_value()),
+                    (CONTENT_DISPOSITION, disposition.as_str()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Ok(Ok(None)) => snapshot_not_found(&id),
+        Ok(Err(err)) => diagnostics_io_error(&err, "reading the snapshot"),
+        Err(err) => diagnostics_io_error(&anyhow::anyhow!(err), "reading the snapshot"),
+    }
+}
+
+/// Delete one diagnostic snapshot.
+///
+/// The explicit retention operation: the store also removes the oldest to
+/// stay under its caps, and this is how an operator removes one sooner.
+/// Answers **204**; **404** when there is no such snapshot.
+#[utoipa::path(
+    delete,
+    path = V1_DIAGNOSTICS_SNAPSHOT_ROUTE,
+    context_path = API,
+    tag = "actions",
+    params(("id" = String, Path, description = "The snapshot id from the collection listing")),
+    responses(
+        (status = 204, description = "The snapshot was removed"),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 404, description = "No such snapshot (`snapshot_not_found`)", body = ApiError),
+        (status = 500, description = "The store could not be written (`diagnostics_io`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_diagnostics_delete(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    Path(id): Path<String>,
+) -> Response {
+    let Ok(snapshot_id) = id.parse::<u64>() else {
+        return snapshot_not_found(&id);
+    };
+    let store = Arc::clone(&state.diagnostics);
+    match tokio::task::spawn_blocking(move || store.delete(snapshot_id)).await {
+        Ok(Ok(true)) => {
+            state
+                .audit
+                .record("diagnostics-snapshot", "deleted", &source);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Ok(false)) => snapshot_not_found(&id),
+        Ok(Err(err)) => diagnostics_io_error(&err, "deleting the snapshot"),
+        Err(err) => diagnostics_io_error(&anyhow::anyhow!(err), "deleting the snapshot"),
+    }
 }
 
 /// The body of a successful key rotation: the public half, and nothing else.
