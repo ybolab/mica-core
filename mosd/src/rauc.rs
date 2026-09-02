@@ -388,14 +388,24 @@ fn older_install(target: &SlotStatus, booted: &SlotStatus) -> Option<bool> {
 /// changes: this paragraph is the warning, deliberately not a check.
 ///
 /// HOW WELL THE PREMISE IS ESTABLISHED, so it is relied on with its evidence
-/// and its gap both visible. VERIFIED: mosd never names a target slot —
-/// `install_bundle` below calls `InstallBundle` with the bundle path and an
-/// empty options map, no target argument, so RAUC alone selects the slot; and
-/// this repository recorded the behaviour independently of this guard, for a
-/// different feature and before it existed (`docs/design/updates.md`'s
-/// lifecycle table: the install task "is writing the other slot", authored in
-/// 98379d18). NOT VERIFIED: RAUC's own target-selection code. Nobody has read
-/// it. The invariant is relied upon here, not proven.
+/// visible. RAUC's target-selection code has been read at the pinned v1.13,
+/// and the premise survives as a CONJUNCTION whose halves are both VERIFIED.
+/// (1) RAUC only ever selects a slot it believes is inactive:
+/// `select_inactive_slot_class_member`, reached from
+/// `determine_target_install_group` (`src/install.c`), skips every slot whose
+/// state is not `ST_INACTIVE`, and no install option, config key or D-Bus
+/// argument can name a target instead. (2) Nothing here tells RAUC that the
+/// wrong slot is booted: `install_bundle` below calls `InstallBundle` with the
+/// bundle path and an empty options map, no target argument; the D-Bus install
+/// API has no boot-slot or target key to pass; and the one lever that exists,
+/// `--override-boot-slot`, is not on the install command in this build and
+/// appears nowhere in this repository. This repository also recorded the
+/// behaviour independently of this guard, for a different feature and before
+/// it existed (`docs/design/updates.md`'s lifecycle table: the install task
+/// "is writing the other slot", authored in 98379d18). It stays A PREMISE: it
+/// is established at the pinned version, and a pin bump can move it.
+/// `docs/design/recovery.md` §3 node 2 carries the reading, the function
+/// names and the recipe for re-running it.
 ///
 /// Why the property is derived rather than read: RAUC v1.13, the version
 /// `pkgs/rauc/versions.env` pins, records no boot anywhere mosd can see, and
