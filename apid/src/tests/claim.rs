@@ -158,11 +158,7 @@ impl SettingsApi for InterruptOnce {
         self.inner.get_settings(path).await
     }
 
-    async fn set_settings(
-        &self,
-        path: &str,
-        value: &serde_json::Value,
-    ) -> anyhow::Result<String> {
+    async fn set_settings(&self, path: &str, value: &serde_json::Value) -> anyhow::Result<String> {
         if path == self.path {
             let mut fired = self.fired.lock().unwrap();
             if !*fired {
@@ -274,7 +270,11 @@ async fn an_interrupted_claim_writes_nothing_and_the_retry_mints_one_identity() 
     );
     assert!(access.get("claim").is_none(), "{access}");
     assert!(access.get("apiTokens").is_none(), "{access}");
-    let device_id = api.inner.get_settings("provisioning.deviceId").await.unwrap();
+    let device_id = api
+        .inner
+        .get_settings("provisioning.deviceId")
+        .await
+        .unwrap();
 
     // The retry, on a device the interruption left exactly as it found it.
     let response = post_json(&router, "/api/v1/setup", &claim_body(), None).await;
@@ -317,7 +317,10 @@ async fn a_claim_that_committed_but_was_never_answered_is_refused_on_retry() {
 
     let first = post_json(&router, "/api/v1/setup", &claim_body(), None).await;
     assert_eq!(first.status(), StatusCode::CREATED);
-    let token = body_json(first).await["token"].as_str().unwrap().to_string();
+    let token = body_json(first).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let committed = access_of(&fake).await;
 
     let retry = post_json(&router, "/api/v1/setup", &claim_body(), None).await;
@@ -369,7 +372,10 @@ async fn a_refused_claim_is_audited_and_discloses_only_what_the_session_route_do
     assert_eq!(body_json(session).await["state"], json!("unauthenticated"));
 
     // And nothing about the credential itself.
-    let hash = fake.get_settings("access.webAdmin.password_hash").await.unwrap();
+    let hash = fake
+        .get_settings("access.webAdmin.password_hash")
+        .await
+        .unwrap();
     let hash = hash.as_str().unwrap();
     for haystack in [&headers, &body] {
         assert!(!haystack.contains(PW_SENTINEL), "{haystack}");
@@ -547,8 +553,7 @@ async fn a_bootstrap_claim_refuses_every_mutation_but_the_rotation() {
         ("POST", "/api/v1/actions/reboot", json!({})),
         ("PUT", "/api/v1/network", json!({})),
     ] {
-        let response =
-            bearer_json(&router, method, path, &token, &body.to_string()).await;
+        let response = bearer_json(&router, method, path, &token, &body.to_string()).await;
         assert_eq!(response.status(), StatusCode::CONFLICT, "{method} {path}");
         let envelope = envelope(response).await;
         assert_eq!(envelope["code"], "rotation_required", "{method} {path}");

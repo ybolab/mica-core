@@ -4762,9 +4762,7 @@ impl FromRequestParts<AppState> for ApiCredential {
                 "this route requires a stored bearer token or an authenticated browser session",
             ));
         };
-        if mutation
-            && parts.uri.path() != V1_CHANGE_PASSWORD_PATH
-            && rotation_required(state).await
+        if mutation && parts.uri.path() != V1_CHANGE_PASSWORD_PATH && rotation_required(state).await
         {
             // Reads stay open, and the password change stays open. Those two
             // exemptions are what make the bound impossible to brick a device
@@ -5463,7 +5461,10 @@ pub(crate) async fn api_v1_setup(
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    subtree.insert("webAdmin".to_string(), serde_json::json!({ "password_hash": hash }));
+    subtree.insert(
+        "webAdmin".to_string(),
+        serde_json::json!({ "password_hash": hash }),
+    );
     // Infallible: both are structs of scalars with no map keys to collide.
     subtree.insert(
         "claim".to_string(),
@@ -5827,7 +5828,9 @@ async fn change_password(
         // and is recorded as one, and this says what it additionally did to
         // the device's claim. An operator reading the trail for "when did this
         // device stop holding the credential it shipped with" greps one name.
-        state.audit.record(CLAIM_ROTATION_EVENT, "completed", source);
+        state
+            .audit
+            .record(CLAIM_ROTATION_EVENT, "completed", source);
     }
     Ok(())
 }
