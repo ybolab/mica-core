@@ -10,6 +10,7 @@ mod claim;
 mod diagnostics;
 mod power_bus;
 mod provisioning_api;
+mod reset;
 mod settings_signal;
 mod update_api;
 

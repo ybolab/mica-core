@@ -1737,6 +1737,210 @@
         }
       }
     },
+    "/api/v1/recovery/credential": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Recover the management credential: rotate, never reveal.",
+        "description": "**Presence is the authority, and the only one.** §5.2: an authenticated\nmanagement session may NOT run this flow — a session that can rotate the\ncredential it authenticated with is a session-fixation lever, and an\noperator holding a working credential needs\n`POST /api/v1/actions/change-password` rather than recovery. So the route\ntakes no credential extractor and refuses a caller that presents one.\n\n**What it does, in §5.1's order.** It MINTS a new password — it never\ndiscloses, decrypts or derives the previous secret, and there is no code\npath from here to a stored plaintext. It publishes the new one exactly\nonce, on the channel that proved presence. Only then does it commit, in ONE\nwrite of `access`: the new hash, the emptied token list, the claim record\nand the bumped generation together. Publishing first is §5.1 rule 3's\ndirection — a crash between the two must not be a self-inflicted lockout —\nso the worst outcome here is a credential the operator saw and that never\nworked, which the flow being cheap to re-run answers.\n\n**The previous credential stops working at that commit**, and so does every\nAPI token: §3's step 5 prices it, \"any client or automation holding it must\nbe re-enrolled\". Every session goes with it, for the reason a password\nchange drops them.\n\n**A device-claimed by a provisioning document is the seam P2 named.** Its\nbootstrap secret sat in plaintext on a medium, and losing it before the\nforced rotation is a §5 case rather than an `docs/design/access.md` §4.4\none. A recovery writes the claim record with the channel that claimed the\ndevice preserved and `rotationRequired` FALSE: the credential this flow\nmints was drawn by the device from `OsRng` and shown once at the device, so\nit is not a bootstrap secret, and demanding a rotation of a credential that\nwas just rotated under physical presence would be a bound with nothing left\nto protect.\n\n**An unclaimed device is refused**, pointing at `POST /api/v1/setup`. There\nis nothing to recover on a device that has no credential, and minting one\nhere would be a third channel that can claim a device —\n`mosd_settings::ClaimChannel` has exactly two members and says why.",
+        "operationId": "api_v1_recovery_credential",
+        "responses": {
+          "200": {
+            "description": "A new credential was minted and published on the channel that proved presence; the body carries no secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialRecovered"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Physical presence is not asserted (`presence_required`), or the caller is authenticated and must use `POST /api/v1/actions/change-password` instead (`authenticated_session`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device has no administrator credential to recover; claim it with `POST /api/v1/setup` (`not_claimed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reset": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Stage a reset tier.",
+        "description": "**This route stages; mosd applies.** §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, so the whole of this handler's write is\nONE `SetSettings(\"reset\")` — one `Store::save` — after which a power loss\nleaves the device either not asked or asked, never half-reset. mosd carries\nthe tier out before anything else on the next boot and clears the record.\n\n**Authority, per §2.2.** Tiers 1 and 2 are authenticated management\nactions. Tier 3 additionally requires §4 physical presence; the order it\nsits at in §3's decision tree is after credential recovery, so an operator\nwho reaches it holds a credential as well as standing at the device. There\nis no tier 4: `ResetTier` has three members, so `secure-wipe` is a body\nthis route cannot parse.\n\nA tier staged over another replaces it. Both are audited, so nothing is\nsilent, and the alternative — refusing until something un-stages the first\n— is a dead end for an operator who asked for the wrong one.",
+        "operationId": "api_v1_reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The tier is staged and runs on the next boot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetStaged"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The tier requires physical presence at the device and none is asserted (`presence_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The device was claimed with a bootstrap credential that has not been rotated (`rotation_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not this shape, or names no tier this device implements (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/session": {
       "get": {
         "tags": [
@@ -5110,6 +5314,26 @@
           }
         }
       },
+      "CredentialRecovered": {
+        "type": "object",
+        "description": "`POST /api/v1/recovery/credential` response body.\n\n**It carries no secret and there is no member it could carry one in.**\n§5.1 rule 2 returns the credential on the channel that proved presence,\nnever over the network, so the body says that a credential was minted and\nwhere it went — the operator standing at the console reads it there.",
+        "required": [
+          "mechanism",
+          "generation"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`access.device.generation` after the rotation (§5.1 rule 5).",
+            "minimum": 0
+          },
+          "mechanism": {
+            "type": "string",
+            "description": "The mechanism that proved presence and published the credential."
+          }
+        }
+      },
       "CustomUiStatus": {
         "type": "object",
         "required": [
@@ -5509,6 +5733,39 @@
           }
         },
         "additionalProperties": false
+      },
+      "ResetRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/reset` request body.",
+        "required": [
+          "tier"
+        ],
+        "properties": {
+          "tier": {
+            "type": "string",
+            "description": "Which tier. §2.2: \"A tier names itself in the request and in the audit\nrecord. There is no parameterless reset.\"",
+            "example": "configuration"
+          }
+        }
+      },
+      "ResetStaged": {
+        "type": "object",
+        "description": "`POST /api/v1/reset` response body.",
+        "required": [
+          "tier",
+          "applies"
+        ],
+        "properties": {
+          "applies": {
+            "type": "string",
+            "description": "When it runs. Always `next-boot`: §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, and mosd applies it before anything\nelse on the next boot."
+          },
+          "tier": {
+            "type": "string",
+            "description": "The tier that is now staged.",
+            "example": "configuration"
+          }
+        }
       },
       "ResourceValue": {
         "description": "The body of a resource `GET`: the value at the dot-path, as mosd holds it.\n\nAny JSON value: a dot-path can name a subtree, an array or a scalar.\n\nSecrets are replaced by the string `\"<redacted>\"`, which a client can\nreceive anywhere inside the body. Every field named `psk`, `passwordHash`,\n`password_hash`, `hash` or `privateKey` carries the sentinel instead of its\nvalue, at any depth and inside arrays, and so does the whole body when the\ndot-path names one of those fields directly.\n\nThe sentinel is read-only: writing it back is refused at **422** rather\nthan stored, because storing it would destroy the credential."
