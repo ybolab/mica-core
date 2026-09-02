@@ -11,10 +11,13 @@
 import { Route as rootRouteImport } from './app/routes/__root'
 import { Route as IndexRouteImport } from './app/routes/index'
 import { Route as AccessRouteImport } from './app/routes/access'
+import { Route as DiagnosticsRouteImport } from './app/routes/diagnostics'
 import { Route as NetworkRouteImport } from './app/routes/network'
+import { Route as NetworkStatusRouteImport } from './app/routes/network-status'
 import { Route as ServicesRouteImport } from './app/routes/services'
 import { Route as StorageRouteImport } from './app/routes/storage'
 import { Route as SystemRouteImport } from './app/routes/system'
+import { Route as SystemInformationRouteImport } from './app/routes/system-information'
 import { Route as TimeRouteImport } from './app/routes/time'
 import { Route as SystemUiRouteImport } from './app/routes/system_.ui'
 
@@ -28,9 +31,19 @@ const AccessRoute = AccessRouteImport.update({
   path: '/access',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DiagnosticsRoute = DiagnosticsRouteImport.update({
+  id: '/diagnostics',
+  path: '/diagnostics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const NetworkRoute = NetworkRouteImport.update({
   id: '/network',
   path: '/network',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NetworkStatusRoute = NetworkStatusRouteImport.update({
+  id: '/network-status',
+  path: '/network-status',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ServicesRoute = ServicesRouteImport.update({
@@ -48,6 +61,11 @@ const SystemRoute = SystemRouteImport.update({
   path: '/system',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SystemInformationRoute = SystemInformationRouteImport.update({
+  id: '/system-information',
+  path: '/system-information',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TimeRoute = TimeRouteImport.update({
   id: '/time',
   path: '/time',
@@ -62,20 +80,26 @@ const SystemUiRoute = SystemUiRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/access': typeof AccessRoute
+  '/diagnostics': typeof DiagnosticsRoute
   '/network': typeof NetworkRoute
+  '/network-status': typeof NetworkStatusRoute
   '/services': typeof ServicesRoute
   '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
+  '/system-information': typeof SystemInformationRoute
   '/time': typeof TimeRoute
   '/system/ui': typeof SystemUiRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/access': typeof AccessRoute
+  '/diagnostics': typeof DiagnosticsRoute
   '/network': typeof NetworkRoute
+  '/network-status': typeof NetworkStatusRoute
   '/services': typeof ServicesRoute
   '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
+  '/system-information': typeof SystemInformationRoute
   '/time': typeof TimeRoute
   '/system/ui': typeof SystemUiRoute
 }
@@ -83,10 +107,13 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/access': typeof AccessRoute
+  '/diagnostics': typeof DiagnosticsRoute
   '/network': typeof NetworkRoute
+  '/network-status': typeof NetworkStatusRoute
   '/services': typeof ServicesRoute
   '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
+  '/system-information': typeof SystemInformationRoute
   '/time': typeof TimeRoute
   '/system_/ui': typeof SystemUiRoute
 }
@@ -95,30 +122,39 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/access'
+    | '/diagnostics'
     | '/network'
+    | '/network-status'
     | '/services'
     | '/storage'
     | '/system'
+    | '/system-information'
     | '/time'
     | '/system/ui'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/access'
+    | '/diagnostics'
     | '/network'
+    | '/network-status'
     | '/services'
     | '/storage'
     | '/system'
+    | '/system-information'
     | '/time'
     | '/system/ui'
   id:
     | '__root__'
     | '/'
     | '/access'
+    | '/diagnostics'
     | '/network'
+    | '/network-status'
     | '/services'
     | '/storage'
     | '/system'
+    | '/system-information'
     | '/time'
     | '/system_/ui'
   fileRoutesById: FileRoutesById
@@ -126,10 +162,13 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccessRoute: typeof AccessRoute
+  DiagnosticsRoute: typeof DiagnosticsRoute
   NetworkRoute: typeof NetworkRoute
+  NetworkStatusRoute: typeof NetworkStatusRoute
   ServicesRoute: typeof ServicesRoute
   StorageRoute: typeof StorageRoute
   SystemRoute: typeof SystemRoute
+  SystemInformationRoute: typeof SystemInformationRoute
   TimeRoute: typeof TimeRoute
   SystemUiRoute: typeof SystemUiRoute
 }
@@ -150,11 +189,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccessRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/diagnostics': {
+      id: '/diagnostics'
+      path: '/diagnostics'
+      fullPath: '/diagnostics'
+      preLoaderRoute: typeof DiagnosticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/network': {
       id: '/network'
       path: '/network'
       fullPath: '/network'
       preLoaderRoute: typeof NetworkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/network-status': {
+      id: '/network-status'
+      path: '/network-status'
+      fullPath: '/network-status'
+      preLoaderRoute: typeof NetworkStatusRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/services': {
@@ -178,6 +231,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SystemRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/system-information': {
+      id: '/system-information'
+      path: '/system-information'
+      fullPath: '/system-information'
+      preLoaderRoute: typeof SystemInformationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/time': {
       id: '/time'
       path: '/time'
@@ -198,10 +258,13 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccessRoute: AccessRoute,
+  DiagnosticsRoute: DiagnosticsRoute,
   NetworkRoute: NetworkRoute,
+  NetworkStatusRoute: NetworkStatusRoute,
   ServicesRoute: ServicesRoute,
   StorageRoute: StorageRoute,
   SystemRoute: SystemRoute,
+  SystemInformationRoute: SystemInformationRoute,
   TimeRoute: TimeRoute,
   SystemUiRoute: SystemUiRoute,
 }

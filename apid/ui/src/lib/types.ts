@@ -125,6 +125,176 @@ export interface StorageStatus {
   lifecycle: Record<string, string>
 }
 
+export interface AvailableFact {
+  available: boolean
+  detail?: string
+}
+
+export interface SystemInformation {
+  machineId: AvailableFact & { id?: string }
+  board: AvailableFact & { model?: string; source?: string }
+  kernel: AvailableFact & { release?: string; version?: string }
+  release: AvailableFact & {
+    name?: string
+    id?: string
+    version?: string
+    versionId?: string
+    prettyName?: string
+    buildId?: string
+    imageId?: string
+    imageVersion?: string
+  }
+  system: AvailableFact & {
+    version?: string
+    package?: string
+    gitStamp?: {
+      commit?: string
+      dirty?: boolean
+      revision?: number
+      consistent: boolean
+      stamps: string[]
+    }
+    buildEpoch?: number
+    buildDate?: string
+  }
+  daemon: AvailableFact & { name?: string; version?: string; commit?: string | null }
+  packages: AvailableFact & {
+    count?: number
+    mosCount?: number
+    malformedRows?: number
+    truncated?: boolean
+    entries?: { name: string; version: string; architecture: string; mos: boolean }[]
+  }
+  slot: AvailableFact & {
+    booted?: string
+    bootname?: string
+    bundleVersion?: string
+    bootStatus?: string
+    primary?: boolean
+  }
+  uptime: AvailableFact & { seconds?: number }
+}
+
+export interface ObservedAddress {
+  family?: string
+  address?: string
+  prefixLength?: number
+  scope?: string
+  configSource?: string
+}
+
+export interface ObservedDhcp extends AvailableFact {
+  state?: string
+  inferred?: boolean
+  lease?: {
+    address?: string
+    prefixLength?: number
+    server?: string
+    router?: string
+    lifetimeSeconds?: number
+  }
+}
+
+export interface ObservedNetworkInterface {
+  name: string
+  index?: number
+  kind?: string
+  type?: string
+  driver?: string
+  mtu?: number
+  link: {
+    administrativeState?: string
+    operationalState?: string
+    carrierState?: string
+    carrier?: boolean
+    onlineState?: string
+    addressState?: string
+  }
+  hardwareAddress?: string
+  addresses: ObservedAddress[]
+  dhcp: ObservedDhcp
+  dns: (string | { address?: string })[]
+  wifi?: AvailableFact & {
+    state?: string
+    associated?: boolean
+    ssid?: string
+    bssid?: string
+    frequencyMhz?: number
+    keyManagement?: string
+    rssiDbm?: number
+    linkSpeedMbps?: number
+  }
+}
+
+export interface ObservedNetworkState {
+  interfaces: AvailableFact & { count: number; entries: ObservedNetworkInterface[] }
+  defaultRoutes: AvailableFact & {
+    count: number
+    entries: {
+      family?: string
+      gateway?: string
+      interface?: string
+      interfaceIndex?: number
+      metric?: number
+      protocol?: string
+      table?: number
+      configSource?: string
+    }[]
+  }
+  dns: AvailableFact & {
+    linkServers: string[]
+    resolverServers: string[]
+    probe?: { name: string; reachable: boolean; result: string; detail?: string }
+  }
+  wifi: AvailableFact & {
+    associations: {
+      interface?: string
+      state?: string
+      associated?: boolean
+      ssid?: string
+      bssid?: string
+      frequencyMhz?: number
+      keyManagement?: string
+      rssiDbm?: number
+      linkSpeedMbps?: number
+    }[]
+  }
+  capabilities: {
+    wifi: { supported: boolean; interfaces: string[] }
+    bluetooth: { supported: boolean; adapters: string[] }
+    cellular: { supported: boolean; interfaces: string[] }
+  }
+}
+
+export interface SnapshotSummary {
+  id: number
+  bytes: number
+  collectedAt?: string | null
+  machineId?: string | null
+  schemaVersion?: number | null
+}
+
+export interface SnapshotRetention {
+  maxSnapshots: number
+  maxTotalBytes: number
+  maxSnapshotBytes: number
+  schemaVersion: number
+  redactionSchemaVersion: number
+}
+
+export interface SnapshotList {
+  snapshots: SnapshotSummary[]
+  retention: SnapshotRetention
+}
+
+export interface SnapshotCollected {
+  snapshot: SnapshotSummary
+  elapsedMillis: number
+  sections: Record<string, string>
+  droppedFields: number
+  redactedFields: number
+}
+
 export interface Meta {
   api: string
   settingsSchemaVersion: number

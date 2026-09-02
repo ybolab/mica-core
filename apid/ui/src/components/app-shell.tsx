@@ -1,7 +1,7 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Activity, Boxes, Cable, Clock3, HardDrive, KeyRound, LogOut, Settings2 } from 'lucide-react'
+import { Activity, Boxes, Cable, Clock3, FileText, HardDrive, Info, KeyRound, LogOut, Settings2 } from 'lucide-react'
 import { api, rememberSession } from '@/lib/api'
 import { sessionKey } from '@/components/auth'
 import { Button } from '@/components/ui/button'
@@ -10,10 +10,13 @@ import { Preferences } from '@/components/preferences'
 const nav = [
   { to: '/' as const, label: 'shell.nav.overview' as const, icon: Activity },
   { to: '/network' as const, label: 'shell.nav.network' as const, icon: Cable },
+  { to: '/network-status' as const, label: 'shell.nav.observedNetwork' as const, icon: Cable },
   { to: '/services' as const, label: 'shell.nav.services' as const, icon: Boxes },
   { to: '/access' as const, label: 'shell.nav.access' as const, icon: KeyRound },
   { to: '/time' as const, label: 'shell.nav.time' as const, icon: Clock3 },
   { to: '/storage' as const, label: 'shell.nav.storage' as const, icon: HardDrive },
+  { to: '/system-information' as const, label: 'shell.nav.systemInformation' as const, icon: Info },
+  { to: '/diagnostics' as const, label: 'shell.nav.diagnostics' as const, icon: FileText },
   { to: '/system' as const, label: 'shell.nav.system' as const, icon: Settings2 },
 ]
 
