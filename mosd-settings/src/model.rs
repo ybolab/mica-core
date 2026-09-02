@@ -657,12 +657,12 @@ pub const DEVICE_ID_LEN: usize = 32;
 /// The shortest administrator bootstrap password a provisioning document may
 /// carry.
 ///
-/// The same floor apid enforces on `POST /api/v1/setup` and
-/// `POST /api/v1/actions/change-password` (its `MIN_PASSWORD_BYTES`). It is
-/// stated here because those two are spelled inside apid, which mosd does not
-/// link; this crate is the one both binaries do share, so it is the place a
-/// later change can fold them onto one constant. Until that happens there are
-/// two statements of one rule, and this comment is the record of it.
+/// **The one statement of the floor**, for the provisioning document and for
+/// apid's `POST /api/v1/setup` and `POST /api/v1/actions/change-password`
+/// alike. apid used to spell its own `MIN_PASSWORD_BYTES = 8` beside this one,
+/// with each comment naming the other; it now reads this constant instead.
+/// This crate is the one both binaries link, which is why the bound lives
+/// here rather than in either of them.
 pub const MIN_ADMIN_PASSWORD_LEN: usize = 8;
 
 /// Refuse a `provisioning.deviceId` that is not the identifier

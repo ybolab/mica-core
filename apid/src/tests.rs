@@ -6,6 +6,7 @@
 //! assert lives below the fake backend's trait.
 
 mod broken_classes;
+mod claim;
 mod diagnostics;
 mod power_bus;
 mod provisioning_api;
@@ -7066,15 +7067,16 @@ async fn the_setup_route_is_the_one_api_route_that_takes_no_credential() {
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-// The API records the same §6 event the wizard does, and the password reaches
-// no line of the trail.
+// The route records the CLAIM, and the password reaches no line of the trail.
 //
-// The same event name on both surfaces because it is the same event: §6's
-// trail says what happened to the device, not which surface asked. The token
-// is checked out of the log for the reason the password is — it is a
-// credential, and the response body is the only place it may appear.
+// The event names the transition and not the route, because §6's trail says
+// what happened to the device: this route and a provisioning document produce
+// the same claim, so a name like `setup` would have described the door rather
+// than what went through it. The token is checked out of the log for the
+// reason the password is — it is a credential, and the response body is the
+// only place it may appear.
 #[tokio::test]
-async fn the_api_setup_route_records_the_wizards_own_audit_event() {
+async fn the_api_setup_route_records_the_claim_and_no_credential() {
     let dir = TempDir::new().unwrap();
     let fake = Arc::new(FakeSettings::new(unconfigured_tree()));
     let router = app(AppState::new(fake, SIGNING_KEY).with_persistence(dir.path()));
@@ -7089,7 +7091,7 @@ async fn the_api_setup_route_records_the_wizards_own_audit_event() {
 
     assert_eq!(
         audit_events(&audit_lines(dir.path())),
-        [("setup".to_string(), "completed".to_string())]
+        [("claim".to_string(), "completed".to_string())]
     );
     let raw = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
     for secret in ["first-boot-pw", token.as_str()] {

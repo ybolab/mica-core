@@ -27,13 +27,14 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use mosd_settings::{
-    ApiToken, AuthorizedKey, IfaceKind, IfaceSettings, SettingsError, WifiNetwork, WireguardPeer,
-    parse_authorized_key, quote_path_segment, validate_api_tokens, validate_authorized_keys,
+    ApiToken, AuthorizedKey, ClaimChannel, ClaimSettings, IfaceKind, IfaceSettings,
+    MIN_ADMIN_PASSWORD_LEN, SettingsError, WifiNetwork, WireguardPeer, parse_authorized_key,
+    quote_path_segment, validate_api_tokens, validate_authorized_keys,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::access_cache::AccessCache;
+use crate::access_cache::{ACCESS_PATH, AccessCache};
 use crate::assets::mime::CacheClass;
 use crate::assets::serve;
 use crate::audit::{Audit, Source};
@@ -398,6 +399,14 @@ pub(crate) const V1_PROVISIONING_STATUS_PATH: &str = "/v1/provisioning/status";
 /// Browser authentication state. Unlike the old HTML login form, every
 /// operation stays inside the reserved JSON API surface.
 const V1_SESSION_PATH: &str = "/v1/session";
+
+/// How this device was claimed, and whether its credential must be rotated.
+///
+/// A fixed path and a `GET` alone: a claim is caused by
+/// [`V1_SETUP_PATH`] or by a provisioning document, never by a write here.
+/// Beside `/v1/session` rather than under it because it describes the DEVICE
+/// and not the browser: the answer is the same for a bearer client.
+const V1_CLAIM_PATH: &str = "/v1/claim";
 const V1_UI_PATH: &str = "/v1/ui";
 const V1_UI_ACTIVE_PATH: &str = "/v1/ui/active";
 const V1_UI_BUNDLES_PATH: &str = "/v1/ui/bundles";
@@ -481,6 +490,7 @@ fn api_router() -> Router<AppState> {
                 .post(api_v1_session_create)
                 .delete(api_v1_session_delete),
         )
+        .route(V1_CLAIM_PATH, get(api_v1_claim))
         .route(V1_UI_PATH, get(api_v1_ui_status))
         .route(
             V1_UI_BUNDLES_PATH,
@@ -4703,6 +4713,12 @@ fn mosd_unreachable(err: &anyhow::Error) -> (StatusCode, ApiError) {
 /// also present its `X-CSRF-Token` value. Keeping the check in the extractor
 /// makes it impossible for a newly added authenticated mutation to forget the
 /// browser-side protection.
+///
+/// The forced rotation that bounds a bootstrap claim is enforced here for the
+/// same reason and by the same argument: it applies to every authenticated
+/// mutation the API serves, so it belongs in the one place every authenticated
+/// mutation already passes through, rather than in a list of routes that a
+/// later one can be added outside of.
 pub(crate) enum ApiCredential {
     Bearer,
     Session(String),
@@ -4715,16 +4731,15 @@ impl FromRequestParts<AppState> for ApiCredential {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if bearer_is_stored(state, &parts.headers).await {
-            return Ok(Self::Bearer);
-        }
-        if let Some(cookie) = session::cookie_from_headers(&parts.headers)
+        let mutation = matches!(
+            parts.method,
+            Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+        );
+        let credential = if bearer_is_stored(state, &parts.headers).await {
+            Self::Bearer
+        } else if let Some(cookie) = session::cookie_from_headers(&parts.headers)
             && state.sessions.verify(&cookie)
         {
-            let mutation = matches!(
-                parts.method,
-                Method::POST | Method::PUT | Method::PATCH | Method::DELETE
-            );
             if mutation {
                 let presented = parts
                     .headers
@@ -4741,11 +4756,42 @@ impl FromRequestParts<AppState> for ApiCredential {
                     ));
                 }
             }
-            return Ok(Self::Session(cookie));
+            Self::Session(cookie)
+        } else {
+            return Err(not_authenticated(
+                "this route requires a stored bearer token or an authenticated browser session",
+            ));
+        };
+        if mutation
+            && parts.uri.path() != V1_CHANGE_PASSWORD_PATH
+            && rotation_required(state).await
+        {
+            // Reads stay open, and the password change stays open. Those two
+            // exemptions are what make the bound impossible to brick a device
+            // with: the operator holding the bootstrap credential can always
+            // see WHY they were refused (`GET /api/v1/claim`) and can always
+            // do the one thing that clears it. Everything else waits.
+            //
+            // The rejection is built here rather than by the handler because
+            // the handler is never reached; a refused mutation writes nothing
+            // by construction and not by each route remembering to.
+            let Source(source) = Source::from_request_parts(parts, state)
+                .await
+                .expect("the source extractor is infallible");
+            state.audit.record(CLAIM_ROTATION_EVENT, "refused", &source);
+            return Err(api_response(
+                StatusCode::CONFLICT,
+                ApiError::apid(
+                    "rotation_required",
+                    "this device was claimed with a bootstrap credential that has not been \
+                     rotated; change the administrator password with \
+                     `POST /api/v1/actions/change-password` before any other write"
+                        .to_string(),
+                )
+                .at("access.claim"),
+            ));
         }
-        Err(not_authenticated(
-            "this route requires a stored bearer token or an authenticated browser session",
-        ))
+        Ok(credential)
     }
 }
 
@@ -4844,28 +4890,22 @@ async fn healthz() -> &'static str {
 const HOSTNAME_RULES: &str =
     "Hostname must be 1-63 letters, digits or hyphens and must not start or end with a hyphen.";
 
-/// The admin-password floor, in bytes, for every surface that enforces it.
-///
-/// It was spelled `len() < 8` inline at two call sites -- the setup wizard's
-/// form handler and [`change_password`] -- and M8 adds a third enforcer.
-/// A third copy is what the rotate-key route below argues against in the
-/// general case: copies of one rule can disagree, and here disagreeing would
-/// mean one surface accepting a credential another would refuse. So the number
-/// lives once and the three call sites read it.
-///
-/// The wording each surface shows is *not* shared, and that is deliberate:
-/// the HTML pages say "at least 8 characters" to a human and the API says it
-/// in §2.4's envelope. What must not differ is the bound.
-const MIN_PASSWORD_BYTES: usize = 8;
-
-/// Whether an admin password is under [`MIN_PASSWORD_BYTES`].
+/// Whether an admin password is under [`MIN_ADMIN_PASSWORD_LEN`].
 ///
 /// Bytes and not characters, which is what every call site already measured:
 /// `str::len` is the byte length, so a password of eight non-ASCII characters
 /// was already over the floor before this function existed. Named rather than
 /// inlined so the comparison, and not only the number, has one spelling.
+///
+/// The number itself is [`mosd_settings::MIN_ADMIN_PASSWORD_LEN`] and no
+/// longer a copy of it. apid used to state its own `MIN_PASSWORD_BYTES = 8`
+/// beside mosd's, with a comment in each naming the other; two statements of
+/// one rule agree with each other right up until one of them moves, and the
+/// thing they would disagree about is whether a credential this device
+/// accepts is one it will keep accepting. `mosd-settings` is the crate both
+/// binaries link, so it is where the bound lives.
 fn password_under_floor(password: &str) -> bool {
-    password.len() < MIN_PASSWORD_BYTES
+    password.len() < MIN_ADMIN_PASSWORD_LEN
 }
 
 /// `^[a-zA-Z0-9._-]{1,15}$`
@@ -5209,6 +5249,12 @@ pub(crate) async fn api_v1_setup(
         Err(err) => return bus_api_error(&err, Some("access")),
     };
     if password_hash(&access).is_some() {
+        // A refused claim is audited, and it is the more interesting record of
+        // the two: a claim can only ever succeed once, so every later attempt
+        // is either an operator who lost track of a device or somebody probing
+        // one. §6's line carries the peer address, which is the whole of what
+        // makes the record useful.
+        state.audit.record(CLAIM_EVENT, "refused", &source);
         return api_response(
             StatusCode::CONFLICT,
             ApiError::apid(
@@ -5233,7 +5279,7 @@ pub(crate) async fn api_v1_setup(
             StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::apid(
                 "validation_failed",
-                format!("the admin password must be at least {MIN_PASSWORD_BYTES} bytes"),
+                format!("the admin password must be at least {MIN_ADMIN_PASSWORD_LEN} bytes"),
             )
             .at("access.webAdmin"),
         );
@@ -5346,10 +5392,10 @@ pub(crate) async fn api_v1_setup(
         }
     };
 
-    // The writes, in the order that fails safe. `access.webAdmin` is written
-    // third and not first: it is the write that takes the device out of setup
-    // mode, so a failure before it leaves the wizard reachable and a failure
-    // after it leaves a device an operator can still sign into.
+    // The writes. `hostname` and `network` come first and are their own calls:
+    // neither takes the device out of the unclaimed state, so a failure in
+    // either leaves an unclaimed, still-claimable device and the caller may
+    // simply post the same body again.
     if let Some(hostname) = request.hostname.as_deref()
         && let Err(err) = state
             .api
@@ -5365,18 +5411,27 @@ pub(crate) async fn api_v1_setup(
         // interfaces are still one write and not N chances to half-apply.
         return *response;
     }
-    let value = serde_json::json!({ "password_hash": hash });
-    if let Err(err) = state.api.set_settings("access.webAdmin", &value).await {
-        return bus_api_error(&err, Some("access.webAdmin"));
-    }
-    // The device just left setup mode, and the gate must not keep believing
-    // otherwise from a cached pre-write snapshot -- the wizard's own reasoning.
-    state.access_cache.invalidate();
-    // Recorded once the admin password exists, which is the moment the device
-    // leaves setup mode. The same event name the wizard records, because it is
-    // the same event: §6's trail says what happened to the device, not which
-    // surface asked.
-    state.audit.record("setup", "completed", &source);
+
+    // The claim itself, as ONE write of the whole `access` subtree.
+    //
+    // The credential, the record of how the device was claimed and the minted
+    // token are three keys of one subtree and they commit together. mosd turns
+    // one `SetSettings` into one `Settings::set` and one `Store::save`, and
+    // `Store::save` commits by rename -- which is
+    // `docs/design/provisioning.md` §4.1.3's argument, held here by the same
+    // construction. A power loss therefore leaves the device fully unclaimed
+    // or fully claimed, and never a credential without its token or a token
+    // without its record.
+    //
+    // It used to be two writes, `access.webAdmin` then `access.apiTokens`,
+    // ordered so that the token write was the only one whose failure left a
+    // configured device. That ordering was the best a two-write claim could
+    // do; one write does not need it.
+    //
+    // The subtree read at the top of this handler is edited in place rather
+    // than rebuilt, so every key this route has no opinion about -- `ssh`,
+    // `console`, the first-boot `device` credential -- is written back exactly
+    // as it was read.
     let mut tokens = tokens;
     tokens.push(ApiToken {
         id: minted.id,
@@ -5384,13 +5439,54 @@ pub(crate) async fn api_v1_setup(
         hash: minted.hash,
         created: device_clock_seconds(),
     });
-    if let Err(response) = write_tokens(&state, &tokens).await {
-        // Last, so this is the only write whose failure leaves a configured
-        // device: the operator signs in with the password they just set and
-        // mints a token from the pane. Every earlier failure left the device
-        // in setup mode.
-        return *response;
+    // The same validator mosd runs, so a list this route accepts is one the
+    // store will accept too -- [`write_tokens`]'s check, which the whole-subtree
+    // write does not go through.
+    if let Err(err) = validate_api_tokens(&tokens) {
+        return api_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::apid("validation_failed", key_error_message(&err)).at(API_TOKENS_PATH),
+        );
     }
+    let claim = ClaimSettings {
+        via: ClaimChannel::Setup,
+        at: device_clock_seconds(),
+        // A password the caller chose at this moment and posted over the
+        // management API is not a bootstrap secret: it was never written onto
+        // a medium and never left with a device (`docs/design/access.md` §4.4).
+        rotation_required: false,
+    };
+    // A subtree that is not an object is a tree no `Settings` produced, so
+    // there is nothing in it to preserve; an empty map is what this route
+    // would have written into anyway.
+    let mut subtree = match access {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    subtree.insert("webAdmin".to_string(), serde_json::json!({ "password_hash": hash }));
+    // Infallible: both are structs of scalars with no map keys to collide.
+    subtree.insert(
+        "claim".to_string(),
+        serde_json::to_value(claim).expect("the claim record serializes"),
+    );
+    subtree.insert(
+        "apiTokens".to_string(),
+        serde_json::to_value(&tokens).expect("api tokens serialize"),
+    );
+    if let Err(err) = state
+        .api
+        .set_settings(ACCESS_PATH, &Value::Object(subtree))
+        .await
+    {
+        return bus_api_error(&err, Some(ACCESS_PATH));
+    }
+    // The device just left setup mode, and the gate must not keep believing
+    // otherwise from a cached pre-write snapshot.
+    state.access_cache.invalidate();
+    // Recorded once the credential exists, which is the moment the device is
+    // claimed. §6's trail says what happened to the device, not which surface
+    // asked, so the event names the transition and not the route.
+    state.audit.record(CLAIM_EVENT, "completed", &source);
     let session = state.sessions.create();
     (
         StatusCode::CREATED,
@@ -5407,6 +5503,192 @@ pub(crate) async fn api_v1_setup(
         }),
     )
         .into_response()
+}
+
+// The claim lifecycle
+
+/// The §6 event name for the unclaimed → claimed transition.
+///
+/// Named for the transition rather than for the route, because both channels
+/// that can cause it produce the same state and §6's trail says what happened
+/// to the device. Its outcomes are `completed` and `refused`, which is the
+/// grammar `login` and `custom-ui-upload` already use; the ROTATION that bounds
+/// a bootstrap claim is a different action and carries its own name
+/// ([`CLAIM_ROTATION_EVENT`]), the way `update-mark` and `update-rollback` are
+/// two names rather than one with two outcomes.
+const CLAIM_EVENT: &str = "claim";
+
+/// The §6 event name for the rotation that discharges a bootstrap claim.
+///
+/// Outcomes: `completed` when the bootstrap credential is replaced, `refused`
+/// when a mutation is turned away because it has not been.
+const CLAIM_ROTATION_EVENT: &str = "claim-rotation";
+
+/// The claim record stored under `access.claim`, when the subtree carries one
+/// this build can read.
+///
+/// A record that does not parse is `None` and therefore reads as a claim by
+/// provisioning document, which is the fail-safe direction: the consequence is
+/// that a rotation is asked for, never that one is excused.
+fn stored_claim(access: &Value) -> Option<ClaimSettings> {
+    serde_json::from_value(access.get("claim")?.clone()).ok()
+}
+
+/// `GET /api/v1/claim` response body.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClaimStatus {
+    /// `unclaimed` or `claimed`.
+    state: &'static str,
+    /// Which channel minted the administrator credential: `setup` or
+    /// `provisioning-document`. Absent while the device is unclaimed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    via: Option<ClaimChannel>,
+    /// The device clock's reading when the claim committed, seconds since the
+    /// UNIX epoch. **A label, never a deadline** — the reading
+    /// `access.apiTokens[].created` is. Absent while the device is unclaimed,
+    /// and absent for a claim by document that predates any recorded import.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at: Option<u64>,
+    /// Whether the claiming credential is still the bootstrap secret it
+    /// arrived as. While this is true the device serves reads and refuses
+    /// every authenticated mutation but the password change that clears it.
+    rotation_required: bool,
+}
+
+/// The claim, projected from the settings tree.
+///
+/// **One truth, read two ways.** `access.webAdmin` is what makes a device
+/// claimed and always was; this adds the part it cannot state. A claim through
+/// `POST /api/v1/setup` writes `access.claim` in the same save as the
+/// credential, so its record is read back verbatim. A claim by provisioning
+/// document writes no record — mosd's importer is the one writer that does not,
+/// deliberately — and is recognised by the absence:
+///
+/// - only two writers can create the FIRST `access.webAdmin` on a device that
+///   has none, this route and the importer, because every other writer of that
+///   path is authenticated and an unclaimed device has no credential to
+///   authenticate with;
+/// - the importer refuses to apply a document at all once `access.webAdmin`
+///   exists (`docs/design/provisioning.md` §4.1.4), so if a document applied
+///   AND a credential exists AND no record does, that document is what created
+///   it.
+///
+/// The `provisioning` subtree is read only in that case, and it is exactly the
+/// case whose mutations are about to be refused, so the ordinary claimed
+/// device pays no second bus call. A `provisioning` read that FAILS answers
+/// "not claimed by document": the failure direction here is open, for
+/// `docs/design/access.md` §6's reason — the alternative to a wrong guess is
+/// an appliance no operator can reach.
+async fn claim_status(state: &AppState, access: &Value) -> ClaimStatus {
+    if password_hash(access).is_none() {
+        return ClaimStatus {
+            state: "unclaimed",
+            via: None,
+            at: None,
+            rotation_required: false,
+        };
+    }
+    if let Some(claim) = stored_claim(access) {
+        return ClaimStatus {
+            state: "claimed",
+            via: Some(claim.via),
+            at: Some(claim.at),
+            rotation_required: claim.rotation_required,
+        };
+    }
+    let document = match state.api.get_settings("provisioning").await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(error = %err, "reading `provisioning` for the claim record failed");
+            return ClaimStatus {
+                state: "claimed",
+                via: None,
+                at: None,
+                rotation_required: false,
+            };
+        }
+    };
+    let applied = document
+        .get("document")
+        .and_then(|record| record.get("appliedDigest"))
+        .and_then(Value::as_str)
+        .is_some();
+    if !applied {
+        // Claimed, with no record and no applied document. Nothing this
+        // build writes produces that tree, so there is nothing to say about
+        // the channel and nothing to demand a rotation of.
+        return ClaimStatus {
+            state: "claimed",
+            via: None,
+            at: None,
+            rotation_required: false,
+        };
+    }
+    ClaimStatus {
+        state: "claimed",
+        via: Some(ClaimChannel::ProvisioningDocument),
+        // P1 already records WHEN, in the import record this reads; the claim
+        // does not copy it into a second field that could disagree.
+        at: document
+            .get("document")
+            .and_then(|record| record.get("lastImport"))
+            .and_then(|import| import.get("at"))
+            .and_then(Value::as_u64),
+        rotation_required: true,
+    }
+}
+
+/// Whether the credential authenticating this request is a bootstrap secret
+/// that still has to be rotated.
+async fn rotation_required(state: &AppState) -> bool {
+    let access = match access_settings(state).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(error = %err, "reading `access` for the rotation gate failed");
+            return false;
+        }
+    };
+    claim_status(state, &access).await.rotation_required
+}
+
+/// Report how this device was claimed and whether its credential must still be
+/// rotated.
+///
+/// **Authenticated, deliberately.** `GET /api/v1/session` already tells an
+/// unauthenticated caller whether the device is in setup mode, and that is all
+/// an unauthenticated caller learns here too — "this device was claimed from a
+/// medium and is still holding the password that was on it" is a sentence an
+/// attacker would act on, and the operator who needs to read it is signed in
+/// by construction.
+///
+/// This is the surface that makes the bound observable BEFORE it bites: the
+/// operator who claimed a device with a provisioning document sees
+/// `rotationRequired` here, and can see it the moment they sign in rather than
+/// on the first mutation the device turns away.
+#[utoipa::path(
+    get,
+    path = V1_CLAIM_PATH,
+    context_path = API,
+    tag = "session",
+    responses(
+        (status = 200, description = "How the device was claimed and whether its credential must be rotated", body = ClaimStatus),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 500, description = "The access settings could not be read", body = ApiError),
+        (status = 503, description = "mosd is unavailable (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_claim(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+) -> Response {
+    let access = match state.api.get_settings(ACCESS_PATH).await {
+        Ok(value) => value,
+        Err(err) => return bus_api_error(&err, Some(ACCESS_PATH)),
+    };
+    api_response(StatusCode::OK, claim_status(&state, &access).await)
 }
 
 // Login / logout
@@ -5487,8 +5769,46 @@ async fn change_password(
         .await
         .unwrap_or_else(|err| Err(anyhow::anyhow!("password hashing task: {err}")))
         .map_err(PasswordChangeError::Hashing)?;
-    let value = serde_json::json!({ "password_hash": hash });
-    if let Err(err) = state.api.set_settings("access.webAdmin", &value).await {
+    // Whether this change is the ROTATION that discharges a bootstrap claim,
+    // decided from the tree as it was read above and not from the tree after
+    // the write.
+    let claim = claim_status(state, &access).await;
+    let discharged = claim.rotation_required;
+    // The new hash and the record that the bootstrap secret is gone commit
+    // together, in ONE write of the whole `access` subtree and therefore one
+    // `Store::save`. Two writes could crash between them, and both halves of
+    // that crash are wrong: a device still demanding a rotation it has already
+    // had, or -- with the writes the other way round -- one excused from a
+    // rotation that never landed.
+    let mut subtree = match access {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    subtree.insert(
+        "webAdmin".to_string(),
+        serde_json::json!({ "password_hash": hash }),
+    );
+    if let Some(via) = claim.via {
+        subtree.insert(
+            "claim".to_string(),
+            // Infallible: a struct of scalars with no map keys to collide.
+            serde_json::to_value(ClaimSettings {
+                via,
+                // WHEN the device was claimed does not move because its
+                // credential did. 0 is the reading `ApiToken::created` gives an
+                // unset clock, and it is what a derived record carries when the
+                // import that claimed the device recorded none.
+                at: claim.at.unwrap_or(0),
+                rotation_required: false,
+            })
+            .expect("the claim record serializes"),
+        );
+    }
+    if let Err(err) = state
+        .api
+        .set_settings(ACCESS_PATH, &Value::Object(subtree))
+        .await
+    {
         return Err(PasswordChangeError::Bus(err));
     }
     // apid knows its own access write happened, so the gate's cache is
@@ -5502,6 +5822,13 @@ async fn change_password(
         .sessions
         .remove_all_except(acting_session.unwrap_or(""));
     state.audit.record("password", "changed", source);
+    if discharged {
+        // A second line and not a replacement: the password change happened
+        // and is recorded as one, and this says what it additionally did to
+        // the device's claim. An operator reading the trail for "when did this
+        // device stop holding the credential it shipped with" greps one name.
+        state.audit.record(CLAIM_ROTATION_EVENT, "completed", source);
+    }
     Ok(())
 }
 
