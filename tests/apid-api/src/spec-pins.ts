@@ -95,6 +95,9 @@ const BOUNDARY = "src/phases/01-spa-boundary.ts";
 const SESSION = "src/phases/02-session.ts";
 const MANAGEMENT = "src/phases/03-api-management.ts";
 const NETWORK_PHASE = "src/phases/04-network-observation.ts";
+const ONBOARDING = "src/phases/06-onboarding-claim.ts";
+const ROLLBACK = "src/phases/07-update-rollback.ts";
+const RESET = "src/phases/08-reset-recovery.ts";
 
 const SESSION_PATH = "/api/v1/session";
 const SETUP = "/api/v1/setup";
@@ -104,6 +107,12 @@ const UI = "/api/v1/ui";
 const UI_ACTIVE = "/api/v1/ui/active";
 const TASK = "/api/v1/tasks/{id}";
 const VERSIONS = "/api/versions";
+const PROVISIONING_STATUS = "/api/v1/provisioning/status";
+const CLAIM = "/api/v1/claim";
+const UPDATE = "/api/v1/update";
+const UPDATE_ROLLBACK = "/api/v1/update/rollback";
+const RESET_PATH = "/api/v1/reset";
+const RECOVERY_CREDENTIAL = "/api/v1/recovery/credential";
 
 const PINS: readonly Pin[] = [
   // -- statuses: `paths.<path>.<method>.responses.<status>` must exist --------
@@ -124,6 +133,16 @@ const PINS: readonly Pin[] = [
   { kind: "status", file: MANAGEMENT, anchor: "setup bearer reads the same management API", method: "get", path: SETTINGS, what: "bearer settings read" },
   { kind: "status", file: MANAGEMENT, anchor: "API management read with no credential", method: "get", path: UI, what: "anonymous management refusal" },
   { kind: "status", file: NETWORK_PHASE, anchor: "GET /api/v1/network returns configured", method: "get", path: NETWORK, what: "network overview" },
+  { kind: "status", file: ONBOARDING, anchor: "GET /api/v1/provisioning/status reports this device", method: "get", path: PROVISIONING_STATUS, what: "the provisioning import record" },
+  { kind: "status", file: ONBOARDING, anchor: "GET /api/v1/claim reports which channel claimed the device", method: "get", path: CLAIM, what: "the claim record" },
+  { kind: "status", file: ONBOARDING, anchor: "POST /api/v1/setup on a claimed device is a conflict", method: "post", path: SETUP, what: "setup on a claimed device" },
+  { kind: "status", file: ROLLBACK, anchor: "GET /api/v1/update returns the device's update state", method: "get", path: UPDATE, what: "the update state" },
+  { kind: "status", file: ROLLBACK, anchor: "POST /api/v1/update/rollback is a conflict", method: "post", path: UPDATE_ROLLBACK, what: "a rollback the slot state forbids" },
+  { kind: "status", file: RESET, anchor: "POST /api/v1/reset stages a configuration reset", method: "post", path: RESET_PATH, what: "staging a tier-1 reset" },
+  { kind: "status", file: RESET, anchor: "GET /api/v1/settings/reset reads the staged intent back", method: "get", path: SETTINGS, what: "reading the staged intent" },
+  { kind: "status", file: RESET, anchor: "POST /api/v1/reset refuses full-factory", method: "post", path: RESET_PATH, what: "a presence-gated tier with no presence" },
+  { kind: "status", file: RESET, anchor: "POST /api/v1/recovery/credential refuses a caller holding a working credential", method: "post", path: RECOVERY_CREDENTIAL, what: "recovery refused to an authenticated caller" },
+  { kind: "status", file: RESET, anchor: "POST /api/v1/recovery/credential is refused with no presence asserted", method: "post", path: RECOVERY_CREDENTIAL, what: "recovery refused with no presence" },
 
   // -- media types: the response declares `content.<media>` ------------------
   { kind: "media", file: BOUNDARY, anchor: "the unauthenticated /api/versions answer is typed", method: "get", path: VERSIONS, status: "200", what: "the discovery route's media type" },
@@ -137,6 +156,12 @@ const PINS: readonly Pin[] = [
   { kind: "schema", file: MANAGEMENT, anchor: "factory UiStatus has no optional availableCustom candidate", span: "call", schema: "UiStatus", mode: "optional", names: ["availableCustom"], what: "retained custom UI candidate" },
   { kind: "schema", file: NETWORK_PHASE, anchor: "NetworkOverview carries", span: "call", schema: "NetworkOverview", mode: "required", names: ["configured", "configuredCount", "observed"], what: "network overview members" },
   { kind: "schema", file: NETWORK_PHASE, anchor: "observed network has a positive", span: "call", schema: "ObservedNetwork", mode: "required", names: ["interfaceCount", "interfaces"], what: "observed interface inventory" },
+  { kind: "schema", file: ONBOARDING, anchor: "a device no document ever reached reports every import member null", span: "call", schema: "ProvisioningStatus", mode: "required", names: ["unclaimed"], what: "the claimed/unclaimed member every status carries" },
+  { kind: "schema", file: ONBOARDING, anchor: "a device no document ever reached reports every import member null", span: "call", schema: "ProvisioningStatus", mode: "present", names: ["documentVersion", "documentDigest", "lastImport"], what: "the import members a device with no document reports null" },
+  { kind: "schema", file: ONBOARDING, anchor: "the claim this device carries names setup as its channel", span: "call", schema: "ClaimStatus", mode: "required", names: ["state", "rotationRequired"], what: "the claim members every device carries" },
+  { kind: "schema", file: ONBOARDING, anchor: "the claim this device carries names setup as its channel", span: "call", schema: "ClaimStatus", mode: "optional", names: ["via"], what: "the claiming channel, absent while unclaimed" },
+  { kind: "schema", file: ONBOARDING, anchor: 'const at = claimBody?.["at"]', span: "line", schema: "ClaimStatus", mode: "optional", names: ["at"], what: "the claim's clock reading" },
+  { kind: "schema", file: RESET, anchor: "the staged tier says when it runs", span: "call", schema: "ResetStaged", mode: "required", names: ["tier", "applies"], what: "the staged reset intent" },
 ];
 
 // -- reporting, in the register run.sh and the verification contract use ---------

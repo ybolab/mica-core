@@ -36,8 +36,10 @@ The current SPA/API contract suite is non-destructive and uses one boot:
 3. QEMU boots the prepared disk once.
 4. The harness waits for both the `APID_LISTENING` console marker and a 200
    from `/healthz`.
-5. The five ordered phases test the SPA boundary, JSON sessions and CSRF,
-   API-only management, live network observation, and kernel link support.
+5. The eight ordered phases test the SPA boundary, JSON sessions and CSRF,
+   API-only management, live network observation, kernel link support, the
+   claim and provisioning records, the rollback verdict, and the reset tiers
+   with the physical-presence gate.
 
 No custom UI fixture is seeded. The boot therefore proves the default device
 root enters the embedded UI at `/ui`. Rust route tests separately install a
@@ -59,7 +61,7 @@ and container routing are usable.
 
 | variable | default | purpose |
 | --- | --- | --- |
-| `MOS_APID_PHASES` | all five registered phases | restrict the ordered phase list; partial runs are reported loudly |
+| `MOS_APID_PHASES` | all eight registered phases | restrict the ordered phase list; partial runs are reported loudly |
 | `MOS_APID_READY_TIMEOUT` | `900` | deadline for apid readiness |
 | `MOS_APID_CONTAINER_TIMEOUT` | `240` | deadline to find the QEMU container |
 | `MOS_APID_KEEP_DISK` | `0` | retain the prepared `disk.img` after the run |

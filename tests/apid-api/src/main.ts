@@ -20,6 +20,9 @@ import session from "./phases/02-session.ts";
 import apiManagement from "./phases/03-api-management.ts";
 import networkObservation from "./phases/04-network-observation.ts";
 import kernelNet from "./phases/05c-kernel-net.ts";
+import onboardingClaim from "./phases/06-onboarding-claim.ts";
+import updateRollback from "./phases/07-update-rollback.ts";
+import resetRecovery from "./phases/08-reset-recovery.ts";
 
 export const PHASES: readonly Phase[] = [
   spaBoundary,
@@ -27,6 +30,9 @@ export const PHASES: readonly Phase[] = [
   apiManagement,
   networkObservation,
   kernelNet,
+  onboardingClaim,
+  updateRollback,
+  resetRecovery,
 ];
 
 async function main(): Promise<void> {

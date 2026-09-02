@@ -20,7 +20,8 @@ readiness deadline stays at 900 s and is not trimmed to fit these numbers.
 
 **A boot per test is still not viable on that figure.** The suite therefore
 runs against one factory-fresh boot and hands credentials and state between
-ordered phases. The current suite follows the shipped SPA/API boundary:
+ordered phases. The current suite runs the shipped SPA/API boundary first, then
+the onboarding, update and recovery surfaces:
 
 | id | what it covers |
 |----|----------------|
@@ -29,6 +30,9 @@ ordered phases. The current suite follows the shipped SPA/API boundary:
 | `03-api-management` | cookie and bearer API reads, a CSRF-protected write/task, and inert legacy paths |
 | `04-network-observation` | configured intent plus current interface count, details and states |
 | `05c-kernel-net` | the live kernel creating VLAN, bridge and WireGuard links, plus key-store permissions |
+| `06-onboarding-claim` | the claim record `POST /api/v1/setup` wrote, the empty provisioning-import record, and setup refusing to run twice |
+| `07-update-rollback` | the `rollback` verdict mosd computes from RAUC's live slot state, and the 409 a refused rollback answers with |
+| `08-reset-recovery` | staging a tier-1 reset and reading the intent back, and the presence gate refusing tier 3 and credential recovery |
 
 State coupling between phases is **accepted**, and then made structural. Every
 phase declares an `assumes` string saying what it expects the previous phase to
