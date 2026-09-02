@@ -1110,9 +1110,7 @@ mod tests {
         // validate must still land: the rule is about the write, not the tree.
         let mut hand_edited: Settings = settings.clone();
         hand_edited.time.timezone = "not a zone!".to_string();
-        hand_edited
-            .set("hostname", Value::from("edge-42"))
-            .unwrap();
+        hand_edited.set("hostname", Value::from("edge-42")).unwrap();
         assert_eq!(hand_edited.hostname, "edge-42");
         assert_eq!(hand_edited.time.timezone, "not a zone!");
     }

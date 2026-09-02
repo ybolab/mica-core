@@ -401,7 +401,9 @@ mod tests {
     async fn a_failed_unit_is_reset_before_it_is_started() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, _servers, _timezone) = fixture(dir.path(), "inactive");
-        reconciler.control.set_active_state(TIMESYNCD_UNIT, "failed");
+        reconciler
+            .control
+            .set_active_state(TIMESYNCD_UNIT, "failed");
 
         reconciler.apply(&settings(&[], "UTC")).await.unwrap();
 

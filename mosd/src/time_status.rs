@@ -422,10 +422,7 @@ mod tests {
     /// wrong cable.
     #[test]
     fn an_unreachable_daemon_is_unknown() {
-        assert_eq!(
-            classify(&TimesyncEvidence::default()),
-            SyncStatus::Unknown
-        );
+        assert_eq!(classify(&TimesyncEvidence::default()), SyncStatus::Unknown);
     }
 
     /// The step-versus-drift distinction, at timesyncd's own boundary: an
@@ -466,7 +463,12 @@ mod tests {
             sample: Some(sample(0, 2, 0.012)),
         };
         let value = status_json(&evidence);
-        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(keys, ["sample", "server", "status", "synchronized"]);
         assert_eq!(value["status"], "synchronized");
@@ -486,21 +488,21 @@ mod tests {
         // origin 1000, receive 1600, transmit 1700, destination 1100 (µs):
         // offset = ((1600-1000)+(1700-1100))/2 = 600 µs.
         let fields: Vec<Value<'_>> = vec![
-            Value::U32(0),                    // leap
-            Value::U32(4),                    // version
-            Value::U32(4),                    // mode
-            Value::U32(2),                    // stratum
-            Value::I32(-24),                  // precision
-            Value::U64(0),                    // root delay
-            Value::U64(0),                    // root dispersion
-            Value::new(vec![0u8; 4]),         // reference id
-            Value::U64(1_000),                // origin
-            Value::U64(1_600),                // receive
-            Value::U64(1_700),                // transmit
-            Value::U64(1_100),                // destination
-            Value::Bool(false),               // spike
-            Value::U64(7),                    // packet count
-            Value::U64(0),                    // jitter
+            Value::U32(0),            // leap
+            Value::U32(4),            // version
+            Value::U32(4),            // mode
+            Value::U32(2),            // stratum
+            Value::I32(-24),          // precision
+            Value::U64(0),            // root delay
+            Value::U64(0),            // root dispersion
+            Value::new(vec![0u8; 4]), // reference id
+            Value::U64(1_000),        // origin
+            Value::U64(1_600),        // receive
+            Value::U64(1_700),        // transmit
+            Value::U64(1_100),        // destination
+            Value::Bool(false),       // spike
+            Value::U64(7),            // packet count
+            Value::U64(0),            // jitter
         ];
         let sample = parse_ntp_message(&fields).expect("the documented shape decodes");
         assert_eq!(sample.leap, 0);

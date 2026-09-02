@@ -1764,10 +1764,18 @@ mod tests {
                 .clone()
         };
         assert_eq!(render(ProbeOutcome::Passed)["passed"], true);
-        assert_eq!(render(ProbeOutcome::Failed("EROFS".into()))["passed"], false);
-        assert_eq!(render(ProbeOutcome::Failed("EROFS".into()))["error"], "EROFS");
+        assert_eq!(
+            render(ProbeOutcome::Failed("EROFS".into()))["passed"],
+            false
+        );
+        assert_eq!(
+            render(ProbeOutcome::Failed("EROFS".into()))["error"],
+            "EROFS"
+        );
 
-        let skipped = render(ProbeOutcome::NotAttempted("mos-data-layout has not run".into()));
+        let skipped = render(ProbeOutcome::NotAttempted(
+            "mos-data-layout has not run".into(),
+        ));
         assert_eq!(skipped["attempted"], false);
         assert_eq!(skipped.get("passed"), None, "{skipped}");
         assert_eq!(skipped["reason"], "mos-data-layout has not run");
@@ -2034,7 +2042,10 @@ mod tests {
         let binds = namespaces["binds"].as_array().expect("binds is an array");
         assert_eq!(binds.len(), BINDS.len());
         for bind in binds {
-            assert!(bind.get("space").is_none(), "a bind reported capacity: {bind}");
+            assert!(
+                bind.get("space").is_none(),
+                "a bind reported capacity: {bind}"
+            );
             assert!(
                 bind.get("partitionBytes").is_none(),
                 "a bind reported a partition size: {bind}"
@@ -2250,8 +2261,7 @@ mod tests {
         std::fs::create_dir_all(path.join("dev/disk/by-partlabel")).expect("mkdir");
         std::fs::create_dir_all(path.join("sys/block/mmcblk0/mmcblk0p11")).expect("mkdir");
         std::fs::write(path.join("sys/block/mmcblk0/size"), "60000000\n").expect("write");
-        std::fs::write(path.join("sys/block/mmcblk0/mmcblk0p11/partition"), "11\n")
-            .expect("write");
+        std::fs::write(path.join("sys/block/mmcblk0/mmcblk0p11/partition"), "11\n").expect("write");
         std::fs::write(path.join("sys/block/mmcblk0/mmcblk0p11/size"), "40000000\n")
             .expect("write");
         std::os::unix::fs::symlink("../../mmcblk0p11", path.join("dev/disk/by-partlabel/data"))

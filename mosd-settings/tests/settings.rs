@@ -11,9 +11,8 @@ use mosd_settings::{
     MqttListenSettings, MqttSettings, NtpSettings, ProvisioningSettings, ProvisioningState,
     SCHEMA_VERSION, Settings, SettingsError, SshSettings, StaticConfig, Store, TimeSettings,
     VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
-    WireguardConfig, WireguardPeer,
-    encode_base64_nopad, json_path_get, migrate, parse_authorized_key, validate_api_tokens,
-    validate_authorized_keys,
+    WireguardConfig, WireguardPeer, encode_base64_nopad, json_path_get, migrate,
+    parse_authorized_key, validate_api_tokens, validate_authorized_keys,
 };
 
 fn populated() -> Settings {
