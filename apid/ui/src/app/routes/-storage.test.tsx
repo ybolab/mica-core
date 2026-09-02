@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
 import type { StorageStatus } from '@/lib/types'
 import { i18n } from '@/i18n/i18n'
-import { LifecyclePanel, MediaPanel, TiersPanel } from './storage'
+import { LifecyclePanel, MediaPanel, NamespacesPanel, TiersPanel } from './storage'
 
 function response(value: StorageStatus) {
   return new Response(JSON.stringify(value), {
@@ -19,7 +19,14 @@ const POLICY: StorageStatus['policy'] = {
   criticalPercent: 90,
   criticalClearPercent: 85,
   updateWorkspaceReservedBytes: 268435456,
+  updateWorkspaceRoot: '/mos/updates',
   watchedTiers: ['data', 'state'],
+}
+
+const NO_NAMESPACES: StorageStatus['namespaces'] = {
+  sharedCapacityTier: 'data',
+  detail: 'one filesystem, two namespaces',
+  binds: [],
 }
 
 function renderPanel(node: React.ReactNode, value: StorageStatus) {
@@ -53,6 +60,7 @@ describe('storage tiers', () => {
         },
       ],
       media: [],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {},
     })
@@ -69,7 +77,7 @@ describe('storage tiers', () => {
           partitionLabel: 'data',
           present: true,
           mounted: true,
-          mount: '/srv',
+          mount: '/mnt/data',
           readOnly: false,
           space: {
             totalBytes: 1024 * 1024 * 1024,
@@ -79,11 +87,12 @@ describe('storage tiers', () => {
             usedPercent: 87,
           },
           pressure: 'warning',
-          updateWorkspace: { reservedBytes: 268435456, available: false },
+          updateWorkspace: { root: '/mos/updates', reservedBytes: 268435456, available: false },
           check: { unit: 'systemd-fsck@dev-mmcblk0p11.service', result: 'success', exitStatus: 1 },
         },
       ],
       media: [],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {},
     })
@@ -115,6 +124,7 @@ describe('storage tiers', () => {
         },
       ],
       media: [],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {},
     })
@@ -124,6 +134,56 @@ describe('storage tiers', () => {
     // An unmounted slot still has a partition size, which is the only
     // capacity number it has.
     expect(summary.textContent).toContain('256.0 MiB')
+  })
+})
+
+describe('storage namespaces', () => {
+  function withBinds(binds: StorageStatus['namespaces']['binds']): StorageStatus {
+    return {
+      tiers: [],
+      namespaces: { ...NO_NAMESPACES, binds },
+      media: [],
+      policy: POLICY,
+      lifecycle: {},
+    }
+  }
+
+  it('says the two namespaces share one capacity pool', async () => {
+    renderPanel(<NamespacesPanel />, withBinds([
+      { name: 'mos', mount: '/mos', source: '/mnt/data/mos', owner: 'system', readiness: 'ready', mounted: true, sourceOnData: true, probe: { attempted: true, passed: true } },
+      { name: 'srv', mount: '/srv', source: '/mnt/data/srv', owner: 'user', readiness: 'ready', mounted: true, sourceOnData: true, probe: { attempted: false, reason: 'user-owned' } },
+    ]))
+
+    // The shared-pool sentence is the point: two mounts, one capacity, and a
+    // reader must not add them together.
+    expect(await screen.findByText(/share its capacity/)).toBeTruthy()
+    const mos = await screen.findByText(/system-owned/, { selector: 'dd' })
+    expect(mos.textContent).toContain('ready')
+    expect(mos.textContent).toContain('write probe passed')
+    // No probe in the user namespace, and it says why rather than passing.
+    const srv = screen.getByText(/user-owned/, { selector: 'dd' })
+    expect(srv.textContent).toContain('no write probe')
+    expect(srv.textContent).not.toContain('write probe passed')
+  })
+
+  it('names a bind that is not backed by DATA as an error, not as ok', async () => {
+    renderPanel(<NamespacesPanel />, withBinds([
+      { name: 'mos', mount: '/mos', source: '/mnt/data/mos', owner: 'system', readiness: 'unavailable', mounted: true, sourceOnData: false, probe: { attempted: false, reason: 'not on DATA' } },
+    ]))
+
+    const row = await screen.findByText(/unavailable/, { selector: 'dd' })
+    expect(row.textContent).toContain('nothing may be written here')
+    expect(row.textContent).toContain('not backed by DATA')
+  })
+
+  it('reports a failed write probe with its error', async () => {
+    renderPanel(<NamespacesPanel />, withBinds([
+      { name: 'mos', mount: '/mos', source: '/mnt/data/mos', owner: 'system', readiness: 'degraded', mounted: true, sourceOnData: true, readOnly: true, probe: { attempted: true, passed: false, error: 'EROFS' } },
+    ]))
+
+    const row = await screen.findByText(/degraded/, { selector: 'dd' })
+    expect(row.textContent).toContain('write probe failed: EROFS')
+    expect(row.textContent).toContain('read-only')
   })
 })
 
@@ -139,6 +199,7 @@ describe('storage media', () => {
           health: { supported: false, reason: 'this image ships no smartctl or nvme-cli, by design' },
         },
       ],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {},
     })
@@ -163,6 +224,7 @@ describe('storage media', () => {
           },
         },
       ],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {},
     })
@@ -178,6 +240,7 @@ describe('data lifecycle', () => {
     renderPanel(<LifecyclePanel />, {
       tiers: [],
       media: [],
+      namespaces: NO_NAMESPACES,
       policy: POLICY,
       lifecycle: {
         backupRestore: 'unsupported',

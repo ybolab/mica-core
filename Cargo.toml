@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker"]
+members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker", "ui-bundle"]
 
 [workspace.package]
 edition = "2024"
@@ -77,6 +77,8 @@ sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rustix = { version = "1", features = ["fs"] }
+zip = { version = "=6.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # rumqttc without default features is TCP-only: no TLS, and every remaining
 # dependency is pure Rust. The `use-rustls` default would pull tokio-rustls in;
 # TLS to the broker is a later decision.

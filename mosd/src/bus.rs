@@ -1697,6 +1697,7 @@ mod tests {
         StorageEvidence {
             tiers,
             media: Vec::new(),
+            binds: std::collections::BTreeMap::new(),
         }
     }
 

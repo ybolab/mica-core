@@ -164,6 +164,24 @@ async fn json_request(
     send(router, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
+async fn zip_request(
+    router: &Router,
+    path: &str,
+    bytes: Vec<u8>,
+    cookie: &str,
+    csrf: Option<&str>,
+) -> Response<axum::body::Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(CONTENT_TYPE, "application/zip")
+        .header(COOKIE, format!("apid_session={cookie}"));
+    if let Some(csrf) = csrf {
+        builder = builder.header("x-csrf-token", csrf);
+    }
+    send(router, builder.body(Body::from(bytes)).unwrap()).await
+}
+
 fn location(response: &Response<axum::body::Body>) -> &str {
     response.headers().get(LOCATION).unwrap().to_str().unwrap()
 }
@@ -585,26 +603,131 @@ async fn ui_boundary_selects_custom_at_root_and_always_reserves_builtin_ui() {
     let router = test_app_serving(configured_tree("hunter2secret"), empty.path());
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::SEE_OTHER);
-    assert_eq!(location(&root), "/ui");
-    let builtin = get(&router, "/ui", None).await;
-    assert_eq!(builtin.status(), StatusCode::OK);
-    assert_eq!(
-        builtin.headers().get(CONTENT_TYPE).unwrap(),
-        "text/html; charset=utf-8"
-    );
-    assert!(body_string(builtin).await.contains("/ui/assets/app.js"));
+    assert_eq!(location(&root), "/_ui/");
+    for path in ["/_ui", "/_ui/"] {
+        let builtin = get(&router, path, None).await;
+        assert_eq!(builtin.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            builtin.headers().get(CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert!(body_string(builtin).await.contains("/_ui/assets/"));
+    }
+    let old_builtin = request(&router, "GET", "/ui", None, Some(BROWSER_ACCEPT)).await;
+    assert_eq!(old_builtin.status(), StatusCode::NOT_FOUND);
+
+    let builtin_js = crate::assets::builtin::embedded_paths()
+        .find(|path| path.ends_with(".js"))
+        .expect("the built-in VFS contains JavaScript");
+    let custom_shadow = format!("_ui/{builtin_js}");
+    let builtin_url = format!("/_ui/{builtin_js}");
 
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom-root</title>"),
-        ("ui/assets/app.js", "CUSTOM-SHADOW"),
+        (&custom_shadow, "CUSTOM-SHADOW"),
     ]);
     let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::OK);
     assert!(body_string(root).await.contains("custom-root"));
-    let builtin_js = get(&router, "/ui/assets/app.js", None).await;
-    assert_eq!(builtin_js.status(), StatusCode::OK);
-    assert!(!body_string(builtin_js).await.contains("CUSTOM-SHADOW"));
+    let response = get(&router, &builtin_url, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body_string(response).await.contains("CUSTOM-SHADOW"));
+}
+
+#[tokio::test]
+async fn builtin_prefix_releases_ui_to_the_custom_owner() {
+    let builtin_js = crate::assets::builtin::embedded_paths()
+        .find(|path| path.ends_with(".js"))
+        .expect("the built-in VFS contains JavaScript");
+    let custom_shadow = format!("_ui/{builtin_js}");
+    let bundle = install_bundle(&[
+        ("index.html", "<!doctype html><title>custom-root</title>"),
+        ("ui/asset.js", "CUSTOM-UI-ASSET"),
+        (&custom_shadow, "CUSTOM-BUILTIN-SHADOW"),
+    ]);
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
+
+    let custom = get(&router, "/ui/asset.js", None).await;
+    assert_eq!(custom.status(), StatusCode::OK);
+    assert_eq!(body_string(custom).await, "CUSTOM-UI-ASSET");
+
+    let custom_route = request(&router, "GET", "/ui", None, Some(BROWSER_ACCEPT)).await;
+    assert_eq!(custom_route.status(), StatusCode::OK);
+    assert!(body_string(custom_route).await.contains("custom-root"));
+
+    let builtin = get(&router, &format!("/_ui/{builtin_js}"), None).await;
+    assert_eq!(builtin.status(), StatusCode::OK);
+    assert!(!body_string(builtin).await.contains("CUSTOM-BUILTIN-SHADOW"));
+}
+
+#[test]
+fn built_in_vfs_contains_sorted_split_output() {
+    let paths = crate::assets::builtin::embedded_paths().collect::<Vec<_>>();
+    assert!(paths.contains(&"index.html"), "{paths:?}");
+    assert!(
+        paths.len() > 3,
+        "the built-in VFS must not regress to a fixed three-file set: {paths:?}"
+    );
+    assert!(
+        paths.windows(2).all(|pair| pair[0] < pair[1]),
+        "generated VFS paths must be sorted: {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.starts_with("assets/zh-cn-") && path.ends_with(".js")),
+        "the Chinese catalog must remain a lazy chunk: {paths:?}"
+    );
+    for path in paths {
+        assert!(
+            crate::assets::path::LogicalPath::parse(path).is_ok(),
+            "generated asset is not a safe logical path: {path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn built_in_vfs_serves_every_asset_with_owner_local_cache_rules() {
+    let empty = TempDir::new().unwrap();
+    let router = test_app_serving(configured_tree("hunter2secret"), empty.path());
+
+    for path in crate::assets::builtin::embedded_paths() {
+        let response = get(&router, &format!("/_ui/{path}"), None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert!(response.headers().contains_key(CONTENT_TYPE), "{path}");
+        assert_eq!(
+            header_value(&response, CACHE_CONTROL),
+            if path == "index.html" {
+                "no-store"
+            } else if path.starts_with("assets/") {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            },
+            "{path}"
+        );
+        assert_eq!(
+            header_value(&response, HeaderName::from_static("x-content-type-options")),
+            "nosniff",
+            "{path}"
+        );
+    }
+
+    let fallback = get(&router, "/_ui/network", None).await;
+    assert_eq!(fallback.status(), StatusCode::OK);
+    assert_eq!(
+        header_value(&fallback, CONTENT_TYPE),
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(header_value(&fallback, CACHE_CONTROL), "no-store");
+
+    for path in ["/_ui/assets/missing.js", "/_ui/%252e%252e"] {
+        let response = get(&router, path, None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(header_value(&response, CACHE_CONTROL), "no-cache", "{path}");
+        assert_eq!(body_string(response).await, "", "{path}");
+    }
 }
 
 #[tokio::test]
@@ -669,7 +792,7 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         None,
     )
@@ -680,7 +803,7 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     )
@@ -693,6 +816,147 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::OK);
     assert!(body_string(root).await.contains("custom-root"));
+}
+
+fn ui_package_bytes(api_version: &str) -> Vec<u8> {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(source.join("assets")).unwrap();
+    std::fs::write(
+        source.join("index.html"),
+        "<!doctype html><title>uploaded</title>",
+    )
+    .unwrap();
+    std::fs::write(source.join("assets/app.js"), "console.log('uploaded')").unwrap();
+    std::fs::write(
+        source.join("mos-ui.json"),
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "name": "uploaded",
+            "version": "1.0.0",
+            "immutableDir": "assets",
+            "apiVersions": [api_version],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let package = temp.path().join("uploaded.mos-ui.zip");
+    mos_ui_bundle::pack(&source, &package).unwrap();
+    std::fs::read(package).unwrap()
+}
+
+#[tokio::test]
+async fn ui_package_upload_installs_without_activation_and_supports_explicit_lifecycle() {
+    let bundle_root = TempDir::new().unwrap();
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle_root.path());
+    let login = json_request(
+        &router,
+        "POST",
+        "/api/v1/session",
+        json!({ "password": "hunter2secret" }),
+        None,
+        None,
+    )
+    .await;
+    let cookie = session_cookie_value(&login);
+    let body: serde_json::Value = serde_json::from_str(&body_string(login).await).unwrap();
+    let csrf = body["csrfToken"].as_str().unwrap();
+    let package = ui_package_bytes("v1");
+
+    let missing_csrf = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        package.clone(),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+
+    let incompatible = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        ui_package_bytes("v999"),
+        &cookie,
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(incompatible.status(), StatusCode::CONFLICT);
+    let incompatible: serde_json::Value =
+        serde_json::from_str(&body_string(incompatible).await).unwrap();
+    assert_eq!(incompatible["error"]["code"], "ui_package_conflict");
+
+    let uploaded = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        package.clone(),
+        &cookie,
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(uploaded.status(), StatusCode::CREATED);
+    let uploaded: serde_json::Value = serde_json::from_str(&body_string(uploaded).await).unwrap();
+    assert!(uploaded["activeGeneration"].is_null());
+    assert_eq!(uploaded["bundles"][0]["generation"], 1);
+    assert_eq!(uploaded["bundles"][0]["name"], "uploaded");
+    assert_eq!(uploaded["bundles"][0]["digest"].as_str().unwrap().len(), 64);
+    assert!(uploaded["bundles"][0]["compressedBytes"].as_u64().unwrap() > 0);
+    assert!(uploaded["bundles"][0]["expandedBytes"].as_u64().unwrap() > 0);
+    assert_eq!(
+        get(&router, "/", None).await.status(),
+        StatusCode::SEE_OTHER
+    );
+
+    let duplicate = zip_request(&router, "/api/v1/ui/bundles", package, &cookie, Some(csrf)).await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+
+    let activated = json_request(
+        &router,
+        "PUT",
+        "/api/v1/ui/active",
+        json!({ "generation": 1 }),
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(activated.status(), StatusCode::OK);
+    assert!(
+        body_string(get(&router, "/", None).await)
+            .await
+            .contains("uploaded")
+    );
+
+    let active_delete = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/bundles/1",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(active_delete.status(), StatusCode::CONFLICT);
+
+    let deactivated = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/active",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(deactivated.status(), StatusCode::OK);
+    let deleted = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/bundles/1",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -743,7 +1007,7 @@ async fn the_ui_api_refuses_a_corrupt_retained_bundle_without_changing_root() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     )
@@ -795,7 +1059,7 @@ async fn ui_selection_records_deactivation_activation_and_no_op() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     );
@@ -803,7 +1067,7 @@ async fn ui_selection_records_deactivation_activation_and_no_op() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     );
@@ -851,13 +1115,11 @@ async fn legacy_form_mutations_are_not_routes() {
     assert!(fake.set_paths().is_empty());
 }
 
-// The asset router with **§4.1 rule 1 deleted**, and nothing else.
+// The root asset router without the structural `/api` declaration.
 //
-// This is the control that makes the reservation's test bidirectional in the
-// sense §4.1 means. A test that asks for `/api/foo` and asserts 404 proves
-// nothing when no file was ever placed there — the 404 is indistinguishable
-// from an unhandled path. Here the same bundle, reached through the same
-// asset handler with the reservation removed, serves the file's bytes.
+// The shared path layer still refuses a literal or encoded reserved first
+// segment. This is intentional defence in depth for ambiguous spellings that
+// Axum did not classify, not a route to API content.
 fn asset_router_without_the_api_reservation(bundle_root: &Path) -> Router {
     let fake = Arc::new(FakeSettings::new(configured_tree("hunter2secret")));
     let state = AppState::new(fake, SIGNING_KEY).with_bundle_root(bundle_root);
@@ -971,33 +1233,69 @@ async fn a_bundle_cannot_shadow_the_reserved_api_subtree() {
     }
 }
 
-// The other direction of the same guard: with §4.1 rule 1 removed, the very
-// same bundle serves its own file at `/api/versions`.
-//
-// Without this the test above would pass against a router that had no
-// reservation and simply no bundle.
+// Reserved ownership is based on one canonical URL spelling. Repeated
+// leading separators and percent-encoded reserved names must be rejected,
+// never decoded by the root asset resolver into a second spelling of `/api`
+// or `/_ui`. Prefix lookalikes and `/ui` remain ordinary custom-UI paths.
 #[tokio::test]
-async fn without_the_reservation_the_bundle_does_shadow_the_api() {
-    const VERSIONS_BYTES: &str = "BUNDLE-SHADOWS-API-VERSIONS";
-
+async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom</title>"),
-        ("api/versions", VERSIONS_BYTES),
+        ("api/versions", "CUSTOM-API-ALIAS"),
+        ("_ui/assets/app.js", "CUSTOM-UI-ALIAS"),
+        ("ui/asset.js", "CUSTOM-UI"),
+        ("apiary/asset.js", "CUSTOM-APIARY"),
+        ("uikit/asset.js", "CUSTOM-UIKIT"),
+    ]);
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
+    let cookie = login(&router, "hunter2secret").await;
+
+    for path in [
+        "//api/versions",
+        "/%61pi/versions",
+        "/%5fui/assets/app.js",
+        "/_ui/%252e%252e",
+        "/_ui/%2e%2e/api",
+    ] {
+        let response = request(&router, "GET", path, Some(&cookie), Some(BROWSER_ACCEPT)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must terminate in its originally selected ownership domain"
+        );
+        let body = body_string(response).await;
+        assert!(!body.contains("CUSTOM-"), "{path} crossed into custom UI");
+        assert!(
+            !body.contains("<title>mos console</title>"),
+            "{path} used a guarded miss as built-in SPA navigation"
+        );
+    }
+
+    for (path, expected) in [
+        ("/apiary/asset.js", "CUSTOM-APIARY"),
+        ("/ui/asset.js", "CUSTOM-UI"),
+        ("/uikit/asset.js", "CUSTOM-UIKIT"),
+    ] {
+        let response = request(&router, "GET", path, Some(&cookie), None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(body_string(response).await, expected, "{path}");
+    }
+}
+
+// Even if a caller constructs the root asset router without the structural
+// `/api` reservation, the shared logical-path guard will not expose a bundle's
+// reserved first segment.
+#[tokio::test]
+async fn root_asset_resolver_fails_closed_without_the_api_router() {
+    let bundle = install_bundle(&[
+        ("index.html", "<!doctype html><title>custom</title>"),
+        ("api/versions", "BUNDLE-SHADOWS-API-VERSIONS"),
     ]);
     let unreserved = asset_router_without_the_api_reservation(bundle.path());
 
     let response = request(&unreserved, "GET", "/api/versions", None, None).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "without the reservation the asset router answers under /api/"
-    );
-    assert_eq!(
-        body_string(response).await,
-        VERSIONS_BYTES,
-        "and it answers with the bundle's own bytes, which is the failure the \
-         reservation prevents"
-    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_string(response).await, "");
 }
 
 // The reservation covers the subtree and every method, for every path the
@@ -2037,7 +2335,7 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
         "the storage surface is missing, so this scan is not scanning it: {paths:?}"
     );
 
-    const FORBIDDEN: [&str; 10] = [
+    const FORBIDDEN: [&str; 12] = [
         "format",
         "repartition",
         "partition",
@@ -2048,6 +2346,10 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
         "erase",
         "lvm",
         "raid",
+        // The status surface now describes mounts, so the API must not grow
+        // a verb that moves one: PLAN-063's units own the mounts, not apid.
+        "mount",
+        "unmount",
     ];
     for path in paths.keys() {
         let lowered = path.to_ascii_lowercase();
@@ -2064,13 +2366,15 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
     // be a destructive surface.
     let (tree, token) = with_token(secret_tree("hunter2secret"));
     let (router, _fake) = test_app(tree);
-    const GUESSES: [&str; 6] = [
+    const GUESSES: [&str; 8] = [
         "/api/v1/storage/format",
         "/api/v1/storage/repartition",
         "/api/v1/storage/partitions",
         "/api/v1/actions/format",
         "/api/v1/actions/factory-reset",
         "/api/v1/storage/wipe",
+        "/api/v1/storage/mount",
+        "/api/v1/storage/namespaces",
     ];
     for path in GUESSES {
         for method in ["GET", "POST", "PUT", "DELETE"] {

@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { HardDrive, Layers, ShieldQuestion } from 'lucide-react'
+import { FolderTree, HardDrive, Layers, ShieldQuestion } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
-import type { StorageMedium, StorageStatus, StorageTier } from '@/lib/types'
+import type { StorageBind, StorageMedium, StorageStatus, StorageTier } from '@/lib/types'
 import { Card, CardHeader } from '@/components/ui/card'
 import { Status } from '@/components/ui/status'
 
@@ -22,6 +22,7 @@ function StoragePage() {
     <div className="page">
       <header className="page-head"><div><p className="eyebrow">{t('storage.eyebrow')}</p><h1>{t('storage.title')}</h1><p>{t('storage.description')}</p></div></header>
       <TiersPanel />
+      <NamespacesPanel />
       <div className="split-grid"><MediaPanel /><LifecyclePanel /></div>
     </div>
   )
@@ -57,6 +58,28 @@ export function TiersPanel() {
         </>
       ) : null}
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
+    </Card>
+  )
+}
+
+export function NamespacesPanel() {
+  const { t } = useTranslation()
+  const status = useStorage()
+  const namespaces = status.data?.namespaces
+  return (
+    <Card>
+      <CardHeader title={t('storage.namespaces.title')} description={t('storage.namespaces.description')} action={<FolderTree className="size-5 text-muted-foreground" />} />
+      <dl className="details">
+        {namespaces?.binds.map((bind) => (
+          <div key={bind.name}>
+            <dt>{bind.mount}</dt>
+            <dd>{bindSummary(bind, t)}</dd>
+          </div>
+        ))}
+      </dl>
+      {/* One pool, two views. Said in the UI as well as the API, because a
+          reader looking at two mounts will otherwise assume two capacities. */}
+      {namespaces ? <p className="callout" role="note">{t('storage.namespaces.sharedPool', { tier: namespaces.sharedCapacityTier })}</p> : null}
     </Card>
   )
 }
@@ -130,6 +153,28 @@ function checkSummary(tier: StorageTier, t: ReturnType<typeof useTranslation>['t
     result: tier.check.result ?? t('common.states.unknown'),
     status: tier.check.exitStatus ?? t('common.states.unknown'),
   })
+}
+
+/// One bind namespace in one line: who owns it, whether it is really backed
+/// by DATA, and what the readiness probe did. A bind that is not on DATA is a
+/// named error, never "ok" — a writer must not fall back to another
+/// filesystem, and the operator has to be able to see that state.
+function bindSummary(bind: StorageBind, t: ReturnType<typeof useTranslation>['t']) {
+  const parts = [t(`storage.namespaces.owner.${bind.owner}`, { defaultValue: bind.owner })]
+  parts.push(t(`storage.namespaces.readiness.${bind.readiness}`))
+  if (bind.mounted && bind.sourceOnData === false) {
+    parts.push(t('storage.namespaces.notOnData', { source: bind.source }))
+  }
+  if (bind.sourceIsDirectory === false) {
+    parts.push(t('storage.namespaces.sourceNotDirectory', { source: bind.source }))
+  }
+  if (bind.readOnly) parts.push(t('storage.tiers.readOnly'))
+  if (bind.probe) {
+    if (!bind.probe.attempted) parts.push(t('storage.namespaces.probeSkipped', { reason: bind.probe.reason }))
+    else if (bind.probe.passed) parts.push(t('storage.namespaces.probePassed'))
+    else parts.push(t('storage.namespaces.probeFailed', { error: bind.probe.error }))
+  }
+  return parts.join(' · ')
 }
 
 /// Wear, or the reason there is none. An unsupported metric is stated, never

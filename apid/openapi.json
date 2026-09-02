@@ -2167,11 +2167,11 @@
           "resources"
         ],
         "summary": "Read the storage status.",
-        "description": "Observed by mosd at request time: every fixed tier of the layout (the A/B\nrootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA/`srv`) with its\ndevice, size, mount and read-only state, its space accounting including\nthe filesystem's reserved pool, and whatever the system recorded about its\nlast check; every physical medium with normalized wear where the device\nexports it and an explicit `unsupported` with a reason where it does not;\nthe low-space thresholds with their hysteresis band; the reserved update\nworkspace; and the explicit lifecycle decisions.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
+        "description": "Observed by mosd at request time: every fixed tier of the layout (the A/B\nrootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA at `/mnt/data`)\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; the reserved update workspace under\n`/mos/updates`; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
         "operationId": "api_v1_storage_status",
         "responses": {
           "200": {
-            "description": "The fixed tiers with their space, mount and check evidence; the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions",
+            "description": "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions",
             "content": {
               "application/json": {
                 "schema": {
@@ -2818,8 +2818,18 @@
         "tags": [
           "ui"
         ],
-        "summary": "Select the newest retained custom bundle that still passes every safety\nand compatibility check.",
+        "summary": "Select one exact retained custom bundle after repeating every safety and\ncompatibility check.",
         "operationId": "api_v1_ui_activate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivateUiRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "A validated retained custom UI is now selected",
@@ -2912,6 +2922,213 @@
           },
           "500": {
             "description": "The custom UI pointer could not be removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ui/bundles": {
+      "get": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "List every retained custom UI generation.",
+        "operationId": "api_v1_ui_bundles",
+        "responses": {
+          "200": {
+            "description": "Every retained UI version and the active generation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiBundleList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The bundle store could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Stream a `.mos-ui.zip` to DATA, validate and extract it off the async worker,\nthen install it without changing the active generation.",
+        "operationId": "api_v1_ui_upload",
+        "requestBody": {
+          "content": {
+            "application/zip": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The package was installed but not activated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiBundleList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is absent or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The package duplicates, conflicts with, or is incompatible with retained versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The compressed package exceeds 64 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/zip",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The ZIP or manifest violates the UI package contract",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Writable /mos storage or required headroom is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ui/bundles/{generation}": {
+      "delete": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Delete one inactive retained custom UI generation.",
+        "operationId": "api_v1_ui_delete",
+        "parameters": [
+          {
+            "name": "generation",
+            "in": "path",
+            "description": "The retained generation to delete",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The inactive retained generation was deleted"
+          },
+          "401": {
+            "description": "No API credential was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser CSRF token is absent or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The generation is active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The generation could not be deleted",
             "content": {
               "application/json": {
                 "schema": {
@@ -3248,6 +3465,19 @@
   },
   "components": {
     "schemas": {
+      "ActivateUiRequest": {
+        "type": "object",
+        "required": [
+          "generation"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "AddAuthorizedKeyRequest": {
         "type": "object",
         "description": "`POST /api/v1/ssh/authorized-keys` request body.",
@@ -4055,6 +4285,110 @@
           "password": {
             "type": "string",
             "description": "The password to open the channel with: 8 to 72 bytes, and no NUL,\nnewline or carriage return."
+          }
+        }
+      },
+      "UiBundleDetails": {
+        "type": "object",
+        "required": [
+          "generation",
+          "indexReadable",
+          "usable"
+        ],
+        "properties": {
+          "compatible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "compressedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digestMatches": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "expandedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "indexReadable": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unavailableReason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CustomUiUnavailableReason"
+              }
+            ]
+          },
+          "usable": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UiBundleList": {
+        "type": "object",
+        "required": [
+          "bundles",
+          "retentionLimit"
+        ],
+        "properties": {
+          "activeGeneration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "bundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UiBundleDetails"
+            }
+          },
+          "retentionLimit": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

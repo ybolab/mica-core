@@ -131,6 +131,7 @@ impl FakeSettings {
             })),
             storage_status: std::sync::Mutex::new(serde_json::json!({
                 "tiers": [],
+                "namespaces": { "sharedCapacityTier": "data", "binds": [] },
                 "media": [],
                 "policy": {},
                 "lifecycle": {},

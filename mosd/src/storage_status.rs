@@ -1,13 +1,28 @@
-//! Read-only observation of the fixed storage layout: tiers, media health,
-//! space pressure and the reserved update workspace (PLAN-049 / RFCT-285).
+//! Read-mostly observation of the fixed storage layout: tiers, the PLAN-063
+//! bind namespaces, media health, space pressure and the reserved update
+//! workspace (PLAN-049 / RFCT-285).
 //!
 //! The shape [`crate::network_state`] and [`crate::time_status`] take: a trait
 //! with an unavailable default so a dry-run daemon or a test never inspects
-//! its host, a production implementation only `main.rs` attaches, and a pure
-//! rendering function the tests drive with literal evidence. Nothing here
-//! writes anything, formats anything or moves a partition boundary — the
-//! layout is fixed by the image assembler and there is deliberately no method
-//! on this module, on the bus or in the API that could change it.
+//! its host, a production implementation only `main.rs` attaches, and pure
+//! rendering functions the tests drive with literal evidence.
+//!
+//! **The layout is not this module's to define.** `boards/*/board.env` fixes
+//! the partition table, `rootfs/overlay/etc/fstab.in` mounts DATA at
+//! [`DATA_MOUNT`], and PLAN-063 binds `/mnt/data/mos` at `/mos` and
+//! `/mnt/data/srv` at `/srv` through
+//! `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, after
+//! `rootfs/overlay/usr/lib/mos/mos-data-layout` has created the roots
+//! fail-closed. Nothing here formats anything or moves a partition boundary,
+//! and there is deliberately no method on this module, on the bus or in the
+//! API that could.
+//!
+//! **One write exists, and it is the point of a readiness probe.** PLAN-061's
+//! readiness contract is explicitly more than `access(W_OK)`, so
+//! [`HostStorage::probe`] creates, fsyncs, removes and re-fsyncs a private
+//! file under [`PROBE_SUBTREE`]. It is the only write in this module, it
+//! happens only in the system-owned namespace, and it cleans up after itself
+//! whether or not it succeeded.
 //!
 //! Two rules govern every field below, because a storage surface that guesses
 //! is worse than one that says nothing:
@@ -24,7 +39,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value as Json, json};
 
 /// One fixed tier of the layout.
@@ -112,11 +127,73 @@ pub const TIERS: &[TierSpec] = &[
         name: "data",
         partition_label: "data",
         role: "ext4",
-        mount: Some("/srv"),
+        mount: Some(DATA_MOUNT),
     },
 ];
 
+/// Where the DATA partition itself mounts (PLAN-063).
+///
+/// `/mnt/data` is a system implementation detail: PLAN-063 exposes `/mos` and
+/// `/srv` and asks product surfaces not to encourage direct writes below it.
+/// It is named here because a tier report that hid the actual mountpoint
+/// could not be checked against `/etc/fstab`.
+pub const DATA_MOUNT: &str = "/mnt/data";
+
+/// The two bind namespaces PLAN-063 carves out of the DATA filesystem, with
+/// the source each is bound from.
+///
+/// Transcribed from `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, which
+/// are the contract; `rootfs/overlay/usr/lib/mos/mos-data-layout` creates the
+/// sources. They are NOT tiers: both live on the one DATA filesystem and
+/// share its single capacity pool, which is why they carry no capacity of
+/// their own below and why `status_json` says so in as many words.
+pub const BINDS: &[BindSpec] = &[
+    BindSpec {
+        name: "mos",
+        mount: "/mos",
+        source: "/mnt/data/mos",
+        owner: "system",
+    },
+    BindSpec {
+        name: "srv",
+        mount: "/srv",
+        source: "/mnt/data/srv",
+        owner: "user",
+    },
+];
+
+/// One PLAN-063 bind namespace.
+pub struct BindSpec {
+    /// Stable name on the wire.
+    pub name: &'static str,
+    /// Where the bind is mounted.
+    pub mount: &'static str,
+    /// The path under [`DATA_MOUNT`] it is bound from.
+    pub source: &'static str,
+    /// `system` for `/mos`, `user` for `/srv`.
+    pub owner: &'static str,
+}
+
+/// The update workspace root under `/mos` and its three subdirectories, the
+/// PLAN-061 taxonomy PLAN-063 keeps: `downloads` for resumable partial
+/// acquisition, `verified` for complete authenticated artifacts awaiting
+/// RAUC, `staging` for bounded transaction-local work.
+pub const UPDATE_WORKSPACE_ROOT: &str = "/mos/updates";
+
+/// The subtree the readiness probe writes into.
+///
+/// `staging` and not `/mos` itself: PLAN-061 asks for a private probe file
+/// "in the owning subtree", and this is the subtree the reservation below is
+/// about. `mos-data-layout` creates it 0755 root-owned and mosd runs as root,
+/// so mosd may write here; see [`ProbeOutcome`] for what happens when it
+/// cannot.
+pub const PROBE_SUBTREE: &str = "/mos/updates/staging";
+
 /// The tier the low-space policy and the update reservation are about.
+///
+/// One tier, one filesystem, one capacity pool -- and two namespaces on top of
+/// it. Reporting `/mos` and `/srv` as if each had its own capacity would give
+/// a reader two numbers that sum to twice the disk.
 pub const DATA_TIER: &str = "data";
 /// The other precious writable tier the policy watches.
 pub const STATE_TIER: &str = "state";
@@ -267,6 +344,121 @@ pub struct MediumEvidence {
     pub health: MediaHealth,
 }
 
+/// What the readiness probe did, or why it did not run.
+///
+/// PLAN-061's readiness contract is explicitly more than `access(W_OK)`:
+/// create and fsync a private probe file in the owning subtree, remove it,
+/// fsync again. `NotAttempted` carries its reason because a probe that did not
+/// run must never read as "writable" -- that is this module's absence rule at
+/// the one place where getting it wrong would tell an operator their update
+/// storage is fine when nobody has checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// A file was created, fsynced, removed and the directory fsynced.
+    Passed,
+    /// The write was attempted and failed; the string is the OS error.
+    Failed(String),
+    /// No write was attempted; the string says why.
+    NotAttempted(String),
+}
+
+/// Everything observed about one PLAN-063 bind namespace.
+#[derive(Debug, Clone, Default)]
+pub struct BindEvidence {
+    /// The mount at the bind's mountpoint, if it is mounted at all.
+    pub mount: Option<MountEvidence>,
+    /// Whether the bind's source path exists under the DATA mount and is a
+    /// real directory rather than a symlink. `mos-data-layout` refuses a
+    /// symlink at these paths, so a symlink here is a substituted namespace.
+    pub source_is_directory: Option<bool>,
+    /// The readiness probe, on `/mos` only.
+    pub probe: Option<ProbeOutcome>,
+}
+
+/// One bind namespace's readiness, in the PLAN-061 vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    /// Mounted, on DATA, writable.
+    Ready,
+    /// Mounted and on DATA, but not fully usable: read-only, or the DATA
+    /// filesystem is at its critical threshold.
+    Degraded,
+    /// Not mounted, or mounted from something that is not the DATA
+    /// partition. Either way a writer must NOT fall back to another
+    /// filesystem.
+    Unavailable,
+    /// The observer could not establish which of the above holds.
+    Unknown,
+}
+
+impl Readiness {
+    /// The wire spelling the API and UI consume.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Unavailable => "unavailable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify one bind namespace against the DATA tier it must live on.
+///
+/// Pure, and the whole of the readiness decision. Order is meaning:
+///
+/// 1. **Not mounted, or the source is not a real directory on DATA, is
+///    `Unavailable`.** PLAN-061 refuses symlink substitution by name, and
+///    PLAN-063's initializer dies on a symlink at these paths, so a bind
+///    whose source is not a directory below the DATA mount has had its
+///    namespace substituted -- reporting that as merely degraded would invite
+///    exactly the fallback the contract forbids.
+/// 2. **A read-only mount, or a full DATA filesystem, is `Degraded`.** The
+///    namespace is the right one; it just cannot be written now.
+/// 3. **A failed probe is `Degraded`**, and a probe that was never attempted
+///    leaves the verdict at whatever the evidence above supports -- it never
+///    upgrades one.
+#[must_use]
+pub fn classify_readiness(
+    bind: &BindEvidence,
+    data: Option<&TierEvidence>,
+    pressure: Pressure,
+) -> Readiness {
+    let Some(mount) = &bind.mount else {
+        // A missing mount is unavailable even without a DATA tier to compare
+        // against: nothing is mounted there, so nothing may be written there.
+        return Readiness::Unavailable;
+    };
+    if bind.source_is_directory == Some(false) {
+        return Readiness::Unavailable;
+    }
+    let Some(data) = data else {
+        return Readiness::Unknown;
+    };
+    let Some(device) = &data.device else {
+        return Readiness::Unknown;
+    };
+    // The mount source must resolve to the DATA partition. A bind carrying
+    // any other device is a different filesystem wearing the right path.
+    if &mount.device != device {
+        return Readiness::Unavailable;
+    }
+    if mount.read_only || data.mount.as_ref().is_some_and(|m| m.read_only) {
+        return Readiness::Degraded;
+    }
+    if matches!(bind.probe, Some(ProbeOutcome::Failed(_))) {
+        return Readiness::Degraded;
+    }
+    if pressure == Pressure::Critical {
+        return Readiness::Degraded;
+    }
+    if bind.source_is_directory.is_none() {
+        return Readiness::Unknown;
+    }
+    Readiness::Ready
+}
+
 /// One observation of the whole storage surface.
 #[derive(Debug, Clone, Default)]
 pub struct StorageEvidence {
@@ -275,6 +467,8 @@ pub struct StorageEvidence {
     pub tiers: BTreeMap<String, TierEvidence>,
     /// Every whole-disk medium the kernel shows.
     pub media: Vec<MediumEvidence>,
+    /// Per-bind evidence, keyed by [`BindSpec::name`].
+    pub binds: BTreeMap<String, BindEvidence>,
 }
 
 impl StorageEvidence {
@@ -352,6 +546,17 @@ pub struct PressureTracker {
 }
 
 impl PressureTracker {
+    /// The last classification recorded for `tier`, without taking a new
+    /// reading. `Normal` when the tier has never been observed.
+    pub fn current(&self, tier: &str) -> Pressure {
+        self.states
+            .lock()
+            .expect("pressure state is never poisoned")
+            .get(tier)
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// Record `used_percent` for `tier` and return the classification.
     pub fn observe(&self, tier: &str, used_percent: u8) -> Pressure {
         let mut states = self
@@ -369,11 +574,17 @@ impl PressureTracker {
 ///
 /// This is the ONE seam where the reserved update workspace is enforced, and
 /// what it enforces is an admission check, not a quota: mos consumes DATA
-/// space for updates only by staging a bundle there, so the question asked
-/// here is whether [`UPDATE_WORKSPACE_RESERVED_BYTES`] is still available for
-/// that purpose. A bundle already staged under the DATA mount is the
-/// reservation being USED rather than consumed by something else, so its own
-/// size counts back towards the floor.
+/// space for updates only by placing a bundle under
+/// [`UPDATE_WORKSPACE_ROOT`], so the question asked here is whether
+/// [`UPDATE_WORKSPACE_RESERVED_BYTES`] is still available for that purpose.
+/// A bundle already sitting in the workspace is the reservation being USED
+/// rather than consumed by something else, so its own size counts back
+/// towards the floor.
+///
+/// The path tested is `/mos/updates`, not the DATA mount at large: under
+/// PLAN-063 the whole of `/mos` and `/srv` is one filesystem, so "the bundle
+/// is on DATA" would be true of an ISO an operator dropped in their home
+/// directory, and that byte count is not the update workspace.
 ///
 /// Absent evidence never refuses. A daemon with no storage observer — a
 /// dry-run daemon, a container — has no basis on which to block an operator's
@@ -385,10 +596,8 @@ pub fn install_refusal(
     bundle: &Path,
     bundle_bytes: u64,
 ) -> Option<String> {
-    let tier = data?;
-    let space = tier.space?;
-    let mount = tier.mount.as_ref()?;
-    let staged = if bundle.starts_with(&mount.mount) {
+    let space = data?.space?;
+    let staged = if bundle.starts_with(UPDATE_WORKSPACE_ROOT) {
         bundle_bytes
     } else {
         0
@@ -398,8 +607,7 @@ pub fn install_refusal(
         return None;
     }
     Some(format!(
-        "the reserved update workspace on {} is not available: {workspace} bytes free where {UPDATE_WORKSPACE_RESERVED_BYTES} are reserved for updates. Free space on {} and retry",
-        mount.mount, mount.mount
+        "the reserved update workspace under {UPDATE_WORKSPACE_ROOT} is not available: {workspace} bytes free on the DATA filesystem where {UPDATE_WORKSPACE_RESERVED_BYTES} are reserved for updates. Free space under /mos or /srv and retry"
     ))
 }
 
@@ -436,8 +644,27 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
         .map(|spec| tier_json(spec, evidence.tiers.get(spec.name), pressure))
         .collect();
     let media: Vec<Json> = evidence.media.iter().map(medium_json).collect();
+    let data = evidence.data_tier();
+    // The binds are classified against the DATA tier's CURRENT pressure, and
+    // reading it here rather than re-observing keeps one poll's verdicts
+    // consistent: `tier_json` above already advanced the hysteresis state for
+    // this observation, so asking the tracker again would be a second
+    // reading of the same sample.
+    let data_pressure = pressure.current(DATA_TIER);
+    let binds: Vec<Json> = BINDS
+        .iter()
+        .map(|spec| bind_json(spec, evidence.binds.get(spec.name), data, data_pressure))
+        .collect();
     json!({
         "tiers": tiers,
+        // One filesystem, two namespaces. This member is not a second tier
+        // list: every capacity number for both binds is the DATA tier's, and
+        // saying so here is what stops a reader adding them together.
+        "namespaces": {
+            "sharedCapacityTier": DATA_TIER,
+            "detail": "/mos and /srv are bind namespaces of one DATA filesystem and share its single capacity pool; their space is reported once, on the `data` tier",
+            "binds": binds,
+        },
         "media": media,
         "policy": {
             "warningPercent": WARNING_ENTER_PERCENT,
@@ -445,6 +672,7 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
             "criticalPercent": CRITICAL_ENTER_PERCENT,
             "criticalClearPercent": CRITICAL_CLEAR_PERCENT,
             "updateWorkspaceReservedBytes": UPDATE_WORKSPACE_RESERVED_BYTES,
+            "updateWorkspaceRoot": UPDATE_WORKSPACE_ROOT,
             "watchedTiers": [DATA_TIER, STATE_TIER],
         },
         "lifecycle": LIFECYCLE
@@ -507,6 +735,7 @@ fn tier_json(spec: &TierSpec, evidence: Option<&TierEvidence>, pressure: &Pressu
             root.insert(
                 "updateWorkspace".to_string(),
                 json!({
+                    "root": UPDATE_WORKSPACE_ROOT,
                     "reservedBytes": UPDATE_WORKSPACE_RESERVED_BYTES,
                     "available": space.free >= UPDATE_WORKSPACE_RESERVED_BYTES,
                 }),
@@ -527,6 +756,67 @@ fn tier_json(spec: &TierSpec, evidence: Option<&TierEvidence>, pressure: &Pressu
             None => json!({ "recorded": false }),
         },
     );
+    Json::Object(root)
+}
+
+/// One bind namespace rendered.
+///
+/// Deliberately carries NO capacity of its own: `/mos` and `/srv` are two
+/// views of the DATA filesystem, and a `space` object here would be the same
+/// bytes reported a second and third time.
+fn bind_json(
+    spec: &BindSpec,
+    evidence: Option<&BindEvidence>,
+    data: Option<&TierEvidence>,
+    pressure: Pressure,
+) -> Json {
+    let mut root = serde_json::Map::new();
+    root.insert("name".to_string(), json!(spec.name));
+    root.insert("mount".to_string(), json!(spec.mount));
+    root.insert("source".to_string(), json!(spec.source));
+    root.insert("owner".to_string(), json!(spec.owner));
+    let Some(evidence) = evidence else {
+        root.insert("readiness".to_string(), json!(Readiness::Unknown.as_str()));
+        root.insert(
+            "detail".to_string(),
+            json!("this daemon observed no mount table"),
+        );
+        return Json::Object(root);
+    };
+    let readiness = classify_readiness(evidence, data, pressure);
+    root.insert("readiness".to_string(), json!(readiness.as_str()));
+    root.insert("mounted".to_string(), json!(evidence.mount.is_some()));
+    if let Some(mount) = &evidence.mount {
+        root.insert("device".to_string(), json!(mount.device));
+        root.insert("readOnly".to_string(), json!(mount.read_only));
+        // The contract's first question, answered as its own member rather
+        // than folded into the verdict: a writer that falls back to another
+        // filesystem is the failure PLAN-061 names, so "is this actually
+        // DATA?" has to be legible on its own.
+        root.insert(
+            "sourceOnData".to_string(),
+            json!(data.and_then(|tier| tier.device.as_deref()) == Some(mount.device.as_str())),
+        );
+    }
+    if let Some(is_directory) = evidence.source_is_directory {
+        root.insert("sourceIsDirectory".to_string(), json!(is_directory));
+    }
+    if let Some(probe) = &evidence.probe {
+        root.insert(
+            "probe".to_string(),
+            match probe {
+                ProbeOutcome::Passed => json!({ "attempted": true, "passed": true }),
+                ProbeOutcome::Failed(error) => {
+                    json!({ "attempted": true, "passed": false, "error": error })
+                }
+                // Never `passed: true`. A probe that did not run is the one
+                // thing this member must not be mistaken for.
+                ProbeOutcome::NotAttempted(reason) => {
+                    json!({ "attempted": false, "reason": reason })
+                }
+            },
+        );
+    }
     Json::Object(root)
 }
 
@@ -945,6 +1235,64 @@ impl HostStorage {
         }
     }
 
+    /// Observe one PLAN-063 bind namespace.
+    fn bind(&self, spec: &BindSpec, mounts: &[MountEvidence]) -> BindEvidence {
+        let mount = mounts
+            .iter()
+            .find(|mount| mount.mount == spec.mount)
+            .cloned();
+        // A symlink here is a substituted namespace, which `mos-data-layout`
+        // refuses outright; `symlink_metadata` is what makes that visible,
+        // because `metadata` would follow the link and call it a directory.
+        let source_is_directory = spec
+            .source
+            .strip_prefix('/')
+            .and_then(|relative| std::fs::symlink_metadata(self.path(relative)).ok())
+            .map(|meta| meta.is_dir());
+        BindEvidence {
+            probe: self.probe(spec, mount.as_ref()),
+            mount,
+            source_is_directory,
+        }
+    }
+
+    /// PLAN-061's readiness probe, on the system namespace only.
+    ///
+    /// `/srv` is user-owned: mosd writing a probe file into it would put a
+    /// daemon's private file in a namespace the product gives to the
+    /// operator, so `/srv` gets no probe and says so rather than getting a
+    /// silent pass.
+    fn probe(&self, spec: &BindSpec, mount: Option<&MountEvidence>) -> Option<ProbeOutcome> {
+        if spec.name != "mos" {
+            return Some(ProbeOutcome::NotAttempted(format!(
+                "{} is the user-owned namespace; mosd owns no subtree of it to probe",
+                spec.mount
+            )));
+        }
+        let Some(mount) = mount else {
+            return Some(ProbeOutcome::NotAttempted(format!(
+                "{} is not mounted",
+                spec.mount
+            )));
+        };
+        if mount.read_only {
+            return Some(ProbeOutcome::NotAttempted(format!(
+                "{} is mounted read-only",
+                spec.mount
+            )));
+        }
+        let subtree = self.path(PROBE_SUBTREE.trim_start_matches('/'));
+        if !subtree.is_dir() {
+            return Some(ProbeOutcome::NotAttempted(format!(
+                "{PROBE_SUBTREE} does not exist; mos-data-layout has not run"
+            )));
+        }
+        Some(match write_probe(&subtree) {
+            Ok(()) => ProbeOutcome::Passed,
+            Err(err) => ProbeOutcome::Failed(format!("{err:#}")),
+        })
+    }
+
     /// The fsck units systemd recorded, over the system bus. Soft: a bus that
     /// does not answer yields no check evidence, never an error.
     async fn checks(&self) -> Vec<CheckEvidence> {
@@ -1057,6 +1405,43 @@ fn unsupported_reason(name: &str) -> &'static str {
     }
 }
 
+/// PLAN-061's probe write, in full: create exclusively, fsync the file,
+/// remove it, fsync the directory.
+///
+/// The whole sequence, not just the create. A create that never reached the
+/// medium proves nothing about a filesystem that will be asked to hold an
+/// update bundle across a reboot, and leaving the file behind would make the
+/// probe a slow leak. The name carries the pid so two daemons cannot collide,
+/// and mode 0600 so nothing else reads or writes it.
+fn write_probe(subtree: &Path) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = subtree.join(format!(".mosd-storage-probe.{}", std::process::id()));
+    let outcome = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("create {}", path.display()))?;
+        file.write_all(b"mosd storage readiness probe\n")
+            .with_context(|| format!("write {}", path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("fsync {}", path.display()))?;
+        Ok(())
+    })();
+    // The removal runs whatever the write did, so a failed probe does not
+    // leave its own evidence behind on the filesystem it just failed on.
+    let removed = std::fs::remove_file(&path);
+    outcome?;
+    removed.with_context(|| format!("remove {}", path.display()))?;
+    std::fs::File::open(subtree)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("fsync {}", subtree.display()))?;
+    Ok(())
+}
+
 /// One mount point's space, from `df -P -B1`.
 fn df_space(mount: &str) -> Option<FsSpace> {
     let output = std::process::Command::new("df")
@@ -1085,7 +1470,20 @@ impl StorageStatusSource for HostStorage {
                 // which is an answer and is reported as one.
                 continue;
             };
-            let mount = mounts.iter().find(|mount| mount.device == device).cloned();
+            // The tier's OWN mountpoint, preferred over any other mount of the
+            // same device. Under PLAN-063 the DATA partition appears three
+            // times in the mount table -- at /mnt/data and at both binds --
+            // so matching on the device alone would report whichever the
+            // kernel happened to list first as "the DATA tier's mount".
+            let mount = spec
+                .mount
+                .and_then(|want| {
+                    mounts
+                        .iter()
+                        .find(|mount| mount.device == device && mount.mount == want)
+                })
+                .or_else(|| mounts.iter().find(|mount| mount.device == device))
+                .cloned();
             let space = mount.as_ref().and_then(|mount| (self.space)(&mount.mount));
             tiers.insert(
                 spec.name.to_string(),
@@ -1098,7 +1496,16 @@ impl StorageStatusSource for HostStorage {
                 },
             );
         }
-        Ok(StorageEvidence { tiers, media })
+
+        let binds = BINDS
+            .iter()
+            .map(|spec| (spec.name.to_string(), self.bind(spec, &mounts)))
+            .collect();
+        Ok(StorageEvidence {
+            tiers,
+            media,
+            binds,
+        })
     }
 }
 
@@ -1170,12 +1577,16 @@ mod tests {
     fn an_install_is_refused_only_when_the_reserved_workspace_is_gone() {
         let reserved = UPDATE_WORKSPACE_RESERVED_BYTES;
         let roomy = TierEvidence {
-            mount: Some(mounted("/dev/mmcblk0p11", "/srv")),
+            mount: Some(mounted("/dev/mmcblk0p11", DATA_MOUNT)),
             space: Some(space(4 * reserved, reserved, 2 * reserved)),
             ..TierEvidence::default()
         };
         assert_eq!(
-            install_refusal(Some(&roomy), Path::new("/srv/update.raucb"), 100),
+            install_refusal(
+                Some(&roomy),
+                Path::new("/mos/updates/verified/update.raucb"),
+                100
+            ),
             None
         );
 
@@ -1185,7 +1596,7 @@ mod tests {
         };
         let refusal = install_refusal(Some(&full), Path::new("/var/tmp/update.raucb"), 100)
             .expect("a full DATA refuses");
-        assert!(refusal.contains("/srv"), "{refusal}");
+        assert!(refusal.contains(UPDATE_WORKSPACE_ROOT), "{refusal}");
         assert!(refusal.contains(&reserved.to_string()), "{refusal}");
 
         // The same full tier, with the bundle staged IN the workspace: the
@@ -1193,25 +1604,204 @@ mod tests {
         // install proceeds. Without this the reservation would refuse every
         // update it was created to make possible.
         assert_eq!(
-            install_refusal(Some(&full), Path::new("/srv/update.raucb"), reserved),
+            install_refusal(
+                Some(&full),
+                Path::new("/mos/updates/verified/update.raucb"),
+                reserved
+            ),
             None
         );
-        // ...and a bundle elsewhere of the same size does not excuse it.
-        assert!(
-            install_refusal(Some(&full), Path::new("/home/mos/update.raucb"), reserved).is_some()
-        );
+        // A bundle elsewhere of the same size does not excuse it -- and under
+        // PLAN-063 "elsewhere" includes the rest of the very same filesystem,
+        // because /mos, /srv and /home are one pool and only /mos/updates is
+        // the workspace. Testing /srv and /home specifically is what stops
+        // this check from degrading into "is the bundle on DATA".
+        for elsewhere in [
+            "/home/mos/update.raucb",
+            "/srv/update.raucb",
+            "/mos/ui/update.raucb",
+        ] {
+            assert!(
+                install_refusal(Some(&full), Path::new(elsewhere), reserved).is_some(),
+                "{elsewhere} was treated as the update workspace"
+            );
+        }
 
         // Absent evidence never refuses: a dry-run daemon has no basis on
         // which to block an operator's update.
-        assert_eq!(install_refusal(None, Path::new("/srv/x.raucb"), 0), None);
+        assert_eq!(
+            install_refusal(None, Path::new("/mos/updates/x.raucb"), 0),
+            None
+        );
         let unmeasured = TierEvidence {
             space: None,
             ..roomy.clone()
         };
         assert_eq!(
-            install_refusal(Some(&unmeasured), Path::new("/srv/x.raucb"), 0),
+            install_refusal(Some(&unmeasured), Path::new("/mos/updates/x.raucb"), 0),
             None
         );
+    }
+
+    fn data_tier(device: &str) -> TierEvidence {
+        TierEvidence {
+            device: Some(device.to_string()),
+            mount: Some(mounted(device, DATA_MOUNT)),
+            space: Some(space(1000, 100, 900)),
+            ..TierEvidence::default()
+        }
+    }
+
+    fn bound(device: &str) -> BindEvidence {
+        BindEvidence {
+            mount: Some(mounted(device, "/mos")),
+            source_is_directory: Some(true),
+            probe: Some(ProbeOutcome::Passed),
+        }
+    }
+
+    /// PLAN-061's readiness contract, driven case by case. The two
+    /// `Unavailable` cases are the ones that matter: each is a state in which
+    /// a writer must NOT fall back to another filesystem, so neither may be
+    /// softened to `degraded`.
+    #[test]
+    fn a_bind_is_ready_only_when_it_is_actually_data_and_writable() {
+        let data = data_tier("/dev/mmcblk0p11");
+        assert_eq!(
+            classify_readiness(&bound("/dev/mmcblk0p11"), Some(&data), Pressure::Normal),
+            Readiness::Ready
+        );
+
+        // Not mounted at all.
+        let unmounted = BindEvidence {
+            mount: None,
+            ..bound("/dev/mmcblk0p11")
+        };
+        assert_eq!(
+            classify_readiness(&unmounted, Some(&data), Pressure::Normal),
+            Readiness::Unavailable
+        );
+
+        // Mounted, but from something that is not the DATA partition: the
+        // path is right and the filesystem is wrong, which is exactly the
+        // fallback PLAN-061 forbids.
+        assert_eq!(
+            classify_readiness(&bound("/dev/mmcblk0p9"), Some(&data), Pressure::Normal),
+            Readiness::Unavailable
+        );
+
+        // The source under /mnt/data is a symlink, not a directory:
+        // substitution, which mos-data-layout dies on.
+        let substituted = BindEvidence {
+            source_is_directory: Some(false),
+            ..bound("/dev/mmcblk0p11")
+        };
+        assert_eq!(
+            classify_readiness(&substituted, Some(&data), Pressure::Normal),
+            Readiness::Unavailable
+        );
+
+        // Read-only, a failed probe and a critically full pool are each
+        // degraded: the namespace is the right one, it just cannot be
+        // written now.
+        let read_only = BindEvidence {
+            mount: Some(MountEvidence {
+                read_only: true,
+                ..mounted("/dev/mmcblk0p11", "/mos")
+            }),
+            ..bound("/dev/mmcblk0p11")
+        };
+        assert_eq!(
+            classify_readiness(&read_only, Some(&data), Pressure::Normal),
+            Readiness::Degraded
+        );
+        let failed = BindEvidence {
+            probe: Some(ProbeOutcome::Failed("ENOSPC".to_string())),
+            ..bound("/dev/mmcblk0p11")
+        };
+        assert_eq!(
+            classify_readiness(&failed, Some(&data), Pressure::Normal),
+            Readiness::Degraded
+        );
+        assert_eq!(
+            classify_readiness(&bound("/dev/mmcblk0p11"), Some(&data), Pressure::Critical),
+            Readiness::Degraded
+        );
+
+        // A probe that did not run never upgrades a verdict and never
+        // downgrades one: it is silence, and silence is neither.
+        let not_attempted = BindEvidence {
+            probe: Some(ProbeOutcome::NotAttempted("no subtree".to_string())),
+            ..bound("/dev/mmcblk0p11")
+        };
+        assert_eq!(
+            classify_readiness(&not_attempted, Some(&data), Pressure::Normal),
+            Readiness::Ready
+        );
+
+        // No DATA tier to compare against: unknown, not ready. Claiming
+        // readiness here would rest on a comparison nobody made.
+        assert_eq!(
+            classify_readiness(&bound("/dev/mmcblk0p11"), None, Pressure::Normal),
+            Readiness::Unknown
+        );
+    }
+
+    /// A probe is rendered as what it was. The `NotAttempted` case must never
+    /// serialize anything a client could read as a pass.
+    #[test]
+    fn a_probe_that_did_not_run_never_renders_as_passed() {
+        let render = |probe: ProbeOutcome| {
+            bind_json(
+                &BINDS[0],
+                Some(&BindEvidence {
+                    probe: Some(probe),
+                    ..bound("/dev/mmcblk0p11")
+                }),
+                Some(&data_tier("/dev/mmcblk0p11")),
+                Pressure::Normal,
+            )["probe"]
+                .clone()
+        };
+        assert_eq!(render(ProbeOutcome::Passed)["passed"], true);
+        assert_eq!(render(ProbeOutcome::Failed("EROFS".into()))["passed"], false);
+        assert_eq!(render(ProbeOutcome::Failed("EROFS".into()))["error"], "EROFS");
+
+        let skipped = render(ProbeOutcome::NotAttempted("mos-data-layout has not run".into()));
+        assert_eq!(skipped["attempted"], false);
+        assert_eq!(skipped.get("passed"), None, "{skipped}");
+        assert_eq!(skipped["reason"], "mos-data-layout has not run");
+    }
+
+    /// `sourceOnData` answers the contract's first question on its own,
+    /// rather than only through the verdict.
+    #[test]
+    fn a_bind_reports_whether_its_source_is_really_data() {
+        let data = data_tier("/dev/mmcblk0p11");
+        let right = bind_json(
+            &BINDS[0],
+            Some(&bound("/dev/mmcblk0p11")),
+            Some(&data),
+            Pressure::Normal,
+        );
+        assert_eq!(right["sourceOnData"], true);
+        assert_eq!(right["readiness"], "ready");
+        assert_eq!(right["source"], "/mnt/data/mos");
+        assert_eq!(right["owner"], "system");
+
+        let wrong = bind_json(
+            &BINDS[0],
+            Some(&bound("/dev/mmcblk0p9")),
+            Some(&data),
+            Pressure::Normal,
+        );
+        assert_eq!(wrong["sourceOnData"], false);
+        assert_eq!(wrong["readiness"], "unavailable");
+
+        // No evidence at all is `unknown` with a reason, not a quiet default.
+        let unseen = bind_json(&BINDS[1], None, Some(&data), Pressure::Normal);
+        assert_eq!(unseen["readiness"], "unknown");
+        assert!(unseen["detail"].as_str().is_some(), "{unseen}");
     }
 
     /// The JEDEC lifetime register is a 10% bucket, and it is reported as one.
@@ -1364,7 +1954,7 @@ mod tests {
             TierEvidence {
                 device: Some("/dev/mmcblk0p11".to_string()),
                 partition_bytes: Some(30_000_000_000),
-                mount: Some(mounted("/dev/mmcblk0p11", "/srv")),
+                mount: Some(mounted("/dev/mmcblk0p11", DATA_MOUNT)),
                 space: Some(space(1000, 850, 100)),
                 check: Some(CheckEvidence {
                     unit: "systemd-fsck@dev-mmcblk0p11.service".to_string(),
@@ -1390,6 +1980,9 @@ mod tests {
         );
         let evidence = StorageEvidence {
             tiers,
+            binds: [("mos".to_string(), bound("/dev/mmcblk0p11"))]
+                .into_iter()
+                .collect(),
             media: vec![MediumEvidence {
                 name: "mmcblk0".to_string(),
                 kind: "mmc".to_string(),
@@ -1417,7 +2010,9 @@ mod tests {
         let data = by_name("data");
         assert_eq!(data["present"], true);
         assert_eq!(data["mounted"], true);
-        assert_eq!(data["mount"], "/srv");
+        // The DATA partition's own mountpoint, not either bind's: PLAN-063
+        // puts the filesystem at /mnt/data and exposes /mos and /srv on top.
+        assert_eq!(data["mount"], DATA_MOUNT);
         assert_eq!(data["readOnly"], false);
         assert_eq!(data["role"], "ext4");
         assert_eq!(data["space"]["reservedBytes"], 50);
@@ -1427,7 +2022,24 @@ mod tests {
             data["updateWorkspace"]["reservedBytes"],
             UPDATE_WORKSPACE_RESERVED_BYTES
         );
+        assert_eq!(data["updateWorkspace"]["root"], UPDATE_WORKSPACE_ROOT);
         assert_eq!(data["updateWorkspace"]["available"], false);
+
+        // One filesystem, two namespaces. The binds carry no capacity of
+        // their own -- a `space` object on either would be the DATA tier's
+        // bytes reported a second time, and a reader summing the three would
+        // get three times the disk.
+        let namespaces = &value["namespaces"];
+        assert_eq!(namespaces["sharedCapacityTier"], DATA_TIER);
+        let binds = namespaces["binds"].as_array().expect("binds is an array");
+        assert_eq!(binds.len(), BINDS.len());
+        for bind in binds {
+            assert!(bind.get("space").is_none(), "a bind reported capacity: {bind}");
+            assert!(
+                bind.get("partitionBytes").is_none(),
+                "a bind reported a partition size: {bind}"
+            );
+        }
         // fsck exit 1 is "errors were corrected", which is real repair
         // evidence and is surfaced rather than folded into a boolean.
         assert_eq!(data["check"]["exitStatus"], 1);
@@ -1528,16 +2140,27 @@ mod tests {
         )
         .expect("symlink");
 
+        // The PLAN-063 layout: DATA at /mnt/data, and the same device bound
+        // twice on top of it. The DATA row is listed LAST on purpose -- a
+        // tier lookup that matched on the device alone would pick /mos here
+        // and report it as the DATA tier's own mountpoint.
         write(
             "proc/self/mountinfo",
             concat!(
                 "25 1 254:0 / / ro,noatime shared:1 - squashfs /dev/dm-0 ro\n",
-                "33 25 179:11 / /srv rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
+                "33 25 179:11 /mos /mos rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
+                "34 25 179:11 /srv /srv rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
+                "35 25 179:11 / /mnt/data rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
             ),
         );
+        // The two bind sources mos-data-layout creates, and the probe subtree
+        // under the system one.
+        std::fs::create_dir_all(path.join("mnt/data/mos")).expect("mkdir");
+        std::fs::create_dir_all(path.join("mnt/data/srv")).expect("mkdir");
+        std::fs::create_dir_all(path.join("mos/updates/staging")).expect("mkdir");
 
         let observer = HostStorage::at(path)
-            .with_space_reader(|mount| (mount == "/srv").then(|| space(1000, 100, 850)));
+            .with_space_reader(|mount| (mount == DATA_MOUNT).then(|| space(1000, 100, 850)));
         let evidence = observer.observe().await.expect("the fixture observes");
 
         // Only the two labelled tiers exist here; the rest are absent, which
@@ -1551,9 +2174,43 @@ mod tests {
         assert_eq!(data.partition_bytes, Some(40_000_000 * 512));
         assert_eq!(
             data.mount.as_ref().map(|mount| mount.mount.as_str()),
-            Some("/srv")
+            Some(DATA_MOUNT),
+            "the DATA tier reported a bind's mountpoint as its own"
         );
         assert_eq!(data.space.map(|space| space.used), Some(100));
+
+        // Both binds observed, both on the DATA device, and the probe ran in
+        // the system namespace only.
+        let mos = &evidence.binds["mos"];
+        assert_eq!(
+            mos.mount.as_ref().map(|mount| mount.device.as_str()),
+            Some("/dev/mmcblk0p11")
+        );
+        assert_eq!(mos.source_is_directory, Some(true));
+        assert_eq!(mos.probe, Some(ProbeOutcome::Passed));
+        // The probe cleans up after itself: a readiness check that leaves
+        // files behind is a slow leak on the filesystem it is vouching for.
+        let leftovers: Vec<_> = std::fs::read_dir(path.join("mos/updates/staging"))
+            .expect("read staging")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        assert!(leftovers.is_empty(), "probe left {leftovers:?} behind");
+
+        let srv = &evidence.binds["srv"];
+        assert_eq!(srv.source_is_directory, Some(true));
+        // No probe in the user-owned namespace, and it says why rather than
+        // reporting a pass nobody earned.
+        match &srv.probe {
+            Some(ProbeOutcome::NotAttempted(reason)) => {
+                assert!(reason.contains("user-owned"), "{reason}")
+            }
+            other => panic!("expected /srv to be un-probed, got {other:?}"),
+        }
+
+        assert_eq!(
+            classify_readiness(mos, evidence.data_tier(), Pressure::Normal),
+            Readiness::Ready
+        );
 
         // The booted slot is behind a verity mapper: without resolving the
         // mapper's single slave, the slot holding the running system would
@@ -1580,6 +2237,54 @@ mod tests {
                 pre_eol_raw: Some("0x01".to_string()),
             }
         );
+    }
+
+    /// The fail-closed side of the layout contract, over a fixture where
+    /// `mos-data-layout` has NOT run: the bind sources are absent, the probe
+    /// subtree is absent, and every one of those is reported as the reason it
+    /// is rather than as a quiet pass.
+    #[tokio::test]
+    async fn an_uninitialized_layout_reports_unavailable_and_an_unattempted_probe() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path();
+        std::fs::create_dir_all(path.join("dev/disk/by-partlabel")).expect("mkdir");
+        std::fs::create_dir_all(path.join("sys/block/mmcblk0/mmcblk0p11")).expect("mkdir");
+        std::fs::write(path.join("sys/block/mmcblk0/size"), "60000000\n").expect("write");
+        std::fs::write(path.join("sys/block/mmcblk0/mmcblk0p11/partition"), "11\n")
+            .expect("write");
+        std::fs::write(path.join("sys/block/mmcblk0/mmcblk0p11/size"), "40000000\n")
+            .expect("write");
+        std::os::unix::fs::symlink("../../mmcblk0p11", path.join("dev/disk/by-partlabel/data"))
+            .expect("symlink");
+        // DATA is mounted, but nothing has created the namespaces on it.
+        std::fs::create_dir_all(path.join("proc/self")).expect("mkdir");
+        std::fs::write(
+            path.join("proc/self/mountinfo"),
+            "35 25 179:11 / /mnt/data rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
+        )
+        .expect("write");
+
+        let evidence = HostStorage::at(path)
+            .observe()
+            .await
+            .expect("the fixture observes");
+
+        for name in ["mos", "srv"] {
+            let bind = &evidence.binds[name];
+            assert_eq!(bind.mount, None, "{name} is not mounted in this fixture");
+            assert_eq!(bind.source_is_directory, None, "{name} has no source yet");
+            assert_eq!(
+                classify_readiness(bind, evidence.data_tier(), Pressure::Normal),
+                Readiness::Unavailable,
+                "{name} must be unavailable, so no writer falls back elsewhere"
+            );
+        }
+        match &evidence.binds["mos"].probe {
+            Some(ProbeOutcome::NotAttempted(reason)) => {
+                assert!(reason.contains("/mos"), "{reason}")
+            }
+            other => panic!("expected an unattempted probe, got {other:?}"),
+        }
     }
 
     /// A medium with no wear registers in sysfs takes the unsupported path

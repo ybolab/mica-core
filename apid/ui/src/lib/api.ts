@@ -66,3 +66,36 @@ export function json(method: string, body?: unknown): RequestInit {
 export function errorMessage(error: unknown, fallback = 'The request could not be completed.') {
   return error instanceof Error ? error.message : fallback
 }
+
+export function uploadZip<T>(path: string, file: File, onProgress: (percent: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', path)
+    request.withCredentials = true
+    request.setRequestHeader('content-type', 'application/zip')
+    if (csrfToken) request.setRequestHeader('x-csrf-token', csrfToken)
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(Math.round((event.loaded / event.total) * 100))
+    })
+    request.addEventListener('load', () => {
+      let body: ApiErrorBody & T
+      try {
+        body = request.responseText
+          ? JSON.parse(request.responseText) as ApiErrorBody & T
+          : {} as unknown as ApiErrorBody & T
+      } catch {
+        reject(new ApiError(`${request.status} ${request.statusText}`, request.status))
+        return
+      }
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(100)
+        resolve(body)
+      } else {
+        reject(new ApiError(body?.error?.message ?? `${request.status} ${request.statusText}`, request.status, body?.error?.code, body?.error?.path))
+      }
+    })
+    request.addEventListener('error', () => reject(new ApiError('The upload connection failed.', 0, 'ui_upload_interrupted')))
+    request.addEventListener('abort', () => reject(new ApiError('The upload was cancelled.', 0, 'ui_upload_interrupted')))
+    request.send(file)
+  })
+}
