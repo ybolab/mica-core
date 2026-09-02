@@ -12,6 +12,7 @@ const CHECK_PATH: &str = "/api/v1/update/check";
 const FETCH_PATH: &str = "/api/v1/update/fetch";
 const INSTALL_PATH: &str = "/api/v1/update/install";
 const MARK_PATH: &str = "/api/v1/update/mark";
+const ROLLBACK_PATH: &str = "/api/v1/update/rollback";
 const OVERRIDE_PATH: &str = "/api/v1/update/reboot-override";
 
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
@@ -176,6 +177,132 @@ async fn a_mark_answers_raucs_slot_and_message_and_bad_vocabulary_is_422() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "validation_failed");
+}
+
+/// A seeded state document whose `rollback` object is what mosd's
+/// `rollback_eligibility` would have written for a permitted rollback.
+fn permitted_rollback() -> serde_json::Value {
+    json!({
+        "booted_slot": "rootfs.0",
+        "primary": "rootfs.0",
+        "pending_not_confirmed": false,
+        "rollback": { "target": "rootfs.1", "permitted": true, "reason": null },
+    })
+}
+
+#[tokio::test]
+async fn the_state_read_carries_the_rollback_verdict_and_no_second_route_serves_it() {
+    let (router, _fake, token) = update_app(permitted_rollback());
+    let response = bearer(&router, "GET", UPDATE_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["rollback"]["target"], "rootfs.1");
+    assert_eq!(body["rollback"]["permitted"], true);
+    assert!(body["rollback"]["reason"].is_null());
+
+    // The action's path is POST-only: there is no read route for slot state
+    // beside `GET /api/v1/update`.
+    let (router, _fake, token) = update_app(permitted_rollback());
+    let read = bearer(&router, "GET", ROLLBACK_PATH, &token).await;
+    assert_eq!(read.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step() {
+    let (router, fake, token) = update_app(permitted_rollback());
+
+    let anonymous = json_request(&router, "POST", ROLLBACK_PATH, json!({}), None, None).await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        fake.update_calls().is_empty(),
+        "an unauthenticated rollback must not reach mosd"
+    );
+
+    let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["target"], "rootfs.1");
+    assert_eq!(body["slotName"], "rootfs.0");
+    assert_eq!(body["nextStep"], "POST /api/v1/actions/reboot");
+    // The guard is read first, then exactly one mark is emitted: `bad` on the
+    // BOOTED slot. Nothing here marks the target good, and nothing reboots.
+    assert_eq!(
+        fake.update_calls(),
+        vec!["get_update_state".to_string(), "mark bad booted".to_string()],
+    );
+}
+
+#[tokio::test]
+async fn every_guard_refusal_is_a_409_carrying_its_own_reason() {
+    // The five reasons `rollback_eligibility` produces, each with the state
+    // document mosd writes for it.
+    let cases = [
+        ("no_alternate_slot", json!(null)),
+        ("alternate_is_booted_slot", json!(null)),
+        ("alternate_never_installed", json!("rootfs.1")),
+        ("alternate_marked_bad", json!("rootfs.1")),
+        ("booted_slot_not_confirmed", json!("rootfs.1")),
+    ];
+    for (reason, target) in cases {
+        let (router, fake, token) = update_app(json!({
+            "rollback": { "target": target, "permitted": false, "reason": reason },
+        }));
+        let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{reason}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], reason, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(reason)),
+            "the reason must reach the caller: {body}"
+        );
+        // A refused rollback reads the state and stops there.
+        assert_eq!(fake.update_calls(), vec!["get_update_state".to_string()], "{reason}");
+    }
+}
+
+#[tokio::test]
+async fn a_verdict_this_surface_does_not_know_is_refused_rather_than_renamed() {
+    // A reason outside the vocabulary, and a document with no verdict at all:
+    // both fail closed, and neither is reported as one of the five.
+    for update in [
+        json!({ "rollback": { "target": "rootfs.1", "permitted": false, "reason": "gremlins" } }),
+        json!({ "lifecycle": { "state": "idle" } }),
+        // Permitted with no resolved target is a shape mosd cannot write; if
+        // it ever appears, it must not be acted on.
+        json!({ "rollback": { "target": null, "permitted": true, "reason": null } }),
+    ] {
+        let (router, fake, token) = update_app(update);
+        let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(body_json(response).await["error"]["code"], "rollback_refused");
+        assert_eq!(fake.update_calls(), vec!["get_update_state".to_string()]);
+    }
+}
+
+#[tokio::test]
+async fn a_rauc_failure_on_the_rollback_mark_is_500_like_the_mark_route() {
+    let (router, fake, token) = update_app(permitted_rollback());
+    // The guard read succeeds (the fake answers it from the seeded tree);
+    // the mark that follows is what RAUC refuses.
+    fake.refuse_updates("org.freedesktop.DBus.Error.Failed", "rauc mark: no primary");
+    let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(response).await["error"]["code"], "mosd_failed");
+}
+
+#[tokio::test]
+async fn a_rollback_from_a_browser_session_needs_its_csrf_token() {
+    let (router, fake, _token) = update_app(permitted_rollback());
+    let cookie = login(&router, "hunter2secret").await;
+    let response =
+        json_request(&router, "POST", ROLLBACK_PATH, json!({}), Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        fake.update_calls().is_empty(),
+        "a CSRF-refused rollback must not reach mosd"
+    );
 }
 
 #[tokio::test]

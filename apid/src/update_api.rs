@@ -1,6 +1,10 @@
-//! The update cluster: one state read and five actions over mosd's update
+//! The update cluster: one state read and six actions over mosd's update
 //! surface (`GetUpdateState`, `CheckUpdate`, `FetchUpdate`, `InstallUpdate`,
 //! `MarkUpdate`, `SetRebootOverride`).
+//!
+//! Six actions over five action members and no sixth: the guarded rollback is
+//! composed here out of `GetUpdateState` (which carries mosd's own rollback
+//! verdict) and `MarkUpdate`, rather than being a second way into RAUC.
 //!
 //! A bounded module beside `routes.rs` rather than more of it: the routes
 //! here share that file's session gate ([`ApiCredential`]), envelope and
@@ -28,6 +32,7 @@ pub(crate) const V1_UPDATE_CHECK_PATH: &str = "/v1/update/check";
 pub(crate) const V1_UPDATE_FETCH_PATH: &str = "/v1/update/fetch";
 pub(crate) const V1_UPDATE_INSTALL_PATH: &str = "/v1/update/install";
 pub(crate) const V1_UPDATE_MARK_PATH: &str = "/v1/update/mark";
+pub(crate) const V1_UPDATE_ROLLBACK_PATH: &str = "/v1/update/rollback";
 pub(crate) const V1_UPDATE_REBOOT_OVERRIDE_PATH: &str = "/v1/update/reboot-override";
 
 /// The D-Bus error name mosd's update surface refuses policy-forbidden
@@ -36,7 +41,12 @@ const FDO_ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 
 /// The update state document, verbatim from mosd: `lifecycle` (state machine,
 /// policy, reboot gate), per-slot status, `booted_slot`, `primary`,
-/// `pending_not_confirmed`, `install` and `last_mark`.
+/// `pending_not_confirmed`, `rollback`, `install` and `last_mark`.
+///
+/// `rollback` is the one place slot state is offered as a decision: mosd's
+/// `rollback_eligibility` resolves the alternate slot, says whether a manual
+/// rollback is permitted, and names the refusal otherwise. There is no second
+/// read route for it — this document is the single writer of that fact.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct UpdateState(Value);
 
@@ -82,14 +92,17 @@ fn body_rejection(rejection: axum::extract::rejection::JsonRejection) -> Respons
 ///
 /// Asks mosd's `GetUpdateState`, which queries RAUC and re-derives the
 /// lifecycle first — this is the polling surface for a UI watching a check,
-/// download or install, and it is never answered from a stale record.
+/// download or install, and it is never answered from a stale record. The
+/// `rollback` object is derived from the same fresh slot list, so an operator
+/// deciding whether to roll back reads the verdict and the slots it came from
+/// in one answer.
 #[utoipa::path(
     get,
     path = V1_UPDATE_PATH,
     context_path = API,
     tag = "update",
     responses(
-        (status = 200, description = "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `install`, `last_mark`", body = UpdateState),
+        (status = 200, description = "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`), `install`, `last_mark`", body = UpdateState),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to answer, e.g. RAUC unreachable (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
@@ -316,6 +329,158 @@ pub(crate) async fn api_v1_update_mark(
         Ok((slot_name, message)) => {
             state.audit.record("update-mark", &request.state, &source);
             api_response(StatusCode::OK, MarkResponse { slot_name, message })
+        }
+        Err(err) => update_bus_error(&err),
+    }
+}
+
+/// The guard's refusal reasons, exactly as `rollback_eligibility` in
+/// `pkgs/mosd/mosd/src/rauc.rs` writes them into the state document.
+///
+/// Listed here because `ApiError`'s code is a `&'static str` and mosd's
+/// verdict arrives as a bus string: this is the vocabulary apid serves, and a
+/// reason outside it is answered as the generic `rollback_refused` carrying
+/// mosd's word verbatim, so a renamed reason degrades to something honest
+/// instead of being silently reported as one of these.
+const ROLLBACK_REASONS: [&str; 5] = [
+    "no_alternate_slot",
+    "alternate_is_booted_slot",
+    "alternate_never_installed",
+    "alternate_marked_bad",
+    "booted_slot_not_confirmed",
+];
+
+/// What a rollback did: RAUC's answer to the mark, and the slot the next boot
+/// will therefore come from.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RollbackResponse {
+    /// RAUC's resolved name for the slot that was marked bad — the one this
+    /// system is running from.
+    slot_name: String,
+    /// RAUC's own message for the mark.
+    message: String,
+    /// The slot the next boot comes from.
+    target: String,
+    /// What the operator must still do; this route deliberately does not.
+    next_step: String,
+}
+
+/// mosd's verdict as an error code: itself when this surface knows it, and
+/// the generic `rollback_refused` when it does not.
+fn rollback_reason_code(reason: Option<&str>) -> &'static str {
+    reason
+        .and_then(|reason| ROLLBACK_REASONS.into_iter().find(|known| *known == reason))
+        .unwrap_or("rollback_refused")
+}
+
+/// **409** for a rollback the device's slot state forbids.
+///
+/// Not 422: the request is well formed and authenticated, and it is the
+/// device that says no. The reason from mosd is the error code when it is one
+/// this surface knows, and the message carries it either way.
+fn rollback_refused(reason: Option<&str>) -> Response {
+    let code = rollback_reason_code(reason);
+    api_response(
+        StatusCode::CONFLICT,
+        ApiError::apid(
+            code,
+            format!(
+                "the device's slot state does not permit a rollback ({}); \
+                 read `rollback` in `GET /api/v1/update` for the resolved target",
+                reason.unwrap_or("the update state carries no rollback verdict"),
+            ),
+        ),
+    )
+}
+
+/// Roll back to the alternate slot, if the guard permits it.
+///
+/// The guard is mosd's `rollback_eligibility`, read out of the same
+/// `GetUpdateState` document `GET /api/v1/update` serves — one derivation of
+/// the slot state, not a second one here. It refuses when there is no
+/// alternate slot, when the alternate is the booted slot, when the alternate
+/// was never written or is marked bad, and when the booted slot is itself
+/// pending-not-confirmed (that window belongs to the bootloader's attempt
+/// counter, and a manual rollback inside it races the credit being spent).
+///
+/// What it then does is ONE mark: `bad` on the **booted** slot. That is what
+/// makes the bootloader pick the other one, and it is why this route cannot
+/// confirm the slot it rolls back to — PLAN-048's "cannot mark an unverified
+/// slot good" holds structurally, not by review. The unguarded
+/// `POST /api/v1/update/mark` remains the operator escape hatch beside it;
+/// this route is the guarded one.
+///
+/// It does NOT reboot. A rollback is a boot-order change, and the reboot that
+/// realises it goes through the safe-to-reboot gate like every other
+/// (`docs/design/updates.md` §4) — folding it in here would either bypass
+/// that gate or duplicate its override semantics. The answer names the next
+/// step instead.
+#[utoipa::path(
+    post,
+    path = V1_UPDATE_ROLLBACK_PATH,
+    context_path = API,
+    tag = "update",
+    responses(
+        (status = 200, description = "The booted slot was marked bad; the next boot comes from `target`. Reboot with `POST /api/v1/actions/reboot`", body = RollbackResponse),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know", body = ApiError),
+        (status = 500, description = "RAUC refused or failed the mark, or mosd could not read the slot state (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_update_rollback(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+) -> Response {
+    // No request body: this action takes no parameters, and a slot it could
+    // name is a slot the guard did not resolve.
+    let update = match state.api.get_update_state().await {
+        Ok(update) => update,
+        Err(err) => return update_bus_error(&err),
+    };
+    let rollback = update.get("rollback");
+    let permitted = rollback
+        .and_then(|rollback| rollback.get("permitted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let reason = rollback
+        .and_then(|rollback| rollback.get("reason"))
+        .and_then(Value::as_str);
+    // A permitted verdict always names its target; a document that permits
+    // without one is refused rather than acted on, so the answer can never
+    // claim a slot the guard did not resolve.
+    let target = rollback
+        .and_then(|rollback| rollback.get("target"))
+        .and_then(Value::as_str);
+    let (Some(target), true) = (target, permitted) else {
+        let code = rollback_reason_code(reason);
+        state
+            .audit
+            .record("update-rollback", &format!("refused: {code}"), &source);
+        return rollback_refused(reason);
+    };
+    let target = target.to_string();
+    // The one mark a rollback emits; `RollbackEligibility::mark` in
+    // `pkgs/mosd/mosd/src/rauc.rs` is where that is a proven invariant.
+    match state.api.mark_update("bad", "booted").await {
+        Ok((slot_name, message)) => {
+            state
+                .audit
+                .record("update-rollback", &format!("to {target}"), &source);
+            api_response(
+                StatusCode::OK,
+                RollbackResponse {
+                    slot_name,
+                    message,
+                    target,
+                    next_step: "POST /api/v1/actions/reboot".to_string(),
+                },
+            )
         }
         Err(err) => update_bus_error(&err),
     }

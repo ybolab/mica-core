@@ -558,7 +558,7 @@ fn api_router() -> Router<AppState> {
         // handler exists, so nothing that merely follows a link can replace a
         // tunnel's identity.
         .route(V1_WIREGUARD_ROTATE_ROUTE, post(api_v1_wireguard_rotate))
-        // The update cluster (`update_api.rs`): one state read, five
+        // The update cluster (`update_api.rs`): one state read, six
         // POST-only actions, all behind the same credential extractor.
         .route(
             crate::update_api::V1_UPDATE_PATH,
@@ -579,6 +579,10 @@ fn api_router() -> Router<AppState> {
         .route(
             crate::update_api::V1_UPDATE_MARK_PATH,
             post(crate::update_api::api_v1_update_mark),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_ROLLBACK_PATH,
+            post(crate::update_api::api_v1_update_rollback),
         )
         .route(
             crate::update_api::V1_UPDATE_REBOOT_OVERRIDE_PATH,

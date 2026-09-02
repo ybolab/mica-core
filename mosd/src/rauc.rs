@@ -176,6 +176,10 @@ impl UpdateQuery {
             "pending_not_confirmed".into(),
             Value::Bool(pending_not_confirmed(&self.slots, self.primary.as_deref())),
         );
+        entry.insert(
+            "rollback".into(),
+            rollback_eligibility(&self.slots, self.primary.as_deref()).to_json(),
+        );
     }
 }
 
@@ -225,6 +229,136 @@ pub fn unconfirmed_slot_warning(slots: &[SlotStatus], primary: Option<&str>) -> 
         ));
     }
     None
+}
+
+/// A manual rollback is refused because RAUC names no booted slot, so nothing
+/// can be resolved relative to it: a container, dry-run, or an image whose
+/// kernel command line carries no `rauc.slot=` (`uboot-ab-handshake.md` §5.3).
+pub const ROLLBACK_NO_ALTERNATE_SLOT: &str = "no_alternate_slot";
+/// A manual rollback is refused because the booted slot is the only member of
+/// its slot class — a single-slot `system.conf`, where "the other slot" would
+/// resolve to the slot already running.
+pub const ROLLBACK_ALTERNATE_IS_BOOTED: &str = "alternate_is_booted_slot";
+/// A manual rollback is refused because the alternate slot has never been
+/// written: no bundle version and no install timestamp, so there is no system
+/// there to fall back to.
+pub const ROLLBACK_ALTERNATE_NEVER_INSTALLED: &str = "alternate_never_installed";
+/// A manual rollback is refused because the alternate slot's boot-status is
+/// `bad`: the bootloader has already condemned it.
+pub const ROLLBACK_ALTERNATE_MARKED_BAD: &str = "alternate_marked_bad";
+/// A manual rollback is refused because the booted slot is itself
+/// pending-not-confirmed. That window belongs to the automatic bad-slot path
+/// — the bootloader's attempt counter — and a manual rollback taken inside it
+/// races the boot credit it is already spending.
+pub const ROLLBACK_BOOTED_NOT_CONFIRMED: &str = "booted_slot_not_confirmed";
+
+/// Whether the device's slot state permits a manual rollback, which slot one
+/// would boot into, and — when it does not — why.
+///
+/// INVARIANT, and the whole point of this type: a rollback is a `bad` mark on
+/// the BOOTED slot. It never names the target in a mark and it can never emit
+/// `good`, so no path through here confirms a slot no boot has verified —
+/// PLAN-048's "cannot mark an unverified slot good". [`Self::mark`] is the
+/// only mark this type produces, and its unit test enumerates the input space
+/// rather than trusting the sentence above.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackEligibility {
+    /// The alternate slot a rollback would boot into, or `None` when the slot
+    /// state names none.
+    pub target: Option<String>,
+    /// Whether a manual rollback is permitted right now.
+    pub permitted: bool,
+    /// The stable refusal reason, `None` when `permitted`.
+    pub reason: Option<&'static str>,
+}
+
+impl RollbackEligibility {
+    /// The mark a permitted rollback emits, or `None` when it is refused.
+    ///
+    /// `bad` on `booted`, always: condemning the slot we are running from is
+    /// what makes the bootloader pick the other one (`uboot-ab-handshake.md`
+    /// §5.3 walks `BOOT_ORDER` for a slot that still has credits). The
+    /// vocabulary is [`validate_mark`]'s, unchanged — there is no second slot
+    /// state machine here, and no way to express "mark the target good".
+    pub fn mark(&self) -> Option<(&'static str, &'static str)> {
+        self.permitted.then_some(("bad", "booted"))
+    }
+
+    /// The `rollback` object recorded under live-state `update`: `target`,
+    /// `permitted` and a stable `reason`, with `null` for the two that are
+    /// absent rather than a missing key — every consumer reads all three.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "target": self.target.as_ref().map_or(Value::Null, |name| Value::String(name.clone())),
+            "permitted": self.permitted,
+            "reason": self.reason.map_or(Value::Null, |reason| Value::String(reason.to_string())),
+        })
+    }
+
+    fn refused(target: Option<&str>, reason: &'static str) -> Self {
+        Self {
+            target: target.map(str::to_string),
+            permitted: false,
+            reason: Some(reason),
+        }
+    }
+}
+
+/// A slot's class: the name up to the first `.`, which is how RAUC groups
+/// slots (`rootfs.0`/`rootfs.1` are one group, `boot.0`/`boot.1` another).
+fn slot_class(name: &str) -> &str {
+    name.split_once('.').map_or(name, |(class, _)| class)
+}
+
+/// Decide whether a manual rollback is permitted, and to which slot.
+///
+/// Pure over RAUC's own answers, so the entire decision is unit-testable with
+/// no bus: the caller supplies the slot list and the primary slot name that
+/// one [`query`] round already gathered.
+///
+/// The alternate is resolved the way RAUC resolves its own `other` — the
+/// booted slot's class, minus the booted slot — so this decides *about* the
+/// `booted`/`other` vocabulary [`validate_mark`] already owns rather than
+/// introducing a second one. `system.conf` declares exactly two members of
+/// the rootfs class (asserted on the built image by verify's
+/// `rauc-rootfs-bootnames`), so at most one sibling can be found; the first
+/// is taken rather than an ambiguity being invented for a shape the image
+/// cannot have.
+pub fn rollback_eligibility(slots: &[SlotStatus], primary: Option<&str>) -> RollbackEligibility {
+    let Some(booted) = booted_slot(slots) else {
+        return RollbackEligibility::refused(None, ROLLBACK_NO_ALTERNATE_SLOT);
+    };
+    let class = slot_class(&booted.name);
+    let target = slots
+        .iter()
+        .find(|slot| slot_class(&slot.name) == class && slot.name != booted.name);
+    let Some(target) = target else {
+        return RollbackEligibility::refused(None, ROLLBACK_ALTERNATE_IS_BOOTED);
+    };
+    // Never written: RAUC records a bundle version and an install timestamp
+    // into a slot it has installed into, and the factory image writes only
+    // slot A — so a device that has never taken an update has neither on the
+    // other slot, and there is no system there to fall back to.
+    if target.bundle_version.is_none() && target.installed_timestamp.is_none() {
+        return RollbackEligibility::refused(
+            Some(&target.name),
+            ROLLBACK_ALTERNATE_NEVER_INSTALLED,
+        );
+    }
+    if target.boot_status.as_deref() == Some("bad") {
+        return RollbackEligibility::refused(Some(&target.name), ROLLBACK_ALTERNATE_MARKED_BAD);
+    }
+    // Checked last because it is a fact about the slot we are LEAVING, not
+    // the one we would arrive at: an operator reading a refusal wants to hear
+    // about the target's own defects first.
+    if pending_not_confirmed(slots, primary) {
+        return RollbackEligibility::refused(Some(&target.name), ROLLBACK_BOOTED_NOT_CONFIRMED);
+    }
+    RollbackEligibility {
+        target: Some(target.name.clone()),
+        permitted: true,
+        reason: None,
+    }
 }
 
 /// The `update` object in the live-state tree, created empty on first use.
@@ -648,6 +782,179 @@ mod tests {
         let slots = [slot("rootfs.0", "booted", Some("good"))];
         assert!(!pending_not_confirmed(&slots, None));
         assert_eq!(unconfirmed_slot_warning(&slots, None), None);
+    }
+
+    /// A slot that has been written: RAUC records both of these into a slot
+    /// it installed into.
+    fn installed(name: &str, state: &str, boot_status: Option<&str>) -> SlotStatus {
+        SlotStatus {
+            bundle_version: Some("2026.08".to_string()),
+            installed_timestamp: Some("2026-08-30T10:00:00Z".to_string()),
+            ..slot(name, state, boot_status)
+        }
+    }
+
+    #[test]
+    fn a_converged_two_slot_system_permits_a_rollback_to_the_other_slot() {
+        let slots = [
+            installed("rootfs.0", "booted", Some("good")),
+            installed("rootfs.1", "inactive", Some("good")),
+        ];
+        let decision = rollback_eligibility(&slots, Some("rootfs.0"));
+        assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
+        assert!(decision.permitted);
+        assert_eq!(decision.reason, None);
+        assert_eq!(decision.mark(), Some(("bad", "booted")));
+    }
+
+    #[test]
+    fn without_a_booted_slot_there_is_no_alternate_to_resolve() {
+        // Dry-run, a container, or an image booted without `rauc.slot=`.
+        for slots in [
+            Vec::new(),
+            vec![
+                installed("rootfs.0", "inactive", Some("good")),
+                installed("rootfs.1", "inactive", Some("good")),
+            ],
+        ] {
+            let decision = rollback_eligibility(&slots, None);
+            assert_eq!(decision.target, None);
+            assert!(!decision.permitted);
+            assert_eq!(decision.reason, Some(ROLLBACK_NO_ALTERNATE_SLOT));
+            assert_eq!(decision.mark(), None);
+        }
+    }
+
+    #[test]
+    fn a_single_slot_class_refuses_because_the_alternate_would_be_the_booted_slot() {
+        // A `system.conf` with one rootfs slot: the boot slots are a class of
+        // their own and must not be offered as a rollback target.
+        let slots = [
+            installed("rootfs.0", "booted", Some("good")),
+            installed("boot.0", "inactive", Some("good")),
+            installed("boot.1", "inactive", Some("good")),
+        ];
+        let decision = rollback_eligibility(&slots, Some("rootfs.0"));
+        assert_eq!(decision.target, None);
+        assert_eq!(decision.reason, Some(ROLLBACK_ALTERNATE_IS_BOOTED));
+        assert_eq!(decision.mark(), None);
+    }
+
+    #[test]
+    fn a_never_written_alternate_is_not_a_rollback_target() {
+        // The shape of a device that has never taken an update: the factory
+        // image wrote slot A and slot B holds nothing.
+        let slots = [
+            installed("rootfs.0", "booted", Some("good")),
+            slot("rootfs.1", "inactive", Some("good")),
+        ];
+        let decision = rollback_eligibility(&slots, Some("rootfs.0"));
+        assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
+        assert!(!decision.permitted);
+        assert_eq!(decision.reason, Some(ROLLBACK_ALTERNATE_NEVER_INSTALLED));
+        assert_eq!(decision.mark(), None);
+    }
+
+    #[test]
+    fn an_alternate_the_bootloader_condemned_is_not_a_rollback_target() {
+        let slots = [
+            installed("rootfs.0", "booted", Some("good")),
+            installed("rootfs.1", "inactive", Some("bad")),
+        ];
+        let decision = rollback_eligibility(&slots, Some("rootfs.0"));
+        assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
+        assert_eq!(decision.reason, Some(ROLLBACK_ALTERNATE_MARKED_BAD));
+        assert_eq!(decision.mark(), None);
+    }
+
+    #[test]
+    fn an_unconfirmed_booted_slot_leaves_the_rollback_to_the_bootloader() {
+        // Installed and activated but not yet booted: `primary` is the other
+        // slot. A manual rollback here races the boot credit the automatic
+        // path is already counting down.
+        let slots = [
+            installed("rootfs.0", "booted", Some("good")),
+            installed("rootfs.1", "inactive", Some("good")),
+        ];
+        let decision = rollback_eligibility(&slots, Some("rootfs.1"));
+        assert!(pending_not_confirmed(&slots, Some("rootfs.1")));
+        assert_eq!(decision.target.as_deref(), Some("rootfs.1"));
+        assert_eq!(decision.reason, Some(ROLLBACK_BOOTED_NOT_CONFIRMED));
+        assert_eq!(decision.mark(), None);
+    }
+
+    /// PLAN-048's clause, as a guarantee rather than an intention: across the
+    /// whole two-slot input space, the mark a rollback emits is `bad` on
+    /// `booted` or nothing at all. It never says `good`, and it never names
+    /// the target slot — so no input reaches "mark the unverified slot good".
+    #[test]
+    fn no_input_lets_a_rollback_mark_the_target_good() {
+        let states = ["booted", "active", "inactive"];
+        let boot_statuses = [None, Some("good"), Some("bad")];
+        let versions = [None, Some("2026.08")];
+        let stamps = [None, Some("2026-08-30T10:00:00Z")];
+        let primaries = [None, Some("rootfs.0"), Some("rootfs.1")];
+
+        let mut permitted_seen = 0_usize;
+        let mut refused_seen = 0_usize;
+        for a_state in states {
+            for b_state in states {
+                for a_boot in boot_statuses {
+                    for b_boot in boot_statuses {
+                        for version in versions {
+                            for stamp in stamps {
+                                for primary in primaries {
+                                    let slots = [
+                                        SlotStatus {
+                                            bundle_version: version.map(str::to_string),
+                                            installed_timestamp: stamp.map(str::to_string),
+                                            ..slot("rootfs.0", a_state, a_boot)
+                                        },
+                                        SlotStatus {
+                                            bundle_version: version.map(str::to_string),
+                                            installed_timestamp: stamp.map(str::to_string),
+                                            ..slot("rootfs.1", b_state, b_boot)
+                                        },
+                                    ];
+                                    let decision = rollback_eligibility(&slots, primary);
+                                    match decision.mark() {
+                                        None => {
+                                            refused_seen += 1;
+                                            assert!(!decision.permitted);
+                                            assert!(decision.reason.is_some());
+                                        }
+                                        Some(mark) => {
+                                            permitted_seen += 1;
+                                            assert_eq!(
+                                                mark,
+                                                ("bad", "booted"),
+                                                "the only mark a rollback may emit"
+                                            );
+                                            assert_eq!(
+                                                validate_mark(mark.0, mark.1),
+                                                Ok(()),
+                                                "the mark stays inside the offered vocabulary"
+                                            );
+                                            assert_ne!(mark.0, "good");
+                                            assert_ne!(
+                                                Some(mark.1),
+                                                decision.target.as_deref(),
+                                                "a rollback never marks the slot it rolls back TO"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The enumeration must actually reach both verdicts; an input space
+        // that only ever refuses would pass the assertions above without
+        // having tested the permitted path at all.
+        assert!(permitted_seen > 0, "no input reached a permitted rollback");
+        assert!(refused_seen > 0, "no input reached a refusal");
     }
 
     #[test]
