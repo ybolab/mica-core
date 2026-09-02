@@ -5,9 +5,9 @@ use std::fs;
 use serde_json::json;
 
 use mosd_settings::{
-    AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ConsoleSettings,
-    ContainerSettings, DEFAULT_PATH, DeviceCredentialSettings, IfaceKind, IfaceSettings,
-    MigrateV0ToV1, MigrateV3ToV4, Migration, MigrationRegistry, MqttAuthSettings,
+    AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ClaimChannel, ClaimSettings,
+    ConsoleSettings, ContainerSettings, DEFAULT_PATH, DeviceCredentialSettings, IfaceKind,
+    IfaceSettings, MigrateV0ToV1, MigrateV3ToV4, Migration, MigrationRegistry, MqttAuthSettings,
     MqttListenSettings, MqttSettings, NtpSettings, ProvisioningSettings, ProvisioningState,
     SCHEMA_VERSION, Settings, SettingsError, SshSettings, StaticConfig, Store, TimeSettings,
     VlanConfig, WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
@@ -400,6 +400,10 @@ fn v3_populated() -> Settings {
             web_admin: Some(WebAdminSettings {
                 password_hash: V2_PASSWORD_HASH.to_string(),
             }),
+            // No claim record: this fixture is a v3 tree, and a v3 device that
+            // carries a credential and no record is exactly what `ClaimSettings`
+            // reads as a claim by provisioning document.
+            claim: None,
             ssh: SshSettings {
                 enabled: true,
                 port: 2222,
@@ -1186,10 +1190,11 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// clock) and a version stamp one ahead of ours.
 ///
 /// A document from a build one schema AHEAD of this one -- the A/B rollback
-/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move six times,
-/// to 6 when the container switch landed, to 7 for the mqtt switch, to 8 for
-/// the interface kinds, to 9 for the API token list and to 10 for the time
-/// subtree: left behind, it stops
+/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move eight
+/// times, to 6 when the container switch landed, to 7 for the mqtt switch, to
+/// 8 for the interface kinds, to 9 for the API token list, to 10 for the time
+/// subtree, to 11 for the provisioning-document record and to 12 for the claim
+/// record: left behind, it stops
 /// being "newer", the strip path stops running, and the test goes on passing
 /// while asserting nothing about rollback. Hence the assertion below that the
 /// stamp really is ahead of us.
@@ -1198,8 +1203,8 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// which this schema now knows, so the fixture would have asserted nothing:
 /// the whole subtree would have loaded rather than been stripped.
 fn newer_additive_document() -> String {
-    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
-    r#"schema_version = 11
+    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
+    r#"schema_version = 12
 hostname = "rolled-back"
 
 [network.eth0]
@@ -1258,7 +1263,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // No amount of unknown-key stripping can make v4 parse this.
     fs::write(
         &path,
-        "schema_version = 11\n\n[hostname]\nname = \"x\"\n\n[network]\n",
+        "schema_version = 12\n\n[hostname]\nname = \"x\"\n\n[network]\n",
     )
     .unwrap();
 
@@ -1329,10 +1334,10 @@ fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
     // The same unknown key at two depths. The strip is by name, everywhere:
     // both go, and the report records the name once per strip pass. The stamp
     // has to stay one ahead of us or the tolerant path never runs.
-    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        r#"schema_version = 11
+        r#"schema_version = 12
 hostname = "h"
 extra = "top"
 
@@ -1393,9 +1398,9 @@ endpoint = "vpn.example.net:51820"
 persistentKeepalive = 25
 "#;
 
-/// A key only a schema AFTER v10 could carry, appended to the fixture above to
+/// A key only a schema AFTER v11 could carry, appended to the fixture above to
 /// make it a genuine rollback document rather than a re-stamped one.
-const V11_ONLY_KEY: &str = r#"
+const V12_ONLY_KEY: &str = r#"
 [network.wg0.wireguard.obfuscation]
 mode = "none"
 "#;
@@ -1625,10 +1630,10 @@ fn the_wireguard_subtree_holds_no_secret() {
 fn a_newer_document_keeps_every_v7_interface_kind() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 12, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 11") + V11_ONLY_KEY,
+        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 12") + V12_ONLY_KEY,
     )
     .unwrap();
 
@@ -1960,4 +1965,123 @@ fn the_token_validator_is_public_and_refuses_a_broken_list() {
     let mut malformed = api_token("3f2a9c41", "ci", 'a');
     malformed.hash = "sha256:beef".to_string();
     assert!(validate_api_tokens(&[malformed]).is_err());
+}
+
+// --- The claim record (schema v11) -----------------------------------------
+
+/// A device that has never been claimed carries no record at all, and the
+/// serialized tree has no `claim` key to mistake for one.
+///
+/// The property `MigrateV10ToV11` depends on: a v10 document and its v11 form
+/// differ by the version integer alone until something claims the device.
+#[test]
+fn an_unclaimed_tree_carries_no_claim_key() {
+    let settings = Settings::default();
+    assert_eq!(settings.access.claim, None);
+
+    let text = toml::to_string(&settings).unwrap();
+    assert!(!text.contains("claim"), "{text}");
+}
+
+/// The record round-trips through the store, and it lands under `access` — the
+/// subtree apid's gate already reads, which is what lets a claim commit the
+/// credential, the record and the minted token in one save.
+#[test]
+fn the_claim_record_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    let mut settings = Settings::default();
+    settings.access.web_admin = Some(WebAdminSettings {
+        password_hash: "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2".to_string(),
+    });
+    settings.access.claim = Some(ClaimSettings {
+        via: ClaimChannel::Setup,
+        at: 1_700_000_000,
+        rotation_required: false,
+    });
+
+    let store = Store::new(&path);
+    store.save(&settings).unwrap();
+    let loaded = store.load().unwrap();
+
+    assert_eq!(loaded.access.claim, settings.access.claim);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("[access.claim]"), "{text}");
+}
+
+/// The wire spelling both channels serialize to, pinned: apid reads these two
+/// strings out of `GetSettings("access")` and a rename here would silently
+/// turn every claimed device into an unreadable record.
+#[test]
+fn the_claim_channels_have_kebab_case_wire_names() {
+    let mut settings = Settings::default();
+    for (channel, expected) in [
+        (ClaimChannel::Setup, "setup"),
+        (ClaimChannel::ProvisioningDocument, "provisioning-document"),
+    ] {
+        settings.access.claim = Some(ClaimSettings {
+            via: channel,
+            at: 0,
+            rotation_required: true,
+        });
+        let access = settings.get("access").unwrap();
+        assert_eq!(access["claim"]["via"], json!(expected));
+        assert_eq!(access["claim"]["rotationRequired"], json!(true));
+    }
+}
+
+/// The whole `access` subtree is writable in ONE dot-path write carrying the
+/// credential, the claim record and the token list together.
+///
+/// This is the transaction the claim flow needs: mosd turns one `SetSettings`
+/// into one `Store::save`, so a claim that reaches the bus as one write cannot
+/// leave a device half-claimed on a power loss.
+#[test]
+fn the_whole_access_subtree_is_one_write() {
+    let mut settings = Settings::default();
+
+    settings
+        .set(
+            "access",
+            json!({
+                "webAdmin": { "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2" },
+                "claim": { "via": "setup", "at": 7, "rotationRequired": false },
+                "apiTokens": [{
+                    "id": "3f2a9c41",
+                    "name": "first-run setup",
+                    "hash": "a".repeat(64),
+                    "created": 7,
+                }],
+            }),
+        )
+        .unwrap();
+
+    assert!(settings.access.web_admin.is_some());
+    assert_eq!(
+        settings.access.claim,
+        Some(ClaimSettings {
+            via: ClaimChannel::Setup,
+            at: 7,
+            rotation_required: false,
+        })
+    );
+    assert_eq!(settings.access.api_tokens.len(), 1);
+}
+
+/// A claim record with a key the schema does not know is refused, and the
+/// write leaves the tree untouched — the discipline every other subtree has.
+#[test]
+fn an_unknown_claim_key_is_refused_and_writes_nothing() {
+    let mut settings = Settings::default();
+    let before = settings.clone();
+
+    let err = settings
+        .set(
+            "access.claim",
+            json!({ "via": "setup", "at": 0, "rotationRequired": false, "expiresAt": 9 }),
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, SettingsError::Validation { .. }), "{err:?}");
+    assert_eq!(settings, before);
 }
