@@ -28,6 +28,10 @@ use crate::system_info::{self, SystemInfoSource, UnavailableSystemInfo};
 use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
 use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
+use crate::update_lifecycle::{
+    DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, UpdateClient, UpdateLifecycle,
+};
+use crate::update_policy::PolicyStore;
 
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mos.mosd";
@@ -122,6 +126,33 @@ pub struct MosdService {
     /// Read-only failure evidence for the diagnostic snapshot (PLAN-052):
     /// failed units and a bounded journal excerpt. Same default.
     failure_evidence: Arc<dyn FailureEvidenceSource>,
+    /// The update lifecycle (check/fetch machine, policy, reboot gate).
+    /// Constructed with [`NoClient`] and a fileless policy store, so a
+    /// dry-run daemon can neither spawn the update client nor read a host
+    /// policy file; production attaches both via [`Self::with_update`].
+    update: Arc<UpdateLifecycle>,
+}
+
+/// The lifecycle's window onto this service: it records under
+/// `update.lifecycle` and reads the `health` subtree, and nothing else.
+struct InnerLifecycleHost(Arc<RwLock<Inner>>);
+
+#[async_trait::async_trait]
+impl LifecycleHost for InnerLifecycleHost {
+    async fn record(&self, lifecycle: Value) {
+        let mut inner = self.0.write().await;
+        rauc::update_entry(&mut inner.state).insert("lifecycle".into(), lifecycle);
+        drop(inner);
+    }
+
+    async fn health(&self) -> Value {
+        let inner = self.0.read().await;
+        inner
+            .state
+            .get("health")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    }
 }
 
 /// The rotation a daemon with no key store has: none.
@@ -153,14 +184,23 @@ impl MosdService {
         shadow_path: PathBuf,
         state: Value,
     ) -> Self {
+        let installing = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(RwLock::new(Inner { settings, state }));
+        let update = Arc::new(UpdateLifecycle::new(
+            Arc::new(NoClient),
+            PolicyStore::defaults(),
+            Arc::new(InnerLifecycleHost(Arc::clone(&inner))),
+            Arc::clone(&installing),
+            PathBuf::from(DEFAULT_WORKSPACE_ROOT),
+        ));
         Self {
             store,
             reconcilers: Arc::new(reconcilers),
             power,
             rauc: Arc::new(rauc::DryRunRauc),
-            installing: Arc::new(AtomicBool::new(false)),
+            installing,
             shadow_path,
-            inner: Arc::new(RwLock::new(Inner { settings, state })),
+            inner,
             apply_lock: Arc::new(Mutex::new(())),
             apply_queue: Arc::new(ApplyQueue::new()),
             registry: None,
@@ -172,7 +212,45 @@ impl MosdService {
             telemetry: Arc::new(UnavailableTelemetry),
             failure_evidence: Arc::new(UnavailableFailureEvidence),
             storage_pressure: Arc::new(PressureTracker::default()),
+            update,
         }
+    }
+
+    /// Attach the update client and policy store, rebuilding the lifecycle
+    /// around them. A builder step for the reason [`Self::with_rauc`] is: the
+    /// defaults touch nothing on the host, and only `main.rs` knows the
+    /// daemon runs on a device with a client binary and a policy file.
+    #[must_use]
+    pub fn with_update(mut self, client: Arc<dyn UpdateClient>, policy: PolicyStore) -> Self {
+        self.update = Arc::new(UpdateLifecycle::new(
+            client,
+            policy,
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+            self.update.workspace_root().to_path_buf(),
+        ));
+        self
+    }
+
+    /// Relocate the `/mos/updates` workspace the lifecycle records `ready`
+    /// paths from and admits installs from. Tests only (the client's
+    /// `RAUC_UPDATE_ROOT`, which `main.rs` forwards); the default is the
+    /// contract.
+    #[must_use]
+    pub fn with_update_workspace(mut self, root: PathBuf) -> Self {
+        self.update = Arc::new(UpdateLifecycle::new(
+            self.update.client(),
+            self.update.policy(),
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+            root,
+        ));
+        self
+    }
+
+    /// The lifecycle handle `main.rs` gives the auto-check task.
+    pub fn update_handle(&self) -> Arc<UpdateLifecycle> {
+        Arc::clone(&self.update)
     }
 
     /// Attach the WireGuard key rotation.
@@ -384,6 +462,17 @@ impl MosdService {
     /// Split out from the D-Bus method so unit tests can drive it without
     /// forging a message header.
     pub async fn request_reboot(&self, sender: &str) -> fdo::Result<()> {
+        // The safe-to-reboot interlock, and the one REFUSAL on this path.
+        // Distinct from the unconfirmed-slot warning below, which stays a
+        // warning: booting a fresh slot is what an updating operator wants,
+        // while rebooting through an application's declared blocking work —
+        // or through an install mid-write — is what nobody wants. The gate
+        // opens by the reporter clearing its status, the install finishing,
+        // or a bounded audited override (`SetRebootOverride`).
+        if let Some(refusal) = self.update.reboot_refusal().await {
+            tracing::warn!(sender, refusal, "reboot refused by the safe-to-reboot gate");
+            return Err(fdo::Error::AccessDenied(refusal));
+        }
         let warning = self.reboot_update_warning().await;
         if let Some(warning) = &warning {
             tracing::warn!(warning, "rebooting with an unconfirmed update slot");
@@ -419,7 +508,20 @@ impl MosdService {
     /// Split out from the D-Bus method so unit tests can drive it without
     /// forging a message header.
     pub async fn request_install(&self, sender: &str, bundle_path: &str) -> fdo::Result<()> {
+        // The maintenance-window policy: installs run only when the window
+        // (when one is configured) is open. Before the path validation so a
+        // refused operator learns the real reason first.
+        if let Some(refusal) = self.update.install_refusal().await {
+            tracing::warn!(sender, refusal, "install refused by update policy");
+            return Err(fdo::Error::AccessDenied(refusal));
+        }
         let bundle = rauc::validate_bundle_path(bundle_path).map_err(fdo::Error::InvalidArgs)?;
+        // Only a verified bundle is handed to RAUC: a regular file inside
+        // /mos/updates/verified, never a `.part`, never a file anywhere else
+        // — the same rule for the staged path and an operator's explicit one.
+        self.update
+            .installable(&bundle)
+            .map_err(fdo::Error::InvalidArgs)?;
         // PLAN-049's reserved update workspace, enforced at the one seam
         // where mos consumes DATA space for an update: the bundle staged
         // there before this call names it. An install admitted onto a DATA
@@ -520,6 +622,12 @@ impl MosdService {
         let query = rauc::query(self.rauc.as_ref())
             .await
             .map_err(|err| fdo::Error::Failed(format!("query rauc: {err:#}")))?;
+        // Re-derive the lifecycle entry from the same fresh slots, so the
+        // answered `lifecycle` (recorded through the host before the merge
+        // below) is exactly as new as the slot facts beside it.
+        self.update
+            .refresh(&query.slots, query.primary.as_deref())
+            .await;
         let mut inner = self.inner.write().await;
         let entry = rauc::update_entry(&mut inner.state);
         query.merge_into(entry);
@@ -844,6 +952,18 @@ fn read_uptime_seconds() -> Option<u64> {
     (secs.is_finite() && secs >= 0.0).then_some(secs as u64)
 }
 
+/// Map an update-action refusal onto a D-Bus error: policy refusals carry
+/// `AccessDenied` (apid maps it to 409 — the request was well-formed and the
+/// device said no), malformed requests carry `InvalidArgs` (422), and
+/// busy/unavailable stay `Failed`.
+fn refusal_to_fdo(refusal: Refusal) -> fdo::Error {
+    match refusal {
+        Refusal::Policy(message) => fdo::Error::AccessDenied(message),
+        Refusal::Invalid(message) => fdo::Error::InvalidArgs(message),
+        Refusal::Busy(message) | Refusal::Unavailable(message) => fdo::Error::Failed(message),
+    }
+}
+
 /// Map a transient-password failure onto a D-Bus error.
 ///
 /// Always `Failed`: the caller cannot distinguish a rejected password from an
@@ -1158,7 +1278,9 @@ impl MosdService {
     /// validated, recorded and handed to a background task; progress and the
     /// outcome are read back through `GetUpdateState` (or the `update` subtree
     /// of `GetState`). Refuses a relative path, a path that does not name an
-    /// existing regular file, and a second install while one runs.
+    /// existing regular file, a path outside `/mos/updates/verified` or a
+    /// `.part` (`InvalidArgs`: only a verified bundle is handed to RAUC), and
+    /// a second install while one runs.
     async fn install_update(
         &self,
         #[zbus(header)] header: Header<'_>,
@@ -1192,6 +1314,54 @@ impl MosdService {
         slot: &str,
     ) -> fdo::Result<(String, String)> {
         self.request_mark(sender_of(&header), state, slot).await
+    }
+
+    /// Run an update metadata check (`rauc-update sync` + `check`) on a
+    /// background task.
+    ///
+    /// Exported as `CheckUpdate`. Answers as soon as the check is admitted;
+    /// the outcome lands under live-state `update.lifecycle` and is read
+    /// back through `GetUpdateState`. Refused with `AccessDenied` when the
+    /// update policy forbids it (offline mode, no configured source, an
+    /// invalid policy file) and with `Failed` when the client binary is
+    /// absent or another update operation is running.
+    async fn check_update(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
+        self.update
+            .request_check(sender_of(&header))
+            .await
+            .map_err(refusal_to_fdo)
+    }
+
+    /// Download the selected bundle (`rauc-update fetch`) on a background
+    /// task; on success the verified bundle path is recorded and the
+    /// lifecycle state becomes `ready`.
+    ///
+    /// Exported as `FetchUpdate`. The same admission and refusal shape as
+    /// `CheckUpdate`, plus the metered-mode download refusal.
+    async fn fetch_update(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
+        self.update
+            .request_fetch(sender_of(&header))
+            .await
+            .map_err(refusal_to_fdo)
+    }
+
+    /// Arm the bounded administrative override of the safe-to-reboot gate
+    /// for `seconds`; answers the recorded override as JSON.
+    ///
+    /// Exported as `SetRebootOverride`. The override lifts health-report
+    /// blocks only — never an install in flight — and expires on its own;
+    /// there is deliberately no member that disarms the gate permanently.
+    async fn set_reboot_override(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        seconds: u32,
+    ) -> fdo::Result<String> {
+        let record = self
+            .update
+            .set_reboot_override(sender_of(&header), u64::from(seconds))
+            .await
+            .map_err(refusal_to_fdo)?;
+        Ok(record.to_string())
     }
 
     /// Set a TRANSIENT root password, then re-apply the SSH subtree.
@@ -1405,8 +1575,20 @@ mod tests {
             shadow_path,
             serde_json::json!({}),
         )
-        .with_rauc(Arc::new(rauc));
+        .with_rauc(Arc::new(rauc))
+        // Installs are admitted only from <workspace>/verified; the tests'
+        // bundles are placed there by `verified_bundle`.
+        .with_update_workspace(dir.path().join("updates"));
         (service, calls, rauc_calls, dir)
+    }
+
+    /// A bundle file inside the test service's `verified/`, as a string path.
+    fn verified_bundle(dir: &tempfile::TempDir, name: &str) -> String {
+        let verified = dir.path().join("updates").join("verified");
+        std::fs::create_dir_all(&verified).expect("verified/");
+        let bundle = verified.join(name);
+        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        bundle.to_str().expect("utf-8").to_string()
     }
 
     /// [`service_with_rauc`] over a default (idle, slotless) RAUC mock.
@@ -1784,6 +1966,33 @@ mod tests {
             .await
             .expect_err("a directory must be refused");
 
+        // A regular file outside <workspace>/verified, a `.part` inside it,
+        // and a symbolic link inside it are all refused: nothing but a
+        // verified bundle is handed to RAUC, whoever names the path.
+        let outside = dir.path().join("outside.raucb");
+        std::fs::write(&outside, b"bundle bytes").expect("seed");
+        let refused = service
+            .request_install(":1.5", outside.to_str().expect("utf-8"))
+            .await
+            .expect_err("a file outside verified/ must be refused");
+        assert!(refused.to_string().contains("verified"), "{refused}");
+        let part = verified_bundle(&dir, "half.raucb.part");
+        let refused = service
+            .request_install(":1.5", &part)
+            .await
+            .expect_err("a partial must be refused");
+        assert!(refused.to_string().contains("partial"), "{refused}");
+        let link = dir
+            .path()
+            .join("updates")
+            .join("verified")
+            .join("link.raucb");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+        service
+            .request_install(":1.5", link.to_str().expect("utf-8"))
+            .await
+            .expect_err("a symbolic link must be refused");
+
         assert!(
             rauc_calls.lock().expect("lock").is_empty(),
             "no invalid request may reach the installer"
@@ -1914,9 +2123,8 @@ mod tests {
             install_gate: Some(Arc::clone(&gate)),
             ..MockRauc::default()
         });
-        let bundle = dir.path().join("ok.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        let bundle = bundle.to_str().expect("utf-8");
+        let bundle = verified_bundle(&dir, "ok.raucb");
+        let bundle = bundle.as_str();
 
         // Returns while the install is still gated: the bus call cannot be
         // blocked by a slow installer.
@@ -1966,9 +2174,8 @@ mod tests {
             install_error: Some("signature verification failed".to_string()),
             ..MockRauc::default()
         });
-        let bundle = dir.path().join("bad.raucb");
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        let bundle = bundle.to_str().expect("utf-8");
+        let bundle = verified_bundle(&dir, "bad.raucb");
+        let bundle = bundle.as_str();
 
         service
             .request_install(":1.9", bundle)
@@ -1988,6 +2195,126 @@ mod tests {
             .request_install(":1.9", bundle)
             .await
             .expect("flag released");
+    }
+
+    #[tokio::test]
+    async fn an_install_mid_flight_refuses_a_reboot_until_it_finishes() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (service, power_calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+            install_gate: Some(Arc::clone(&gate)),
+            ..MockRauc::default()
+        });
+        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
+        service
+            .request_install(":1.6", bundle.to_str().expect("utf-8"))
+            .await
+            .expect("install");
+        wait_for_install_status(&service, "running").await;
+
+        let refused = service
+            .request_reboot(":1.7")
+            .await
+            .expect_err("the gate must refuse a reboot mid-install");
+        assert!(refused.to_string().contains("install"), "{refused}");
+        assert!(
+            power_calls.lock().expect("lock").is_empty(),
+            "a refused reboot must not reach the power control"
+        );
+        // No override lifts the install block.
+        service
+            .update_handle()
+            .set_reboot_override(":1.7", 60)
+            .await
+            .expect("override armed");
+        assert!(service.request_reboot(":1.7").await.is_err());
+
+        gate.notify_one();
+        wait_for_install_status(&service, "done").await;
+        service.request_reboot(":1.7").await.expect("gate reopened");
+        assert_eq!(*power_calls.lock().expect("lock"), vec!["reboot"]);
+    }
+
+    #[tokio::test]
+    async fn a_blocking_health_report_refuses_a_reboot_until_overridden() {
+        let (service, power_calls, _dir) = service_with_mock();
+        service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+        // `degraded` — mos-health's disk-pressure report — must NOT block.
+        service
+            .report_health("var", "degraded", "/var at 91% of capacity")
+            .await
+            .expect("report");
+
+        let refused = service
+            .request_reboot(":1.4")
+            .await
+            .expect_err("a blocking report closes the gate");
+        assert!(refused.to_string().contains("exporter"), "{refused}");
+        assert!(power_calls.lock().expect("lock").is_empty());
+
+        // The reporter clearing its status reopens the gate without any
+        // override — the ordinary path.
+        service
+            .report_health("exporter", "ok", "flushed")
+            .await
+            .expect("report");
+        service.request_reboot(":1.4").await.expect("reopened");
+
+        // And the bounded override lifts a standing block, audited.
+        service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+        assert!(service.request_reboot(":1.4").await.is_err());
+        service
+            .update_handle()
+            .set_reboot_override(":1.4", 120)
+            .await
+            .expect("override armed");
+        service.request_reboot(":1.4").await.expect("overridden");
+        assert_eq!(*power_calls.lock().expect("lock"), vec!["reboot", "reboot"]);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_policy_file_fails_installs_closed() {
+        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("update-policy.toml");
+        std::fs::write(&policy_path, "not = valid = toml").expect("seed policy");
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path),
+        );
+        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
+
+        let refused = service
+            .request_install(":1.5", bundle.to_str().expect("utf-8"))
+            .await
+            .expect_err("an unreadable policy file must fail closed");
+        assert!(refused.to_string().contains("invalid"), "{refused}");
+        assert!(
+            rauc_calls.lock().expect("lock").is_empty(),
+            "the refused install must not reach the installer"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_refreshed_state_carries_the_derived_lifecycle_beside_the_slots() {
+        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
+            slots: ab_slots("good", "good"),
+            primary: Some("rootfs.1".to_string()),
+            ..MockRauc::default()
+        });
+        let rendered = service.refresh_update_state().await.expect("query");
+        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(rendered["lifecycle"]["state"], "reboot-required");
+        assert_eq!(rendered["lifecycle"]["reboot_gate"]["safe"], true);
+        assert_eq!(
+            rendered["lifecycle"]["client"]["available"], false,
+            "a daemon with no client must say so"
+        );
+        assert_eq!(rendered["lifecycle"]["policy"]["networkMode"], "online");
     }
 
     #[tokio::test]

@@ -15,6 +15,9 @@ mosd-settings = { path = "../mosd-settings" }
 mos-busname = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+# The update policy file (`update-policy.toml`) is TOML like the settings
+# store; the crate is already in the workspace graph via mosd-settings.
+toml = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

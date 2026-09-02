@@ -204,5 +204,11 @@ export const zhCN: Translation = {
       title: '电源', description: '这些操作会立即下发。设备状态改变前，连接可能已经关闭。', reboot: '重启', powerOff: '关机',
       confirmReboot: '立即重启此设备？', confirmPowerOff: '立即关闭此设备？', accepted: '电源操作已接受。',
     },
+    update: {
+      title: '更新', description: '更新生命周期、已暂存的更新包与安全重启门。只读；操作通过 API 执行。',
+      checking: '正在读取更新状态', available: '可用更新', bundle: '已暂存更新包', bootedSlot: '当前启动槽', lastCheck: '上次检查',
+      pendingReboot: '已安装的更新等待首次启动。', gateSafe: '可以安全重启。', gateBlocked: '重启被阻止：{{reasons}}。',
+      clientUnavailable: '更新客户端不可用：{{reason}}。', policyError: '更新策略文件无效：{{reason}}。',
+    },
   },
 }

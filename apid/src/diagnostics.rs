@@ -1774,6 +1774,24 @@ mod tests {
             async fn rotate_wireguard_key(&self, iface: &str) -> anyhow::Result<String> {
                 self.0.rotate_wireguard_key(iface).await
             }
+            async fn get_update_state(&self) -> anyhow::Result<Value> {
+                self.0.get_update_state().await
+            }
+            async fn check_update(&self) -> anyhow::Result<()> {
+                self.0.check_update().await
+            }
+            async fn fetch_update(&self) -> anyhow::Result<()> {
+                self.0.fetch_update().await
+            }
+            async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
+                self.0.install_update(bundle).await
+            }
+            async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
+                self.0.mark_update(state, slot).await
+            }
+            async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
+                self.0.set_reboot_override(seconds).await
+            }
         }
 
         let api = HalfFailing(FakeSettings::new(

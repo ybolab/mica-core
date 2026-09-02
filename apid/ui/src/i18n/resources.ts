@@ -384,6 +384,20 @@ export const en = {
       confirmPowerOff: 'Power off this appliance now?',
       accepted: 'Power action accepted.',
     },
+    update: {
+      title: 'Updates',
+      description: 'Update lifecycle, staged bundle and the safe-to-reboot gate. Read-only; actions run through the API.',
+      checking: 'reading update state',
+      available: 'Available',
+      bundle: 'Staged bundle',
+      bootedSlot: 'Booted slot',
+      lastCheck: 'Last check',
+      pendingReboot: 'An installed update awaits its first boot.',
+      gateSafe: 'Safe to reboot.',
+      gateBlocked: 'Reboot blocked: {{reasons}}.',
+      clientUnavailable: 'Update client unavailable: {{reason}}.',
+      policyError: 'Update policy file invalid: {{reason}}.',
+    },
   },
 } as const
 

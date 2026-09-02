@@ -78,6 +78,12 @@ trait Mosd {
     fn rotate_wireguard_key(&self, iface: &str) -> zbus::Result<String>;
     fn reboot(&self) -> zbus::Result<()>;
     fn power_off(&self) -> zbus::Result<()>;
+    fn get_update_state(&self) -> zbus::Result<String>;
+    fn check_update(&self) -> zbus::Result<()>;
+    fn fetch_update(&self) -> zbus::Result<()>;
+    fn install_update(&self, bundle_path: &str) -> zbus::Result<()>;
+    fn mark_update(&self, state: &str, slot: &str) -> zbus::Result<(String, String)>;
+    fn set_reboot_override(&self, seconds: u32) -> zbus::Result<String>;
     /// Emitted by mosd after every successful settings write, with the
     /// changed dot-path and its new JSON-encoded value. The subscriber
     /// ([`watch_settings_changed`]) feeds the auth gate's access cache: the
@@ -388,5 +394,43 @@ impl SettingsApi for BusSettings {
         let proxy = self.proxy().await?;
         self.call("RotateWireguardKey", proxy.rotate_wireguard_key(iface))
             .await
+    }
+
+    async fn get_update_state(&self) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call("GetUpdateState", proxy.get_update_state())
+            .await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn check_update(&self) -> anyhow::Result<()> {
+        let proxy = self.proxy().await?;
+        self.call("CheckUpdate", proxy.check_update()).await
+    }
+
+    async fn fetch_update(&self) -> anyhow::Result<()> {
+        let proxy = self.proxy().await?;
+        self.call("FetchUpdate", proxy.fetch_update()).await
+    }
+
+    async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
+        let proxy = self.proxy().await?;
+        self.call("InstallUpdate", proxy.install_update(bundle))
+            .await
+    }
+
+    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
+        let proxy = self.proxy().await?;
+        self.call("MarkUpdate", proxy.mark_update(state, slot))
+            .await
+    }
+
+    async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call("SetRebootOverride", proxy.set_reboot_override(seconds))
+            .await?;
+        Ok(serde_json::from_str(&json)?)
     }
 }
