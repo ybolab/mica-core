@@ -38,7 +38,6 @@ export const zhCN: Translation = {
   },
   auth: {
     login: {
-      eyebrow: '设备控制台',
       title: '欢迎回来',
       copy: '使用设备管理员密码登录。会话仅保留在本设备上，且不会暴露给 JavaScript。',
       password: '管理员密码',
@@ -46,7 +45,6 @@ export const zhCN: Translation = {
       submit: '登录',
     },
     setup: {
-      eyebrow: '首次运行',
       title: '设置你的设备',
       copy: '设置管理员密码，并可选设置主机名。完成后可在控制台查看网络接口。',
       hostname: '主机名',
@@ -60,7 +58,6 @@ export const zhCN: Translation = {
       submit: '配置设备',
     },
     complete: {
-      eyebrow: '设置完成',
       title: '保存 API 令牌',
       copy: '此令牌只显示一次。进入控制台前，请先将它保存到密码管理器。',
       submit: '我已保存令牌',
@@ -74,7 +71,7 @@ export const zhCN: Translation = {
     queued: '变更已排队…',
   },
   overview: {
-    eyebrow: '设备', title: '概览', description: '实时查看管理平面及其网络边缘。',
+    title: '概览', description: '实时查看管理平面及其网络边缘。',
     allResponding: '所有系统均有响应', checking: '正在检查系统', unavailable: '系统不可用', systemHealth: '系统健康', systemHealthCopy: '核心服务与管理平面',
     attention: {
       title: '需要关注', description: '下次维护窗口前建议处理以下两项。', updateTitle: '系统更新已就绪', updateCopy: '可以查看并安装 2026.09.0 版本。',
@@ -92,7 +89,7 @@ export const zhCN: Translation = {
     recentTasks: '最近的应用任务', recentTasksDescription: 'mosd 报告的异步设置协调任务。', noTasks: '本次启动后尚未运行应用任务。', tasks: { change: '变更', source: '来源', status: '状态' },
   },
   network: {
-    eyebrow: '连接', title: '网络', description: '查看声明的配置，以及 systemd-networkd 实际观测到的链路。',
+    title: '网络', description: '查看声明的配置，以及 systemd-networkd 实际观测到的链路。',
     tabs: { interfaces: '接口', wifi: 'Wi-Fi', wireguard: 'WireGuard', observed: '观测状态' }, interfaceCount: '{{count}} 个接口', actions: { addInterface: '添加接口' },
     kinds: { physical: '物理接口', vlan: 'VLAN', bridge: '网桥', wireguard: 'WireGuard' },
     editor: {
@@ -156,7 +153,7 @@ export const zhCN: Translation = {
     summary: { notConfigured: '未配置', physical: '物理接口', dhcp: 'DHCP', static: '静态地址', noAddressing: '未配置地址', value: '{{kind}} · {{method}}' },
   },
   services: {
-    eyebrow: '工作负载', title: '服务', description: '通过 API 支持的控件启用设备服务。',
+    title: '服务', description: '通过 API 支持的控件启用设备服务。',
     containers: { title: '容器', warning: '容器在此设备上以 root 运行。Quadlet 文件可以启动具有 root 权限的代码。' },
     mqtt: { title: 'MQTT', warning: '监听地址、认证和端口分别配置。将 MQTT 暴露到回环地址之外前，请先检查这些设置。' },
     liveAvailable: '实时状态可用', noLiveState: '无实时状态', liveState: '实时状态', managedBy: '管理组件',
@@ -190,7 +187,7 @@ export const zhCN: Translation = {
     },
   },
   access: {
-    eyebrow: '凭据', title: '访问', description: '管理浏览器会话、自动化令牌和 root SSH 访问。',
+    title: '访问', description: '管理浏览器会话、自动化令牌和 root SSH 访问。',
     claim: {
       title: '设备认领', description: '此设备是如何脱离未认领状态的，以及认领它的凭据是否仍是初始凭据。',
       checking: '正在读取认领状态', claimed: '已认领', unclaimed: '未认领 —— 尚不存在管理员凭据',
@@ -232,7 +229,7 @@ export const zhCN: Translation = {
     },
   },
   system: {
-    eyebrow: '设备', title: '系统', description: '管理设备标识、UI 选择和明确的电源操作。',
+    title: '系统', description: '管理设备标识、UI 选择和明确的电源操作。',
     simulationScope: '自动更新策略、临时支持访问与配置备份',
     tabs: { general: '常规', information: '信息', time: '时间', update: '更新与恢复', storage: '存储', diagnostics: '诊断', recovery: '恢复' },
     information: {
@@ -465,7 +462,7 @@ export const zhCN: Translation = {
       },
     },
     uiManager: {
-      back: '返回系统', eyebrow: '系统 UI', title: 'UI 版本', description: '上传、验证和选择自定义界面，且不改变内置恢复控制台。',
+      back: '返回系统', title: 'UI 版本', description: '上传、验证和选择自定义界面，且不改变内置恢复控制台。',
       uploadTitle: '上传 UI 包', uploadDescription: '软件包会作为未激活版本安装；激活始终是单独操作。', packageFile: 'mos UI 软件包', noFile: '请选择 .mos-ui.zip 软件包。',
       upload: '上传软件包', uploading: '正在上传…', validating: '正在验证并安装…', uploadProgress: 'UI 软件包上传进度', uploadedInactive: '软件包已安装，当前界面未改变。',
       safetyNote: '软件包必须在根目录包含 index.html 和 schemaVersion 为 1 的 mos-ui.json；压缩包上限为 64 MiB。',

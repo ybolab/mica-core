@@ -23,7 +23,7 @@ export function AccessPage() {
   const { t } = useTranslation()
   return (
     <div className="page">
-      <header className="page-head"><div><p className="eyebrow">{t('access.eyebrow')}</p><h1>{t('access.title')}</h1><p>{t('access.description')}</p></div></header>
+      <header className="page-head"><div><h1>{t('access.title')}</h1><p>{t('access.description')}</p></div></header>
       <div className="split-grid"><ClaimPanel /><ProvisioningPanel /></div>
       <TokenPanel />
       <div className="split-grid"><SshPanel /><PasswordPanel /></div>

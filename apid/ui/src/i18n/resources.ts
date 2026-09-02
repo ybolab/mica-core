@@ -85,7 +85,6 @@ export const en = {
   },
   auth: {
     login: {
-      eyebrow: 'Device console',
       title: 'Welcome back',
       copy: 'Sign in with the appliance administrator password. The session stays on this device and is never exposed to JavaScript.',
       password: 'Admin password',
@@ -93,7 +92,6 @@ export const en = {
       submit: 'Sign in',
     },
     setup: {
-      eyebrow: 'First run',
       title: 'Make this device yours',
       copy: 'Set the administrator password and, optionally, a hostname. Network interfaces can be inspected from the console next.',
       hostname: 'Hostname',
@@ -107,7 +105,6 @@ export const en = {
       submit: 'Configure device',
     },
     complete: {
-      eyebrow: 'Setup complete',
       title: 'Save your API token',
       copy: 'This token is shown once. Store it in your password manager before entering the console.',
       submit: 'I saved the token',
@@ -121,7 +118,6 @@ export const en = {
     queued: 'Change queued…',
   },
   overview: {
-    eyebrow: 'Appliance',
     title: 'Overview',
     description: 'A live view of the management plane and its network edge.',
     allResponding: 'All systems responding',
@@ -167,7 +163,6 @@ export const en = {
     tasks: { change: 'Change', source: 'Source', status: 'Status' },
   },
   network: {
-    eyebrow: 'Connectivity',
     title: 'Network',
     description: 'Declared configuration and the links actually visible to systemd-networkd.',
     tabs: { interfaces: 'Interfaces', wifi: 'Wi-Fi', wireguard: 'WireGuard', observed: 'Observed state' },
@@ -263,7 +258,6 @@ export const en = {
     },
   },
   services: {
-    eyebrow: 'Workloads',
     title: 'Services',
     description: 'Enable appliance services through API-backed controls.',
     containers: {
@@ -332,7 +326,6 @@ export const en = {
     },
   },
   access: {
-    eyebrow: 'Credentials',
     title: 'Access',
     description: 'Browser sessions, automation tokens and root SSH access.',
     claim: {
@@ -417,7 +410,6 @@ export const en = {
     },
   },
   system: {
-    eyebrow: 'Appliance',
     title: 'System',
     description: 'Identity, UI selection and explicit power actions.',
     simulationScope: 'Automatic-update policy, temporary support access and configuration backup',
@@ -685,7 +677,6 @@ export const en = {
     },
     uiManager: {
       back: 'Back to system',
-      eyebrow: 'System UI',
       title: 'UI versions',
       description: 'Upload, validate and select custom interfaces without changing the built-in recovery console.',
       uploadTitle: 'Upload a UI package',

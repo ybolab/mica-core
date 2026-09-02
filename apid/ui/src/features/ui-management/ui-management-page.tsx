@@ -61,7 +61,6 @@ export function UiManagementPage() {
       <header className="page-head">
         <div>
           <a className="text-link" href="/_ui/system"><ArrowLeft className="size-4" /> {t('system.uiManager.back')}</a>
-          <p className="eyebrow">{t('system.uiManager.eyebrow')}</p>
           <h1>{t('system.uiManager.title')}</h1>
           <p>{t('system.uiManager.description')}</p>
         </div>

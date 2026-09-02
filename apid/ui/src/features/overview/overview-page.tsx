@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Activity, ArrowRight, Cable, Clock3, Server } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { api } from '@/shared/lib/http'
 import type { Health, Meta, NetworkOverview, TaskRecord } from '@/lib/types'
 import { Page, PageHeader, Surface } from '@/shared/components/product-layout'
@@ -27,7 +27,7 @@ export function OverviewPage() {
         action={<StatusBadge tone={healthy ? 'success' : health.isPending ? 'warning' : 'danger'}>{healthLabel}</StatusBadge>}
       />
       {queryError ? <p className="callout error" role="alert">{t('common.requestFailed')}</p> : null}
-      <Surface>
+      <Surface className="surface-compact">
         <div className="surface-title"><div><h2>{t('overview.attention.title')}</h2><p>{t('overview.attention.description')}</p></div></div>
         <div className="attention-list">
           <div className="attention-row"><div><strong>{t('overview.attention.updateTitle')}</strong><small>{t('overview.attention.updateCopy')}</small></div><Link to="/system" hash="update" className="text-link">{t('overview.attention.review')}<ArrowRight /></Link></div>
@@ -35,10 +35,10 @@ export function OverviewPage() {
         </div>
       </Surface>
       <div className="metric-grid">
-        <Surface className="metric"><Activity /><span>{t('overview.systemHealth')}</span><strong>{healthy ? t('common.states.healthy') : t('common.states.unknown')}</strong><small>{t('overview.systemHealthCopy')}</small></Surface>
-        <Surface className="metric"><Server /><span>{t('overview.managementApi')}</span><strong>{health.data?.apid ?? t('common.notAvailable')}</strong><small>{meta.data ? t('overview.metadata', { api: meta.data.api, schema: meta.data.settingsSchemaVersion }) : t('overview.loadingMetadata')}</small></Surface>
-        <Surface className="metric"><Cable /><span>{t('overview.observedInterfaces')}</span><strong>{network.data?.observed.interfaceCount ?? t('common.notAvailable')}</strong><small>{network.data?.observed.available ? t('overview.configuredCount', { count: network.data.configuredCount }) : t('overview.liveUnavailable')}</small></Surface>
-        <Surface className="metric"><Clock3 /><span>{t('overview.deviceUptime')}</span><strong>{formatUptime(health.data?.checkedAt, t)}</strong><small>{t('overview.readFromMosd')}</small></Surface>
+        <Surface className="metric"><span>{t('overview.systemHealth')}</span><strong>{healthy ? t('common.states.healthy') : t('common.states.unknown')}</strong><small>{t('overview.systemHealthCopy')}</small></Surface>
+        <Surface className="metric"><span>{t('overview.managementApi')}</span><strong>{health.data?.apid ?? t('common.notAvailable')}</strong><small>{meta.data ? t('overview.metadata', { api: meta.data.api, schema: meta.data.settingsSchemaVersion }) : t('overview.loadingMetadata')}</small></Surface>
+        <Surface className="metric"><span>{t('overview.observedInterfaces')}</span><strong>{network.data?.observed.interfaceCount ?? t('common.notAvailable')}</strong><small>{network.data?.observed.available ? t('overview.configuredCount', { count: network.data.configuredCount }) : t('overview.liveUnavailable')}</small></Surface>
+        <Surface className="metric"><span>{t('overview.deviceUptime')}</span><strong>{formatUptime(health.data?.checkedAt, t)}</strong><small>{t('overview.readFromMosd')}</small></Surface>
       </div>
       <Surface className="surface-compact">
         <div className="surface-title table-title"><div><h2>{t('overview.recentTasks')}</h2><p>{t('overview.recentTasksDescription')}</p></div></div>
