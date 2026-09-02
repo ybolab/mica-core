@@ -1786,7 +1786,11 @@ mod tests {
             async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
                 self.0.install_update(bundle).await
             }
-            async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
+            async fn mark_update(
+                &self,
+                state: &str,
+                slot: &str,
+            ) -> anyhow::Result<(String, String)> {
                 self.0.mark_update(state, slot).await
             }
             async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
