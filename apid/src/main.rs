@@ -36,6 +36,7 @@ mod config;
 mod diagnostics;
 mod openapi;
 mod persist;
+mod provisioning_api;
 mod redact;
 mod routes;
 mod session;

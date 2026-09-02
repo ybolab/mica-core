@@ -384,6 +384,17 @@ const V1_DIAGNOSTICS_SNAPSHOT_ROUTE: &str = "/v1/diagnostics/snapshots/{id}";
 /// the first-run operation, so it is named for that and nothing else.
 const V1_SETUP_PATH: &str = "/v1/setup";
 
+/// The read-only provisioning-document status (PLAN-046 / RFCT-282).
+///
+/// A fixed path on the time status's reasoning, and the whole of this
+/// surface: there is no sibling constant here that applies, re-applies,
+/// returns or clears a provisioning document. The document is the channel for
+/// a device with NO network — it is applied by mosd from a boot medium or a
+/// stick before anything is listening — so an HTTP route that applied one
+/// would be a second, differently-trusted write path for the same thing. The
+/// handler is [`crate::provisioning_api::api_v1_provisioning_status`].
+pub(crate) const V1_PROVISIONING_STATUS_PATH: &str = "/v1/provisioning/status";
+
 /// Browser authentication state. Unlike the old HTML login form, every
 /// operation stays inside the reserved JSON API surface.
 const V1_SESSION_PATH: &str = "/v1/session";
@@ -584,6 +595,12 @@ fn api_router() -> Router<AppState> {
         // First-run setup is the only unauthenticated write and remains
         // POST-only.
         .route(V1_SETUP_PATH, post(api_v1_setup))
+        // GET only: what a provisioning document did is observed; applying one
+        // is a file on a medium, read before anything is listening.
+        .route(
+            V1_PROVISIONING_STATUS_PATH,
+            get(crate::provisioning_api::api_v1_provisioning_status),
+        )
         // §2.4's envelope on the methods those routes do not serve, declared
         // once for the subtree rather than route by route. It reaches exactly
         // the routes above — it rewrites the method-not-allowed fallback of

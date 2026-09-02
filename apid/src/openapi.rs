@@ -72,6 +72,7 @@ use utoipa::OpenApi;
         crate::routes::api_v1_poweroff,
         crate::routes::api_v1_transient_root_password,
         crate::routes::api_v1_setup,
+        crate::provisioning_api::api_v1_provisioning_status,
         crate::update_api::api_v1_update_state,
         crate::update_api::api_v1_update_check,
         crate::update_api::api_v1_update_fetch,
