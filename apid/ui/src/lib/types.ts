@@ -32,6 +32,72 @@ export interface TimeStatus {
   }
 }
 
+export interface StorageSpace {
+  totalBytes: number
+  usedBytes: number
+  freeBytes: number
+  reservedBytes: number
+  usedPercent: number
+}
+
+export interface StorageTier {
+  name: string
+  role: string
+  partitionLabel: string
+  expectedMount?: string
+  present: boolean
+  detail?: string
+  device?: string
+  partitionBytes?: number
+  mounted?: boolean
+  mount?: string
+  filesystem?: string
+  readOnly?: boolean
+  space?: StorageSpace
+  pressure?: 'normal' | 'warning' | 'critical'
+  updateWorkspace?: { reservedBytes: number; available: boolean }
+  check: {
+    recorded?: false
+    unit?: string
+    activeState?: string | null
+    result?: string | null
+    exitStatus?: number | null
+  }
+}
+
+/// Absent wear is reported as unsupported with a reason, never omitted: a
+/// medium nobody can read must not look healthy.
+export interface StorageMedium {
+  name: string
+  kind: string
+  sizeBytes?: number
+  model?: string
+  rotational?: boolean
+  health:
+    | {
+        supported: true
+        source: string
+        raw: { lifeTime: string; preEolInfo?: string | null }
+        lifetimeEstimates: { raw: string; usedPercentMin?: number; usedPercentMax?: number; detail?: string }[]
+        preEol?: string | null
+      }
+    | { supported: false; reason: string }
+}
+
+export interface StorageStatus {
+  tiers: StorageTier[]
+  media: StorageMedium[]
+  policy: {
+    warningPercent: number
+    warningClearPercent: number
+    criticalPercent: number
+    criticalClearPercent: number
+    updateWorkspaceReservedBytes: number
+    watchedTiers: string[]
+  }
+  lifecycle: Record<string, string>
+}
+
 export interface Meta {
   api: string
   settingsSchemaVersion: number

@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './app/routes/index'
 import { Route as AccessRouteImport } from './app/routes/access'
 import { Route as NetworkRouteImport } from './app/routes/network'
 import { Route as ServicesRouteImport } from './app/routes/services'
+import { Route as StorageRouteImport } from './app/routes/storage'
 import { Route as SystemRouteImport } from './app/routes/system'
 import { Route as TimeRouteImport } from './app/routes/time'
 
@@ -36,6 +37,11 @@ const ServicesRoute = ServicesRouteImport.update({
   path: '/services',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StorageRoute = StorageRouteImport.update({
+  id: '/storage',
+  path: '/storage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SystemRoute = SystemRouteImport.update({
   id: '/system',
   path: '/system',
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   '/access': typeof AccessRoute
   '/network': typeof NetworkRoute
   '/services': typeof ServicesRoute
+  '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
   '/time': typeof TimeRoute
 }
@@ -60,6 +67,7 @@ export interface FileRoutesByTo {
   '/access': typeof AccessRoute
   '/network': typeof NetworkRoute
   '/services': typeof ServicesRoute
+  '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
   '/time': typeof TimeRoute
 }
@@ -69,20 +77,36 @@ export interface FileRoutesById {
   '/access': typeof AccessRoute
   '/network': typeof NetworkRoute
   '/services': typeof ServicesRoute
+  '/storage': typeof StorageRoute
   '/system': typeof SystemRoute
   '/time': typeof TimeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/access' | '/network' | '/services' | '/system' | '/time'
+  fullPaths:
+    | '/'
+    | '/access'
+    | '/network'
+    | '/services'
+    | '/storage'
+    | '/system'
+    | '/time'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/access' | '/network' | '/services' | '/system' | '/time'
+  to:
+    | '/'
+    | '/access'
+    | '/network'
+    | '/services'
+    | '/storage'
+    | '/system'
+    | '/time'
   id:
     | '__root__'
     | '/'
     | '/access'
     | '/network'
     | '/services'
+    | '/storage'
     | '/system'
     | '/time'
   fileRoutesById: FileRoutesById
@@ -92,6 +116,7 @@ export interface RootRouteChildren {
   AccessRoute: typeof AccessRoute
   NetworkRoute: typeof NetworkRoute
   ServicesRoute: typeof ServicesRoute
+  StorageRoute: typeof StorageRoute
   SystemRoute: typeof SystemRoute
   TimeRoute: typeof TimeRoute
 }
@@ -126,6 +151,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ServicesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/storage': {
+      id: '/storage'
+      path: '/storage'
+      fullPath: '/storage'
+      preLoaderRoute: typeof StorageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/system': {
       id: '/system'
       path: '/system'
@@ -148,6 +180,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccessRoute: AccessRoute,
   NetworkRoute: NetworkRoute,
   ServicesRoute: ServicesRoute,
+  StorageRoute: StorageRoute,
   SystemRoute: SystemRoute,
   TimeRoute: TimeRoute,
 }
