@@ -227,10 +227,10 @@ export interface ObservedNetworkInterface {
 }
 
 export interface ObservedNetworkState {
-  interfaces: AvailableFact & { count: number; entries: ObservedNetworkInterface[] }
+  interfaces: AvailableFact & { count?: number; entries?: ObservedNetworkInterface[] }
   defaultRoutes: AvailableFact & {
-    count: number
-    entries: {
+    count?: number
+    entries?: {
       family?: string
       gateway?: string
       interface?: string
@@ -242,12 +242,12 @@ export interface ObservedNetworkState {
     }[]
   }
   dns: AvailableFact & {
-    linkServers: string[]
-    resolverServers: string[]
+    linkServers?: string[]
+    resolverServers?: string[]
     probe?: { name: string; reachable: boolean; result: string; detail?: string }
   }
   wifi: AvailableFact & {
-    associations: {
+    associations?: {
       interface?: string
       state?: string
       associated?: boolean

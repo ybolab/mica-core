@@ -23,7 +23,7 @@ export function ObservedNetworkPage() {
             <CardHeader title={t('observedNetwork.interfaces.title')} description={t('observedNetwork.interfaces.description')} action={<Cable className="size-5 text-muted-foreground" />} />
             {!value.interfaces.available ? <Unavailable fact={value.interfaces} /> : null}
             <div className="grid gap-4">
-              {value.interfaces.entries.map((entry) => <InterfaceDetails key={entry.name} value={entry} />)}
+              {value.interfaces.entries?.map((entry) => <InterfaceDetails key={entry.name} value={entry} />)}
             </div>
             {value.interfaces.available && value.interfaces.count === 0 ? <p className="callout warning" role="status">{t('observedNetwork.interfaces.empty')}</p> : null}
           </Card>
@@ -32,14 +32,14 @@ export function ObservedNetworkPage() {
               <CardHeader title={t('observedNetwork.routes.title')} description={t('observedNetwork.routes.description')} action={<RouteIcon className="size-5 text-muted-foreground" />} />
               {!value.defaultRoutes.available ? <Unavailable fact={value.defaultRoutes} /> : null}
               {value.defaultRoutes.available && value.defaultRoutes.count === 0 ? <p className="callout warning" role="status">{t('observedNetwork.routes.empty')}</p> : null}
-              <dl className="details">{value.defaultRoutes.entries.map((route, index) => <div key={`${route.family}-${route.gateway}-${index}`}><dt>{route.interface ?? t('common.notAvailable')}</dt><dd>{join([route.gateway, route.family, route.metric === undefined ? undefined : `metric ${route.metric}`, route.configSource])}</dd></div>)}</dl>
+              <dl className="details">{value.defaultRoutes.entries?.map((route, index) => <div key={`${route.family}-${route.gateway}-${index}`}><dt>{route.interface ?? t('common.notAvailable')}</dt><dd>{join([route.gateway, route.family, route.metric === undefined ? undefined : `metric ${route.metric}`, route.configSource])}</dd></div>)}</dl>
             </Card>
             <Card>
               <CardHeader title={t('observedNetwork.dns.title')} description={t('observedNetwork.dns.description')} action={<Radio className="size-5 text-muted-foreground" />} />
               {!value.dns.available ? <Unavailable fact={value.dns} /> : (
                 <dl className="details">
-                  <div><dt>{t('observedNetwork.dns.link')}</dt><dd>{value.dns.linkServers.join(', ') || t('common.notAvailable')}</dd></div>
-                  <div><dt>{t('observedNetwork.dns.resolver')}</dt><dd>{value.dns.resolverServers.join(', ') || t('common.notAvailable')}</dd></div>
+                  <div><dt>{t('observedNetwork.dns.link')}</dt><dd>{value.dns.linkServers?.join(', ') || t('common.notAvailable')}</dd></div>
+                  <div><dt>{t('observedNetwork.dns.resolver')}</dt><dd>{value.dns.resolverServers?.join(', ') || t('common.notAvailable')}</dd></div>
                   {value.dns.probe ? <div><dt>{value.dns.probe.name}</dt><dd><Status ok={value.dns.probe.reachable}>{join([value.dns.probe.result, value.dns.probe.detail])}</Status></dd></div> : null}
                 </dl>
               )}
@@ -69,7 +69,7 @@ function WifiAssociations({ value }: { value: ObservedNetworkState['wifi'] }) {
       <CardHeader title={t('observedNetwork.wifi.title')} description={t('observedNetwork.wifi.description')} action={<Radio className="size-5 text-muted-foreground" />} />
       {!value.available ? <Unavailable fact={value} /> : (
         <dl className="details">
-          {value.associations.map((association, index) => (
+          {value.associations?.map((association, index) => (
             <div key={`${association.interface ?? 'wifi'}-${index}`}>
               <dt>{association.interface ?? t('observedNetwork.wifi.interfaceFallback')}</dt>
               <dd>{join([
@@ -83,7 +83,7 @@ function WifiAssociations({ value }: { value: ObservedNetworkState['wifi'] }) {
           ))}
         </dl>
       )}
-      {value.available && value.associations.length === 0 ? <p className="callout" role="status">{t('observedNetwork.wifi.empty')}</p> : null}
+      {value.available && value.associations?.length === 0 ? <p className="callout" role="status">{t('observedNetwork.wifi.empty')}</p> : null}
     </Card>
   )
 }
@@ -100,7 +100,7 @@ function InterfaceDetails({ value }: { value: ObservedNetworkInterface }) {
         <div><dt>{t('observedNetwork.interfaces.addresses')}</dt><dd>{value.addresses.map((address) => `${address.address ?? '—'}${address.prefixLength === undefined ? '' : `/${address.prefixLength}`}${address.configSource ? ` · ${address.configSource}` : ''}`).join(', ') || t('common.notAvailable')}</dd></div>
         <div><dt>{t('observedNetwork.interfaces.dhcp')}</dt><dd>{value.dhcp.available ? join([value.dhcp.state, lease?.server ? `server ${lease.server}` : undefined, lease?.router ? `router ${lease.router}` : undefined, lease?.lifetimeSeconds === undefined ? undefined : `${lease.lifetimeSeconds}s`]) : <Unavailable fact={value.dhcp} />}</dd></div>
         <div><dt>{t('observedNetwork.interfaces.dns')}</dt><dd>{value.dns.map((server) => typeof server === 'string' ? server : server.address).filter(Boolean).join(', ') || t('common.notAvailable')}</dd></div>
-        {value.wifi ? <div><dt>{t('observedNetwork.interfaces.wifi')}</dt><dd>{value.wifi.available ? join([value.wifi.state, value.wifi.associated ? 'associated' : 'not associated', value.wifi.ssid, value.wifi.rssiDbm === undefined ? undefined : `${value.wifi.rssiDbm} dBm`]) : <Unavailable fact={value.wifi} />}</dd></div> : null}
+        {value.wifi ? <div><dt>{t('observedNetwork.interfaces.wifi')}</dt><dd>{value.wifi.available ? join([value.wifi.state, value.wifi.associated ? t('observedNetwork.wifi.associated') : t('observedNetwork.wifi.notAssociated'), value.wifi.ssid, value.wifi.rssiDbm === undefined ? undefined : `${value.wifi.rssiDbm} dBm`]) : <Unavailable fact={value.wifi} />}</dd></div> : null}
       </dl>
     </section>
   )

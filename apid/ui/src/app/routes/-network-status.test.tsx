@@ -76,4 +76,31 @@ describe('observed network state', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
     expect(fetch).toHaveBeenCalledWith('/api/v1/network/status', expect.anything())
   })
+
+  it('names unavailable top-level evidence without assuming lists exist', async () => {
+    const value = {
+      interfaces: { available: false, detail: 'networkd did not answer' },
+      defaultRoutes: { available: false, detail: 'route observer unavailable' },
+      dns: { available: false, detail: 'resolved unavailable' },
+      wifi: { available: false, detail: 'Wi-Fi observer unavailable' },
+      capabilities: {
+        wifi: { supported: false, interfaces: [] },
+        bluetooth: { supported: false, adapters: [] },
+        cellular: { supported: false, interfaces: [] },
+      },
+    } satisfies ObservedNetworkState
+    const fetch = vi.fn().mockResolvedValue(response(value))
+    vi.stubGlobal('fetch', fetch)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}><ObservedNetworkPage /></QueryClientProvider>
+      </I18nextProvider>,
+    )
+
+    expect(await screen.findByText('Observed evidence unavailable: networkd did not answer')).toBeTruthy()
+    expect(screen.getByText('Observed evidence unavailable: route observer unavailable')).toBeTruthy()
+    expect(screen.getByText('Observed evidence unavailable: resolved unavailable')).toBeTruthy()
+    expect(screen.getByText('Observed evidence unavailable: Wi-Fi observer unavailable')).toBeTruthy()
+  })
 })
