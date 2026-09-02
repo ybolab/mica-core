@@ -280,6 +280,20 @@ export const en = {
       confirmPowerOff: 'Power off this appliance now?',
       accepted: 'Power action accepted.',
     },
+    update: {
+      title: 'Updates',
+      description: 'Update lifecycle, staged bundle and the safe-to-reboot gate. Read-only; actions run through the API.',
+      checking: 'reading update state',
+      available: 'Available',
+      bundle: 'Staged bundle',
+      bootedSlot: 'Booted slot',
+      lastCheck: 'Last check',
+      pendingReboot: 'An installed update awaits its first boot.',
+      gateSafe: 'Safe to reboot.',
+      gateBlocked: 'Reboot blocked: {{reasons}}.',
+      clientUnavailable: 'Update client unavailable: {{reason}}.',
+      policyError: 'Update policy file invalid: {{reason}}.',
+    },
   },
 } as const
 
@@ -410,6 +424,12 @@ export const zhCN: TranslationShape<typeof en> = {
     power: {
       title: '电源', description: '这些操作会立即下发。设备状态改变前，连接可能已经关闭。', reboot: '重启', powerOff: '关机',
       confirmReboot: '立即重启此设备？', confirmPowerOff: '立即关闭此设备？', accepted: '电源操作已接受。',
+    },
+    update: {
+      title: '更新', description: '更新生命周期、已暂存的更新包与安全重启门。只读；操作通过 API 执行。',
+      checking: '正在读取更新状态', available: '可用更新', bundle: '已暂存更新包', bootedSlot: '当前启动槽', lastCheck: '上次检查',
+      pendingReboot: '已安装的更新等待首次启动。', gateSafe: '可以安全重启。', gateBlocked: '重启被阻止：{{reasons}}。',
+      clientUnavailable: '更新客户端不可用：{{reason}}。', policyError: '更新策略文件无效：{{reason}}。',
     },
   },
 }

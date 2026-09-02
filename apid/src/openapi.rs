@@ -59,7 +59,13 @@ use utoipa::OpenApi;
         crate::routes::api_v1_reboot,
         crate::routes::api_v1_poweroff,
         crate::routes::api_v1_transient_root_password,
-        crate::routes::api_v1_setup
+        crate::routes::api_v1_setup,
+        crate::update_api::api_v1_update_state,
+        crate::update_api::api_v1_update_check,
+        crate::update_api::api_v1_update_fetch,
+        crate::update_api::api_v1_update_install,
+        crate::update_api::api_v1_update_mark,
+        crate::update_api::api_v1_update_reboot_override
     )
 )]
 struct ApiDoc;

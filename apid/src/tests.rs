@@ -8,6 +8,7 @@
 mod broken_classes;
 mod power_bus;
 mod settings_signal;
+mod update_api;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -2223,6 +2224,32 @@ impl SettingsApi for FailingSettings {
     /// The one write this fixture *does* answer, because §2.4's classification
     /// is exactly what the rotate route has to inherit from the read routes.
     async fn rotate_wireguard_key(&self, _iface: &str) -> anyhow::Result<String> {
+        Err(self.error())
+    }
+
+    // The update cluster inherits the same classification through
+    // `update_bus_error`, so this fixture answers all six the same way.
+    async fn get_update_state(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn check_update(&self) -> anyhow::Result<()> {
+        Err(self.error())
+    }
+
+    async fn fetch_update(&self) -> anyhow::Result<()> {
+        Err(self.error())
+    }
+
+    async fn install_update(&self, _bundle: &str) -> anyhow::Result<()> {
+        Err(self.error())
+    }
+
+    async fn mark_update(&self, _state: &str, _slot: &str) -> anyhow::Result<(String, String)> {
+        Err(self.error())
+    }
+
+    async fn set_reboot_override(&self, _seconds: u32) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
 }

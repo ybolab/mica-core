@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ExternalLink, MonitorCog, Power, RefreshCcw } from 'lucide-react'
+import { ExternalLink, MonitorCog, PackageSearch, Power, RefreshCcw } from 'lucide-react'
 import { api, errorMessage, json } from '@/lib/api'
 import type { TaskAccepted, UiStatus } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -18,8 +18,54 @@ function SystemPage() {
     <div className="page">
       <header className="page-head"><div><p className="eyebrow">{t('system.eyebrow')}</p><h1>{t('system.title')}</h1><p>{t('system.description')}</p></div></header>
       <div className="split-grid"><HostnamePanel /><UiPanel /></div>
+      <UpdatePanel />
       <PowerPanel />
     </div>
+  )
+}
+
+// The update state document `GET /api/v1/update` answers; only the members
+// this read-only panel renders are typed.
+interface UpdateStateDoc {
+  lifecycle?: {
+    state?: string
+    reason?: string
+    available?: { name?: string; version?: string; channel?: string }
+    bundle?: string
+    last_check?: string
+    client?: { available?: boolean; reason?: string }
+    policy_error?: string
+    reboot_gate?: { safe?: boolean; reasons?: string[] }
+  }
+  booted_slot?: string | null
+  pending_not_confirmed?: boolean
+}
+
+export function UpdatePanel() {
+  const { t } = useTranslation()
+  const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateStateDoc>('/api/v1/update') })
+  const lifecycle = status.data?.lifecycle
+  const gate = lifecycle?.reboot_gate
+  const available = lifecycle?.available
+  return (
+    <Card>
+      <CardHeader title={t('system.update.title')} description={t('system.update.description')} action={<PackageSearch className="size-5 text-muted-foreground" />} />
+      <div className="service-state"><Status ok={!status.isError && lifecycle?.state !== 'failed'}>{status.isPending ? t('system.update.checking') : (lifecycle?.state ?? t('common.states.unknown'))}</Status></div>
+      {lifecycle?.reason ? <p className="text-sm text-muted-foreground">{lifecycle.reason}</p> : null}
+      <dl className="details">
+        {available ? <div><dt>{t('system.update.available')}</dt><dd>{available.name} {available.version} ({available.channel})</dd></div> : null}
+        {lifecycle?.bundle ? <div><dt>{t('system.update.bundle')}</dt><dd>{lifecycle.bundle}</dd></div> : null}
+        {status.data?.booted_slot ? <div><dt>{t('system.update.bootedSlot')}</dt><dd>{status.data.booted_slot}</dd></div> : null}
+        {lifecycle?.last_check ? <div><dt>{t('system.update.lastCheck')}</dt><dd>{lifecycle.last_check}</dd></div> : null}
+      </dl>
+      {status.data?.pending_not_confirmed ? <p className="callout warning" role="status">{t('system.update.pendingReboot')}</p> : null}
+      {gate ? (gate.safe
+        ? <p className="callout success" role="status">{t('system.update.gateSafe')}</p>
+        : <p className="callout warning" role="status">{t('system.update.gateBlocked', { reasons: (gate.reasons ?? []).join('; ') })}</p>) : null}
+      {lifecycle?.client && lifecycle.client.available === false ? <p className="callout warning" role="status">{t('system.update.clientUnavailable', { reason: lifecycle.client.reason ?? '' })}</p> : null}
+      {lifecycle?.policy_error ? <p className="callout error" role="alert">{t('system.update.policyError', { reason: lifecycle.policy_error })}</p> : null}
+      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
+    </Card>
   )
 }
 

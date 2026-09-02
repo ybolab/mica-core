@@ -42,10 +42,10 @@ use crate::token;
 /// Shared handler state.
 #[derive(Clone)]
 pub struct AppState {
-    api: Arc<dyn SettingsApi>,
+    pub(crate) api: Arc<dyn SettingsApi>,
     sessions: Arc<SessionStore>,
     guard: Arc<GuardStore>,
-    audit: Arc<Audit>,
+    pub(crate) audit: Arc<Audit>,
     bundles: Arc<Store>,
     /// Serialises custom-UI pointer mutations so concurrent API requests are
     /// deterministic and cannot contend for the atomic replacement link.
@@ -223,7 +223,7 @@ async fn api_not_found(OriginalUri(uri): OriginalUri) -> Response {
 /// document composes them with the prefix through `context_path`, and
 /// [`is_declared_api_route`] composes them to get what the gate sees. One
 /// spelling each.
-const API: &str = "/api";
+pub(crate) const API: &str = "/api";
 const VERSIONS_PATH: &str = "/versions";
 const V1_META_PATH: &str = "/v1/meta";
 
@@ -450,6 +450,32 @@ fn api_router() -> Router<AppState> {
         // handler exists, so nothing that merely follows a link can replace a
         // tunnel's identity.
         .route(V1_WIREGUARD_ROTATE_ROUTE, post(api_v1_wireguard_rotate))
+        // The update cluster (`update_api.rs`): one state read, five
+        // POST-only actions, all behind the same credential extractor.
+        .route(
+            crate::update_api::V1_UPDATE_PATH,
+            get(crate::update_api::api_v1_update_state),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_CHECK_PATH,
+            post(crate::update_api::api_v1_update_check),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_FETCH_PATH,
+            post(crate::update_api::api_v1_update_fetch),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_INSTALL_PATH,
+            post(crate::update_api::api_v1_update_install),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_MARK_PATH,
+            post(crate::update_api::api_v1_update_mark),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_REBOOT_OVERRIDE_PATH,
+            post(crate::update_api::api_v1_update_reboot_override),
+        )
         // Actions are POST-only so navigation and prefetch cannot trigger
         // state changes.
         .route(V1_REBOOT_PATH, post(api_v1_reboot))
@@ -507,7 +533,7 @@ async fn api_method_not_allowed(method: Method, OriginalUri(uri): OriginalUri) -
 }
 
 /// Every `/api/` response is JSON and is never cacheable.
-fn api_response(status: StatusCode, body: impl serde::Serialize) -> Response {
+pub(crate) fn api_response(status: StatusCode, body: impl serde::Serialize) -> Response {
     (
         status,
         [(CACHE_CONTROL, CacheClass::NoStore.header_value())],
@@ -533,11 +559,11 @@ pub(crate) struct ApiErrorDetail {
 }
 
 impl ApiError {
-    fn apid(code: &'static str, message: String) -> Self {
+    pub(crate) fn apid(code: &'static str, message: String) -> Self {
         Self::new(code, message, "apid")
     }
 
-    fn mosd(code: &'static str, message: String) -> Self {
+    pub(crate) fn mosd(code: &'static str, message: String) -> Self {
         Self::new(code, message, "mosd")
     }
 
