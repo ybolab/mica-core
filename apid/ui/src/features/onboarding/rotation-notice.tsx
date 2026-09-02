@@ -1,4 +1,3 @@
-import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { claimQuery } from '@/features/onboarding/claim-panel'
@@ -14,7 +13,7 @@ export function RotationNotice() {
   return (
     <div className="mx-auto w-full max-w-[1280px] px-6 pt-4">
       <p className="callout warning" role="status">
-        {t('access.claim.notice')} <Link to="/access" className="text-link">{t('access.claim.noticeLink')}</Link>
+        {t('access.claim.notice')} <a className="text-link" href="/_ui/access">{t('access.claim.noticeLink')}</a>
       </p>
     </div>
   )
