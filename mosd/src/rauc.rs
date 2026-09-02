@@ -250,6 +250,10 @@ pub const ROLLBACK_ALTERNATE_MARKED_BAD: &str = "alternate_marked_bad";
 /// installed MORE RECENTLY than the running one. That is not a rollback
 /// target: it is a pending or skipped update, and switching the boot order to
 /// it is "apply the untested thing" rather than "go back to the tested one".
+///
+/// This orders the two INSTALLS. It does not establish that the older one
+/// ever booted — see [`rollback_eligibility`] for what that does and does not
+/// cover.
 pub const ROLLBACK_ALTERNATE_IS_NEWER: &str = "alternate_is_newer";
 /// A manual rollback is refused because the two slots' install timestamps
 /// cannot be ordered — one is absent, unparseable, or they are equal — so
@@ -365,29 +369,51 @@ fn older_install(target: &SlotStatus, booted: &SlotStatus) -> Option<bool> {
 /// is taken rather than an ambiguity being invented for a shape the image
 /// cannot have.
 ///
-/// # Why the install-order step IS the precondition, not a proxy for it
+/// # What the install-order step checks, and what it does NOT
 ///
-/// `docs/design/recovery.md` §3 node 2 requires that the alternate "holds a
-/// system that booted successfully before". No RAUC field records a boot, and
-/// this does not guess one — it DERIVES the property from the A/B install
-/// invariant: an install always writes the slot that is not running. So if
-/// the booted slot's install is the more recent of the two, the device was
-/// running the alternate at the moment that install happened, and that is a
-/// successful boot of the alternate. "Target older than booted" is therefore
-/// evidence OF the precondition, not a correlate of it.
+/// The rule this enforces is "**a rollback goes backward**": the target must
+/// be the strictly older of the two installs. That is NOT the same property
+/// as `docs/design/recovery.md` §3 node 2's precondition, "the other slot
+/// holds a system that booted successfully before", and this comment says so
+/// rather than letting the two be read as one.
 ///
-/// Everything else refuses. Equal timestamps are the shape of a factory flash
-/// that wrote both slots in one operation, where the alternate has never run;
-/// an absent or unparseable timestamp on EITHER slot proves nothing at all.
-/// This is a brick-avoidance guard, so the unorderable case fails CLOSED — it
-/// refuses a rollback it cannot justify rather than permitting one.
+/// They coincide on the normal path, because an install writes the inactive
+/// slot and a never-booted slot is therefore normally also the newest. They
+/// come apart wherever that does not hold — the running slot re-installed in
+/// place, or install metadata restored. Concretely: target installed at t=20
+/// and never booted, booted slot re-installed at t=30, and this step permits
+/// a rollback into a system that has never run. That case is NOT caught here.
 ///
-/// HONEST LIMIT, so nobody reads more into this than it carries: the
-/// derivation is only as good as the clock at install time. Time is UTC
-/// everywhere on this system, but a device that installed with a wrong clock
-/// can record an ordering that did not happen, and a booted slot stamped
-/// spuriously LATE would let this step pass. Closing that needs a monotonic
-/// per-slot boot record, which no field on this surface carries.
+/// The stronger property is not observable on this surface, and the check was
+/// made rather than assumed — RAUC v1.13, the version `pkgs/rauc/versions.env`
+/// pins, does not persist it anywhere mosd can read:
+/// - `RaucSlotStatus` (`include/slot.h`) — everything the status file holds —
+///   has no mark field at all: bundle metadata, `status`, checksum,
+///   `installed.*` and `activated.*`, and nothing else.
+/// - `r_mark_good` (`src/mark.c`) calls the bootloader backend and writes an
+///   event-log line. It does NOT call `r_slot_status_save`, unlike
+///   `r_mark_active` beside it, which does. A mark-good leaves no persisted
+///   trace.
+/// - `convert_slot_status_to_dict` (`src/service.c`) is the exhaustive
+///   `GetSlotStatus` key list, and `boot-status` in it is computed live as
+///   `slot->boot_good ? "good" : "bad"` — the attempt counter as a boolean,
+///   the same limit [`pending_not_confirmed`] states.
+/// - `status` (which [`SlotStatus`] already carries) is written only by the
+///   installer, `pending` -> `update` -> `ok` (`src/install.c`). It records an
+///   install, never a boot.
+///
+/// So a never-booted but OLDER slot is not distinguishable from a
+/// confirmed-good one, and remains a permitted rollback target. Closing that
+/// needs mosd to record its own confirmed-boot fact; it is a separate design,
+/// not something to approximate here.
+///
+/// Everything that cannot be ordered refuses. Equal timestamps are the shape
+/// of a factory flash that wrote both slots in one operation; an absent or
+/// unparseable timestamp on EITHER slot proves nothing at all. This is a
+/// brick-avoidance guard, so the unorderable case fails CLOSED — it refuses a
+/// rollback it cannot justify rather than permitting one. The ordering is also
+/// only as good as the clock at install time: a device that installed with a
+/// wrong clock can record an order that did not happen.
 pub fn rollback_eligibility(slots: &[SlotStatus], primary: Option<&str>) -> RollbackEligibility {
     let Some(booted) = booted_slot(slots) else {
         return RollbackEligibility::refused(None, ROLLBACK_NO_ALTERNATE_SLOT);
@@ -872,8 +898,8 @@ mod tests {
     }
 
     /// The ordinary post-update shape: the running slot was installed AFTER
-    /// the one we would roll back to, which is what makes the other slot a
-    /// system that must have been running when this one was written.
+    /// the one we would roll back to, which is the only ordering the
+    /// backward-only step permits.
     const OLDER: &str = "2026-08-01T10:00:00Z";
     const NEWER: &str = "2026-08-30T10:00:00Z";
 
