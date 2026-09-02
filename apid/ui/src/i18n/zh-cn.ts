@@ -290,13 +290,24 @@ export const zhCN: Translation = {
     },
     tokens: {
       title: 'API 令牌', description: '用于自动化的长期凭据。明文只显示一次。', copyNow: '立即复制此令牌', revokeLabel: '撤销 {{name}}', confirmRevoke: '撤销 {{name}}？正在使用此令牌的自动化将立即停止工作。', empty: '没有 API 令牌。',
-      newLabel: '新令牌标签', placeholder: '部署代理', pending: '正在创建…', create: '创建令牌',
+      label: '标签', created: '创建时间', revoke: '吊销', mint: '生成令牌', copied: '已复制', revealCopy: '这是设备唯一一次显示它。', closeReveal: '关闭', closeRevealCopy: '关闭此面板后明文令牌会被丢弃，无法再次显示。', closeRevealConfirm: '关闭并丢弃', newLabel: '新令牌标签', placeholder: '部署代理', pending: '正在创建…', create: '创建令牌',
     },
     ssh: {
-      title: 'SSH', defaultNotice: '每个授权密钥都会授予此设备的 root 权限。', status: 'SSH {{state}}', keyFallback: 'SSH 公钥', unreadableFingerprint: '无法读取指纹',
+      title: 'SSH', sectionCopy: '授权密钥可获得 root Shell 访问。即使服务已停用，仍可管理密钥。',
+      server: 'SSH 服务', serverState: '{{state}} · 仍可管理密钥', remove: '移除',
+      defaultNotice: '每个授权密钥都会授予此设备的 root 权限。', status: 'SSH {{state}}', keyFallback: 'SSH 公钥', unreadableFingerprint: '无法读取指纹',
       removeLabel: '移除 SSH 密钥', confirmRemove: '从设备移除此 root 授权密钥？', authorizedKey: '授权密钥', keyPlaceholder: 'ssh-ed25519 AAAA… operator', addKey: '添加密钥',
       transient: '临时 root 密码', transientHint: '8–72 字节；下次重启时移除。', confirmTransient: '将此 root 密码设置到下次重启为止？',
       setting: '正在设置…', setUntilReboot: '设置到重启为止', transientAccepted: '临时 root 密码已接受。',
+    },
+    root: {
+      title: '临时 root 密码',
+      description: '有效期至下次重启的 root 密码。它与 Web 密码相互独立，设置后不再显示。',
+      highPrivilege: '高权限', state: '未设置', password: 'root 密码',
+    },
+    onboarding: {
+      title: '认领与开局',
+      addition: '不属于已批准的设计。设备会报告这两项，在设计给出位置之前控制台先保留它们。',
     },
   },
   system: {

@@ -422,6 +422,21 @@ form.grid > .group\/button { justify-self: end; }
 [data-slot="dialog-backdrop"], [data-slot="alert-dialog-backdrop"] { background: rgb(0 0 0 / .5); }
 [data-slot="dropdown-menu-item"], [data-slot="select-item"] { min-height: 34px; border-radius: 6px; font-size: 14px; }
 
+.panel-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); padding: 14px 16px; }
+.panel-row > div { min-width: 0; display: grid; gap: 2px; }
+.panel-row strong { font-weight: 500; }
+.panel-row small { color: var(--muted-foreground); font-size: 13px; }
+.panel-footer { padding: 12px 16px; }
+.panel-footer .inline-form { margin: 0; }
+.root-panel { border-color: var(--danger); }
+.panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+.reveal-panel { grid-template-columns: 1fr; gap: 12px; }
+.reveal-panel > div { display: grid; gap: 2px; }
+.reveal-panel strong { color: var(--warning); font-weight: 600; }
+.reveal-panel span { color: var(--foreground); font-size: 13px; }
+.reveal-panel code { grid-column: auto; }
+.reveal-panel button { grid-column: auto; grid-row: auto; }
+
 .blocked-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
 .blocked-banner > div { display: grid; gap: 2px; }
 .blocked-banner strong { display: block; font-weight: 600; }
