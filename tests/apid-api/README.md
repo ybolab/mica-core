@@ -25,7 +25,7 @@ the onboarding, update and recovery surfaces:
 
 | id | what it covers |
 |----|----------------|
-| `01-spa-boundary` | `/` → `/ui`, embedded SPA assets, API JSON errors, and retired form routes |
+| `01-spa-boundary` | `/` → `/_ui/`, embedded SPA assets, API JSON errors, and retired form routes |
 | `02-session` | JSON setup/login/logout, the session cookie, and CSRF enforcement |
 | `03-api-management` | cookie and bearer API reads, a CSRF-protected write/task, and inert legacy paths |
 | `04-network-observation` | configured intent plus current interface count, details and states |

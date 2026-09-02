@@ -42,8 +42,8 @@ The current SPA/API contract suite is non-destructive and uses one boot:
    with the physical-presence gate.
 
 No custom UI fixture is seeded. The boot therefore proves the default device
-root enters the embedded UI at `/ui`. Rust route tests separately install a
-real custom bundle and prove that it owns `/` without shadowing `/ui`.
+root enters the embedded UI at `/_ui/`. Rust route tests separately install a
+real custom bundle and prove that it owns `/` without shadowing `/_ui/`.
 
 ## Console and readiness
 
