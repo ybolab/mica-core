@@ -5,13 +5,10 @@ export function Page({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('page', className)} {...props} />
 }
 
-export function PageHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
+export function PageHeader({ title, action }: { title: string; action?: ReactNode }) {
   return (
     <header className="page-head">
-      <div>
-        <h1>{title}</h1>
-        {description ? <p>{description}</p> : null}
-      </div>
+      <div><h1>{title}</h1></div>
       {action ? <div className="page-actions">{action}</div> : null}
     </header>
   )

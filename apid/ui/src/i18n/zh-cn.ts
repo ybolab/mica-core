@@ -2,6 +2,7 @@ import type { Translation } from './resources'
 
 export const zhCN: Translation = {
   common: {
+    age: { now: '刚刚', minutes: '{{count}} 分钟前', hours: '{{count}} 小时前' },
     actions: { refresh: '刷新', enable: '启用', disable: '停用', copy: '复制', cancel: '取消', delete: '删除', close: '关闭', edit: '编辑', save: '保存', add: '添加' },
     states: { available: '可用', unavailable: '不可用', enabled: '已启用', disabled: '已停用', unknown: '未知', finished: '已完成', succeeded: '成功', failed: '失败', pending: '等待中', running: '执行中', queued: '已排队', healthy: '健康', routable: '可路由', carrier: '有载波', degraded: '降级' },
     requestFailed: '请求未能完成。',
@@ -13,8 +14,12 @@ export const zhCN: Translation = {
     regionLabel: '显示偏好',
     language: '语言',
     appearance: '外观',
-    languages: { en: 'English', zhCN: '简体中文' },
-    themes: { system: '跟随系统', light: '浅色', dark: '深色' },
+    auto: '自动',
+    autoCopy: '跟随浏览器',
+    search: '搜索语言',
+    planned: '计划中',
+    noMatch: '没有匹配的语言',
+    themes: { system: '自动', light: '浅色', dark: '深色' },
   },
   root: {
     connecting: '正在连接设备…',
@@ -32,8 +37,19 @@ export const zhCN: Translation = {
     navigationLabel: '主导航',
     builtInUi: '内置界面',
     signOut: '退出登录',
-    refresh: '刷新全部数据', settings: '显示设置', menu: '打开导航', connected: '已连接', refreshing: '刷新中', offline: '离线',
-    fresh: '设备数据为最新', unavailable: '管理面不可用', api: 'API', schema: '配置模型',
+    refresh: '刷新全部数据', settings: '显示设置', menu: '打开导航',
+    connected: '已连接', connectedDetail: '正在直接读取设备',
+    reconnecting: '重新连接中', reconnectingDetail: '显示上次成功读取的数据',
+    offline: '离线', offlineDetail: '管理面不可达 · 变更已暂停',
+    refreshing: '刷新中…',
+    updated: { now: '刚刚更新', minutes: '{{count}} 分钟前更新', hours: '{{count}} 小时前更新' },
+    release: '版本', slot: '当前槽位',
+    banner: {
+      reconnecting: '部分数据可能已过期。',
+      reconnectingCopy: '设备已停止响应。显示的内容来自上次成功读取，变更会暂存到设备恢复为止。',
+      offline: '设备不可达。',
+      offlineCopy: '在管理面重新响应之前，所有变更都已暂停。已保存的内容不会丢失。',
+    },
     nav: { overview: '概览', network: '网络', services: '服务', applications: '应用', access: '访问', system: '系统' },
   },
   auth: {
@@ -71,25 +87,23 @@ export const zhCN: Translation = {
     queued: '变更已排队…',
   },
   overview: {
-    title: '概览', description: '实时查看管理平面及其网络边缘。',
-    allResponding: '所有系统均有响应', checking: '正在检查系统', unavailable: '系统不可用', systemHealth: '系统健康', systemHealthCopy: '核心服务与管理平面',
+    title: '概览',
+    allResponding: '所有系统均有响应', checking: '正在检查系统', unavailable: '系统不可用',
+    systemHealth: '系统健康', systemHealthCopy: '核心服务与管理面',
     attention: {
-      title: '需要关注', description: '下次维护窗口前建议处理以下两项。', updateTitle: '系统更新已就绪', updateCopy: '可以查看并安装 2026.09.0 版本。',
-      timeTitle: '尚未配置时间源', timeCopy: '添加 NTP 时间源，以确保更新与审计时间可信。', review: '查看更新', configure: '配置时间',
+      title: '需要关注',
+      updateTag: '更新', updateTitle: '系统更新 {{version}} 已可安装', updateCopy: '安装前请先查看该版本。',
+      timeTag: '警告', timeTitle: '系统时钟未同步', timeCopy: '添加 NTP 时间源，以确保更新与审计时间可信。',
+      review: '打开更新', configure: '打开时间',
     },
-    managementApi: '管理 API', metadata: '{{api}} · 架构 {{schema}}', loadingMetadata: '正在加载元数据',
-    observedInterfaces: '观测到的接口', configuredCount: '已配置 {{count}} 个', liveUnavailable: '实时状态不可用',
-    deviceUptime: '设备运行时间', readFromMosd: '直接读取自 mosd',
-    uptime: { daysHours: '{{days}} 天 {{hours}} 小时', hoursMinutes: '{{hours}} 小时 {{minutes}} 分钟' },
-    networkEdge: '网络边缘', networkEdgeDescription: 'systemd-networkd 当前报告的状态。', details: '详情',
-    interfaceFallback: '接口 {{index}}', physicalLink: '物理链路', noInterfaces: '未观测到接口。',
-    separationTitle: '按边界隔离', separationDescription: '控制台只通过版本化 API 读写。',
-    boundaryLabel: 'UI 与 API 通信，API 再与 mosd 通信',
-    boundaryCopy: '/api 之外不存在表单端点或服务端渲染的管理操作。内置控制台始终可通过 /_ui/ 恢复访问。',
-    recentTasks: '最近的应用任务', recentTasksDescription: 'mosd 报告的异步设置协调任务。', noTasks: '本次启动后尚未运行应用任务。', tasks: { change: '变更', source: '来源', status: '状态' },
+    identity: '标识', machineId: '机器 ID {{id}}…', network: '网络', liveUnavailable: '实时状态不可用',
+    deviceUptime: '运行时长', readFromMosd: '自上次启动起',
+    uptime: { daysHours: '{{days}} 天 {{hours}} 小时', hoursMinutes: '{{hours}} 小时 {{minutes}} 分' },
+    recentTasks: '最近的应用任务', noTasks: '本次启动后尚未运行应用任务。',
+    tasks: { action: '动作', target: '目标', phase: '阶段', result: '结果', time: '时间', noDetail: '未报告细节 · 来自 {{source}}' },
   },
   network: {
-    title: '网络', description: '查看声明的配置，以及 systemd-networkd 实际观测到的链路。',
+    title: '网络',
     tabs: { interfaces: '接口', wifi: 'Wi-Fi', wireguard: 'WireGuard', observed: '观测状态' }, interfaceCount: '{{count}} 个接口', actions: { addInterface: '添加接口' },
     kinds: { physical: '物理接口', vlan: 'VLAN', bridge: '网桥', wireguard: 'WireGuard' },
     editor: {
@@ -153,7 +167,7 @@ export const zhCN: Translation = {
     summary: { notConfigured: '未配置', physical: '物理接口', dhcp: 'DHCP', static: '静态地址', noAddressing: '未配置地址', value: '{{kind}} · {{method}}' },
   },
   services: {
-    title: '服务', description: '通过 API 支持的控件启用设备服务。',
+    title: '服务',
     containers: { title: '容器', warning: '容器在此设备上以 root 运行。Quadlet 文件可以启动具有 root 权限的代码。' },
     mqtt: { title: 'MQTT', warning: '监听地址、认证和端口分别配置。将 MQTT 暴露到回环地址之外前，请先检查这些设置。' },
     liveAvailable: '实时状态可用', noLiveState: '无实时状态', liveState: '实时状态', managedBy: '管理组件',
@@ -187,7 +201,7 @@ export const zhCN: Translation = {
     },
   },
   access: {
-    title: '访问', description: '管理浏览器会话、自动化令牌和 root SSH 访问。',
+    title: '访问',
     claim: {
       title: '设备认领', description: '此设备是如何脱离未认领状态的，以及认领它的凭据是否仍是初始凭据。',
       checking: '正在读取认领状态', claimed: '已认领', unclaimed: '未认领 —— 尚不存在管理员凭据',
@@ -229,7 +243,7 @@ export const zhCN: Translation = {
     },
   },
   system: {
-    title: '系统', description: '管理设备标识、UI 选择和明确的电源操作。',
+    title: '系统',
     simulationScope: '自动更新策略、临时支持访问与配置备份',
     tabs: { general: '常规', information: '信息', time: '时间', update: '更新与恢复', storage: '存储', diagnostics: '诊断', recovery: '恢复' },
     information: {

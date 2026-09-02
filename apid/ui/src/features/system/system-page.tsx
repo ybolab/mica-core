@@ -40,7 +40,7 @@ export function SystemPage() {
   const initialTab = ['general', 'information', 'time', 'update', 'storage', 'diagnostics', 'recovery'].includes(hash) ? hash : 'general'
   return (
     <div className="page">
-      <header className="page-head"><div><h1>{t('system.title')}</h1><p>{t('system.description')}</p></div></header>
+      <header className="page-head"><div><h1>{t('system.title')}</h1></div></header>
       <Tabs key={initialTab} defaultValue={initialTab}>
         <TabsList aria-label={t('system.title')}>
           <TabsTrigger value="general">{t('system.tabs.general')}</TabsTrigger>

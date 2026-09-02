@@ -5,9 +5,12 @@ export type ResolvedTheme = Exclude<ThemeMode, 'system'>
 
 export const THEME_STORAGE_KEY = 'mos.ui.theme'
 
+/// The `--background` token of each theme, restated here because the browser
+/// chrome color cannot read a CSS custom property. Keep in step with
+/// `styles.css`.
 const themeColors: Record<ResolvedTheme, string> = {
-  light: 'oklch(0.961 0.011 95)',
-  dark: 'oklch(0.15 0.035 270)',
+  light: '#f3f2ec',
+  dark: '#070a19',
 }
 
 export function normalizeThemeMode(value: string | null | undefined): ThemeMode {

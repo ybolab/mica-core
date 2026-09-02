@@ -29,7 +29,7 @@ export function ServicesPage() {
 
   return (
     <Page>
-      <PageHeader title={t('services.title')} description={t('services.description')} />
+      <PageHeader title={t('services.title')} />
       <div className="service-grid">
         {services.map((service) => <ServiceCard key={service.id} {...service} />)}
         <Surface className="service-card">

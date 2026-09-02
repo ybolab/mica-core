@@ -1,6 +1,6 @@
 import { createInstance } from 'i18next'
 import { loadLocale } from './load'
-import { detectLocale, LOCALE_STORAGE_KEY, normalizeLocale, type Locale } from './locale'
+import { AUTO_LOCALE, LOCALE_STORAGE_KEY, normalizeLocale, resolveLocaleChoice, type Locale } from './locale'
 import { en, type Translation } from './resources'
 
 function safeStoredLocale() {
@@ -16,7 +16,7 @@ function browserLocales(): readonly string[] {
   return navigator.languages?.length ? navigator.languages : [navigator.language]
 }
 
-const initialLocale = detectLocale(safeStoredLocale(), browserLocales())
+const initialLocale = resolveLocaleChoice(safeStoredLocale(), browserLocales())
 
 export const i18n = createInstance()
 
@@ -68,7 +68,14 @@ export function currentLocale(): Locale {
   return normalizeLocale(i18n.resolvedLanguage ?? i18n.language) ?? 'en'
 }
 
-export async function setLocale(locale: Locale) {
+/// The picker choice as stored, which is not the same as the rendered locale:
+/// `auto` and every planned language render as something else.
+export function currentLocaleChoice(): string {
+  return safeStoredLocale() ?? AUTO_LOCALE
+}
+
+export async function setLocaleChoice(choice: string) {
+  const locale = resolveLocaleChoice(choice, browserLocales())
   try {
     await activateLocale(locale)
   } catch {
@@ -76,7 +83,7 @@ export async function setLocale(locale: Locale) {
     return
   }
   try {
-    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale)
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, choice)
   } catch {
     // Browser privacy settings may disable local storage; the session still updates.
   }

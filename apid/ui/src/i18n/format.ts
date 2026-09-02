@@ -21,3 +21,14 @@ export function formatKnownState(value: string, t: TFunction) {
   const key = knownStateKeys[value as keyof typeof knownStateKeys]
   return key ? t(key) : value
 }
+
+/// A device timestamp rendered as an age, in the same buckets the shell uses
+/// for read freshness. Anything the device did not date reads as `just now`
+/// rather than inventing a distance.
+export function formatAge(ageMs: number, t: TFunction) {
+  if (!Number.isFinite(ageMs) || ageMs < 60_000) return t('common.age.now')
+  const minutes = Math.floor(ageMs / 60_000)
+  return minutes < 60
+    ? t('common.age.minutes', { count: minutes })
+    : t('common.age.hours', { count: Math.floor(minutes / 60) })
+}

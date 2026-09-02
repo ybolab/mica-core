@@ -14,7 +14,7 @@ export const sessionKey = ['session'] as const
 function AuthFrame({ title, copy, children }: { title: string; copy: string; children: React.ReactNode }) {
   return (
     <main className="auth-shell">
-      <div className="auth-preferences"><Preferences compact /></div>
+      <div className="auth-preferences"><Preferences /></div>
       <Card className="auth-card">
         <i className="corner tl" aria-hidden="true" /><i className="corner tr" aria-hidden="true" />
         <i className="corner bl" aria-hidden="true" /><i className="corner br" aria-hidden="true" />

@@ -25,10 +25,20 @@ test('navigates the complete desktop console', async ({ page, isMobile }) => {
   await expect(page.getByRole('button', { name: 'MQTT Bridge', exact: true })).toBeVisible()
 })
 
+test('routes the reported update from the overview attention list', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop navigation contract')
+  await page.goto('./')
+
+  await expect(page.getByText('System update 2026.09.0 is ready to install')).toBeVisible()
+  await page.getByRole('link', { name: 'Open Update' }).click()
+  await expect(page.getByRole('heading', { name: 'System' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Update & recovery', selected: true })).toBeVisible()
+})
+
 test('writes real time settings while the simulation boundary stays named', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop system workflow')
-  await page.goto('./')
-  await page.getByRole('link', { name: 'Configure time' }).click()
+  await page.goto('./system')
+  await page.getByRole('tab', { name: 'Time' }).click()
 
   await expect(page.getByRole('heading', { name: 'System' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'NTP servers' })).toBeVisible()
@@ -99,7 +109,7 @@ test('uses the mobile navigation drawer', async ({ page, isMobile }) => {
 
 test('labels every route that contains simulated behavior', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium', 'one browser covers the shared route boundary')
-  for (const path of ['./', './services', './applications', './system']) {
+  for (const path of ['./services', './applications', './system']) {
     await page.goto(path)
     await expect(page.getByText('Simulation', { exact: true })).toBeVisible()
     await expect(page.getByText(/does not change this device/)).toBeVisible()
@@ -153,6 +163,17 @@ function payload(path: string, method: string): unknown {
   if (path === '/api/v1/session') return { state: 'authenticated', csrfToken: 'e2e-csrf' }
   if (path === '/api/v1/health') return { apid: 'ok', mosd: 'ok', checkedAt: 183900 }
   if (path === '/api/v1/meta') return { api: 'v1', settingsSchemaVersion: 4, daemon: 'mosd 0.1.0' }
+  if (path === '/api/v1/system/info') return {
+    machineId: { available: true, id: '4f2e9c1a7b3d4e5f' },
+    board: { available: true, model: 'mos-cm4 rev 2', source: 'device-tree' },
+    kernel: { available: true, release: '6.6.52-mos', version: '#1 SMP' },
+    release: { available: true, name: 'mos', versionId: '2026.08.2', imageVersion: '2026.08.2', prettyName: 'mos 2026.08.2' },
+    system: { available: true, version: '2026.08.2', package: 'mos-system', buildDate: '2026-08-19' },
+    daemon: { available: true, name: 'mosd', version: '0.1.0', commit: 'a3f9c1e' },
+    packages: { available: true, count: 214, mosCount: 12, entries: [] },
+    slot: { available: true, booted: 'A', bootname: 'rootfs.0', bootStatus: 'good', primary: true },
+    uptime: { available: true, seconds: 1231932 },
+  }
   if (path === '/api/v1/settings/hostname') return 'mos-cm4'
   if (path === '/api/v1/network') return {
     configured: { eth0: { dhcp: true }, wg0: { kind: 'wireguard', dhcp: false, static: { address: '10.10.0.2/24', dns: [] }, wireguard: { listenPort: 51820, peers: [] } } },
@@ -168,7 +189,7 @@ function payload(path: string, method: string): unknown {
   if (path === '/api/v1/ssh/authorized-keys') return { keys: [], notice: 'Every authorized key grants root on this appliance.' }
   if (path === '/api/v1/settings/wifi.client') return { enabled: true, interface: 'wlan0', networks: [] }
   if (path === '/api/v1/wifi/client/networks' || path.endsWith('/peers')) return []
-  if (path === '/api/v1/update') return { lifecycle: { state: 'ready', reboot_gate: { safe: true, reasons: [] }, client: { available: true } }, booted_slot: 'rootfs.0' }
+  if (path === '/api/v1/update') return { lifecycle: { state: 'ready', available: { name: 'mos', version: '2026.09.0', channel: 'stable' }, reboot_gate: { safe: true, reasons: [] }, client: { available: true } }, booted_slot: 'rootfs.0' }
   if (path === '/api/v1/settings/time.ntp.servers') return ['0.pool.ntp.org']
   if (path === '/api/v1/settings/time.timezone') return 'Etc/UTC'
   if (path === '/api/v1/time/status') return {

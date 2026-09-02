@@ -38,7 +38,7 @@ export function ApplicationsPage() {
 
   return (
     <Page>
-      <PageHeader title={t('applications.title')} description={t('applications.description')} />
+      <PageHeader title={t('applications.title')} />
       <Tabs defaultValue="installed">
         <TabsList aria-label={t('applications.title')}>
           <TabsTrigger value="installed">{t('applications.tabs.installed')}</TabsTrigger>

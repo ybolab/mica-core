@@ -39,7 +39,7 @@ export function NetworkPage() {
 
   return (
     <Page>
-      <PageHeader title={t('network.title')} description={t('network.description')} action={<Button variant="outline" onClick={() => network.refetch()} disabled={network.isFetching}><RefreshCw className={network.isFetching ? 'animate-spin' : ''} />{t('common.actions.refresh')}</Button>} />
+      <PageHeader title={t('network.title')} action={<Button variant="outline" onClick={() => network.refetch()} disabled={network.isFetching}><RefreshCw className={network.isFetching ? 'animate-spin' : ''} />{t('common.actions.refresh')}</Button>} />
       {network.isPending ? <p className="callout warning" role="status">{t('common.states.pending')}</p> : null}
       {network.error ? <p className="callout error" role="alert">{errorMessage(network.error, t('common.requestFailed'))}</p> : null}
       {network.data?.observed.error ? <p className="callout warning" role="status">{network.data.observed.error}</p> : null}

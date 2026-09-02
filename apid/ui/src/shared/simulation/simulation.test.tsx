@@ -2,7 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
-import { i18n, setLocale } from '@/i18n/i18n'
+import { i18n, setLocaleChoice } from '@/i18n/i18n'
 import { SimulationNotice } from './simulation-notice'
 import { SimulationProvider, useSimulation } from './simulation-provider'
 
@@ -51,7 +51,7 @@ describe('simulation boundary', () => {
     expect(screen.getByText('Simulation')).toBeTruthy()
     expect(screen.getByText(/does not change this device/)).toBeTruthy()
 
-    await setLocale('zh-CN')
+    await setLocaleChoice('zh-CN')
     rerender(
       <I18nextProvider i18n={i18n}>
         <SimulationNotice scope="应用" />

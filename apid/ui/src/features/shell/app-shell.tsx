@@ -1,16 +1,17 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Cpu, Key, LayoutGrid, LogOut, Menu, Network, Package, RefreshCw, Server, Settings2, X } from 'lucide-react'
+import { CircleAlert, Cpu, Key, LayoutGrid, LogOut, Menu, Network, Package, RefreshCw, Server, Settings2, X } from 'lucide-react'
 import { useState } from 'react'
 import { api, rememberSession } from '@/shared/lib/http'
 import { sessionKey } from '@/components/auth'
-import { Preferences } from '@/components/preferences'
+import { LanguageControl, ThemeControl } from '@/components/preferences'
 import { Button } from '@/shared/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/shared/components/ui/dropdown-menu'
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/shared/components/ui/sheet'
-import type { Meta } from '@/lib/types'
+import type { Health, SystemInformation } from '@/lib/types'
 import { RotationNotice } from '@/features/onboarding/rotation-notice'
+import { connectionState, freshnessLabel } from './connection'
 
 const nav = [
   { to: '/' as const, label: 'shell.nav.overview' as const, icon: LayoutGrid },
@@ -26,8 +27,9 @@ export function AppShell() {
   const queryClient = useQueryClient()
   const [menuOpen, setMenuOpen] = useState(false)
   const path = useRouterState({ select: (state) => state.location.pathname })
-  const health = useQuery({ queryKey: ['shell-health'], queryFn: () => api<{ mosd: string }>('/api/v1/health'), refetchInterval: 15_000 })
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => api<Meta>('/api/v1/meta') })
+  const fetching = useIsFetching() > 0
+  const health = useQuery({ queryKey: ['shell-health'], queryFn: () => api<Health>('/api/v1/health'), refetchInterval: 15_000 })
+  const information = useQuery({ queryKey: ['system-information'], queryFn: () => api<SystemInformation>('/api/v1/system/info'), retry: false })
   const hostname = useQuery({ queryKey: ['settings', 'hostname'], queryFn: () => api<string>('/api/v1/settings/hostname') })
   const logout = useMutation({
     mutationFn: () => api<void>('/api/v1/session', { method: 'DELETE' }),
@@ -38,12 +40,13 @@ export function AppShell() {
     },
   })
   const refresh = () => void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'session' })
-  const unavailable = health.isError || (health.data !== undefined && health.data.mosd !== 'ok')
-  const connection = {
-    tone: unavailable ? 'connection-dot connection-offline' : health.isFetching ? 'connection-dot connection-pending' : 'connection-dot',
-    label: unavailable ? t('shell.offline') : health.isFetching ? t('shell.refreshing') : t('shell.connected'),
-    detail: unavailable ? t('shell.unavailable') : t('shell.fresh'),
-  }
+
+  const state = connectionState({ isError: health.isError, failureCount: health.failureCount, mosd: health.data?.mosd })
+  const freshness = fetching ? t('shell.refreshing') : freshnessLabel(health.dataUpdatedAt, t)
+  const release = information.data?.release
+  const releaseLabel = release?.available ? release.imageVersion ?? release.versionId ?? release.name ?? '—' : '—'
+  const slot = information.data?.slot
+  const slotLabel = slot?.available ? slot.booted ?? '—' : '—'
 
   return (
     <div className="app-shell">
@@ -58,18 +61,21 @@ export function AppShell() {
           </nav>
           <div className="header-actions">
             <Button variant="outline" size="icon" onClick={refresh} aria-label={t('shell.refresh')} title={t('shell.refresh')}>
-              <RefreshCw aria-hidden="true" />
+              <RefreshCw className={fetching ? 'animate-spin' : undefined} aria-hidden="true" />
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="outline" size="icon" aria-label={t('shell.settings')} title={t('shell.settings')} />}>
                 <Settings2 aria-hidden="true" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="settings-menu">
-                <Preferences compact />
+                <LanguageControl inMenu />
                 <div className="menu-divider" />
-                <Button variant="ghost" className="w-full justify-between" onClick={() => logout.mutate()} disabled={logout.isPending}>
-                  {t('shell.signOut')}<LogOut aria-hidden="true" />
-                </Button>
+                <span className="menu-label">{t('preferences.appearance')}</span>
+                <ThemeControl />
+                <div className="menu-divider" />
+                <button type="button" className="menu-item" onClick={() => logout.mutate()} disabled={logout.isPending}>
+                  <span>{t('shell.signOut')}</span><LogOut aria-hidden="true" />
+                </button>
               </DropdownMenuContent>
             </DropdownMenu>
             <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
@@ -86,23 +92,33 @@ export function AppShell() {
                   {nav.map((item) => <NavItem key={item.to} {...item} active={isActive(path, item.to)} onClick={() => setMenuOpen(false)} />)}
                 </nav>
                 <div className="drawer-status">
-                  <div className="connection-state"><span className={connection.tone} /><strong>{connection.label}</strong><span>· {connection.detail}</span></div>
-                  <div className="drawer-release"><span>{t('shell.api')}</span><code>{meta.data?.api ?? '—'}</code></div>
+                  <div className="connection-state"><span className={`connection-dot connection-${state}`} /><strong>{t(`shell.${state}`)}</strong><span>· {freshness}</span></div>
+                  <div className="drawer-release"><span>{t('shell.release')}</span><code>{releaseLabel}</code></div>
                 </div>
               </SheetContent>
             </Sheet>
           </div>
         </div>
       </header>
+      {state === 'connected' ? null : (
+        <div className={`shell-banner shell-banner-${state}`} role="status">
+          <CircleAlert aria-hidden="true" />
+          <div><strong>{t(`shell.banner.${state}`)}</strong><span>{t(`shell.banner.${state}Copy`)}</span></div>
+        </div>
+      )}
       <main className="app-main"><RotationNotice /><Outlet /></main>
       <footer className="app-footer">
         <div className="footer-row">
           <div className="connection-state">
-            <span className={connection.tone} />
-            <strong>{connection.label}</strong>
-            <span className="footer-detail">· {connection.detail}</span>
+            <span className={`connection-dot connection-${state}`} />
+            <strong>{t(`shell.${state}`)}</strong>
+            <span className="footer-detail">· {t(`shell.${state}Detail`)}</span>
+            <span className="footer-detail">· {freshness}</span>
           </div>
-          <div className="release-state"><span>{t('shell.api')}</span><code>{meta.data?.api ?? '—'}</code><span>{t('shell.schema')}</span><code>{meta.data?.settingsSchemaVersion ?? '—'}</code></div>
+          <div className="release-state">
+            <span>{t('shell.release')} <code>{releaseLabel}</code></span>
+            <span>{t('shell.slot')} <code>{slotLabel}</code></span>
+          </div>
         </div>
       </footer>
     </div>
