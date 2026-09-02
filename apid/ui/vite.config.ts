@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 
 export default defineConfig({
-  base: '/ui/',
+  base: '/_ui/',
   plugins: [
     tanstackRouter({
       target: 'react',

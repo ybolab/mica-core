@@ -201,8 +201,8 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
     // Static routing is independent of setup and authentication.
     let response = admin.get(format!("{https_base}/")).send().await?;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(location(&response), "/ui");
-    for path in ["/ui", "/ui/", "/ui/network"] {
+    assert_eq!(location(&response), "/_ui/");
+    for path in ["/_ui", "/_ui/", "/_ui/network"] {
         let response = admin.get(format!("{https_base}{path}")).send().await?;
         assert_eq!(response.status(), StatusCode::OK, "GET {path}");
         assert!(
@@ -213,15 +213,15 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
         );
     }
     let index = admin
-        .get(format!("{https_base}/ui"))
+        .get(format!("{https_base}/_ui/"))
         .send()
         .await?
         .text()
         .await?;
     let script = module_script_src(&index).context("built-in index has no module script")?;
     anyhow::ensure!(
-        script.starts_with("/ui/assets/") && script.ends_with(".js"),
-        "built-in module script is not a hashed /ui asset: {script}"
+        script.starts_with("/_ui/assets/") && script.ends_with(".js"),
+        "built-in module script is not a hashed /_ui asset: {script}"
     );
     let response = admin.get(format!("{https_base}{script}")).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
@@ -442,7 +442,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
 
     // The plain HTTP listener only redirects to HTTPS and preserves the path.
     let response = anonymous
-        .get(format!("http://{http_addr}/ui/network?from=e2e"))
+        .get(format!("http://{http_addr}/_ui/network?from=e2e"))
         .send()
         .await?;
     assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
@@ -452,7 +452,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
         "unexpected redirect: {target}"
     );
     assert!(
-        target.ends_with("/ui/network?from=e2e"),
+        target.ends_with("/_ui/network?from=e2e"),
         "unexpected redirect: {target}"
     );
 

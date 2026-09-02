@@ -585,20 +585,24 @@ async fn ui_boundary_selects_custom_at_root_and_always_reserves_builtin_ui() {
     let router = test_app_serving(configured_tree("hunter2secret"), empty.path());
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::SEE_OTHER);
-    assert_eq!(location(&root), "/ui");
-    let builtin = get(&router, "/ui", None).await;
-    assert_eq!(builtin.status(), StatusCode::OK);
-    assert_eq!(
-        builtin.headers().get(CONTENT_TYPE).unwrap(),
-        "text/html; charset=utf-8"
-    );
-    assert!(body_string(builtin).await.contains("/ui/assets/"));
+    assert_eq!(location(&root), "/_ui/");
+    for path in ["/_ui", "/_ui/"] {
+        let builtin = get(&router, path, None).await;
+        assert_eq!(builtin.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            builtin.headers().get(CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert!(body_string(builtin).await.contains("/_ui/assets/"));
+    }
+    let old_builtin = request(&router, "GET", "/ui", None, Some(BROWSER_ACCEPT)).await;
+    assert_eq!(old_builtin.status(), StatusCode::NOT_FOUND);
 
     let builtin_js = crate::assets::builtin::embedded_paths()
         .find(|path| path.ends_with(".js"))
         .expect("the built-in VFS contains JavaScript");
-    let custom_shadow = format!("ui/{builtin_js}");
-    let builtin_url = format!("/ui/{builtin_js}");
+    let custom_shadow = format!("_ui/{builtin_js}");
+    let builtin_url = format!("/_ui/{builtin_js}");
 
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom-root</title>"),
@@ -611,6 +615,32 @@ async fn ui_boundary_selects_custom_at_root_and_always_reserves_builtin_ui() {
     let response = get(&router, &builtin_url, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!body_string(response).await.contains("CUSTOM-SHADOW"));
+}
+
+#[tokio::test]
+async fn builtin_prefix_releases_ui_to_the_custom_owner() {
+    let builtin_js = crate::assets::builtin::embedded_paths()
+        .find(|path| path.ends_with(".js"))
+        .expect("the built-in VFS contains JavaScript");
+    let custom_shadow = format!("_ui/{builtin_js}");
+    let bundle = install_bundle(&[
+        ("index.html", "<!doctype html><title>custom-root</title>"),
+        ("ui/asset.js", "CUSTOM-UI-ASSET"),
+        (&custom_shadow, "CUSTOM-BUILTIN-SHADOW"),
+    ]);
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle.path());
+
+    let custom = get(&router, "/ui/asset.js", None).await;
+    assert_eq!(custom.status(), StatusCode::OK);
+    assert_eq!(body_string(custom).await, "CUSTOM-UI-ASSET");
+
+    let custom_route = request(&router, "GET", "/ui", None, Some(BROWSER_ACCEPT)).await;
+    assert_eq!(custom_route.status(), StatusCode::OK);
+    assert!(body_string(custom_route).await.contains("custom-root"));
+
+    let builtin = get(&router, &format!("/_ui/{builtin_js}"), None).await;
+    assert_eq!(builtin.status(), StatusCode::OK);
+    assert!(!body_string(builtin).await.contains("CUSTOM-BUILTIN-SHADOW"));
 }
 
 #[test]
@@ -645,7 +675,7 @@ async fn built_in_vfs_serves_every_asset_with_owner_local_cache_rules() {
     let router = test_app_serving(configured_tree("hunter2secret"), empty.path());
 
     for path in crate::assets::builtin::embedded_paths() {
-        let response = get(&router, &format!("/ui/{path}"), None).await;
+        let response = get(&router, &format!("/_ui/{path}"), None).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert!(response.headers().contains_key(CONTENT_TYPE), "{path}");
         assert_eq!(
@@ -666,7 +696,7 @@ async fn built_in_vfs_serves_every_asset_with_owner_local_cache_rules() {
         );
     }
 
-    let fallback = get(&router, "/ui/network", None).await;
+    let fallback = get(&router, "/_ui/network", None).await;
     assert_eq!(fallback.status(), StatusCode::OK);
     assert_eq!(
         header_value(&fallback, CONTENT_TYPE),
@@ -674,7 +704,7 @@ async fn built_in_vfs_serves_every_asset_with_owner_local_cache_rules() {
     );
     assert_eq!(header_value(&fallback, CACHE_CONTROL), "no-store");
 
-    for path in ["/ui/assets/missing.js", "/ui/%252e%252e"] {
+    for path in ["/_ui/assets/missing.js", "/_ui/%252e%252e"] {
         let response = get(&router, path, None).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
         assert_eq!(header_value(&response, CACHE_CONTROL), "no-cache", "{path}");
@@ -1047,13 +1077,14 @@ async fn a_bundle_cannot_shadow_the_reserved_api_subtree() {
 // Reserved ownership is based on one canonical URL spelling. Repeated
 // leading separators and percent-encoded reserved names must be rejected,
 // never decoded by the root asset resolver into a second spelling of `/api`
-// or `/ui`. Prefix lookalikes remain ordinary custom-UI paths.
+// or `/_ui`. Prefix lookalikes and `/ui` remain ordinary custom-UI paths.
 #[tokio::test]
 async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom</title>"),
         ("api/versions", "CUSTOM-API-ALIAS"),
-        ("ui/assets/app.js", "CUSTOM-UI-ALIAS"),
+        ("_ui/assets/app.js", "CUSTOM-UI-ALIAS"),
+        ("ui/asset.js", "CUSTOM-UI"),
         ("apiary/asset.js", "CUSTOM-APIARY"),
         ("uikit/asset.js", "CUSTOM-UIKIT"),
     ]);
@@ -1063,9 +1094,9 @@ async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
     for path in [
         "//api/versions",
         "/%61pi/versions",
-        "/%75i/assets/app.js",
-        "/ui/%252e%252e",
-        "/ui/%2e%2e/api",
+        "/%5fui/assets/app.js",
+        "/_ui/%252e%252e",
+        "/_ui/%2e%2e/api",
     ] {
         let response = request(&router, "GET", path, Some(&cookie), Some(BROWSER_ACCEPT)).await;
         assert_eq!(
@@ -1083,6 +1114,7 @@ async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
 
     for (path, expected) in [
         ("/apiary/asset.js", "CUSTOM-APIARY"),
+        ("/ui/asset.js", "CUSTOM-UI"),
         ("/uikit/asset.js", "CUSTOM-UIKIT"),
     ] {
         let response = request(&router, "GET", path, Some(&cookie), None).await;

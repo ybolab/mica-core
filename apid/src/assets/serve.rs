@@ -6,18 +6,18 @@
 //! fallback, so a bundle shipping a file at `api/v1/settings` or at `healthz`
 //! cannot capture either because this function is never called for a path the
 //! router matched. [`super::path::resolve`] also rejects repeated-separator and
-//! encoded aliases of the reserved `api` and `ui` roots; this is the boundary
+//! encoded aliases of the reserved `api` and `_ui` roots; this is the boundary
 //! guard for spellings Axum did not structurally claim, not a fallback into
 //! either reserved domain. [`root`] is `GET /`, §4.1's single declared
 //! exception: the active bundle's `index.html` when a bundle is active and its
-//! index is readable, and a redirect to the reserved built-in `/ui` otherwise.
+//! index is readable, and a redirect to the reserved built-in `/_ui/` otherwise.
 //!
 //! [`fallback`] answers §4.2's five conditions in order — condition 1 is the
 //! mounting above and costs no code, 2 is the method check, 3 and 4 are
 //! [`offers_html`] and [`ends_in_a_route_segment`], 5 is whether
 //! [`serve_index`] produced anything. A custom-SPA fallback exists only while
 //! a readable custom index exists; without one the path is a 404 and the
-//! browser enters the built-in application through `/` or `/ui`. §4.3 is
+//! browser enters the built-in application through `/` or `/_ui/`. §4.3 is
 //! applied rather than re-decided: [`super::mime::content_type`]
 //! and [`super::mime::cache_class`] answer the headers, `nosniff` goes on every
 //! response this module builds, and every HTML document — bundle index, SPA
@@ -50,14 +50,14 @@ const MANIFEST: &str = "mos-ui.json";
 /// There is no `Accept` condition and no extension condition here. §4.2's five
 /// conditions govern the *fallback*; `/` is a declared route and §4.1 states
 /// its rule in two branches and no more: the active bundle's index when a
-/// bundle is active and its index is readable, a redirect to `/ui` otherwise.
+/// bundle is active and its index is readable, a redirect to `/_ui/` otherwise.
 pub async fn root(State(state): State<AppState>) -> Response {
     match active_root(state.bundles())
         .as_deref()
         .and_then(serve_index)
     {
         Some(response) => response,
-        None => Redirect::to("/ui").into_response(),
+        None => Redirect::to("/_ui/").into_response(),
     }
 }
 
@@ -97,7 +97,7 @@ async fn respond(state: &AppState, request_path: &str, accept: Option<&str>) -> 
         return not_found();
     }
     // Condition 5. A custom route is meaningful only when a readable custom
-    // index exists; `/ui` is the separate, unconditional built-in SPA.
+    // index exists; `/_ui` is the separate, unconditional built-in SPA.
     root.as_deref()
         .and_then(serve_index)
         .unwrap_or_else(not_found)
@@ -109,7 +109,7 @@ async fn respond(state: &AppState, request_path: &str, accept: Option<&str>) -> 
 /// rather than canonicalising the link and serving wherever it points. The
 /// difference is what happens to a `current` repointed outside the store over
 /// a root shell: the link's target is never trusted as a root, so such a
-/// pointer reads as "no bundle" and the site root redirects to `/ui`.
+/// pointer reads as "no bundle" and the site root redirects to `/_ui/`.
 ///
 /// The root handed to [`asset_path::resolve`] is canonical, which §4.4
 /// requires of the caller: the assertion is made against the resolved bundle

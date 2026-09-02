@@ -9,7 +9,7 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, refetchOnWindowFocus: false } },
 })
 
-const router = createRouter({ routeTree, basepath: '/ui' })
+const router = createRouter({ routeTree, basepath: '/_ui' })
 
 declare module '@tanstack/react-router' {
   interface Register { router: typeof router }

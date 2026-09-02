@@ -68,7 +68,7 @@ pub enum Rejection {
     CurrentDir,
     /// A `..` component, at any position (rules 1 and 3).
     ParentDir,
-    /// A root-UI request decoded to the reserved `api` or `ui` first segment.
+    /// A root-UI request decoded to the reserved `api` or `_ui` first segment.
     ReservedRoot,
     /// The path resolved through a symlink that stays inside the bundle. The
     /// rule is "no symlinks in bundle contents" (§5.3 requirement 2), not "no
@@ -192,7 +192,7 @@ pub fn resolve(request_path: &str, bundle_root: &Path) -> Result<PathBuf, Reject
         .strip_prefix('/')
         .ok_or(Rejection::RootOrPrefix)?;
     let logical = LogicalPath::parse(relative)?;
-    if matches!(logical.first_segment(), "api" | "ui") {
+    if matches!(logical.first_segment(), "api" | "_ui") {
         return Err(Rejection::ReservedRoot);
     }
     resolve_logical(&logical, bundle_root)
@@ -310,6 +310,10 @@ mod tests {
         fs::write(root.join("etc/passwd"), "decoy").expect("write decoy");
         fs::create_dir(root.join("a")).expect("create a/");
         fs::write(root.join("a/b"), "b").expect("write a/b");
+        fs::create_dir(root.join("ui")).expect("create ui/");
+        fs::write(root.join("ui/custom.js"), "// custom").expect("write custom UI asset");
+        fs::create_dir(root.join("_ui")).expect("create _ui/");
+        fs::write(root.join("_ui/shadow.js"), "// shadow").expect("write built-in shadow");
 
         symlink(&outside_file, root.join("leak")).expect("plant escaping symlink");
         symlink("index.html", root.join("inside")).expect("plant non-escaping symlink");
@@ -496,6 +500,7 @@ mod tests {
             // content-hashed name is the shape §4.3's immutable class exists
             // for.
             ("/assets/app.a1b2c3.js", "assets/app.a1b2c3.js"),
+            ("/ui/custom.js", "ui/custom.js"),
         ] {
             assert_eq!(
                 resolve(input, &f.root),
@@ -509,7 +514,8 @@ mod tests {
             ("/assets/", Rejection::EmptySegment),
             ("/", Rejection::EmptySegment),
             ("/api/versions", Rejection::ReservedRoot),
-            ("/%75i/index.html", Rejection::ReservedRoot),
+            ("/_ui/shadow.js", Rejection::ReservedRoot),
+            ("/%5fui/shadow.js", Rejection::ReservedRoot),
         ] {
             assert_eq!(resolve(input, &f.root), Err(expected), "{input:?}");
         }

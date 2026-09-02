@@ -20,16 +20,16 @@ include!(concat!(env!("OUT_DIR"), "/builtin_assets.rs"));
 
 const CSP: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
-/// Stable built-in SPA entry at both `/ui` and `/ui/`.
+/// Stable built-in SPA entry at both `/_ui` and `/_ui/`.
 pub async fn index() -> Response {
     lookup("index.html")
         .map(asset_response)
         .unwrap_or_else(internal_error)
 }
 
-/// One path below the already-selected `/ui` namespace.
+/// One path below the already-selected `/_ui` namespace.
 pub async fn serve(OriginalUri(uri): OriginalUri) -> Response {
-    let Some(relative) = uri.path().strip_prefix("/ui/") else {
+    let Some(relative) = uri.path().strip_prefix("/_ui/") else {
         return not_found();
     };
     let logical = match LogicalPath::parse(relative) {

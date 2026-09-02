@@ -76,7 +76,7 @@ export const zhCN: Translation = {
     interfaceFallback: '接口 {{index}}', physicalLink: '物理链路', noInterfaces: '未观测到接口。',
     separationTitle: '按边界隔离', separationDescription: '控制台只通过版本化 API 读写。',
     boundaryLabel: 'UI 与 API 通信，API 再与 mosd 通信',
-    boundaryCopy: '/api 之外不存在表单端点或服务端渲染的管理操作。内置控制台始终可通过 /ui 恢复访问。',
+    boundaryCopy: '/api 之外不存在表单端点或服务端渲染的管理操作。内置控制台始终可通过 /_ui/ 恢复访问。',
     recentTasks: '最近的应用任务', recentTasksDescription: 'mosd 报告的异步设置协调任务。', noTasks: '本次启动后尚未运行应用任务。',
   },
   network: {
@@ -116,8 +116,8 @@ export const zhCN: Translation = {
     eyebrow: '设备', title: '系统', description: '管理设备标识、UI 选择和明确的电源操作。',
     identity: { title: '设备标识', description: '本地服务和发现功能使用的主机名。', hostname: '主机名', save: '保存主机名' },
     ui: {
-      title: '用户界面', description: '内置 SPA 始终可通过 /ui 访问。', checking: '正在检查 UI 选择', customActive: '自定义 UI 已在 / 激活', builtInActive: '内置 UI 已在 / 激活',
-      useCustom: '在根路径使用自定义 UI', recoveryCopy: '/ui 上的恢复控制台不会改变。', noCustom: '未安装保留的自定义 UI。', cannotSelect: '无法选择保留的自定义 UI：{{reason}}。',
+      title: '用户界面', description: '内置 SPA 始终可通过 /_ui/ 访问。', checking: '正在检查 UI 选择', customActive: '自定义 UI 已在 / 激活', builtInActive: '内置 UI 已在 / 激活',
+      useCustom: '在根路径使用自定义 UI', recoveryCopy: '/_ui/ 上的恢复控制台不会改变。', noCustom: '未安装保留的自定义 UI。', cannotSelect: '无法选择保留的自定义 UI：{{reason}}。',
       bundle: '包', generation: '第 {{generation}} 代', index: '入口', readable: '可读取', unreadable: '不可读取', digest: '摘要', digestVerified: '已验证', digestChanged: '已改变', digestUnknown: '未验证', openCustom: '在根路径打开自定义 UI',
       unavailable: {
         missingActivationRecord: '缺少激活记录', unsafeTree: '文件不再构成安全的包目录树', indexUnavailable: 'index.html 缺失或不可读', manifestInvalid: '清单无效',

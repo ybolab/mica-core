@@ -1,8 +1,8 @@
 //! HTTP routing for the JSON management API and its two UI entry points.
 //!
-//! `/api/` owns every management read and mutation. `/ui` is the built-in SPA
+//! `/api/` owns every management read and mutation. `/_ui` is the built-in SPA
 //! embedded in the binary. `/` serves a valid active custom bundle and
-//! otherwise redirects to `/ui`; custom assets are considered only by the
+//! otherwise redirects to `/_ui/`; custom assets are considered only by the
 //! final fallback, so neither UI can shadow the API or health endpoint.
 
 use std::net::IpAddr;
@@ -188,12 +188,12 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve::root))
         .nest(
-            "/ui",
+            "/_ui",
             Router::new()
                 .route("/", get(crate::assets::builtin::index))
                 .route("/{*path}", get(crate::assets::builtin::serve)),
         )
-        .route("/ui/", get(crate::assets::builtin::index))
+        .route("/_ui/", get(crate::assets::builtin::index))
         .route("/healthz", get(healthz))
         .nest(API, api_router())
         .route("/api/", any(api_not_found))

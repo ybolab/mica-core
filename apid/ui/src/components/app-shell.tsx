@@ -36,7 +36,7 @@ export function AppShell() {
         </Link>
         <nav aria-label={t('shell.navigationLabel')}>
           {nav.map(({ to, label, icon: Icon }) => {
-            const active = to === '/' ? path === '/ui/' || path === '/ui' : path.startsWith(`/ui${to}`)
+            const active = to === '/' ? path === '/_ui/' || path === '/_ui' : path.startsWith(`/_ui${to}`)
             return (
               <Link key={to} to={to} className="nav-link" data-active={active || undefined} aria-current={active ? 'page' : undefined}>
                 <Icon className="size-[18px]" aria-hidden="true" /> {t(label)}
