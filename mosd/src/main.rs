@@ -39,6 +39,8 @@ mod rauc;
 mod reconciler;
 mod scan;
 mod transient;
+mod update_lifecycle;
+mod update_policy;
 mod wgkeys;
 
 use std::path::{Path, PathBuf};
@@ -242,6 +244,26 @@ async fn serve() -> anyhow::Result<()> {
         // Same reasoning again: the rotation writes a private key onto STATE
         // and deletes a kernel device, so a dry-run daemon is never given one.
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));
+        // The update lifecycle's client and policy, same reasoning once more:
+        // only here is it known that /usr/bin/rauc-update may exist and that
+        // the policy file beside the settings store is the host's. The client
+        // binary's ABSENCE is a reported state, not a failure — a sibling
+        // workstream ships it into the image.
+        let update_bin = std::env::var("MOSD_RAUC_UPDATE_BIN")
+            .unwrap_or_else(|_| update_lifecycle::DEFAULT_CLIENT_PATH.to_string());
+        let policy_path = std::env::var("MOSD_UPDATE_POLICY_PATH").map_or_else(
+            |_| state_dir_for(&settings_path).join("update-policy.toml"),
+            PathBuf::from,
+        );
+        service = service.with_update(
+            Arc::new(update_lifecycle::SubprocessClient::new(PathBuf::from(
+                update_bin,
+            ))),
+            update_policy::PolicyStore::at(policy_path),
+        );
+        // The auto-check cadence: policy-driven, checks only, never running
+        // under dry-run (whose lifecycle has no client to call anyway).
+        tokio::spawn(update_lifecycle::auto_check_loop(service.update_handle()));
     }
     if let Some(registry) = &registry {
         service = service.with_service_registry(Arc::clone(registry));

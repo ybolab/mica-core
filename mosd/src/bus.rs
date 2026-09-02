@@ -23,6 +23,8 @@ use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
 use crate::transient;
+use crate::update_lifecycle::{LifecycleHost, NoClient, Refusal, UpdateClient, UpdateLifecycle};
+use crate::update_policy::PolicyStore;
 
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mos.mosd";
@@ -100,6 +102,33 @@ pub struct MosdService {
     /// Read-only live network observation. The default is unavailable so
     /// tests and dry-run instances never inspect the host network.
     network_state: Arc<dyn NetworkState>,
+    /// The update lifecycle (check/fetch machine, policy, reboot gate).
+    /// Constructed with [`NoClient`] and a fileless policy store, so a
+    /// dry-run daemon can neither spawn the update client nor read a host
+    /// policy file; production attaches both via [`Self::with_update`].
+    update: Arc<UpdateLifecycle>,
+}
+
+/// The lifecycle's window onto this service: it records under
+/// `update.lifecycle` and reads the `health` subtree, and nothing else.
+struct InnerLifecycleHost(Arc<RwLock<Inner>>);
+
+#[async_trait::async_trait]
+impl LifecycleHost for InnerLifecycleHost {
+    async fn record(&self, lifecycle: Value) {
+        let mut inner = self.0.write().await;
+        rauc::update_entry(&mut inner.state).insert("lifecycle".into(), lifecycle);
+        drop(inner);
+    }
+
+    async fn health(&self) -> Value {
+        let inner = self.0.read().await;
+        inner
+            .state
+            .get("health")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    }
 }
 
 /// The rotation a daemon with no key store has: none.
@@ -131,20 +160,49 @@ impl MosdService {
         shadow_path: PathBuf,
         state: Value,
     ) -> Self {
+        let installing = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(RwLock::new(Inner { settings, state }));
+        let update = Arc::new(UpdateLifecycle::new(
+            Arc::new(NoClient),
+            PolicyStore::defaults(),
+            Arc::new(InnerLifecycleHost(Arc::clone(&inner))),
+            Arc::clone(&installing),
+        ));
         Self {
             store,
             reconcilers: Arc::new(reconcilers),
             power,
             rauc: Arc::new(rauc::DryRunRauc),
-            installing: Arc::new(AtomicBool::new(false)),
+            installing,
             shadow_path,
-            inner: Arc::new(RwLock::new(Inner { settings, state })),
+            inner,
             apply_lock: Arc::new(Mutex::new(())),
             apply_queue: Arc::new(ApplyQueue::new()),
             registry: None,
             wireguard: Arc::new(NoRotation),
             network_state: Arc::new(UnavailableNetworkState),
+            update,
         }
+    }
+
+    /// Attach the update client and policy store, rebuilding the lifecycle
+    /// around them. A builder step for the reason [`Self::with_rauc`] is: the
+    /// defaults touch nothing on the host, and only `main.rs` knows the
+    /// daemon runs on a device with a client binary and a policy file.
+    #[must_use]
+    pub fn with_update(mut self, client: Arc<dyn UpdateClient>, policy: PolicyStore) -> Self {
+        self.update = Arc::new(UpdateLifecycle::new(
+            client,
+            policy,
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+        ));
+        self
+    }
+
+    /// The lifecycle handle `main.rs` gives the auto-check task.
+    pub fn update_handle(&self) -> Arc<UpdateLifecycle> {
+        Arc::clone(&self.update)
     }
 
     /// Attach the WireGuard key rotation.
@@ -280,6 +338,17 @@ impl MosdService {
     /// Split out from the D-Bus method so unit tests can drive it without
     /// forging a message header.
     pub async fn request_reboot(&self, sender: &str) -> fdo::Result<()> {
+        // The safe-to-reboot interlock, and the one REFUSAL on this path.
+        // Distinct from the unconfirmed-slot warning below, which stays a
+        // warning: booting a fresh slot is what an updating operator wants,
+        // while rebooting through an application's declared blocking work —
+        // or through an install mid-write — is what nobody wants. The gate
+        // opens by the reporter clearing its status, the install finishing,
+        // or a bounded audited override (`SetRebootOverride`).
+        if let Some(refusal) = self.update.reboot_refusal().await {
+            tracing::warn!(sender, refusal, "reboot refused by the safe-to-reboot gate");
+            return Err(fdo::Error::AccessDenied(refusal));
+        }
         let warning = self.reboot_update_warning().await;
         if let Some(warning) = &warning {
             tracing::warn!(warning, "rebooting with an unconfirmed update slot");
@@ -315,6 +384,13 @@ impl MosdService {
     /// Split out from the D-Bus method so unit tests can drive it without
     /// forging a message header.
     pub async fn request_install(&self, sender: &str, bundle_path: &str) -> fdo::Result<()> {
+        // The maintenance-window policy: installs run only when the window
+        // (when one is configured) is open. Before the path validation so a
+        // refused operator learns the real reason first.
+        if let Some(refusal) = self.update.install_refusal().await {
+            tracing::warn!(sender, refusal, "install refused by update policy");
+            return Err(fdo::Error::AccessDenied(refusal));
+        }
         let bundle = rauc::validate_bundle_path(bundle_path).map_err(fdo::Error::InvalidArgs)?;
         // The in-flight flag is taken BEFORE anything is recorded, in one
         // compare-exchange, so two racing calls cannot both proceed. It is
@@ -397,6 +473,12 @@ impl MosdService {
         let query = rauc::query(self.rauc.as_ref())
             .await
             .map_err(|err| fdo::Error::Failed(format!("query rauc: {err:#}")))?;
+        // Re-derive the lifecycle entry from the same fresh slots, so the
+        // answered `lifecycle` (recorded through the host before the merge
+        // below) is exactly as new as the slot facts beside it.
+        self.update
+            .refresh(&query.slots, query.primary.as_deref())
+            .await;
         let mut inner = self.inner.write().await;
         let entry = rauc::update_entry(&mut inner.state);
         query.merge_into(entry);
@@ -721,6 +803,18 @@ fn read_uptime_seconds() -> Option<u64> {
     (secs.is_finite() && secs >= 0.0).then_some(secs as u64)
 }
 
+/// Map an update-action refusal onto a D-Bus error: policy refusals carry
+/// `AccessDenied` (apid maps it to 409 — the request was well-formed and the
+/// device said no), malformed requests carry `InvalidArgs` (422), and
+/// busy/unavailable stay `Failed`.
+fn refusal_to_fdo(refusal: Refusal) -> fdo::Error {
+    match refusal {
+        Refusal::Policy(message) => fdo::Error::AccessDenied(message),
+        Refusal::Invalid(message) => fdo::Error::InvalidArgs(message),
+        Refusal::Busy(message) | Refusal::Unavailable(message) => fdo::Error::Failed(message),
+    }
+}
+
 /// Map a transient-password failure onto a D-Bus error.
 ///
 /// Always `Failed`: the caller cannot distinguish a rejected password from an
@@ -975,6 +1069,54 @@ impl MosdService {
         slot: &str,
     ) -> fdo::Result<(String, String)> {
         self.request_mark(sender_of(&header), state, slot).await
+    }
+
+    /// Run an update metadata check (`rauc-update sync` + `check`) on a
+    /// background task.
+    ///
+    /// Exported as `CheckUpdate`. Answers as soon as the check is admitted;
+    /// the outcome lands under live-state `update.lifecycle` and is read
+    /// back through `GetUpdateState`. Refused with `AccessDenied` when the
+    /// update policy forbids it (offline mode, no configured source, an
+    /// invalid policy file) and with `Failed` when the client binary is
+    /// absent or another update operation is running.
+    async fn check_update(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
+        self.update
+            .request_check(sender_of(&header))
+            .await
+            .map_err(refusal_to_fdo)
+    }
+
+    /// Download the selected bundle (`rauc-update fetch`) on a background
+    /// task; on success the verified bundle path is recorded and the
+    /// lifecycle state becomes `ready`.
+    ///
+    /// Exported as `FetchUpdate`. The same admission and refusal shape as
+    /// `CheckUpdate`, plus the metered-mode download refusal.
+    async fn fetch_update(&self, #[zbus(header)] header: Header<'_>) -> fdo::Result<()> {
+        self.update
+            .request_fetch(sender_of(&header))
+            .await
+            .map_err(refusal_to_fdo)
+    }
+
+    /// Arm the bounded administrative override of the safe-to-reboot gate
+    /// for `seconds`; answers the recorded override as JSON.
+    ///
+    /// Exported as `SetRebootOverride`. The override lifts health-report
+    /// blocks only — never an install in flight — and expires on its own;
+    /// there is deliberately no member that disarms the gate permanently.
+    async fn set_reboot_override(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        seconds: u32,
+    ) -> fdo::Result<String> {
+        let record = self
+            .update
+            .set_reboot_override(sender_of(&header), u64::from(seconds))
+            .await
+            .map_err(refusal_to_fdo)?;
+        Ok(record.to_string())
     }
 
     /// Set a TRANSIENT root password, then re-apply the SSH subtree.
@@ -1658,6 +1800,131 @@ mod tests {
             .request_install(":1.9", bundle)
             .await
             .expect("flag released");
+    }
+
+    #[tokio::test]
+    async fn an_install_mid_flight_refuses_a_reboot_until_it_finishes() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (service, power_calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+            install_gate: Some(Arc::clone(&gate)),
+            ..MockRauc::default()
+        });
+        let bundle = dir.path().join("ok.raucb");
+        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        service
+            .request_install(":1.6", bundle.to_str().expect("utf-8"))
+            .await
+            .expect("install");
+        wait_for_install_status(&service, "running").await;
+
+        let refused = service
+            .request_reboot(":1.7")
+            .await
+            .expect_err("the gate must refuse a reboot mid-install");
+        assert!(refused.to_string().contains("install"), "{refused}");
+        assert!(
+            power_calls.lock().expect("lock").is_empty(),
+            "a refused reboot must not reach the power control"
+        );
+        // No override lifts the install block.
+        service
+            .update_handle()
+            .set_reboot_override(":1.7", 60)
+            .await
+            .expect("override armed");
+        assert!(service.request_reboot(":1.7").await.is_err());
+
+        gate.notify_one();
+        wait_for_install_status(&service, "done").await;
+        service.request_reboot(":1.7").await.expect("gate reopened");
+        assert_eq!(*power_calls.lock().expect("lock"), vec!["reboot"]);
+    }
+
+    #[tokio::test]
+    async fn a_blocking_health_report_refuses_a_reboot_until_overridden() {
+        let (service, power_calls, _dir) = service_with_mock();
+        service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+        // `degraded` — mos-health's disk-pressure report — must NOT block.
+        service
+            .report_health("var", "degraded", "/var at 91% of capacity")
+            .await
+            .expect("report");
+
+        let refused = service
+            .request_reboot(":1.4")
+            .await
+            .expect_err("a blocking report closes the gate");
+        assert!(refused.to_string().contains("exporter"), "{refused}");
+        assert!(power_calls.lock().expect("lock").is_empty());
+
+        // The reporter clearing its status reopens the gate without any
+        // override — the ordinary path.
+        service
+            .report_health("exporter", "ok", "flushed")
+            .await
+            .expect("report");
+        service.request_reboot(":1.4").await.expect("reopened");
+
+        // And the bounded override lifts a standing block, audited.
+        service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+        assert!(service.request_reboot(":1.4").await.is_err());
+        service
+            .update_handle()
+            .set_reboot_override(":1.4", 120)
+            .await
+            .expect("override armed");
+        service.request_reboot(":1.4").await.expect("overridden");
+        assert_eq!(
+            *power_calls.lock().expect("lock"),
+            vec!["reboot", "reboot"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_policy_file_fails_installs_closed() {
+        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("update-policy.toml");
+        std::fs::write(&policy_path, "not = valid = toml").expect("seed policy");
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path),
+        );
+        let bundle = dir.path().join("ok.raucb");
+        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+
+        let refused = service
+            .request_install(":1.5", bundle.to_str().expect("utf-8"))
+            .await
+            .expect_err("an unreadable policy file must fail closed");
+        assert!(refused.to_string().contains("invalid"), "{refused}");
+        assert!(
+            rauc_calls.lock().expect("lock").is_empty(),
+            "the refused install must not reach the installer"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_refreshed_state_carries_the_derived_lifecycle_beside_the_slots() {
+        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
+            slots: ab_slots("good", "good"),
+            primary: Some("rootfs.1".to_string()),
+            ..MockRauc::default()
+        });
+        let rendered = service.refresh_update_state().await.expect("query");
+        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(rendered["lifecycle"]["state"], "reboot-required");
+        assert_eq!(rendered["lifecycle"]["reboot_gate"]["safe"], true);
+        assert_eq!(
+            rendered["lifecycle"]["client"]["available"], false,
+            "a daemon with no client must say so"
+        );
+        assert_eq!(rendered["lifecycle"]["policy"]["networkMode"], "online");
     }
 
     #[tokio::test]
