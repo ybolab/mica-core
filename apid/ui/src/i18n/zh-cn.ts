@@ -249,6 +249,7 @@ export const zhCN: Translation = {
         title: '软件与启动',
         description: '镜像构建、守护进程、活动 RAUC 槽位和单调运行时间。',
         system: '系统镜像',
+        commitDate: '源提交日期',
         daemon: 'mosd',
         slot: '活动槽位',
         primary: '主槽位',

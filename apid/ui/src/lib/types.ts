@@ -239,8 +239,10 @@ export interface SystemInformation {
       consistent: boolean
       stamps: string[]
     }
-    buildEpoch?: number
-    buildDate?: string
+    /** When the commit this image was built from was committed. */
+    commitDate?: AvailableFact & { date?: string }
+    /** The pinned SOURCE_DATE_EPOCH every file in the image carries. */
+    fileEpoch?: AvailableFact & { epoch?: number; date?: string }
   }
   daemon: AvailableFact & { name?: string; version?: string; commit?: string | null }
   packages: AvailableFact & {

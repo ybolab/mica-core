@@ -2405,7 +2405,7 @@ pub(crate) async fn api_v1_storage_status(
     context_path = API,
     tag = "resources",
     responses(
-        (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `buildDate`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`", body = ResourceValue),
+        (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),

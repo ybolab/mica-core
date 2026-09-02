@@ -20,9 +20,19 @@
 //!   holds an image to that shape and to the ONE `+git<commit>[.dirty]-<rev>`
 //!   stamp every mos row shares; this module parses the same shape and
 //!   reports the stamp it finds, consistent or not.
+//! - `/usr/share/mos/release-identity.env`, which
+//!   `rootfs/compose/compose-install.sh` writes from the arguments of the
+//!   build that composed the image. Its `COMMIT_DATE` is the commit date of
+//!   the commit the pool's `+git<commit>` stamp names, so it is a property of
+//!   the SOURCE and not of the run: every reproducible build of one commit
+//!   states the same instant, which a wall clock read at build time could not.
 //! - The manifest file's mtime, which `rootfs/scripts/pack-squashfs.sh` pins
-//!   to `SOURCE_DATE_EPOCH` with `-all-time`: that IS the build date, and it
-//!   is read from the file rather than stamped a second time.
+//!   to `SOURCE_DATE_EPOCH` with `-all-time`. It is NOT a build date and this
+//!   module no longer reports it as one: `build/src/geometry.ts` pins that
+//!   epoch to a constant so two builds of one tree are byte-identical, so the
+//!   value is the same instant in every image this repository has ever
+//!   produced. What it truthfully is -- the timestamp every file in the root
+//!   carries -- is what it is reported as, under `system.fileEpoch`.
 //! - `/proc/sys/kernel/{osrelease,version}`, what `uname -r` / `uname -v`
 //!   print, read as files so a fixture tree can stand in for the host.
 //! - `/etc/os-release`, the distribution's own identity file.
@@ -65,6 +75,11 @@ pub const KERNEL_RELEASE_PATH: &str = "proc/sys/kernel/osrelease";
 pub const KERNEL_VERSION_PATH: &str = "proc/sys/kernel/version";
 /// Seconds since boot, relative to the root.
 pub const UPTIME_PATH: &str = "proc/uptime";
+/// The device identity the composition writes, relative to the root.
+pub const RELEASE_IDENTITY_PATH: &str = "usr/share/mos/release-identity.env";
+/// The key in [`RELEASE_IDENTITY_PATH`] carrying the source commit's date,
+/// as `rootfs/compose/compose-install.sh` spells it.
+pub const COMMIT_DATE_KEY: &str = "COMMIT_DATE";
 
 /// The most manifest rows the surface carries. A real image ships a few
 /// hundred; the cap exists so a corrupted or hostile file cannot grow the
@@ -248,8 +263,12 @@ pub struct SystemInfoEvidence {
     pub os_release: BTreeMap<String, String>,
     /// The parsed manifest, or `None` when the file is absent.
     pub manifest: Option<Manifest>,
-    /// The manifest file's mtime in seconds since the epoch — the build date.
-    pub build_epoch: Option<u64>,
+    /// The manifest file's mtime in seconds since the epoch: the pinned
+    /// `SOURCE_DATE_EPOCH` every file in the image carries, not a build date.
+    pub file_epoch: Option<u64>,
+    /// [`COMMIT_DATE_KEY`] as the release identity states it — the date of
+    /// the commit the image's git stamp names.
+    pub commit_date: Option<String>,
     /// Whole seconds since boot.
     pub uptime_seconds: Option<u64>,
 }
@@ -265,7 +284,8 @@ impl Default for SystemInfoEvidence {
             kernel_version: None,
             os_release: BTreeMap::new(),
             manifest: None,
-            build_epoch: None,
+            file_epoch: None,
+            commit_date: None,
             uptime_seconds: None,
         }
     }
@@ -413,6 +433,20 @@ impl HostSystemInfo {
         (Some(parse_manifest(&text)), epoch)
     }
 
+    /// [`COMMIT_DATE_KEY`] from the release identity, trimmed; `None` when
+    /// the file is absent or states nothing for the key. That file is
+    /// `KEY=VALUE`, the shape [`parse_os_release`] already reads, so it is
+    /// parsed by the same function rather than by a second parser that could
+    /// come to disagree with it. The value is reported as written: it is
+    /// `git show -s --format=%cI`'s output, and `verify`'s
+    /// `packed-release-identity` is what holds an image to that shape.
+    fn commit_date(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.path(RELEASE_IDENTITY_PATH)).ok()?;
+        let value = parse_os_release(&text).remove(COMMIT_DATE_KEY)?;
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    }
+
     fn uptime_seconds(&self) -> Option<u64> {
         let contents = std::fs::read_to_string(self.path(UPTIME_PATH)).ok()?;
         let secs: f64 = contents.split_whitespace().next()?.parse().ok()?;
@@ -423,7 +457,7 @@ impl HostSystemInfo {
 #[async_trait::async_trait]
 impl SystemInfoSource for HostSystemInfo {
     async fn observe(&self) -> Result<SystemInfoEvidence> {
-        let (manifest, build_epoch) = self.manifest();
+        let (manifest, file_epoch) = self.manifest();
         Ok(SystemInfoEvidence {
             machine_id: self.machine_id(),
             board: self.board(),
@@ -433,7 +467,8 @@ impl SystemInfoSource for HostSystemInfo {
                 .map(|text| parse_os_release(&text))
                 .unwrap_or_default(),
             manifest,
-            build_epoch,
+            file_epoch,
+            commit_date: self.commit_date(),
             uptime_seconds: self.uptime_seconds(),
         })
     }
@@ -507,7 +542,11 @@ pub fn info_json(
             absent(format!("/{MANIFEST_PATH} is absent")),
         ),
         Some(manifest) => (
-            system_json(manifest, evidence.build_epoch),
+            system_json(
+                manifest,
+                evidence.file_epoch,
+                evidence.commit_date.as_deref(),
+            ),
             packages_json(manifest),
         ),
     };
@@ -560,8 +599,17 @@ pub fn info_json(
 }
 
 /// The `system` member: the image version by way of the system package's
-/// manifest row, the git stamp the mos rows share, and the build date.
-fn system_json(manifest: &Manifest, build_epoch: Option<u64>) -> Json {
+/// manifest row, the git stamp the mos rows share, the date of the commit
+/// that stamp names, and the pinned file epoch the root carries.
+///
+/// The two times are DIFFERENT FACTS and are named apart on purpose.
+/// `commitDate` is when the source was committed, so it moves with the tree
+/// and is the same for every rebuild of one commit. `fileEpoch` is the
+/// `SOURCE_DATE_EPOCH` `build/src/geometry.ts` pins to a constant, which is
+/// why every file in every mos image carries it; naming it `buildDate` — as
+/// this surface once did — reported 2020-01-01 as the day each image was
+/// made, on every image ever built.
+fn system_json(manifest: &Manifest, file_epoch: Option<u64>, commit_date: Option<&str>) -> Json {
     let version_row = SYSTEM_VERSION_PACKAGES
         .iter()
         .find_map(|name| manifest.rows.iter().find(|row| row.name == *name));
@@ -577,7 +625,8 @@ fn system_json(manifest: &Manifest, build_epoch: Option<u64>) -> Json {
     stamps.sort();
     stamps.dedup();
     let consistent = stamps.len() == 1 && stamps[0] != "unstamped";
-    let git_stamp = match version_row.and_then(|row| parse_git_stamp(&row.version)) {
+    let stamp = version_row.and_then(|row| parse_git_stamp(&row.version));
+    let git_stamp = match &stamp {
         Some(stamp) => json!({
             "available": true,
             "commit": stamp.commit,
@@ -612,21 +661,70 @@ fn system_json(manifest: &Manifest, build_epoch: Option<u64>) -> Json {
         }
     }
     root.insert("gitStamp".to_string(), git_stamp);
-    match build_epoch {
-        Some(epoch) => {
-            root.insert("buildEpoch".to_string(), json!(epoch));
-            if let Some(date) = rfc3339(epoch) {
-                root.insert("buildDate".to_string(), json!(date));
-            }
-        }
-        None => {
-            root.insert(
-                "buildDateDetail".to_string(),
-                json!("the manifest's mtime could not be read"),
-            );
-        }
-    }
+    root.insert(
+        "commitDate".to_string(),
+        commit_date_json(commit_date, stamp.as_ref()),
+    );
+    root.insert("fileEpoch".to_string(), file_epoch_json(file_epoch));
     Json::Object(root)
+}
+
+/// The `system.commitDate` member: when the commit the image's stamp names
+/// was committed, as `rootfs/compose/compose-install.sh` recorded it.
+///
+/// A `.dirty` stamp is stated rather than hidden. It means the pool was built
+/// from a tree that no commit reproduces, so the date below is that commit's
+/// and the source that was packaged was not exactly it — which a bare date
+/// would invite a reader to assume it was.
+fn commit_date_json(commit_date: Option<&str>, stamp: Option<&GitStamp>) -> Json {
+    let Some(date) = commit_date else {
+        return absent(format!(
+            "/{RELEASE_IDENTITY_PATH} states no {COMMIT_DATE_KEY}; it is written by \
+             rootfs/compose/compose-install.sh from the commit the pool's git stamp names, so a \
+             root without it was composed by something else or before the field existed"
+        ));
+    };
+    let mut node = serde_json::Map::new();
+    node.insert("available".to_string(), json!(true));
+    node.insert("date".to_string(), json!(date));
+    if let Some(stamp) = stamp
+        && stamp.dirty
+    {
+        node.insert(
+            "detail".to_string(),
+            json!(format!(
+                "the pool this image was composed from carries a .dirty stamp, so this is when \
+                 commit {} was committed and the tree that was packaged was not exactly it",
+                stamp.commit
+            )),
+        );
+    }
+    Json::Object(node)
+}
+
+/// The `system.fileEpoch` member: the mtime every file in this root carries.
+///
+/// Not a build date and deliberately not named as one. `rootfs/scripts/
+/// pack-squashfs.sh` pins every time in the image to `SOURCE_DATE_EPOCH`, and
+/// `build/src/geometry.ts` pins that to a constant so two builds of one tree
+/// are byte-identical — so this value is a property of the repository's
+/// reproducibility rule, not of when anything was built. It is reported
+/// because it IS what the filesystem says, and a reader comparing a file's
+/// timestamp against this surface should find the two agreeing.
+fn file_epoch_json(file_epoch: Option<u64>) -> Json {
+    let Some(epoch) = file_epoch else {
+        return absent(format!(
+            "/{MANIFEST_PATH} has no readable mtime, so the epoch every file in this root was \
+             pinned to cannot be read back from it"
+        ));
+    };
+    let mut node = serde_json::Map::new();
+    node.insert("available".to_string(), json!(true));
+    node.insert("epoch".to_string(), json!(epoch));
+    if let Some(date) = rfc3339(epoch) {
+        node.insert("date".to_string(), json!(date));
+    }
+    Json::Object(node)
 }
 
 /// The `packages` member: every manifest row, with the mos ones marked.
@@ -695,6 +793,11 @@ mod tests {
             b"#1 SMP PREEMPT Mon Sep 1 00:00:00 UTC 2026\n",
         );
         write(UPTIME_PATH, b"12345.67 8888.00\n");
+        write(
+            RELEASE_IDENTITY_PATH,
+            b"# What this device is, for rauc-update.\nBOARD=cx3576\nPROFILE=dev\n\
+              VERSION=0.1.0+git00b674ec0ffe-1\nCOMMIT_DATE=2026-09-01T12:34:56+08:00\n",
+        );
         dir
     }
 
@@ -774,7 +877,8 @@ mod tests {
     }
 
     /// The assembly over a full fixture tree: every seam read from where it
-    /// lives, and the build date read from the manifest's mtime.
+    /// lives, the commit date read from the release identity, and the pinned
+    /// file epoch read from the manifest's mtime.
     #[tokio::test]
     async fn a_full_root_yields_every_member_available() {
         let root = fixture_root();
@@ -820,12 +924,25 @@ mod tests {
             info["system"]["gitStamp"]["stamps"],
             json!(["git00b674ec0ffe-1"])
         );
-        // The build date is the manifest's mtime, which the fixture wrote
-        // just now: a real epoch, rendered RFC 3339 beside it.
-        let epoch = info["system"]["buildEpoch"].as_u64().expect("build epoch");
+        // The commit date is the release identity's, verbatim -- a fact about
+        // the source, not about this run and not about any file's mtime.
+        assert_eq!(info["system"]["commitDate"]["available"], true);
+        assert_eq!(
+            info["system"]["commitDate"]["date"],
+            "2026-09-01T12:34:56+08:00"
+        );
+        // A clean stamp carries no caveat.
+        assert!(info["system"]["commitDate"]["detail"].is_null());
+        // The file epoch is the manifest's mtime, which the fixture wrote just
+        // now: a real epoch, rendered RFC 3339 beside it. On a composed image
+        // it is the pinned SOURCE_DATE_EPOCH instead, which is why it is not
+        // the commit date and is not named like one.
+        let epoch = info["system"]["fileEpoch"]["epoch"]
+            .as_u64()
+            .expect("file epoch");
         assert!(epoch > 1_700_000_000, "epoch {epoch}");
         assert!(
-            info["system"]["buildDate"]
+            info["system"]["fileEpoch"]["date"]
                 .as_str()
                 .is_some_and(|d| d.ends_with('Z')),
             "{}",
@@ -930,14 +1047,85 @@ mod tests {
             "mos-apid\t0.1.0+git00b674ec0ffe-1\tarm64\n\
              mosd\t0.1.0+gitffffffffffff.dirty-1\tarm64\n",
         );
-        let system = system_json(&manifest, None);
+        let system = system_json(&manifest, None, Some("2026-09-01T12:34:56+08:00"));
         assert_eq!(system["gitStamp"]["consistent"], false);
         assert_eq!(
             system["gitStamp"]["stamps"],
             json!(["git00b674ec0ffe-1", "gitffffffffffff.dirty-1"])
         );
         assert_eq!(system["gitStamp"]["dirty"], true);
-        assert!(system["buildDateDetail"].is_string());
+        assert_eq!(system["fileEpoch"]["available"], false);
+        assert!(
+            system["fileEpoch"]["detail"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty())
+        );
+    }
+
+    /// A `.dirty` stamp means the packaged tree is not the commit the date
+    /// belongs to, and the field SAYS so instead of reading like a plain
+    /// timestamp of the source that shipped.
+    #[test]
+    fn a_dirty_stamp_is_stated_beside_the_commit_date() {
+        let manifest = parse_manifest("mosd\t0.1.0+gitffffffffffff.dirty-1\tarm64\n");
+        let system = system_json(&manifest, Some(1_577_836_800), Some("2026-09-01T00:00:00Z"));
+        assert_eq!(system["commitDate"]["available"], true);
+        assert_eq!(system["commitDate"]["date"], "2026-09-01T00:00:00Z");
+        assert!(
+            system["commitDate"]["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("ffffffffffff") && d.contains(".dirty")),
+            "{}",
+            system["commitDate"]
+        );
+    }
+
+    /// A root whose identity states no commit date says so. It must not fall
+    /// back to the pinned file epoch -- which is a real value, is present in
+    /// the same member, and would read as a build date that is 2020-01-01 on
+    /// every image this repository has ever produced.
+    #[tokio::test]
+    async fn an_identity_without_a_commit_date_is_absent_and_never_the_file_epoch() {
+        let root = fixture_root();
+        std::fs::write(
+            root.path().join(RELEASE_IDENTITY_PATH),
+            "BOARD=cx3576\nPROFILE=dev\nVERSION=0.1.0+git00b674ec0ffe-1\n",
+        )
+        .expect("write");
+        let evidence = HostSystemInfo::at(root.path())
+            .observe()
+            .await
+            .expect("observe");
+        assert_eq!(evidence.commit_date, None);
+        let info = info_json(&evidence, None, &daemon());
+        assert_eq!(info["system"]["commitDate"]["available"], false);
+        assert!(
+            info["system"]["commitDate"]["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains(COMMIT_DATE_KEY)),
+            "{}",
+            info["system"]["commitDate"]
+        );
+        assert!(info["system"]["commitDate"]["date"].is_null());
+        // The file epoch is still reported, under its own name.
+        assert_eq!(info["system"]["fileEpoch"]["available"], true);
+    }
+
+    /// An identity stating the key with nothing after it is absence, not an
+    /// empty string that renders as a blank date.
+    #[tokio::test]
+    async fn an_empty_commit_date_is_absence() {
+        let root = fixture_root();
+        std::fs::write(
+            root.path().join(RELEASE_IDENTITY_PATH),
+            "BOARD=cx3576\nCOMMIT_DATE=\n",
+        )
+        .expect("write");
+        let evidence = HostSystemInfo::at(root.path())
+            .observe()
+            .await
+            .expect("observe");
+        assert_eq!(evidence.commit_date, None);
     }
 
     /// The unavailable default refuses rather than inspecting the host.
