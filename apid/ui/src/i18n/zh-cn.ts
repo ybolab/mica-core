@@ -2,7 +2,7 @@ import type { Translation } from './resources'
 
 export const zhCN: Translation = {
   common: {
-    actions: { refresh: '刷新', enable: '启用', disable: '停用', copy: '复制' },
+    actions: { refresh: '刷新', enable: '启用', disable: '停用', copy: '复制', cancel: '取消', delete: '删除' },
     states: { available: '可用', unavailable: '不可用', enabled: '已启用', disabled: '已停用', unknown: '未知', finished: '已完成', succeeded: '成功', failed: '失败', pending: '等待中', running: '执行中', queued: '已排队', routable: '可路由', carrier: '有载波', degraded: '降级' },
     requestFailed: '请求未能完成。',
     notAvailable: '—',
@@ -118,11 +118,20 @@ export const zhCN: Translation = {
     ui: {
       title: '用户界面', description: '内置 SPA 始终可通过 /_ui/ 访问。', checking: '正在检查 UI 选择', customActive: '自定义 UI 已在 / 激活', builtInActive: '内置 UI 已在 / 激活',
       useCustom: '在根路径使用自定义 UI', recoveryCopy: '/_ui/ 上的恢复控制台不会改变。', noCustom: '未安装保留的自定义 UI。', cannotSelect: '无法选择保留的自定义 UI：{{reason}}。',
-      bundle: '包', generation: '第 {{generation}} 代', index: '入口', readable: '可读取', unreadable: '不可读取', digest: '摘要', digestVerified: '已验证', digestChanged: '已改变', digestUnknown: '未验证', openCustom: '在根路径打开自定义 UI',
+      bundle: '包', generation: '第 {{generation}} 代', index: '入口', readable: '可读取', unreadable: '不可读取', digest: '摘要', digestVerified: '已验证', digestChanged: '已改变', digestUnknown: '未验证', openCustom: '在根路径打开自定义 UI', manage: '管理 UI 版本',
       unavailable: {
         missingActivationRecord: '缺少激活记录', unsafeTree: '文件不再构成安全的包目录树', indexUnavailable: 'index.html 缺失或不可读', manifestInvalid: '清单无效',
         digestMismatch: '文件在激活后发生改变', incompatible: '不支持此 API 版本', unknown: '未通过验证',
       },
+    },
+    uiManager: {
+      back: '返回系统', eyebrow: '系统 UI', title: 'UI 版本', description: '上传、验证和选择自定义界面，且不改变内置恢复控制台。',
+      uploadTitle: '上传 UI 包', uploadDescription: '软件包会作为未激活版本安装；激活始终是单独操作。', packageFile: 'mos UI 软件包', noFile: '请选择 .mos-ui.zip 软件包。',
+      upload: '上传软件包', uploading: '正在上传…', validating: '正在验证并安装…', uploadProgress: 'UI 软件包上传进度', uploadedInactive: '软件包已安装，当前界面未改变。',
+      safetyNote: '软件包必须在根目录包含 index.html 和 schemaVersion 为 1 的 mos-ui.json；压缩包上限为 64 MiB。',
+      versionsTitle: '已安装版本', versionsDescription: '系统不会自动删除任何版本；活动版本必须停用后才能删除。', version: '版本', size: '安装大小', archiveSize: '压缩包 {{size}}', sizeUnavailable: '旧版包未记录大小', validation: '验证', state: '状态', actions: '操作',
+      valid: '已验证', compatible: 'API 兼容', incompatible: 'API 不兼容', unchecked: '未检查 API 兼容性', active: '活动', inactive: '未激活', activate: '激活', useBuiltIn: '使用内置 UI', deleteVersion: '删除第 {{generation}} 代',
+      confirmDelete: '删除第 {{generation}} 代 UI？此操作无法撤销。', retention: '已使用 {{count}} / {{limit}} 个保留版本槽位。',
     },
     power: {
       title: '电源', description: '这些操作会立即下发。设备状态改变前，连接可能已经关闭。', reboot: '重启', powerOff: '关机',

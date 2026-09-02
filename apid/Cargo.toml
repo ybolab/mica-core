@@ -16,14 +16,17 @@ axum = { workspace = true }
 axum-server = { workspace = true }
 chrono = { workspace = true }
 hmac = { workspace = true }
+futures-util = { workspace = true }
+mos-ui-bundle = { path = "../ui-bundle" }
 mosd-settings = { path = "../mosd-settings" }
 rand = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["signal", "net"] }
+tokio = { workspace = true, features = ["signal", "net", "fs", "io-util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }

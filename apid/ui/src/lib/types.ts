@@ -84,3 +84,17 @@ export interface CustomUiDetails {
   digestMatches?: boolean
   compatible?: boolean
 }
+
+export interface UiBundleDetails extends CustomUiDetails {
+  digest?: string
+  compressedBytes?: number
+  expandedBytes?: number
+  usable: boolean
+  unavailableReason?: NonNullable<UiStatus['availableCustom']>['unavailableReason']
+}
+
+export interface UiBundleList {
+  activeGeneration?: number
+  bundles: UiBundleDetails[]
+  retentionLimit: number
+}

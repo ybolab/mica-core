@@ -164,6 +164,24 @@ async fn json_request(
     send(router, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
+async fn zip_request(
+    router: &Router,
+    path: &str,
+    bytes: Vec<u8>,
+    cookie: &str,
+    csrf: Option<&str>,
+) -> Response<axum::body::Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(CONTENT_TYPE, "application/zip")
+        .header(COOKIE, format!("apid_session={cookie}"));
+    if let Some(csrf) = csrf {
+        builder = builder.header("x-csrf-token", csrf);
+    }
+    send(router, builder.body(Body::from(bytes)).unwrap()).await
+}
+
 fn location(response: &Response<axum::body::Body>) -> &str {
     response.headers().get(LOCATION).unwrap().to_str().unwrap()
 }
@@ -774,7 +792,7 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         None,
     )
@@ -785,7 +803,7 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     )
@@ -798,6 +816,147 @@ async fn ui_selection_is_managed_only_through_the_csrf_protected_api() {
     let root = get(&router, "/", None).await;
     assert_eq!(root.status(), StatusCode::OK);
     assert!(body_string(root).await.contains("custom-root"));
+}
+
+fn ui_package_bytes(api_version: &str) -> Vec<u8> {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(source.join("assets")).unwrap();
+    std::fs::write(
+        source.join("index.html"),
+        "<!doctype html><title>uploaded</title>",
+    )
+    .unwrap();
+    std::fs::write(source.join("assets/app.js"), "console.log('uploaded')").unwrap();
+    std::fs::write(
+        source.join("mos-ui.json"),
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "name": "uploaded",
+            "version": "1.0.0",
+            "immutableDir": "assets",
+            "apiVersions": [api_version],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let package = temp.path().join("uploaded.mos-ui.zip");
+    mos_ui_bundle::pack(&source, &package).unwrap();
+    std::fs::read(package).unwrap()
+}
+
+#[tokio::test]
+async fn ui_package_upload_installs_without_activation_and_supports_explicit_lifecycle() {
+    let bundle_root = TempDir::new().unwrap();
+    let router = test_app_serving(configured_tree("hunter2secret"), bundle_root.path());
+    let login = json_request(
+        &router,
+        "POST",
+        "/api/v1/session",
+        json!({ "password": "hunter2secret" }),
+        None,
+        None,
+    )
+    .await;
+    let cookie = session_cookie_value(&login);
+    let body: serde_json::Value = serde_json::from_str(&body_string(login).await).unwrap();
+    let csrf = body["csrfToken"].as_str().unwrap();
+    let package = ui_package_bytes("v1");
+
+    let missing_csrf = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        package.clone(),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+
+    let incompatible = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        ui_package_bytes("v999"),
+        &cookie,
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(incompatible.status(), StatusCode::CONFLICT);
+    let incompatible: serde_json::Value =
+        serde_json::from_str(&body_string(incompatible).await).unwrap();
+    assert_eq!(incompatible["error"]["code"], "ui_package_conflict");
+
+    let uploaded = zip_request(
+        &router,
+        "/api/v1/ui/bundles",
+        package.clone(),
+        &cookie,
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(uploaded.status(), StatusCode::CREATED);
+    let uploaded: serde_json::Value = serde_json::from_str(&body_string(uploaded).await).unwrap();
+    assert!(uploaded["activeGeneration"].is_null());
+    assert_eq!(uploaded["bundles"][0]["generation"], 1);
+    assert_eq!(uploaded["bundles"][0]["name"], "uploaded");
+    assert_eq!(uploaded["bundles"][0]["digest"].as_str().unwrap().len(), 64);
+    assert!(uploaded["bundles"][0]["compressedBytes"].as_u64().unwrap() > 0);
+    assert!(uploaded["bundles"][0]["expandedBytes"].as_u64().unwrap() > 0);
+    assert_eq!(
+        get(&router, "/", None).await.status(),
+        StatusCode::SEE_OTHER
+    );
+
+    let duplicate = zip_request(&router, "/api/v1/ui/bundles", package, &cookie, Some(csrf)).await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+
+    let activated = json_request(
+        &router,
+        "PUT",
+        "/api/v1/ui/active",
+        json!({ "generation": 1 }),
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(activated.status(), StatusCode::OK);
+    assert!(
+        body_string(get(&router, "/", None).await)
+            .await
+            .contains("uploaded")
+    );
+
+    let active_delete = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/bundles/1",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(active_delete.status(), StatusCode::CONFLICT);
+
+    let deactivated = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/active",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(deactivated.status(), StatusCode::OK);
+    let deleted = json_request(
+        &router,
+        "DELETE",
+        "/api/v1/ui/bundles/1",
+        serde_json::Value::Null,
+        Some(&cookie),
+        Some(csrf),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -848,7 +1007,7 @@ async fn the_ui_api_refuses_a_corrupt_retained_bundle_without_changing_root() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     )
@@ -900,7 +1059,7 @@ async fn ui_selection_records_deactivation_activation_and_no_op() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     );
@@ -908,7 +1067,7 @@ async fn ui_selection_records_deactivation_activation_and_no_op() {
         &router,
         "PUT",
         "/api/v1/ui/active",
-        serde_json::Value::Null,
+        json!({ "generation": 1 }),
         Some(&cookie),
         Some(csrf),
     );
