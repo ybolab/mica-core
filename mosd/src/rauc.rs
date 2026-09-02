@@ -407,6 +407,25 @@ fn older_install(target: &SlotStatus, booted: &SlotStatus) -> Option<bool> {
 /// `docs/design/recovery.md` §3 node 2 carries the reading, the function
 /// names and the recipe for re-running it.
 ///
+/// WHAT "APPEARS NOWHERE IN THIS REPOSITORY" DOES NOT MEAN, because a reader
+/// can otherwise infer total absence from it. The string `override-boot-slot`
+/// IS in the shipped `/usr/bin/rauc` — measured, once, in its help text.
+/// `entries_install` compiles the option in only under `#if ENABLE_SERVICE ==
+/// 0` and `pkgs/rauc/Dockerfile` builds `-Dservice=true`, so it is compiled out
+/// of the INSTALL SUBCOMMAND, not out of the binary; it survives on
+/// `entries_service`, the daemon's own argv. The sentence above is about this
+/// repository's own text, and the honest statement about the image is the
+/// narrower one: nothing on the device passes it.
+///
+/// AND THAT NARROWER STATEMENT IS NOW ASSERTED RATHER THAN MERELY WRITTEN
+/// DOWN. `rauc-units-never-override-boot-slot` (`verify/src/checks-rauc-units.ts`)
+/// reads every unit and drop-in under `/etc/systemd/system`,
+/// `/usr/lib/systemd/system` and `/usr/local/lib/systemd/system` in the packed
+/// root, folds continuation lines, and fails if any `Exec*=` command line that
+/// starts rauc names the option — and fails, too, if it found no rauc command
+/// line to look at. Half (1) above is still a premise a pin bump can move; this
+/// half is a gate.
+///
 /// Why the property is derived rather than read: RAUC v1.13, the version
 /// `pkgs/rauc/versions.env` pins, records no boot anywhere mosd can see, and
 /// that was checked rather than assumed:
