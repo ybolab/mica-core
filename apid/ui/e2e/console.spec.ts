@@ -53,7 +53,6 @@ test('reads the observed network beside the desired configuration', async ({ pag
   test.skip(isMobile, 'desktop network workflow')
   await page.goto('./network')
 
-  await page.getByRole('tab', { name: 'Observed state' }).click()
   await expect(page.getByText(/Observed state only/)).toBeVisible()
   await expect(page.getByText('192.168.1.24/24 \u00b7 DHCPv4')).toBeVisible()
   await expect(page.getByText('Cellular')).toBeVisible()
@@ -73,18 +72,23 @@ test('restores Chinese and dark appearance preferences', async ({ page, isMobile
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
 })
 
-test('applies a typed interface edit', async ({ page, isMobile }) => {
+test('applies a typed interface edit through the review dialog', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop network editor contract')
   await page.goto('./network')
-  const row = page.locator('tr').filter({ hasText: 'eth0' })
-  await row.getByRole('button', { name: 'Edit' }).click()
-  await page.getByRole('switch', { name: 'Use DHCP' }).click()
-  await page.getByRole('textbox', { name: 'Address' }).fill('192.168.1.24/24')
+  await page.getByRole('link', { name: 'eth0' }).click()
+
+  await expect(page.getByRole('heading', { name: 'eth0' })).toBeVisible()
+  await page.getByRole('radio', { name: 'Static' }).click()
+  await page.getByRole('textbox', { name: 'Address / prefix' }).fill('192.168.1.24/24')
+  await page.getByRole('button', { name: 'Review and save' }).click()
+
+  await expect(page.getByRole('dialog')).toContainText('this browser did not arrive on eth0')
   const request = page.waitForRequest((candidate) => candidate.method() === 'PUT')
-  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Apply', exact: true }).click()
   const interfaceRequest = await request
   expect(new URL(interfaceRequest.url()).pathname).toBe('/api/v1/network/eth0')
   expect(interfaceRequest.postDataJSON()).toMatchObject({ dhcp: false, static: { address: '192.168.1.24/24' } })
+  await expect(page.getByText('Applying the change')).toBeVisible()
 })
 
 test('shows the new WireGuard public key after rotation', async ({ page }, testInfo) => {
