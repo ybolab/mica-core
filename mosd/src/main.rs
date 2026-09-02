@@ -30,6 +30,7 @@
 
 mod apply_queue;
 mod bus;
+mod diagnostics;
 mod fswrite;
 mod identity;
 mod network_state;
@@ -39,6 +40,8 @@ mod rauc;
 mod reconciler;
 mod scan;
 mod storage_status;
+mod system_info;
+mod telemetry;
 mod time_status;
 mod transient;
 mod wgkeys;
@@ -240,9 +243,16 @@ async fn serve() -> anyhow::Result<()> {
     // place that knows this daemon runs on a real device.
     if !dry_run {
         service = service.with_rauc(Arc::new(rauc::Rauc::new()));
-        service = service.with_network_state(Arc::new(network_state::SystemdNetworkState));
+        service =
+            service.with_network_state(Arc::new(network_state::SystemdNetworkState::production()));
         service = service.with_time_status(Arc::new(time_status::SystemdTimesync));
         service = service.with_storage_status(Arc::new(storage_status::HostStorage::production()));
+        // The PLAN-052 observers, on the same rule: each reads the host
+        // (sysfs, /etc, the journal), so a dry-run daemon is never given one.
+        service = service.with_system_info(Arc::new(system_info::HostSystemInfo::production()));
+        service = service.with_telemetry(Arc::new(telemetry::SysfsTelemetry::production()));
+        service =
+            service.with_failure_evidence(Arc::new(diagnostics::HostFailureEvidence::production()));
         // Same reasoning again: the rotation writes a private key onto STATE
         // and deletes a kernel device, so a dry-run daemon is never given one.
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));

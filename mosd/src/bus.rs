@@ -16,6 +16,7 @@ use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 
 use crate::apply_queue::{ApplyJob, ApplyQueue, TaskRecord};
+use crate::diagnostics::{FailureEvidenceSource, UnavailableFailureEvidence};
 use crate::network_state::{NetworkState, UnavailableNetworkState};
 use crate::power::PowerControl;
 use crate::rauc::{self, RaucClient};
@@ -23,6 +24,8 @@ use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
 use crate::storage_status::{self, PressureTracker, StorageStatusSource, UnavailableStorageStatus};
+use crate::system_info::{self, SystemInfoSource, UnavailableSystemInfo};
+use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
 use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 
@@ -111,6 +114,14 @@ pub struct MosdService {
     /// Lives with the service rather than with the observer because it is the
     /// REPORTED state, and it has to survive an observer being reattached.
     storage_pressure: Arc<PressureTracker>,
+    /// Read-only system-information observation (PLAN-052), on the same
+    /// unavailable default for the same reason.
+    system_info: Arc<dyn SystemInfoSource>,
+    /// Read-only board telemetry (PLAN-052), on the same default.
+    telemetry: Arc<dyn TelemetrySource>,
+    /// Read-only failure evidence for the diagnostic snapshot (PLAN-052):
+    /// failed units and a bounded journal excerpt. Same default.
+    failure_evidence: Arc<dyn FailureEvidenceSource>,
 }
 
 /// The rotation a daemon with no key store has: none.
@@ -157,6 +168,9 @@ impl MosdService {
             network_state: Arc::new(UnavailableNetworkState),
             time_status: Arc::new(UnavailableTimeStatus),
             storage_status: Arc::new(UnavailableStorageStatus),
+            system_info: Arc::new(UnavailableSystemInfo),
+            telemetry: Arc::new(UnavailableTelemetry),
+            failure_evidence: Arc::new(UnavailableFailureEvidence),
             storage_pressure: Arc::new(PressureTracker::default()),
         }
     }
@@ -194,6 +208,33 @@ impl MosdService {
     #[must_use]
     pub fn with_storage_status(mut self, storage_status: Arc<dyn StorageStatusSource>) -> Self {
         self.storage_status = storage_status;
+        self
+    }
+
+    /// Attach the system-information observer (`GetSystemInfo`).
+    ///
+    /// Same shape and same reason as [`Self::with_storage_status`]: only
+    /// `main.rs` knows the daemon runs on a device.
+    #[must_use]
+    pub fn with_system_info(mut self, system_info: Arc<dyn SystemInfoSource>) -> Self {
+        self.system_info = system_info;
+        self
+    }
+
+    /// Attach the board telemetry adapter (`GetTelemetry`).
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Arc<dyn TelemetrySource>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Attach the failure-evidence source (`GetFailureEvidence`).
+    #[must_use]
+    pub fn with_failure_evidence(
+        mut self,
+        failure_evidence: Arc<dyn FailureEvidenceSource>,
+    ) -> Self {
+        self.failure_evidence = failure_evidence;
         self
     }
 
@@ -264,6 +305,37 @@ impl MosdService {
             root.insert("power".to_string(), Value::Object(entry));
         }
         drop(inner);
+    }
+
+    /// The booted slot for the system-information surface, or `None`.
+    ///
+    /// Bounded and non-fatal, [`Self::reboot_update_warning`]'s reasoning:
+    /// an installer that is absent, wedged or slow makes the `slot` member
+    /// absent with a reason, never the whole answer. Failures are logged.
+    async fn slot_evidence(&self) -> Option<system_info::SlotEvidence> {
+        const SLOT_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+        let query = async {
+            let slots = self.rauc.slot_status().await?;
+            let primary = self.rauc.primary().await?;
+            anyhow::Ok((slots, primary))
+        };
+        match tokio::time::timeout(SLOT_QUERY_TIMEOUT, query).await {
+            Ok(Ok((slots, primary))) => Some(system_info::SlotEvidence {
+                booted: rauc::booted_slot(&slots).cloned(),
+                primary,
+            }),
+            Ok(Err(err)) => {
+                tracing::debug!(error = %err, "slot status unavailable for system info");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout = ?SLOT_QUERY_TIMEOUT,
+                    "rauc did not answer the system-info slot query in time"
+                );
+                None
+            }
+        }
     }
 
     /// The unconfirmed-slot warning a reboot should carry, or `None`.
@@ -913,6 +985,68 @@ impl MosdService {
             .map_err(|err| {
                 SettingsFault::Fdo(fdo::Error::Failed(format!(
                     "observe network state: {err:#}"
+                )))
+            })
+    }
+
+    /// JSON observed network state (PLAN-052): link/carrier, addresses, DHCP
+    /// lease, default routes, DNS reachability, Wi-Fi association and the
+    /// radio/modem capabilities, observed at call time and DISTINCT from the
+    /// desired `network` settings, which this method never reads.
+    async fn get_observed_network(&self) -> Result<String, SettingsFault> {
+        self.network_state
+            .observe()
+            .await
+            .map(|value| value.to_string())
+            .map_err(|err| {
+                SettingsFault::Fdo(fdo::Error::Failed(format!("observe network: {err:#}")))
+            })
+    }
+
+    /// JSON system information (PLAN-052): machine id, board, kernel,
+    /// release, the image version with its git stamp and build date, the
+    /// installed packages, the booted slot and the uptime — every one read
+    /// at call time from the seam that already carries it, none restated.
+    ///
+    /// Observed rather than stored, the `uptime` reasoning again: the slot
+    /// and the uptime move without any settings write. Read-only.
+    async fn get_system_info(&self) -> Result<String, SettingsFault> {
+        let evidence = self.system_info.observe().await.map_err(|err| {
+            SettingsFault::Fdo(fdo::Error::Failed(format!(
+                "observe system information: {err:#}"
+            )))
+        })?;
+        let slot = self.slot_evidence().await;
+        Ok(system_info::info_json(
+            &evidence,
+            slot.as_ref(),
+            &system_info::DaemonIdentity::this_build(),
+        )
+        .to_string())
+    }
+
+    /// JSON board telemetry (PLAN-052): temperature, watchdog and the reset
+    /// reason the kernel's generic sources support, observed at call time.
+    /// Absence is explicit; nothing here reads a vendor register.
+    async fn get_telemetry(&self) -> Result<String, SettingsFault> {
+        let evidence = self.telemetry.observe().await.map_err(|err| {
+            SettingsFault::Fdo(fdo::Error::Failed(format!("observe telemetry: {err:#}")))
+        })?;
+        Ok(telemetry::telemetry_json(&evidence).to_string())
+    }
+
+    /// JSON failure evidence for the diagnostic snapshot (PLAN-052): the
+    /// units systemd holds failed and a bounded excerpt of this boot's
+    /// journal at warning and worse. Bounded in size and time by
+    /// [`crate::diagnostics`]; the redaction is apid's, at the snapshot.
+    async fn get_failure_evidence(&self) -> Result<String, SettingsFault> {
+        self.failure_evidence
+            .observe()
+            .await
+            .map(|value| value.to_string())
+            .map_err(|err| {
+                SettingsFault::Fdo(fdo::Error::Failed(format!(
+                    "observe failure evidence: {err:#}"
                 )))
             })
     }
@@ -2252,5 +2386,92 @@ mod tests {
         assert!(!paths_overlap("hostname", "network"));
         assert!(!paths_overlap("network.eth0", "network2"));
         assert!(!paths_overlap("net", "network"));
+    }
+
+    struct FixedSystemInfo(crate::system_info::SystemInfoEvidence);
+
+    #[async_trait::async_trait]
+    impl crate::system_info::SystemInfoSource for FixedSystemInfo {
+        async fn observe(&self) -> anyhow::Result<crate::system_info::SystemInfoEvidence> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// The system-information surface: absent without an observer, and with
+    /// one it carries the booted slot read from the RAUC client the service
+    /// already holds — one client, not a second reader of the installer.
+    #[tokio::test]
+    async fn the_system_info_is_observed_with_the_booted_slot_and_absent_without_an_observer() {
+        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
+            slots: ab_slots("good", "good"),
+            primary: Some("rootfs.0".to_string()),
+            ..MockRauc::default()
+        });
+        let err = service
+            .get_system_info()
+            .await
+            .expect_err("no observer means no answer");
+        assert!(format!("{err:?}").contains("observes no system information"));
+
+        let evidence = crate::system_info::SystemInfoEvidence {
+            machine_id: Ok("0123456789abcdef0123456789abcdef".to_string()),
+            uptime_seconds: Some(42),
+            ..crate::system_info::SystemInfoEvidence::default()
+        };
+        let service = service.with_system_info(Arc::new(FixedSystemInfo(evidence)));
+        let info: serde_json::Value =
+            serde_json::from_str(&service.get_system_info().await.expect("observed")).unwrap();
+        assert_eq!(info["machineId"]["id"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(info["uptime"]["seconds"], 42);
+        assert_eq!(info["slot"]["available"], true);
+        assert_eq!(info["slot"]["booted"], "rootfs.0");
+        assert_eq!(info["slot"]["primary"], "rootfs.0");
+        assert_eq!(info["daemon"]["name"], "mosd");
+        // A member the fixture did not supply is absent with a reason, not
+        // manufactured.
+        assert_eq!(info["board"]["available"], false);
+    }
+
+    /// The other three PLAN-052 reads refuse without an observer, so a
+    /// dry-run daemon can never inspect its host through them.
+    #[tokio::test]
+    async fn the_diagnostic_reads_are_absent_without_observers() {
+        let (service, _calls, _dir) = service_with_mock();
+        assert!(service.get_telemetry().await.is_err());
+        assert!(service.get_observed_network().await.is_err());
+        assert!(service.get_failure_evidence().await.is_err());
+
+        let service = service
+            .with_telemetry(Arc::new(crate::telemetry::SysfsTelemetry::at(_dir.path())))
+            .with_failure_evidence(Arc::new(crate::diagnostics::HostFailureEvidence::new(
+                Box::new(EmptyJournal),
+                Box::new(NoUnits),
+            )));
+        let telemetry: serde_json::Value =
+            serde_json::from_str(&service.get_telemetry().await.expect("telemetry")).unwrap();
+        assert_eq!(telemetry["reset"]["reason"], "unknown");
+        assert_eq!(telemetry["reset"]["available"], false);
+        let failures: serde_json::Value =
+            serde_json::from_str(&service.get_failure_evidence().await.expect("failures")).unwrap();
+        assert_eq!(failures["journal"]["lineCount"], 0);
+        assert_eq!(failures["units"]["count"], 0);
+    }
+
+    struct EmptyJournal;
+
+    #[async_trait::async_trait]
+    impl crate::diagnostics::JournalReader for EmptyJournal {
+        async fn read(&self, _max_lines: usize) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct NoUnits;
+
+    #[async_trait::async_trait]
+    impl crate::diagnostics::UnitLister for NoUnits {
+        async fn failed_units(&self) -> anyhow::Result<Vec<crate::diagnostics::FailedUnit>> {
+            Ok(Vec::new())
+        }
     }
 }

@@ -422,6 +422,39 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
         );
     }
 
+    // The PLAN-052 reads, by member name for the same reason, and each
+    // refusing under dry-run: their observers read the host (sysfs, /etc,
+    // the journal) and are attached only by main.rs on a real device, so a
+    // daemon started by a test answers Failed rather than inspecting the
+    // build host.
+    for member in [
+        "GetSystemInfo",
+        "GetTelemetry",
+        "GetObservedNetwork",
+        "GetFailureEvidence",
+    ] {
+        assert!(
+            xml.contains(&format!("<method name=\"{member}\">")),
+            "no {member} on com.mos.mosd1:\n{xml}"
+        );
+        let reply: Result<String, zbus::Error> = connection
+            .call_method(
+                Some("com.mos.mosd"),
+                "/com/mos/mosd",
+                Some("com.mos.mosd1"),
+                member,
+                &(),
+            )
+            .await
+            .and_then(|message| message.body().deserialize::<String>());
+        let err = reply.expect_err("dry-run must refuse the host read");
+        assert_eq!(
+            error_name(&err),
+            "org.freedesktop.DBus.Error.Failed",
+            "{member}: {err}"
+        );
+    }
+
     // GetUpdateState queries and records: the dry-run client reports an idle
     // installer with no slots, and the same entry lands in the state tree.
     let update = proxy.get_update_state().await?;
