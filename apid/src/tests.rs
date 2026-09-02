@@ -2028,14 +2028,25 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
     // The search space is populated, and it contains the storage surface
     // this test is about: a scan over an empty or storage-less document
     // would pass forever while proving nothing.
-    assert!(paths.len() > 20, "the document lists too few paths: {paths:?}");
+    assert!(
+        paths.len() > 20,
+        "the document lists too few paths: {paths:?}"
+    );
     assert!(
         paths.contains_key("/api/v1/storage/status"),
         "the storage surface is missing, so this scan is not scanning it: {paths:?}"
     );
 
     const FORBIDDEN: [&str; 10] = [
-        "format", "repartition", "partition", "mkfs", "fdisk", "resize", "wipe", "erase", "lvm",
+        "format",
+        "repartition",
+        "partition",
+        "mkfs",
+        "fdisk",
+        "resize",
+        "wipe",
+        "erase",
+        "lvm",
         "raid",
     ];
     for path in paths.keys() {
@@ -2069,7 +2080,11 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
                 StatusCode::NOT_FOUND,
                 "{method} {path} is served by something"
             );
-            assert_eq!(envelope(response).await["code"], "not_found", "{method} {path}");
+            assert_eq!(
+                envelope(response).await["code"],
+                "not_found",
+                "{method} {path}"
+            );
         }
     }
 }

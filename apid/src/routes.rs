@@ -1365,8 +1365,7 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
                         .collect()
                 })
                 .ok_or_else(|| {
-                    "this setting is a list: the body is a JSON array of server strings"
-                        .to_string()
+                    "this setting is a list: the body is a JSON array of server strings".to_string()
                 })?;
             mosd_settings::validate_ntp_servers(&servers)
         }

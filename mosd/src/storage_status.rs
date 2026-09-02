@@ -60,15 +60,60 @@ pub struct TierSpec {
 /// for, and listing them would invite a reader to expect capacity numbers
 /// that cannot exist.
 pub const TIERS: &[TierSpec] = &[
-    TierSpec { name: "esp", partition_label: "esp", role: "esp", mount: Some("/boot") },
-    TierSpec { name: "boot-a", partition_label: "boot-a", role: "esp", mount: None },
-    TierSpec { name: "boot-b", partition_label: "boot-b", role: "esp", mount: None },
-    TierSpec { name: "rootfs-a", partition_label: "rootfs-a", role: "verity-slot", mount: None },
-    TierSpec { name: "rootfs-b", partition_label: "rootfs-b", role: "verity-slot", mount: None },
-    TierSpec { name: "meta", partition_label: "meta", role: "ext4", mount: Some("/mnt/meta") },
-    TierSpec { name: "state", partition_label: "state", role: "ext4", mount: Some("/mnt/state") },
-    TierSpec { name: "ephemeral", partition_label: "ephemeral", role: "ext4", mount: Some("/var") },
-    TierSpec { name: "data", partition_label: "data", role: "ext4", mount: Some("/srv") },
+    TierSpec {
+        name: "esp",
+        partition_label: "esp",
+        role: "esp",
+        mount: Some("/boot"),
+    },
+    TierSpec {
+        name: "boot-a",
+        partition_label: "boot-a",
+        role: "esp",
+        mount: None,
+    },
+    TierSpec {
+        name: "boot-b",
+        partition_label: "boot-b",
+        role: "esp",
+        mount: None,
+    },
+    TierSpec {
+        name: "rootfs-a",
+        partition_label: "rootfs-a",
+        role: "verity-slot",
+        mount: None,
+    },
+    TierSpec {
+        name: "rootfs-b",
+        partition_label: "rootfs-b",
+        role: "verity-slot",
+        mount: None,
+    },
+    TierSpec {
+        name: "meta",
+        partition_label: "meta",
+        role: "ext4",
+        mount: Some("/mnt/meta"),
+    },
+    TierSpec {
+        name: "state",
+        partition_label: "state",
+        role: "ext4",
+        mount: Some("/mnt/state"),
+    },
+    TierSpec {
+        name: "ephemeral",
+        partition_label: "ephemeral",
+        role: "ext4",
+        mount: Some("/var"),
+    },
+    TierSpec {
+        name: "data",
+        partition_label: "data",
+        role: "ext4",
+        mount: Some("/srv"),
+    },
 ];
 
 /// The tier the low-space policy and the update reservation are about.
@@ -309,7 +354,10 @@ pub struct PressureTracker {
 impl PressureTracker {
     /// Record `used_percent` for `tier` and return the classification.
     pub fn observe(&self, tier: &str, used_percent: u8) -> Pressure {
-        let mut states = self.states.lock().expect("pressure state is never poisoned");
+        let mut states = self
+            .states
+            .lock()
+            .expect("pressure state is never poisoned");
         let previous = states.get(tier).copied().unwrap_or_default();
         let next = next_pressure(previous, used_percent);
         states.insert(tier.to_string(), next);
@@ -579,10 +627,7 @@ pub fn parse_mountinfo(text: &str) -> Vec<MountEvidence> {
                 device: (*right.get(1)?).to_string(),
                 mount: unescape_octal(left.get(4)?),
                 fstype: (*right.first()?).to_string(),
-                read_only: left
-                    .get(5)?
-                    .split(',')
-                    .any(|option| option == "ro"),
+                read_only: left.get(5)?.split(',').any(|option| option == "ro"),
             })
         })
         .collect()
@@ -740,8 +785,12 @@ pub fn parse_df(output: &str) -> Option<FsSpace> {
 /// `df` reader attached.
 pub struct HostStorage {
     root: std::path::PathBuf,
-    space: Box<dyn Fn(&str) -> Option<FsSpace> + Send + Sync>,
+    space: SpaceReader,
 }
+
+/// Answers one mount point's space. Injected so a fixture tree cannot make a
+/// test shell out to `df` against the machine running it.
+type SpaceReader = Box<dyn Fn(&str) -> Option<FsSpace> + Send + Sync>;
 
 impl HostStorage {
     /// The observer `main.rs` attaches on a device.
@@ -819,13 +868,15 @@ impl HostStorage {
             .filter_map(|entry| {
                 let name = entry.ok()?.file_name().into_string().ok()?;
                 let relative = format!("sys/block/{disk}/{name}");
-                self.path(&format!("{relative}/partition")).exists().then(|| {
-                    let sectors: u64 = self
-                        .read_trimmed(&format!("{relative}/size"))
-                        .and_then(|text| text.parse().ok())
-                        .unwrap_or_default();
-                    (format!("/dev/{name}"), sectors * SECTOR_BYTES)
-                })
+                self.path(&format!("{relative}/partition"))
+                    .exists()
+                    .then(|| {
+                        let sectors: u64 = self
+                            .read_trimmed(&format!("{relative}/size"))
+                            .and_then(|text| text.parse().ok())
+                            .unwrap_or_default();
+                        (format!("/dev/{name}"), sectors * SECTOR_BYTES)
+                    })
             })
             .collect()
     }
@@ -880,10 +931,11 @@ impl HostStorage {
         if !name.starts_with("dm-") {
             return None;
         }
-        let mut slaves: Vec<String> = std::fs::read_dir(self.path(&format!("sys/block/{name}/slaves")))
-            .ok()?
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .collect();
+        let mut slaves: Vec<String> =
+            std::fs::read_dir(self.path(&format!("sys/block/{name}/slaves")))
+                .ok()?
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .collect();
         slaves.sort();
         // Exactly one backing device, or none of this is the verity slot
         // pairing it claims to be.
@@ -1034,9 +1086,7 @@ impl StorageStatusSource for HostStorage {
                 continue;
             };
             let mount = mounts.iter().find(|mount| mount.device == device).cloned();
-            let space = mount
-                .as_ref()
-                .and_then(|mount| (self.space)(&mount.mount));
+            let space = mount.as_ref().and_then(|mount| (self.space)(&mount.mount));
             tiers.insert(
                 spec.name.to_string(),
                 TierEvidence {
@@ -1251,8 +1301,7 @@ mod tests {
             },
         ];
         let paired = checks_by_device(&units, |device| {
-            (device == "/dev/disk/by-partuuid/state-uuid")
-                .then(|| "/dev/mmcblk0p9".to_string())
+            (device == "/dev/disk/by-partuuid/state-uuid").then(|| "/dev/mmcblk0p9".to_string())
         });
         assert_eq!(paired.len(), 1);
         assert_eq!(paired["/dev/mmcblk0p9"].exit_status, Some(0));
@@ -1471,11 +1520,8 @@ mod tests {
         write("sys/block/dm-0/slaves/mmcblk0p6/.keep", "");
 
         std::fs::create_dir_all(path.join("dev/disk/by-partlabel")).expect("mkdir");
-        std::os::unix::fs::symlink(
-            "../../mmcblk0p11",
-            path.join("dev/disk/by-partlabel/data"),
-        )
-        .expect("symlink");
+        std::os::unix::fs::symlink("../../mmcblk0p11", path.join("dev/disk/by-partlabel/data"))
+            .expect("symlink");
         std::os::unix::fs::symlink(
             "../../mmcblk0p6",
             path.join("dev/disk/by-partlabel/rootfs-a"),
@@ -1490,9 +1536,8 @@ mod tests {
             ),
         );
 
-        let observer = HostStorage::at(path).with_space_reader(|mount| {
-            (mount == "/srv").then(|| space(1000, 100, 850))
-        });
+        let observer = HostStorage::at(path)
+            .with_space_reader(|mount| (mount == "/srv").then(|| space(1000, 100, 850)));
         let evidence = observer.observe().await.expect("the fixture observes");
 
         // Only the two labelled tiers exist here; the rest are absent, which
@@ -1504,14 +1549,20 @@ mod tests {
         let data = &evidence.tiers["data"];
         assert_eq!(data.device.as_deref(), Some("/dev/mmcblk0p11"));
         assert_eq!(data.partition_bytes, Some(40_000_000 * 512));
-        assert_eq!(data.mount.as_ref().map(|mount| mount.mount.as_str()), Some("/srv"));
+        assert_eq!(
+            data.mount.as_ref().map(|mount| mount.mount.as_str()),
+            Some("/srv")
+        );
         assert_eq!(data.space.map(|space| space.used), Some(100));
 
         // The booted slot is behind a verity mapper: without resolving the
         // mapper's single slave, the slot holding the running system would
         // report unmounted.
         let rootfs = &evidence.tiers["rootfs-a"];
-        assert_eq!(rootfs.mount.as_ref().map(|mount| mount.mount.as_str()), Some("/"));
+        assert_eq!(
+            rootfs.mount.as_ref().map(|mount| mount.mount.as_str()),
+            Some("/")
+        );
         assert!(rootfs.mount.as_ref().is_some_and(|mount| mount.read_only));
         // No space reader answers for `/`, and none is invented.
         assert_eq!(rootfs.space, None);
@@ -1545,7 +1596,10 @@ mod tests {
             .observe()
             .await
             .expect("the fixture observes");
-        assert!(evidence.tiers.is_empty(), "no partition labels in the fixture");
+        assert!(
+            evidence.tiers.is_empty(),
+            "no partition labels in the fixture"
+        );
         assert_eq!(evidence.media.len(), 1);
         match &evidence.media[0].health {
             MediaHealth::Unsupported(reason) => assert!(reason.contains("SMART"), "{reason}"),

@@ -22,9 +22,7 @@ use crate::rauc::{self, RaucClient};
 use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
-use crate::storage_status::{
-    self, PressureTracker, StorageStatusSource, UnavailableStorageStatus,
-};
+use crate::storage_status::{self, PressureTracker, StorageStatusSource, UnavailableStorageStatus};
 use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 
@@ -360,7 +358,9 @@ impl MosdService {
         // A daemon whose observer sees nothing refuses nothing; see
         // `storage_status::install_refusal`.
         if let Ok(evidence) = self.storage_status.observe().await {
-            let bundle_bytes = std::fs::metadata(&bundle).map(|meta| meta.len()).unwrap_or(0);
+            let bundle_bytes = std::fs::metadata(&bundle)
+                .map(|meta| meta.len())
+                .unwrap_or(0);
             if let Some(refusal) =
                 storage_status::install_refusal(evidence.data_tier(), &bundle, bundle_bytes)
             {
@@ -1709,7 +1709,10 @@ mod tests {
             .get_storage_status()
             .await
             .expect_err("a daemon with no observer cannot answer");
-        assert!(format!("{unobserved:?}").contains("storage"), "{unobserved:?}");
+        assert!(
+            format!("{unobserved:?}").contains("storage"),
+            "{unobserved:?}"
+        );
 
         let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(
             10 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES / 100,
@@ -1743,7 +1746,10 @@ mod tests {
             .request_install(":1.9", &bundle)
             .await
             .expect_err("a full DATA must refuse the install");
-        assert!(refused.to_string().contains("reserved update workspace"), "{refused}");
+        assert!(
+            refused.to_string().contains("reserved update workspace"),
+            "{refused}"
+        );
         assert!(
             rauc_calls.lock().expect("lock").is_empty(),
             "a refused install must not reach the installer"
