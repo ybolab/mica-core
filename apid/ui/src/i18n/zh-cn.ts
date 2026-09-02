@@ -2,6 +2,9 @@ import type { Translation } from './resources'
 
 export const zhCN: Translation = {
   common: {
+    optional: '可选',
+    planned: '计划中',
+    plannedCopy: '已完成设计，但设备尚未提供对应 API。此处的操作不会改变设备。',
     age: { now: '刚刚', minutes: '{{count}} 分钟前', hours: '{{count}} 小时前' },
     actions: { refresh: '刷新', enable: '启用', disable: '停用', copy: '复制', cancel: '取消', delete: '删除', close: '关闭', edit: '编辑', save: '保存', add: '添加' },
     states: { available: '可用', unavailable: '不可用', enabled: '已启用', disabled: '已停用', unknown: '未知', finished: '已完成', succeeded: '成功', failed: '失败', pending: '等待中', running: '执行中', queued: '已排队', healthy: '健康', routable: '可路由', carrier: '有载波', degraded: '降级' },
@@ -196,12 +199,35 @@ export const zhCN: Translation = {
   },
   services: {
     title: '服务',
-    containers: { title: '容器', warning: '容器在此设备上以 root 运行。Quadlet 文件可以启动具有 root 权限的代码。' },
-    mqtt: { title: 'MQTT', warning: '监听地址、认证和端口分别配置。将 MQTT 暴露到回环地址之外前，请先检查这些设置。' },
-    liveAvailable: '实时状态可用', noLiveState: '无实时状态', liveState: '实时状态', managedBy: '管理组件',
-    terminal: { title: '终端', description: '在浏览器中打开受约束的 root Shell，用于本机诊断。', browserSession: '浏览器终端会话', scope: '仅当前浏览器', open: '打开终端', disabledCopy: '启用浏览器终端后可启动临时会话。' },
-    runtime: { title: '本机终端', description: '浏览器会话结束时自动关闭的临时故障排查会话。' },
-    saving: '正在保存…', enable: '启用{{name}}', disable: '停用{{name}}',
+    unknown: '没有名为 {{id}} 的服务。',
+    containers: {
+      title: '容器运行时',
+      warning: '容器在此设备上以 root 运行。Quadlet 文件可以启动具有 root 权限的代码。',
+      hub: '镜像仓库地址', mirror: '拉取镜像源', user: '仓库用户', token: '仓库令牌',
+    },
+    mqtt: {
+      title: 'MQTT',
+      warning: '监听地址、认证和端口分别配置。将 MQTT 暴露到回环地址之外前，请先检查这些设置。',
+      listen: '监听地址', listenTls: 'TLS 监听地址', anonymous: '允许匿名客户端',
+    },
+    liveAvailable: '实时状态可用', noLiveState: '无实时状态',
+    desiredEnabled: '期望配置中已启用', desiredDisabled: '期望配置中已停用',
+    detail: {
+      configured: '已配置', observed: '观测', endpoint: '端点',
+      settled: '没有进行中的变更', noObserver: '该服务没有设备观测器',
+      endpointReported: '由设备报告', endpointUnreported: '设备未报告端点',
+      configuration: '配置',
+      configPlanned: '设备尚未提供该配置的 API。这些控件已禁用，此处的内容不会发送到设备。',
+    },
+    terminal: {
+      title: 'Web 终端',
+      warning: '在浏览器中打开 root Shell。会话会被记录，并在空闲超时后结束。',
+      endpoint: '/console/terminal',
+      open: '打开终端', end: '结束会话', minimize: '最小化', fullscreen: '全屏', restore: '还原',
+      timeout: '空闲超时', shell: 'Shell',
+      planned: '设备尚未提供终端端点。此窗口显示固定的示例输出，且不接受输入。',
+    },
+    saving: '正在保存…',
   },
   applications: {
     title: '应用', description: '本设备上已安装与可安装的工作负载。',

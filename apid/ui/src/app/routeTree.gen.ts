@@ -16,6 +16,7 @@ import { Route as NetworkRouteImport } from './routes/network'
 import { Route as ServicesRouteImport } from './routes/services'
 import { Route as SystemRouteImport } from './routes/system'
 import { Route as NetworkNameRouteImport } from './routes/network_.$name'
+import { Route as ServicesServiceRouteImport } from './routes/services_.$service'
 import { Route as SystemUiRouteImport } from './routes/system_.ui'
 
 const IndexRoute = IndexRouteImport.update({
@@ -53,6 +54,11 @@ const NetworkNameRoute = NetworkNameRouteImport.update({
   path: '/network/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ServicesServiceRoute = ServicesServiceRouteImport.update({
+  id: '/services_/$service',
+  path: '/services/$service',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SystemUiRoute = SystemUiRouteImport.update({
   id: '/system_/ui',
   path: '/system/ui',
@@ -67,6 +73,7 @@ export interface FileRoutesByFullPath {
   '/services': typeof ServicesRoute
   '/system': typeof SystemRoute
   '/network/$name': typeof NetworkNameRoute
+  '/services/$service': typeof ServicesServiceRoute
   '/system/ui': typeof SystemUiRoute
 }
 export interface FileRoutesByTo {
@@ -77,6 +84,7 @@ export interface FileRoutesByTo {
   '/services': typeof ServicesRoute
   '/system': typeof SystemRoute
   '/network/$name': typeof NetworkNameRoute
+  '/services/$service': typeof ServicesServiceRoute
   '/system/ui': typeof SystemUiRoute
 }
 export interface FileRoutesById {
@@ -88,6 +96,7 @@ export interface FileRoutesById {
   '/services': typeof ServicesRoute
   '/system': typeof SystemRoute
   '/network_/$name': typeof NetworkNameRoute
+  '/services_/$service': typeof ServicesServiceRoute
   '/system_/ui': typeof SystemUiRoute
 }
 export interface FileRouteTypes {
@@ -100,6 +109,7 @@ export interface FileRouteTypes {
     | '/services'
     | '/system'
     | '/network/$name'
+    | '/services/$service'
     | '/system/ui'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -110,6 +120,7 @@ export interface FileRouteTypes {
     | '/services'
     | '/system'
     | '/network/$name'
+    | '/services/$service'
     | '/system/ui'
   id:
     | '__root__'
@@ -120,6 +131,7 @@ export interface FileRouteTypes {
     | '/services'
     | '/system'
     | '/network_/$name'
+    | '/services_/$service'
     | '/system_/ui'
   fileRoutesById: FileRoutesById
 }
@@ -131,6 +143,7 @@ export interface RootRouteChildren {
   ServicesRoute: typeof ServicesRoute
   SystemRoute: typeof SystemRoute
   NetworkNameRoute: typeof NetworkNameRoute
+  ServicesServiceRoute: typeof ServicesServiceRoute
   SystemUiRoute: typeof SystemUiRoute
 }
 
@@ -185,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NetworkNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/services_/$service': {
+      id: '/services_/$service'
+      path: '/services/$service'
+      fullPath: '/services/$service'
+      preLoaderRoute: typeof ServicesServiceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/system_/ui': {
       id: '/system_/ui'
       path: '/system/ui'
@@ -203,6 +223,7 @@ const rootRouteChildren: RootRouteChildren = {
   ServicesRoute: ServicesRoute,
   SystemRoute: SystemRoute,
   NetworkNameRoute: NetworkNameRoute,
+  ServicesServiceRoute: ServicesServiceRoute,
   SystemUiRoute: SystemUiRoute,
 }
 export const routeTree = rootRouteImport
