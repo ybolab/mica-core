@@ -25,16 +25,29 @@ test('navigates the complete desktop console', async ({ page, isMobile }) => {
   await expect(page.getByRole('button', { name: 'MQTT Bridge', exact: true })).toBeVisible()
 })
 
-test('renders system prototypes with an explicit simulation boundary', async ({ page, isMobile }) => {
+test('writes real time settings while the simulation boundary stays named', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop system workflow')
   await page.goto('./')
   await page.getByRole('link', { name: 'Configure time' }).click()
 
   await expect(page.getByRole('heading', { name: 'System' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Time settings' })).toBeVisible()
-  await page.getByRole('button', { name: 'Save' }).click()
-  await expect(page.getByText('Time settings saved for this simulation.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'NTP servers' })).toBeVisible()
+  await expect(page.getByText('synchronized with network time')).toBeVisible()
+  await page.getByRole('textbox', { name: /^Timezone/ }).fill('Europe/Berlin')
+  await page.getByRole('button', { name: 'Save timezone' }).click()
+  await expect(page.getByText('Change applied.')).toBeVisible()
   await expect(page.getByText('Simulation', { exact: true })).toBeVisible()
+})
+
+test('reads the observed network beside the desired configuration', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop network workflow')
+  await page.goto('./network')
+
+  await page.getByRole('tab', { name: 'Observed state' }).click()
+  await expect(page.getByText(/Observed state only/)).toBeVisible()
+  await expect(page.getByText('192.168.1.24/24 \u00b7 DHCPv4')).toBeVisible()
+  await expect(page.getByText('Cellular')).toBeVisible()
+  await expect(page.getByText('unsupported').first()).toBeVisible()
 })
 
 test('restores Chinese and dark appearance preferences', async ({ page, isMobile }) => {
@@ -156,6 +169,27 @@ function payload(path: string, method: string): unknown {
   if (path === '/api/v1/settings/wifi.client') return { enabled: true, interface: 'wlan0', networks: [] }
   if (path === '/api/v1/wifi/client/networks' || path.endsWith('/peers')) return []
   if (path === '/api/v1/update') return { lifecycle: { state: 'ready', reboot_gate: { safe: true, reasons: [] }, client: { available: true } }, booted_slot: 'rootfs.0' }
+  if (path === '/api/v1/settings/time.ntp.servers') return ['0.pool.ntp.org']
+  if (path === '/api/v1/settings/time.timezone') return 'Etc/UTC'
+  if (path === '/api/v1/time/status') return {
+    status: 'synchronized',
+    synchronized: true,
+    server: { name: 'time.cloudflare.com', address: '162.159.200.1' },
+    sample: { leap: 0, stratum: 3, spike: false, offsetSeconds: 0.0024, packetCount: 8, correction: 'slew' },
+  }
+  if (path === '/api/v1/network/status') return {
+    interfaces: { available: true, count: 1, entries: [{
+      name: 'eth0',
+      link: { operationalState: 'routable', carrierState: 'carrier', carrier: true },
+      addresses: [{ family: 'inet', address: '192.168.1.24', prefixLength: 24, configSource: 'DHCPv4' }],
+      dhcp: { available: true, state: 'bound', lease: { server: '192.168.1.1' } },
+      dns: ['192.168.1.1'],
+    }] },
+    defaultRoutes: { available: true, count: 1, entries: [{ family: 'inet', gateway: '192.168.1.1', interface: 'eth0', metric: 100 }] },
+    dns: { available: true, linkServers: ['192.168.1.1'], resolverServers: ['127.0.0.53'], probe: { name: 'deb.debian.org', reachable: true, result: 'resolved' } },
+    wifi: { available: true, associations: [] },
+    capabilities: { wifi: { supported: false, interfaces: [] }, bluetooth: { supported: false, adapters: [] }, cellular: { supported: false, interfaces: [] } },
+  }
   if (path === '/api/v1/ui/bundles') return { bundles: [], retentionLimit: 32 }
   return {}
 }

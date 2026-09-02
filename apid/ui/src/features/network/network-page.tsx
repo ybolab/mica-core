@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/shared/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/shared/components/ui/alert-dialog'
+import { ObservedNetworkPanel } from '@/features/network/observed-network-panel'
 
 interface WifiNetwork { ssid: string; psk?: string; hidden: boolean; priority: number }
 interface WifiClient { enabled: boolean; interface: string; networks: WifiNetwork[] }
@@ -43,13 +44,14 @@ export function NetworkPage() {
       {network.error ? <p className="callout error" role="alert">{errorMessage(network.error, t('common.requestFailed'))}</p> : null}
       {network.data?.observed.error ? <p className="callout warning" role="status">{network.data.observed.error}</p> : null}
       <Tabs defaultValue="interfaces">
-        <TabsList aria-label={t('network.title')}><TabsTrigger value="interfaces">{t('network.tabs.interfaces')}</TabsTrigger><TabsTrigger value="wifi">{t('network.tabs.wifi')}</TabsTrigger><TabsTrigger value="wireguard">{t('network.tabs.wireguard')}</TabsTrigger></TabsList>
+        <TabsList aria-label={t('network.title')}><TabsTrigger value="interfaces">{t('network.tabs.interfaces')}</TabsTrigger><TabsTrigger value="wifi">{t('network.tabs.wifi')}</TabsTrigger><TabsTrigger value="wireguard">{t('network.tabs.wireguard')}</TabsTrigger><TabsTrigger value="observed">{t('network.tabs.observed')}</TabsTrigger></TabsList>
         <TabsContent value="interfaces" className="tab-panel">
           <div className="toolbar"><span>{t('network.interfaceCount', { count: rows.length })}</span><Button size="sm" onClick={() => setEditing({})}><Plus />{t('network.actions.addInterface')}</Button></div>
           <Surface className="surface-compact"><div className="data-table-wrap"><table className="data-table"><thead><tr><th>{t('network.table.interface')}</th><th>{t('network.table.configured')}</th><th>{t('network.table.observedType')}</th><th>{t('network.table.operational')}</th><th>{t('network.table.addresses')}</th><th /></tr></thead><tbody>{rows.map((row) => <InterfaceRow row={row} key={row.name} onEdit={() => setEditing({ name: row.name, value: row.configured as InterfaceConfig | undefined })} />)}</tbody></table>{!network.isPending && !network.isError && rows.length === 0 ? <p className="empty"><Cable />{t('network.noInterfaces')}</p> : null}</div></Surface>
         </TabsContent>
         <TabsContent value="wifi" className="tab-panel"><WifiPanel /></TabsContent>
         <TabsContent value="wireguard" className="tab-panel"><WireguardPanel configured={(network.data?.configured ?? {}) as Record<string, InterfaceConfig>} /></TabsContent>
+        <TabsContent value="observed" className="tab-panel"><ObservedNetworkPanel /></TabsContent>
       </Tabs>
       <InterfaceDialog key={editing ? (editing.name ?? 'new') : 'closed'} edit={editing} onClose={() => setEditing(undefined)} />
     </Page>

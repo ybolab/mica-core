@@ -21,7 +21,6 @@ export interface SimulatedActivity {
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'ready' | 'installing' | 'reboot-required' | 'succeeded'
-export type DiagnosticPhase = 'idle' | 'collecting' | 'ready'
 
 interface SimulationValue {
   apps: SimulatedApp[]
@@ -29,7 +28,6 @@ interface SimulationValue {
   terminalEnabled: boolean
   updatePhase: UpdatePhase
   automaticUpdates: boolean
-  diagnosticPhase: DiagnosticPhase
   supportAccess: boolean
   installApp: (id: string) => void
   toggleApp: (id: string) => void
@@ -38,7 +36,6 @@ interface SimulationValue {
   setTerminalEnabled: (enabled: boolean) => void
   advanceUpdate: () => void
   setAutomaticUpdates: (enabled: boolean) => void
-  setDiagnosticPhase: (phase: DiagnosticPhase) => void
   setSupportAccess: (enabled: boolean) => void
 }
 
@@ -66,7 +63,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [terminalEnabled, setTerminalEnabled] = useState(false)
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('ready')
   const [automaticUpdates, setAutomaticUpdates] = useState(true)
-  const [diagnosticPhase, setDiagnosticPhase] = useState<DiagnosticPhase>('idle')
   const [supportAccess, setSupportAccess] = useState(false)
 
   const record = (action: SimulatedActivity['action'], app: SimulatedApp) => {
@@ -101,7 +97,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     terminalEnabled,
     updatePhase,
     automaticUpdates,
-    diagnosticPhase,
     supportAccess,
     installApp,
     toggleApp,
@@ -110,9 +105,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setTerminalEnabled,
     advanceUpdate,
     setAutomaticUpdates,
-    setDiagnosticPhase,
     setSupportAccess,
-  }), [apps, activity, terminalEnabled, updatePhase, automaticUpdates, diagnosticPhase, supportAccess])
+  }), [apps, activity, terminalEnabled, updatePhase, automaticUpdates, supportAccess])
 
   return <SimulationContext value={value}>{children}</SimulationContext>
 }

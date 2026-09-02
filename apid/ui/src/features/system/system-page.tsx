@@ -2,21 +2,23 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouterState } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
-import { Database, ExternalLink, FileArchive, HardDrive, Info, MonitorCog, PackageSearch, Power, RefreshCcw, Settings2, Stethoscope } from 'lucide-react'
+import { Database, ExternalLink, MonitorCog, PackageSearch, Power, RefreshCcw, Settings2, Stethoscope } from 'lucide-react'
 import { api, errorMessage, json } from '@/lib/api'
-import type { Health, Meta, TaskAccepted, UiStatus } from '@/lib/types'
+import type { TaskAccepted, UiStatus } from '@/lib/types'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardHeader } from '@/components/ui/card'
 import { Field } from '@/shared/components/field'
 import { Input } from '@/shared/components/ui/input'
 import { Status } from '@/components/ui/status'
 import { Switch } from '@/shared/components/ui/switch'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { TaskProgress } from '@/shared/components/task-progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { SimulationNotice } from '@/shared/simulation/simulation-notice'
 import { useSimulation } from '@/shared/simulation/simulation-provider'
-import { Progress } from '@/shared/components/ui/progress'
+import { InformationPanel } from '@/features/system/information-panel'
+import { TimePanel } from '@/features/system/time-panel'
+import { StoragePanel } from '@/features/system/storage-panel'
+import { DiagnosticsPanel } from '@/features/system/diagnostics-panel'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -104,21 +106,6 @@ export function UpdatePanel() {
   )
 }
 
-function InformationPanel() {
-  const { t } = useTranslation()
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => api<Meta>('/api/v1/meta') })
-  const health = useQuery({ queryKey: ['health'], queryFn: () => api<Health>('/api/v1/health') })
-  return <Card><CardHeader title={t('system.information.title')} description={t('system.information.description')} action={<Info className="size-5 text-muted-foreground" />} /><dl className="details"><div><dt>{t('system.information.model')}</dt><dd>mos-cm4 rev 2</dd></div><div><dt>{t('system.information.serial')}</dt><dd><code>MOS-CM4-02842</code></dd></div><div><dt>{t('system.information.release')}</dt><dd>2026.08.2</dd></div><div><dt>{t('system.information.api')}</dt><dd>{meta.data?.api ?? t('common.notAvailable')}</dd></div><div><dt>{t('system.information.daemon')}</dt><dd>{meta.data?.daemon ?? t('common.notAvailable')}</dd></div><div><dt>{t('system.information.health')}</dt><dd><Status ok={health.data?.mosd === 'ok'}>{health.data?.mosd ?? t('common.states.unknown')}</Status></dd></div></dl>{meta.error || health.error ? <p className="callout error" role="alert">{errorMessage(meta.error ?? health.error, t('common.requestFailed'))}</p> : null}</Card>
-}
-
-function TimePanel() {
-  const { t } = useTranslation()
-  const [timezone, setTimezone] = useState('Etc/UTC')
-  const [ntp, setNtp] = useState('time.cloudflare.com, pool.ntp.org')
-  const [saved, setSaved] = useState(false)
-  return <div className="split-grid"><Card><CardHeader title={t('system.time.title')} description={t('system.time.description')} /><form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); setSaved(true) }}><Field label={t('system.time.timezone')}><Select value={timezone} onValueChange={(value) => { if (value) setTimezone(value) }}><SelectTrigger aria-label={t('system.time.timezone')}><SelectValue /></SelectTrigger><SelectContent>{['Etc/UTC', 'Asia/Shanghai', 'Europe/Berlin', 'America/Los_Angeles'].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></Field><Field label={t('system.time.ntp')} hint={t('system.time.ntpHint')}><Input value={ntp} onChange={(event) => setNtp(event.target.value)} /></Field><Button type="submit">{t('common.actions.save')}</Button>{saved ? <p className="callout success">{t('system.time.saved')}</p> : null}</form></Card><Card><CardHeader title={t('system.time.statusTitle')} description={t('system.time.statusDescription')} /><dl className="details"><div><dt>{t('system.time.localTime')}</dt><dd>2026-09-02 09:18:42</dd></div><div><dt>{t('system.time.utcTime')}</dt><dd>2026-09-02 09:18:42 UTC</dd></div><div><dt>{t('system.time.source')}</dt><dd>time.cloudflare.com</dd></div><div><dt>{t('system.time.offset')}</dt><dd>+2.4 ms</dd></div></dl><p className="callout success">{t('system.time.synchronized')}</p></Card></div>
-}
-
 function UpdateActions() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -127,27 +114,11 @@ function UpdateActions() {
   return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="ui-selector"><div><strong>{t('system.update.automatic')}</strong><small>{t('system.update.automaticCopy')}</small></div><Switch aria-label={t('system.update.automatic')} checked={simulation.automaticUpdates} onCheckedChange={simulation.setAutomaticUpdates} /></div><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={action.isPending}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={action.isPending}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={action.isPending}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
 }
 
-function StoragePanel() {
-  const { t } = useTranslation()
-  return <div className="stack"><div className="content-grid content-grid-wide"><StorageCard name="ROOTFS A" used={42} detail="3.4 / 8 GiB" /><StorageCard name="ROOTFS B" used={39} detail="3.1 / 8 GiB" /><StorageCard name="DATA" used={63} detail="49.2 / 78 GiB" /></div><Card><CardHeader title={t('system.storage.allocationTitle')} description={t('system.storage.allocationDescription')} action={<HardDrive className="size-5 text-muted-foreground" />} /><dl className="details"><div><dt>{t('system.storage.applications')}</dt><dd>18.6 GiB</dd></div><div><dt>{t('system.storage.updates')}</dt><dd>6.2 GiB</dd></div><div><dt>{t('system.storage.userData')}</dt><dd>21.4 GiB</dd></div><div><dt>{t('system.storage.available')}</dt><dd>28.8 GiB</dd></div></dl></Card></div>
-}
-
-function StorageCard({ name, used, detail }: { name: string; used: number; detail: string }) {
-  const { t } = useTranslation()
-  return <Card><CardHeader title={name} description={t('system.storage.used', { value: used })} /><Progress value={used} /><p className="mt-3 text-sm text-muted-foreground">{detail}</p></Card>
-}
-
-function DiagnosticsPanel() {
-  const { t } = useTranslation()
-  const simulation = useSimulation()
-  const collect = () => simulation.setDiagnosticPhase(simulation.diagnosticPhase === 'ready' ? 'idle' : 'ready')
-  return <div className="split-grid"><Card><CardHeader title={t('system.diagnostics.bundleTitle')} description={t('system.diagnostics.bundleDescription')} action={<FileArchive className="size-5 text-muted-foreground" />} /><Button onClick={collect}>{simulation.diagnosticPhase === 'ready' ? t('system.diagnostics.download') : t('system.diagnostics.collect')}</Button>{simulation.diagnosticPhase === 'ready' ? <p className="callout success">{t('system.diagnostics.ready')}</p> : null}</Card><Card><CardHeader title={t('system.diagnostics.supportTitle')} description={t('system.diagnostics.supportDescription')} action={<Stethoscope className="size-5 text-muted-foreground" />} /><div className="ui-selector"><div><strong>{t('system.diagnostics.supportAccess')}</strong><small>{t('system.diagnostics.supportCopy')}</small></div><Switch aria-label={t('system.diagnostics.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} /></div><Status ok={!simulation.supportAccess}>{t(simulation.supportAccess ? 'system.diagnostics.expires' : 'system.diagnostics.disabled')}</Status></Card></div>
-}
-
 function RecoveryPanel() {
   const { t } = useTranslation()
+  const simulation = useSimulation()
   const [message, setMessage] = useState('')
-  return <div className="stack"><Card><CardHeader title={t('system.recovery.backupTitle')} description={t('system.recovery.backupDescription')} action={<Database className="size-5 text-muted-foreground" />} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => setMessage(t('system.recovery.created'))}>{t('system.recovery.create')}</Button><Button variant="secondary" onClick={() => setMessage(t('system.recovery.restored'))}>{t('system.recovery.restore')}</Button></div>{message ? <p className="callout success">{message}</p> : null}</Card><Card><CardHeader title={t('system.recovery.resetTitle')} description={t('system.recovery.resetDescription')} action={<RefreshCcw className="size-5 text-danger" />} /><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>{t('system.recovery.reset')}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('system.recovery.confirmTitle')}</AlertDialogTitle><AlertDialogDescription>{t('system.recovery.confirmDescription')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => setMessage(t('system.recovery.resetQueued'))}>{t('system.recovery.reset')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>{message ? <p className="callout warning">{message}</p> : null}</Card></div>
+  return <div className="stack"><Card><CardHeader title={t('system.recovery.backupTitle')} description={t('system.recovery.backupDescription')} action={<Database className="size-5 text-muted-foreground" />} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => setMessage(t('system.recovery.created'))}>{t('system.recovery.create')}</Button><Button variant="secondary" onClick={() => setMessage(t('system.recovery.restored'))}>{t('system.recovery.restore')}</Button></div>{message ? <p className="callout success">{message}</p> : null}</Card><Card><CardHeader title={t('system.recovery.supportTitle')} description={t('system.recovery.supportDescription')} action={<Stethoscope className="size-5 text-muted-foreground" />} /><div className="ui-selector"><div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div><Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} /></div><Status ok={!simulation.supportAccess}>{t(simulation.supportAccess ? 'system.recovery.supportExpires' : 'system.recovery.supportDisabled')}</Status></Card><Card><CardHeader title={t('system.recovery.resetTitle')} description={t('system.recovery.resetDescription')} action={<RefreshCcw className="size-5 text-danger" />} /><AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>{t('system.recovery.reset')}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('system.recovery.confirmTitle')}</AlertDialogTitle><AlertDialogDescription>{t('system.recovery.confirmDescription')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => setMessage(t('system.recovery.resetQueued'))}>{t('system.recovery.reset')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>{message ? <p className="callout warning">{message}</p> : null}</Card></div>
 }
 
 function HostnamePanel() {

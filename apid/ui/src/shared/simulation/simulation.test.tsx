@@ -18,7 +18,6 @@ function Probe() {
       <span data-testid="terminal">{String(simulation.terminalEnabled)}</span>
       <span data-testid="update-phase">{simulation.updatePhase}</span>
       <span data-testid="automatic">{String(simulation.automaticUpdates)}</span>
-      <span data-testid="diagnostic">{simulation.diagnosticPhase}</span>
       <span data-testid="support">{String(simulation.supportAccess)}</span>
       <span data-testid="activity-count">{simulation.activity.length}</span>
       <button type="button" onClick={() => simulation.installApp('mqtt-bridge')}>install</button>
@@ -30,7 +29,6 @@ function Probe() {
       <button type="button" onClick={() => simulation.setTerminalEnabled(true)}>terminal</button>
       <button type="button" onClick={simulation.advanceUpdate}>advance</button>
       <button type="button" onClick={() => simulation.setAutomaticUpdates(false)}>automatic</button>
-      <button type="button" onClick={() => simulation.setDiagnosticPhase('ready')}>diagnostic</button>
       <button type="button" onClick={() => simulation.setSupportAccess(true)}>support</button>
     </div>
   )
@@ -98,11 +96,9 @@ describe('simulation boundary', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'terminal' }))
     await userEvent.click(screen.getByRole('button', { name: 'automatic' }))
-    await userEvent.click(screen.getByRole('button', { name: 'diagnostic' }))
     await userEvent.click(screen.getByRole('button', { name: 'support' }))
     expect(screen.getByTestId('terminal').textContent).toBe('true')
     expect(screen.getByTestId('automatic').textContent).toBe('false')
-    expect(screen.getByTestId('diagnostic').textContent).toBe('ready')
     expect(screen.getByTestId('support').textContent).toBe('true')
   })
 
