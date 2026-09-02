@@ -924,3 +924,887 @@ pub fn staging_root_from_env() -> PathBuf {
     std::env::var_os("MOSD_PROVISIONING_ROOT")
         .map_or_else(|| PathBuf::from(DEFAULT_STAGING_ROOT), PathBuf::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use mosd_settings::{ProvisioningState, encode_base64_nopad};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// A password the sentinel test can find anywhere it leaked, and which is
+    /// long enough to be accepted.
+    const SECRET_PASSWORD: &str = "PW-SENTINEL-8a3f-do-not-log";
+
+    /// The same, for the WiFi pre-shared key. A DIFFERENT string, so a test
+    /// that finds one cannot be satisfied by the other.
+    const SECRET_PSK: &str = "PSK-SENTINEL-4c7e";
+
+    /// The same sentinel, padded past IEEE 802.11i's longest passphrase. Used
+    /// where a REFUSAL about a pre-shared key is wanted: the refusal must name
+    /// neither the value nor its length, and this is the string that proves it.
+    fn unusable_psk() -> String {
+        format!("{SECRET_PSK}{}", "x".repeat(50))
+    }
+
+    fn settings_path(dir: &Path) -> PathBuf {
+        dir.join("settings.toml")
+    }
+
+    fn store_in(dir: &Path) -> Store {
+        Store::new(settings_path(dir))
+    }
+
+    /// Write `body` as the document of `source`, under a fresh staging root.
+    fn stage(dir: &Path, source: Source, body: &str) -> PathBuf {
+        let root = dir.join("staging");
+        let source_dir = root.join(source.dir_name());
+        fs::create_dir_all(&source_dir).expect("create staging dir");
+        fs::write(source_dir.join(DOCUMENT_FILE_NAME), body).expect("write document");
+        root
+    }
+
+    /// A structurally valid authorized-key line, built from the crate's own
+    /// encoder rather than pasted from anywhere.
+    fn key_line() -> String {
+        let key_type = "ssh-ed25519";
+        let mut bytes = Vec::new();
+        let name = key_type.as_bytes();
+        bytes.extend_from_slice(
+            &u32::try_from(name.len())
+                .expect("name length")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(name);
+        while bytes.len() < 64 {
+            let index = u8::try_from(bytes.len()).expect("index fits");
+            bytes.push(index.wrapping_mul(11).wrapping_add(5));
+        }
+        let mut encoded = encode_base64_nopad(&bytes);
+        while !encoded.len().is_multiple_of(4) {
+            encoded.push('=');
+        }
+        format!("{key_type} {encoded}")
+    }
+
+    /// A document exercising every section, secrets included.
+    fn full_document() -> String {
+        format!(
+            r#"
+# A factory document, with the comments and blank lines a real one carries.
+version = 1
+
+[identity]
+deviceId = "0123456789abcdef0123456789abcdef"
+
+[admin]
+password = "{SECRET_PASSWORD}"
+authorizedKeys = ["{key}"]
+
+[network.eth0]
+dhcp = true
+
+[wifi]
+enabled = true
+interface = "wlan0"
+
+[[wifi.networks]]
+ssid = "site-ap"
+psk = "{SECRET_PSK}"
+priority = 10
+
+[time]
+timezone = "Europe/Berlin"
+
+[time.ntp]
+servers = ["0.pool.ntp.org", "192.0.2.7"]
+"#,
+            key = key_line()
+        )
+    }
+
+    /// The smallest document that does anything, and which claims nothing.
+    fn time_only_document() -> &'static str {
+        r#"
+version = 1
+
+[time]
+timezone = "Europe/Berlin"
+"#
+    }
+
+    /// Import `body` from `source` against a fresh STATE, returning the store,
+    /// the resulting tree and the outcome.
+    fn import_body(dir: &Path, source: Source, body: &str) -> (Store, Settings, Outcome) {
+        let store = store_in(dir);
+        let root = stage(dir, source, body);
+        let mut settings = Settings::default();
+        let outcome = import(&store, &mut settings, &root).expect("import");
+        (store, settings, outcome)
+    }
+
+    // The happy path, end to end: every section lands where it belongs, the
+    // record names the document, and the tree really reached STATE.
+    #[test]
+    fn a_boot_document_is_applied_and_persisted() {
+        let dir = TempDir::new().expect("tempdir");
+        let (store, settings, outcome) = import_body(dir.path(), Source::Boot, &full_document());
+
+        let Outcome::Applied {
+            source,
+            version,
+            digest,
+        } = outcome
+        else {
+            panic!("expected an applied document, got {outcome:?}");
+        };
+        assert_eq!(source, Source::Boot);
+        assert_eq!(version, DOCUMENT_VERSION);
+
+        assert_eq!(
+            settings.provisioning.device_id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert!(
+            settings
+                .access
+                .web_admin
+                .as_ref()
+                .expect("the admin credential is set")
+                .password_hash
+                .starts_with("$argon2id$"),
+            "the bootstrap password must be stored as an Argon2id hash"
+        );
+        assert_eq!(settings.access.ssh.authorized_keys.len(), 1);
+        assert!(settings.network.get("eth0").expect("eth0 configured").dhcp);
+        assert!(settings.wifi.client.enabled);
+        assert_eq!(settings.wifi.client.networks[0].ssid, "site-ap");
+        assert_eq!(settings.time.timezone, "Europe/Berlin");
+        assert_eq!(settings.time.ntp.servers.len(), 2);
+
+        let record = settings
+            .provisioning
+            .document
+            .as_ref()
+            .expect("a document record");
+        assert_eq!(record.applied_version, Some(DOCUMENT_VERSION));
+        assert_eq!(record.applied_digest.as_deref(), Some(digest.as_str()));
+        let import_record = record.last_import.as_ref().expect("an import record");
+        assert_eq!(import_record.source, "boot");
+        assert_eq!(import_record.outcome, "applied");
+        assert_eq!(import_record.reason, None);
+
+        // The one save really happened, and it holds the same tree.
+        assert_eq!(store.load().expect("reload"), settings);
+
+        // Nothing seeding owns was moved: this ran before seeding, so the
+        // state is still pending and the generation still zero.
+        assert_eq!(settings.provisioning.state, ProvisioningState::Pending);
+        assert_eq!(settings.provisioning.seeded_generation, 0);
+    }
+
+    // The idempotence criterion, asserted on the bytes: a second import writes
+    // NOTHING at all, so a device left with the medium in place does not burn
+    // a flash write per boot.
+    #[test]
+    fn re_applying_an_identical_document_is_a_proven_no_op() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(dir.path(), Source::Boot, &full_document());
+        let mut settings = Settings::default();
+
+        let first = import(&store, &mut settings, &root).expect("first import");
+        assert!(matches!(first, Outcome::Applied { .. }), "{first:?}");
+        let first_tree = settings.clone();
+        let first_bytes = fs::read(settings_path(dir.path())).expect("read settings file");
+
+        // Reload from STATE, exactly as the next boot would.
+        let mut second = store.load().expect("reload");
+        assert_eq!(second, first_tree);
+        let outcome = import(&store, &mut second, &root).expect("second import");
+        let Outcome::Unchanged { source, digest } = outcome else {
+            panic!("expected `unchanged`, got {outcome:?}");
+        };
+        assert_eq!(source, Source::Boot);
+        assert_eq!(
+            Some(digest.as_str()),
+            first_tree
+                .provisioning
+                .document
+                .as_ref()
+                .and_then(|record| record.applied_digest.as_deref())
+        );
+
+        // NOTHING the document names moved. The one thing a second import does
+        // write is the attempt record, so it is excluded here and asserted
+        // directly below — the tree is otherwise the tree the first import
+        // produced, byte for byte in the settings the document owns.
+        let mut second_without_record = second.clone();
+        let mut first_without_record = first_tree.clone();
+        for tree in [&mut second_without_record, &mut first_without_record] {
+            if let Some(document) = tree.provisioning.document.as_mut() {
+                document.last_import = None;
+            }
+        }
+        assert_eq!(
+            second_without_record, first_without_record,
+            "a second import must move nothing the document names"
+        );
+        let attempt = second
+            .provisioning
+            .document
+            .as_ref()
+            .and_then(|record| record.last_import.as_ref())
+            .expect("an import record");
+        assert_eq!(attempt.outcome, "unchanged");
+        assert_eq!(attempt.reason, None);
+        assert_ne!(
+            fs::read(settings_path(dir.path())).expect("re-read settings file"),
+            first_bytes,
+            "the second import records that it found nothing to do"
+        );
+
+        // And a THIRD import writes nothing at all: a device left with the
+        // medium in its socket must not burn a flash write per boot.
+        let second_bytes = fs::read(settings_path(dir.path())).expect("read settings file");
+        let mut third = store.load().expect("reload");
+        assert!(matches!(
+            import(&store, &mut third, &root).expect("third import"),
+            Outcome::Unchanged { .. }
+        ));
+        assert_eq!(third, second);
+        assert_eq!(
+            fs::read(settings_path(dir.path())).expect("re-read settings file"),
+            second_bytes,
+            "settings.toml must be byte-identical from the second import on"
+        );
+    }
+
+    // The digest is over the CANONICAL document: the same configuration
+    // written differently is the same document. Without this, an operator who
+    // reformatted the file on the medium would re-claim the device.
+    #[test]
+    fn the_digest_ignores_comments_whitespace_and_section_order() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let original = "version = 1\n\n[identity]\ndeviceId = \"0123456789abcdef0123456789abcdef\"\n\n                        [time]\ntimezone = \"Europe/Berlin\"\n";
+        let root = stage(dir.path(), Source::Boot, original);
+        let mut settings = Settings::default();
+        assert!(matches!(
+            import(&store, &mut settings, &root).expect("first"),
+            Outcome::Applied { .. }
+        ));
+
+        // The same document, rewritten by hand: a comment, different spacing,
+        // and the two sections in the other order.
+        let rewritten = "# rewritten by an operator\nversion=1\n\n[time]\n\ntimezone   =   \
+                         \"Europe/Berlin\"\n\n[identity]\ndeviceId=\"0123456789abcdef0123456789abcdef\"\n";
+        let root = stage(dir.path(), Source::Boot, rewritten);
+        let mut reloaded = store.load().expect("reload");
+        let outcome = import(&store, &mut reloaded, &root).expect("second");
+        assert!(
+            matches!(outcome, Outcome::Unchanged { .. }),
+            "a reformatted document is the same document, got {outcome:?}"
+        );
+
+        // And a document that differs in a VALUE is a different document.
+        let root = stage(
+            dir.path(),
+            Source::Boot,
+            "version = 1\n\n[time]\ntimezone = \"UTC\"\n",
+        );
+        let mut reloaded = store.load().expect("reload");
+        let outcome = import(&store, &mut reloaded, &root).expect("third");
+        assert!(
+            matches!(outcome, Outcome::Applied { .. }),
+            "a changed value must not be short-circuited, got {outcome:?}"
+        );
+        assert_eq!(reloaded.time.timezone, "UTC");
+    }
+
+    /// Every way a document can be wrong, with the key path its refusal must
+    /// name. Driven as one table so a new rule is one row.
+    fn invalid_documents() -> Vec<(&'static str, String, &'static str)> {
+        vec![
+            (
+                "no version field",
+                "[time]\ntimezone = \"UTC\"\n".to_string(),
+                "version",
+            ),
+            (
+                "a version this build does not apply",
+                "version = 2\n".to_string(),
+                "version",
+            ),
+            (
+                "a version that is not an integer",
+                "version = \"1\"\n".to_string(),
+                "version",
+            ),
+            (
+                "a section the schema does not have",
+                "version = 1\n\n[certificates]\nca = \"x\"\n".to_string(),
+                "certificates",
+            ),
+            (
+                "a misspelled key inside a section",
+                "version = 1\n\n[identity]\ndeviceID = \"0123456789abcdef0123456789abcdef\"\n"
+                    .to_string(),
+                "identity.deviceID",
+            ),
+            (
+                "a device identifier that is not 32 lowercase hex",
+                "version = 1\n\n[identity]\ndeviceId = \"0123456789ABCDEF0123456789abcdef\"\n"
+                    .to_string(),
+                "identity.deviceId",
+            ),
+            (
+                "a device identifier of the wrong length",
+                "version = 1\n\n[identity]\ndeviceId = \"abc\"\n".to_string(),
+                "identity.deviceId",
+            ),
+            (
+                "an administrator password below the floor",
+                "version = 1\n\n[admin]\npassword = \"short\"\n".to_string(),
+                "admin.password",
+            ),
+            (
+                "an authorized key that is not one",
+                "version = 1\n\n[admin]\nauthorizedKeys = [\"command=/bin/sh ssh-ed25519 AAAA\"]\n"
+                    .to_string(),
+                "admin.authorizedKeys[0]",
+            ),
+            (
+                "an interface name that is not one",
+                "version = 1\n\n[network.\"eth 0\"]\ndhcp = true\n".to_string(),
+                "network",
+            ),
+            (
+                "a network entry of the wrong shape",
+                "version = 1\n\n[network.eth0]\ndhcp = \"yes\"\n".to_string(),
+                "network",
+            ),
+            (
+                "a WiFi network with no name",
+                "version = 1\n\n[[wifi.networks]]\nssid = \"\"\n".to_string(),
+                "wifi.networks[0].ssid",
+            ),
+            (
+                "a pre-shared key no supplicant could use",
+                format!(
+                    "version = 1\n\n[[wifi.networks]]\nssid = \"s\"\npsk = \"{}\"\n",
+                    unusable_psk()
+                ),
+                "wifi.networks[0].psk",
+            ),
+            (
+                "an NTP server that could smuggle a second assignment",
+                "version = 1\n\n[time.ntp]\nservers = [\"pool one\"]\n".to_string(),
+                "time.ntp.servers",
+            ),
+            (
+                "a timezone that is not an IANA zone name",
+                "version = 1\n\n[time]\ntimezone = \"../etc/passwd\"\n".to_string(),
+                "time.timezone",
+            ),
+        ]
+    }
+
+    // The acceptance criterion, stated twice over: one bad field applies
+    // NOTHING, and the refusal names the offending KEY PATH.
+    //
+    // "Applies nothing" is asserted against the tree the import started from,
+    // with the import record excluded — the record is the one thing a refusal
+    // does write, because a refusal nobody can see is not a legible failure.
+    #[test]
+    fn a_document_with_one_bad_field_applies_nothing_and_names_the_key() {
+        for (label, body, key) in invalid_documents() {
+            let dir = TempDir::new().expect("tempdir");
+            let store = store_in(dir.path());
+            let root = stage(dir.path(), Source::Boot, &body);
+            let mut settings = Settings::default();
+
+            let outcome = import(&store, &mut settings, &root).expect("import");
+            let Outcome::Rejected { source, rejection } = outcome else {
+                panic!("{label}: expected a rejection, got {outcome:?}");
+            };
+            assert_eq!(source, Source::Boot);
+            assert_eq!(
+                rejection.key, key,
+                "{label}: wrong key path in {rejection:?}"
+            );
+            assert!(!rejection.reason.is_empty(), "{label}: no reason given");
+
+            let mut without_record = settings.clone();
+            without_record.provisioning.document = None;
+            assert_eq!(
+                without_record,
+                Settings::default(),
+                "{label}: a refused document moved something"
+            );
+
+            let record = settings
+                .provisioning
+                .document
+                .as_ref()
+                .expect("a record of the refusal");
+            assert_eq!(record.applied_version, None);
+            assert_eq!(record.applied_digest, None);
+            let attempt = record.last_import.as_ref().expect("an import record");
+            assert_eq!(attempt.outcome, "rejected");
+            let reason = attempt.reason.as_deref().expect("a reason");
+            assert!(
+                reason.contains(key),
+                "{label}: the recorded reason must name the key, got {reason:?}"
+            );
+
+            // And the device is still a working, UNCLAIMED appliance: nothing
+            // about a refused document may take it out of setup mode.
+            assert!(settings.access.web_admin.is_none(), "{label}");
+            assert_eq!(store.load().expect("reload"), settings, "{label}");
+        }
+    }
+
+    // The secret-safety acceptance criterion. A document carrying two known
+    // sentinels is driven through the WHOLE path — apply, record, re-import,
+    // refuse — and neither sentinel may appear in anything emitted.
+    //
+    // The settings tree is deliberately NOT in the search space for the PSK:
+    // `wifi.client.networks[].psk` stores it by design and apid's redactor is
+    // what keeps it off the wire. What is asserted here is everything this
+    // module itself produces, plus the whole `provisioning` subtree, which is
+    // what the status route serves.
+    #[test]
+    fn no_secret_from_the_document_reaches_a_report_or_the_record() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(dir.path(), Source::Boot, &full_document());
+        let mut settings = Settings::default();
+
+        let applied = import(&store, &mut settings, &root).expect("import");
+        let mut emitted = vec![format!("{applied:?}")];
+
+        // The subtree the status route reads and `GetSettings("provisioning")`
+        // serves, in the form it is served in.
+        emitted
+            .push(serde_json::to_string(&settings.provisioning).expect("the subtree serializes"));
+        emitted.push(toml::to_string(&settings.provisioning).expect("the subtree renders"));
+
+        // The re-import, and the refusal a claimed device gives a DIFFERENT
+        // document carrying the same secrets.
+        let mut reloaded = store.load().expect("reload");
+        emitted.push(format!(
+            "{:?}",
+            import(&store, &mut reloaded, &root).expect("re-import")
+        ));
+        let altered = full_document().replace("priority = 10", "priority = 11");
+        let root = stage(dir.path(), Source::Media, &altered);
+        // The boot document is still staged, so remove it: this is about what
+        // the media path reports.
+        fs::remove_file(root.join(Source::Boot.dir_name()).join(DOCUMENT_FILE_NAME))
+            .expect("remove the boot document");
+        let mut reloaded = store.load().expect("reload");
+        let refused = import(&store, &mut reloaded, &root).expect("refused import");
+        assert!(
+            matches!(refused, Outcome::Rejected { .. }),
+            "a claimed device must refuse a new document, got {refused:?}"
+        );
+        emitted.push(format!("{refused:?}"));
+        emitted.push(serde_json::to_string(&reloaded.provisioning).expect("serializes"));
+
+        // Every rejection this module can raise about a secret-bearing key.
+        for body in [
+            format!(
+                "version = 1\n\n[admin]\npassword = \"{}\"\n",
+                &SECRET_PASSWORD[..4]
+            ),
+            format!(
+                "version = 1\n\n[[wifi.networks]]\nssid = \"s\"\npsk = \"{}\"\n",
+                unusable_psk()
+            ),
+            format!("version = 1\n\n[admin]\npassword = {SECRET_PASSWORD:?}\nbogus = 1\n"),
+        ] {
+            let dir = TempDir::new().expect("tempdir");
+            let store = store_in(dir.path());
+            let root = stage(dir.path(), Source::Media, &body);
+            let mut fresh = Settings::default();
+            let outcome = import(&store, &mut fresh, &root).expect("import");
+            emitted.push(format!("{outcome:?}"));
+            if let Outcome::Rejected { rejection, .. } = &outcome {
+                emitted.push(rejection.to_string());
+            }
+            emitted.push(serde_json::to_string(&fresh.provisioning).expect("serializes"));
+        }
+
+        for text in &emitted {
+            for sentinel in [SECRET_PASSWORD, SECRET_PSK, &SECRET_PASSWORD[..4]] {
+                assert!(
+                    !text.contains(sentinel),
+                    "a document secret reached an emitted string: {sentinel:?} in {text:?}"
+                );
+            }
+        }
+        // The search space is populated: a scan over empty strings would pass
+        // forever.
+        assert!(emitted.len() >= 10, "{emitted:?}");
+        assert!(
+            emitted.iter().any(|text| text.contains("rejected")),
+            "no refusal was emitted, so the refusal half proves nothing: {emitted:?}"
+        );
+    }
+
+    // The stored hash is not the password, which is the other half of the
+    // claim above: the plaintext is dropped, not moved.
+    #[test]
+    fn the_bootstrap_password_is_stored_only_as_a_hash() {
+        let dir = TempDir::new().expect("tempdir");
+        let (_, settings, _) = import_body(dir.path(), Source::Boot, &full_document());
+        let rendered = toml::to_string(&settings).expect("the tree renders");
+        assert!(
+            !rendered.contains(SECRET_PASSWORD),
+            "the plaintext password reached the settings file"
+        );
+        assert!(rendered.contains("$argon2id$"));
+    }
+
+    // The preference order: the BOOT medium wins, and the other source is not
+    // consulted at all.
+    #[test]
+    fn the_boot_medium_wins_over_removable_media() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(
+            dir.path(),
+            Source::Boot,
+            "version = 1\n\n[time]\ntimezone = \"Europe/Berlin\"\n",
+        );
+        stage(
+            dir.path(),
+            Source::Media,
+            "version = 1\n\n[time]\ntimezone = \"Asia/Shanghai\"\n",
+        );
+        let mut settings = Settings::default();
+
+        let outcome = import(&store, &mut settings, &root).expect("import");
+        let Outcome::Applied { source, .. } = outcome else {
+            panic!("expected an applied document, got {outcome:?}");
+        };
+        assert_eq!(source, Source::Boot);
+        assert_eq!(settings.time.timezone, "Europe/Berlin");
+    }
+
+    // With no boot document the media one is taken, which is the whole of
+    // path 2.
+    #[test]
+    fn a_removable_medium_is_taken_when_the_boot_medium_carries_nothing() {
+        let dir = TempDir::new().expect("tempdir");
+        let (_, settings, outcome) = import_body(dir.path(), Source::Media, time_only_document());
+        let Outcome::Applied { source, .. } = outcome else {
+            panic!("expected an applied document, got {outcome:?}");
+        };
+        assert_eq!(source, Source::Media);
+        assert_eq!(settings.time.timezone, "Europe/Berlin");
+    }
+
+    // No medium, or a medium with no document: nothing is read, nothing is
+    // written, and the record of the document this device DID apply survives.
+    #[test]
+    fn no_document_writes_nothing_and_forgets_nothing() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(dir.path(), Source::Boot, time_only_document());
+        let mut settings = Settings::default();
+        import(&store, &mut settings, &root).expect("import");
+        let applied = settings.clone();
+        let bytes = fs::read(settings_path(dir.path())).expect("read settings file");
+
+        // The medium is gone on the next boot.
+        fs::remove_file(root.join("boot").join(DOCUMENT_FILE_NAME)).expect("remove");
+        let mut reloaded = store.load().expect("reload");
+        assert_eq!(
+            import(&store, &mut reloaded, &root).expect("import"),
+            Outcome::NoDocument
+        );
+        assert_eq!(reloaded, applied);
+        assert_eq!(
+            fs::read(settings_path(dir.path())).expect("re-read"),
+            bytes,
+            "a boot with no document must write nothing"
+        );
+
+        // And a staging root that was never created at all.
+        let mut reloaded = store.load().expect("reload");
+        assert_eq!(
+            import(&store, &mut reloaded, &dir.path().join("absent")).expect("import"),
+            Outcome::NoDocument
+        );
+        assert_eq!(reloaded, applied);
+    }
+
+    // Only a regular file at the one documented path is read. A symbolic link
+    // planted on operator media would otherwise name a path on the DEVICE, and
+    // a character device would hang early boot on a read that never ends.
+    #[test]
+    fn only_a_regular_file_at_the_documented_path_is_read() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().join("staging");
+        let boot = root.join("boot");
+        fs::create_dir_all(&boot).expect("create staging dir");
+
+        // A document at a name this code does not look for is not found.
+        fs::write(boot.join("provisioning.toml"), time_only_document()).expect("write");
+        fs::write(root.join(DOCUMENT_FILE_NAME), time_only_document()).expect("write");
+        assert_eq!(find_document(&root), None);
+
+        // A directory under the document's name is not a document.
+        fs::create_dir(boot.join(DOCUMENT_FILE_NAME)).expect("create dir");
+        assert_eq!(find_document(&root), None);
+        fs::remove_dir(boot.join(DOCUMENT_FILE_NAME)).expect("remove dir");
+
+        // A symbolic link, even one pointing at a perfectly good document.
+        let target = dir.path().join("elsewhere.toml");
+        fs::write(&target, time_only_document()).expect("write");
+        std::os::unix::fs::symlink(&target, boot.join(DOCUMENT_FILE_NAME)).expect("symlink");
+        assert_eq!(find_document(&root), None);
+        fs::remove_file(boot.join(DOCUMENT_FILE_NAME)).expect("remove link");
+
+        // The positive control: the same bytes, as a regular file, ARE found.
+        fs::write(boot.join(DOCUMENT_FILE_NAME), time_only_document()).expect("write");
+        assert_eq!(
+            find_document(&root),
+            Some((Source::Boot, boot.join(DOCUMENT_FILE_NAME)))
+        );
+    }
+
+    // A document too large to be one is refused before its bytes are read, so
+    // a stick carrying a huge file is a legible refusal and not an
+    // out-of-memory kill during early boot.
+    #[test]
+    fn an_oversized_document_is_refused_without_being_read() {
+        let dir = TempDir::new().expect("tempdir");
+        let body = "#".repeat(usize::try_from(MAX_DOCUMENT_BYTES).expect("fits") + 1);
+        let (_, settings, outcome) = import_body(dir.path(), Source::Media, &body);
+        let Outcome::Rejected { rejection, .. } = outcome else {
+            panic!("expected a rejection, got {outcome:?}");
+        };
+        assert_eq!(rejection.key, "");
+        assert!(rejection.reason.contains("maximum"), "{rejection:?}");
+        assert!(settings.access.web_admin.is_none());
+    }
+
+    // A file that is not TOML is a refusal, and the parser's own message —
+    // which quotes source text — is not what is reported.
+    #[test]
+    fn a_file_that_is_not_toml_is_refused_without_quoting_it() {
+        let dir = TempDir::new().expect("tempdir");
+        let body = format!("this is not TOML {SECRET_PASSWORD}");
+        let (_, _, outcome) = import_body(dir.path(), Source::Boot, &body);
+        let Outcome::Rejected { rejection, .. } = outcome else {
+            panic!("expected a rejection, got {outcome:?}");
+        };
+        assert_eq!(rejection.key, "");
+        assert_eq!(rejection.reason, "the document is not valid TOML");
+        assert!(!rejection.to_string().contains(SECRET_PASSWORD));
+    }
+
+    // The claim gate, stated on its own: an unsigned medium cannot reconfigure
+    // a device that already has an administrator.
+    #[test]
+    fn a_claimed_device_refuses_a_document_it_has_not_already_applied() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let mut settings = Settings::default();
+        settings
+            .set(
+                "access.webAdmin",
+                serde_json::json!({ "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2" }),
+            )
+            .expect("claim the device");
+        store.save(&settings).expect("save");
+        let claimed = settings.clone();
+
+        let root = stage(dir.path(), Source::Media, time_only_document());
+        let outcome = import(&store, &mut settings, &root).expect("import");
+        let Outcome::Rejected { rejection, .. } = outcome else {
+            panic!("expected a rejection, got {outcome:?}");
+        };
+        assert!(
+            rejection.reason.contains("already claimed"),
+            "{rejection:?}"
+        );
+
+        // Nothing the document named moved, and the credential is intact.
+        assert_eq!(settings.time, claimed.time);
+        assert_eq!(settings.access.web_admin, claimed.access.web_admin);
+    }
+
+    // A device claimed BY the offered document reports `unchanged`, not
+    // `already-claimed`: the short-circuit runs before the gate, or every
+    // reboot with the medium still in place would look like an attack.
+    #[test]
+    fn the_document_that_claimed_the_device_still_reports_unchanged() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(dir.path(), Source::Boot, &full_document());
+        let mut settings = Settings::default();
+        assert!(matches!(
+            import(&store, &mut settings, &root).expect("first"),
+            Outcome::Applied { .. }
+        ));
+        assert!(settings.access.web_admin.is_some(), "the device is claimed");
+
+        let mut reloaded = store.load().expect("reload");
+        assert!(matches!(
+            import(&store, &mut reloaded, &root).expect("second"),
+            Outcome::Unchanged { .. }
+        ));
+    }
+
+    // A failing save leaves STATE and the caller's tree exactly as they were,
+    // which is what makes a power loss mid-apply harmless: the commit is one
+    // rename and there is nothing before it that reaches STATE.
+    #[test]
+    fn a_failed_save_leaves_state_and_the_caller_untouched() {
+        let dir = TempDir::new().expect("tempdir");
+        // The settings file's parent is a regular file, so `create_dir_all`
+        // inside `Store::save` fails. Root-safe: a type error on the path, not
+        // a permission check.
+        let blocker = dir.path().join("blocked");
+        fs::write(&blocker, b"not a directory").expect("write blocker");
+        let store = Store::new(blocker.join("settings.toml"));
+        let root = stage(dir.path(), Source::Boot, time_only_document());
+        let mut settings = Settings::default();
+
+        let err = import(&store, &mut settings, &root).expect_err("the save must fail");
+        assert!(
+            format!("{err:#}").contains("persist the applied provisioning document"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(settings, Settings::default());
+        assert_eq!(
+            fs::read(&blocker).expect("re-read blocker"),
+            b"not a directory"
+        );
+        assert!(!blocker.join("settings.toml").exists());
+    }
+
+    // The interlock with Layer 1: an identity the factory injected is the
+    // identity the device keeps, and the seeded hostname is derived from it.
+    // This is why the import runs BEFORE `ensure_provisioned`.
+    #[test]
+    fn an_injected_identity_is_the_one_first_boot_seeds_from() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let profile = dir.path().join("profile.conf");
+        fs::write(&profile, "MOS_PROFILE=prod\n").expect("write profile");
+        let root = stage(
+            dir.path(),
+            Source::Boot,
+            "version = 1\n\n[identity]\ndeviceId = \"fedcba9876543210fedcba9876543210\"\n",
+        );
+        let mut settings = Settings::default();
+
+        import(&store, &mut settings, &root).expect("import");
+        crate::provisioning::ensure_provisioned(&store, dir.path(), &profile, &mut settings)
+            .expect("seed");
+
+        assert_eq!(
+            settings.provisioning.device_id.as_deref(),
+            Some("fedcba9876543210fedcba9876543210"),
+            "seeding must keep the injected identity, not mint over it"
+        );
+        assert_eq!(settings.hostname, "mos-fedcba98");
+        assert_eq!(settings.provisioning.state, ProvisioningState::Complete);
+        assert_eq!(settings.provisioning.seeded_generation, 1);
+        // The document record survives seeding's own save.
+        assert!(settings.provisioning.document.is_some());
+    }
+
+    // A refused document leaves an appliance a person can still set up: no
+    // credential, no settings change, and `POST /api/v1/setup` still available
+    // because `access.webAdmin` is absent.
+    #[test]
+    fn a_refused_document_leaves_a_working_unclaimed_appliance() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let profile = dir.path().join("profile.conf");
+        fs::write(&profile, "MOS_PROFILE=prod\n").expect("write profile");
+        let root = stage(dir.path(), Source::Media, "version = 9\n");
+        let mut settings = Settings::default();
+
+        assert!(matches!(
+            import(&store, &mut settings, &root).expect("import"),
+            Outcome::Rejected { .. }
+        ));
+        // Seeding still runs and still works, which is what "does not block
+        // boot" means for the daemon that follows.
+        crate::provisioning::ensure_provisioned(&store, dir.path(), &profile, &mut settings)
+            .expect("seed");
+        assert_eq!(settings.provisioning.state, ProvisioningState::Complete);
+        assert!(
+            settings.access.web_admin.is_none(),
+            "the device must still be claimable"
+        );
+        assert!(settings.access.device.password_hash.is_some());
+    }
+
+    // The record is written once, not once per boot: a device that keeps
+    // meeting the same refusal does not rewrite STATE every time.
+    #[test]
+    fn a_repeated_refusal_writes_the_record_once() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = store_in(dir.path());
+        let root = stage(dir.path(), Source::Boot, "version = 2\n");
+        let mut settings = Settings::default();
+
+        import(&store, &mut settings, &root).expect("first");
+        let bytes = fs::read(settings_path(dir.path())).expect("read settings file");
+
+        let mut reloaded = store.load().expect("reload");
+        import(&store, &mut reloaded, &root).expect("second");
+        assert_eq!(
+            fs::read(settings_path(dir.path())).expect("re-read"),
+            bytes,
+            "the same refusal twice must not rewrite the settings file"
+        );
+    }
+
+    // The document version is the DOCUMENT's, not the settings schema's. They
+    // move independently and this pins that they are not the same number by
+    // accident.
+    #[test]
+    fn the_document_version_is_not_the_settings_schema_version() {
+        assert_eq!(DOCUMENT_VERSION, 1);
+        assert_ne!(
+            u64::from(DOCUMENT_VERSION),
+            u64::from(mosd_settings::SCHEMA_VERSION),
+            "if these ever coincide, a reader will assume one is the other"
+        );
+    }
+
+    // The two source names are the wire values the status route serves and the
+    // directory names the transport unit writes into. Pinned so a rename shows
+    // up here rather than as a unit that stages into a directory nothing reads.
+    #[test]
+    fn the_source_names_are_the_transport_contract() {
+        assert_eq!(SOURCES.len(), 2);
+        assert_eq!(Source::Boot.as_str(), "boot");
+        assert_eq!(Source::Boot.dir_name(), "boot");
+        assert_eq!(Source::Media.as_str(), "media");
+        assert_eq!(Source::Media.dir_name(), "media");
+        assert_eq!(DOCUMENT_FILE_NAME, "mos-provisioning.toml");
+        assert_eq!(DEFAULT_STAGING_ROOT, "/run/mos/provisioning");
+    }
+
+    // The staging root is the default unless the test hook names another.
+    #[test]
+    fn the_staging_root_defaults_to_the_documented_location() {
+        // SAFETY-adjacent: this test reads and does not write the variable, so
+        // it cannot race another test's environment.
+        if std::env::var_os("MOSD_PROVISIONING_ROOT").is_none() {
+            assert_eq!(staging_root_from_env(), PathBuf::from(DEFAULT_STAGING_ROOT));
+        }
+    }
+}

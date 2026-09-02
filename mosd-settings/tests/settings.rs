@@ -1186,7 +1186,7 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// clock) and a version stamp one ahead of ours.
 ///
 /// A document from a build one schema AHEAD of this one -- the A/B rollback
-/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move four times,
+/// path. Its version tracks SCHEMA_VERSION + 1 and has had to move six times,
 /// to 6 when the container switch landed, to 7 for the mqtt switch, to 8 for
 /// the interface kinds, to 9 for the API token list and to 10 for the time
 /// subtree: left behind, it stops
@@ -1198,8 +1198,8 @@ fn the_public_parser_accepts_a_real_key_and_refuses_an_options_line() {
 /// which this schema now knows, so the fixture would have asserted nothing:
 /// the whole subtree would have loaded rather than been stripped.
 fn newer_additive_document() -> String {
-    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
-    r#"schema_version = 10
+    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
+    r#"schema_version = 11
 hostname = "rolled-back"
 
 [network.eth0]
@@ -1258,7 +1258,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // No amount of unknown-key stripping can make v4 parse this.
     fs::write(
         &path,
-        "schema_version = 10\n\n[hostname]\nname = \"x\"\n\n[network]\n",
+        "schema_version = 11\n\n[hostname]\nname = \"x\"\n\n[network]\n",
     )
     .unwrap();
 
@@ -1267,7 +1267,7 @@ fn newer_reshaped_document_falls_back_to_defaults_not_an_error() {
     // The written acceptance: everything is abandoned, the daemon still runs.
     assert_eq!(settings, Settings::default());
     let report = report.expect("a newer document must produce a report");
-    assert_eq!(report.from, 10);
+    assert_eq!(report.from, SCHEMA_VERSION + 1);
     assert!(report.defaulted);
 }
 
@@ -1329,10 +1329,10 @@ fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
     // The same unknown key at two depths. The strip is by name, everywhere:
     // both go, and the report records the name once per strip pass. The stamp
     // has to stay one ahead of us or the tolerant path never runs.
-    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        r#"schema_version = 10
+        r#"schema_version = 11
 hostname = "h"
 extra = "top"
 
@@ -1393,9 +1393,9 @@ endpoint = "vpn.example.net:51820"
 persistentKeepalive = 25
 "#;
 
-/// A key only a schema AFTER v8 could carry, appended to the fixture above to
+/// A key only a schema AFTER v10 could carry, appended to the fixture above to
 /// make it a genuine rollback document rather than a re-stamped one.
-const V10_ONLY_KEY: &str = r#"
+const V11_ONLY_KEY: &str = r#"
 [network.wg0.wireguard.obfuscation]
 mode = "none"
 "#;
@@ -1625,10 +1625,10 @@ fn the_wireguard_subtree_holds_no_secret() {
 fn a_newer_document_keeps_every_v7_interface_kind() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.toml");
-    assert_eq!(SCHEMA_VERSION + 1, 10, "the fixture stamp must stay ahead");
+    assert_eq!(SCHEMA_VERSION + 1, 11, "the fixture stamp must stay ahead");
     fs::write(
         &path,
-        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 10") + V10_ONLY_KEY,
+        V7_EVERY_KIND.replace("schema_version = 7", "schema_version = 11") + V11_ONLY_KEY,
     )
     .unwrap();
 
