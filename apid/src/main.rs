@@ -46,6 +46,7 @@ mod task_registry;
 mod tests;
 mod tls;
 mod token;
+mod update_api;
 
 use std::sync::Arc;
 

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
 import type { UiStatus } from '@/lib/types'
 import { i18n } from '@/i18n/i18n'
-import { UiPanel } from './system'
+import { UiPanel, UpdatePanel } from './system'
 
 function response(value: UiStatus) {
   return new Response(JSON.stringify(value), {
@@ -119,5 +119,77 @@ describe('custom UI selector', () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
     expect((fetch.mock.calls[1][1] as RequestInit).method).toBe('DELETE')
+  })
+})
+
+function renderUpdatePanel() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={queryClient}>
+        <UpdatePanel />
+      </QueryClientProvider>
+    </I18nextProvider>,
+  )
+}
+
+function jsonResponse(value: unknown) {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+describe('update status panel', () => {
+  it('renders the lifecycle state, staged bundle and a closed reboot gate', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      lifecycle: {
+        state: 'ready',
+        reason: 'a verified bundle is staged for install',
+        bundle: '/mos/updates/verified/abc.update-1.1.0.raucb',
+        client: { available: true },
+        reboot_gate: { safe: false, reasons: ['health.exporter reports `blocking`: mid-transaction'] },
+      },
+      booted_slot: 'rootfs.0',
+      pending_not_confirmed: false,
+    })))
+    renderUpdatePanel()
+
+    expect(await screen.findByText('ready')).toBeTruthy()
+    expect(screen.getByText('/mos/updates/verified/abc.update-1.1.0.raucb')).toBeTruthy()
+    expect(screen.getByText(/Reboot blocked/)).toBeTruthy()
+    expect(screen.getByText(/mid-transaction/)).toBeTruthy()
+  })
+
+  it('shows an unready update workspace as its named state with the reason', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      lifecycle: {
+        state: 'update-unavailable',
+        reason: 'degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)',
+        workspace: { root: '/mos/updates', status: 'degraded', kind: 'read-only' },
+        client: { available: true },
+        reboot_gate: { safe: true, reasons: [] },
+      },
+    })))
+    renderUpdatePanel()
+
+    expect(await screen.findByText('update-unavailable')).toBeTruthy()
+    expect(screen.getByText('degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)')).toBeTruthy()
+  })
+
+  it('reports an absent update client instead of hiding it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      lifecycle: {
+        state: 'idle',
+        client: { available: false, reason: '/usr/bin/rauc-update is not present on this image' },
+        reboot_gate: { safe: true, reasons: [] },
+      },
+    })))
+    renderUpdatePanel()
+
+    expect(await screen.findByText(/Update client unavailable/)).toBeTruthy()
+    expect(screen.getByText('Safe to reboot.')).toBeTruthy()
   })
 })

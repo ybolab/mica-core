@@ -102,6 +102,22 @@ pub trait SettingsApi: Send + Sync {
     /// private half never leaves mosd and there is no accessor that returns
     /// one, so the only thing this call can hand back is the public half.
     async fn rotate_wireguard_key(&self, iface: &str) -> anyhow::Result<String>;
+    /// The complete update state (`GetUpdateState`): mosd queries RAUC and
+    /// re-derives the lifecycle before answering, so this is never stale.
+    async fn get_update_state(&self) -> anyhow::Result<Value>;
+    /// Ask mosd to run an update metadata check on a background task.
+    async fn check_update(&self) -> anyhow::Result<()>;
+    /// Ask mosd to download the selected bundle on a background task.
+    async fn fetch_update(&self) -> anyhow::Result<()>;
+    /// Ask mosd to install the bundle at absolute path `bundle` (RAUC's
+    /// background install; progress lands in the update state).
+    async fn install_update(&self, bundle: &str) -> anyhow::Result<()>;
+    /// Manually mark a slot (`good`/`bad` on `booted`/`other`); answers
+    /// RAUC's `(slot_name, message)`.
+    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)>;
+    /// Arm the bounded safe-to-reboot override for `seconds`; answers the
+    /// recorded override.
+    async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
 }
 
 /// In-memory [`SettingsApi`] used by the route tests.
@@ -146,6 +162,13 @@ pub struct FakeSettings {
     transient_password_calls: std::sync::Mutex<usize>,
     next_task: std::sync::atomic::AtomicU64,
     tasks: std::sync::Mutex<std::collections::BTreeMap<String, TaskRecord>>,
+    /// Update calls received, in order (`check`, `fetch`, `install <path>`,
+    /// `mark <state> <slot>`, `reboot-override <s>`, `get_update_state`).
+    update_log: std::sync::Mutex<Vec<String>>,
+    /// When set, every update action fails with a `zbus` `MethodError` of
+    /// this fdo name and message — how a route test provokes the 409/422
+    /// mappings the real mosd produces.
+    update_refusal: std::sync::Mutex<Option<(&'static str, String)>>,
 }
 
 #[cfg(test)]
@@ -205,7 +228,34 @@ impl FakeSettings {
             rotations: std::sync::Mutex::new(Vec::new()),
             next_task: std::sync::atomic::AtomicU64::new(0),
             tasks: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            update_log: std::sync::Mutex::new(Vec::new()),
+            update_refusal: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Update actions received, in call order.
+    pub fn update_calls(&self) -> Vec<String> {
+        self.update_log.lock().unwrap().clone()
+    }
+
+    /// Make every subsequent update action fail as mosd would: a bus
+    /// `MethodError` under fdo `name` carrying `message`.
+    pub fn refuse_updates(&self, name: &'static str, message: &str) {
+        *self.update_refusal.lock().unwrap() = Some((name, message.to_string()));
+    }
+
+    /// Log one update action and fail it when a refusal is scripted.
+    fn update_call(&self, call: &str) -> anyhow::Result<()> {
+        self.update_log.lock().unwrap().push(call.to_string());
+        if let Some((name, message)) = self.update_refusal.lock().unwrap().clone() {
+            let reply_to = zbus::message::Message::method_call("/com/mos/mosd", "CheckUpdate")
+                .expect("a well-formed method call")
+                .build(&())
+                .expect("an empty body serialises");
+            let name = zbus::names::ErrorName::try_from(name).expect("a well-formed error name");
+            return Err(zbus::Error::MethodError(name.into(), Some(message), reply_to).into());
+        }
+        Ok(())
     }
 
     fn completed_task(&self, operation: &str, path: &str) -> String {
@@ -467,5 +517,41 @@ impl SettingsApi for FakeSettings {
             .unwrap()
             .push((iface.to_string(), public_key.clone()));
         Ok(public_key)
+    }
+
+    async fn get_update_state(&self) -> anyhow::Result<Value> {
+        // The fake's "refreshed" state is whatever the test seeded under the
+        // live-state `update` key — the route's job is transport, not
+        // derivation, which mosd's own tests own.
+        self.update_log
+            .lock()
+            .unwrap()
+            .push("get_update_state".to_string());
+        fake_get(&self.state.lock().unwrap(), "update")
+    }
+
+    async fn check_update(&self) -> anyhow::Result<()> {
+        self.update_call("check")
+    }
+
+    async fn fetch_update(&self) -> anyhow::Result<()> {
+        self.update_call("fetch")
+    }
+
+    async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
+        self.update_call(&format!("install {bundle}"))
+    }
+
+    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
+        self.update_call(&format!("mark {state} {slot}"))?;
+        Ok(("rootfs.0".to_string(), format!("marked {slot} as {state}")))
+    }
+
+    async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
+        self.update_call(&format!("reboot-override {seconds}"))?;
+        Ok(serde_json::json!({
+            "until": "2026-09-02T00:10:00Z",
+            "requestedBy": ":1.9",
+        }))
     }
 }
