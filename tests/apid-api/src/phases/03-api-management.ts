@@ -58,7 +58,15 @@ const phase: Phase = {
       { subset: true },
     );
 
+    // A BODY, because the route takes `Json<ActivateUiRequest>` and axum's
+    // extractor answers 415 before the handler runs without one -- so a
+    // bodyless request tests the extractor, not the "no retained bundle"
+    // conflict this asserts. The generation is arbitrary: this device retains
+    // no custom UI, so no generation resolves and every one of them is the
+    // same 409.
     const unavailableUi = await client.request("PUT", "/api/v1/ui/active", {
+      body: JSON.stringify({ generation: 1 }),
+      contentType: "application/json",
       headers: { "X-CSRF-Token": csrf },
     });
     report.expectStatus(unavailableUi, 409, "PUT /api/v1/ui/active reports no retained custom UI");
