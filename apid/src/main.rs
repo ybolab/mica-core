@@ -33,6 +33,7 @@ mod auth;
 mod bundle;
 mod bus_client;
 mod config;
+mod diagnostics;
 mod openapi;
 mod persist;
 mod redact;

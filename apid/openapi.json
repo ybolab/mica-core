@@ -426,6 +426,275 @@
         }
       }
     },
+    "/api/v1/diagnostics/snapshots": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "List the stored diagnostic snapshots.",
+        "description": "Oldest first, each with its id, size, `collectedAt`, schema version and\nmachine id, plus the retention bounds the store enforces.",
+        "operationId": "api_v1_diagnostics_list",
+        "responses": {
+          "200": {
+            "description": "The stored snapshots and the retention bounds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The store could not be read (`diagnostics_io`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Collect a diagnostic snapshot.",
+        "description": "Reads every mosd surface the schema names — system information,\ntelemetry, failure evidence, storage, time, observed network, live\nstate — under a per-section timeout inside one deadline, assembles the\nversioned snapshot, redacts it against the allowlist schema (a field the\nschema does not name does not ship), and publishes it whole to the store\nor not at all. A source that does not answer is an absent member with\nthe reason; the snapshot is produced regardless. Bounded on disk: the\noldest snapshots are removed to stay under the retention caps.\n\nAnswers **201** with the stored snapshot's summary and the collection\nreport. **409** while another collection is running.",
+        "operationId": "api_v1_diagnostics_collect",
+        "responses": {
+          "201": {
+            "description": "The snapshot was collected, redacted and published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotCollected"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A collection is already running (`diagnostics_busy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The snapshot could not be published (`diagnostics_io`): the store is unwritable or the snapshot is above the size cap; nothing was written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/snapshots/{id}": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Export one diagnostic snapshot.",
+        "description": "The stored bytes, verbatim and already redacted, as an attachment named\n`mos-diagnostics-<machine id prefix>-<id>.json` so a browser saves it\nunder a name support can file. Never cached.",
+        "operationId": "api_v1_diagnostics_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The snapshot id from the collection listing",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snapshot document (`schemaVersion` names its shape); `Content-Disposition: attachment`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such snapshot (`snapshot_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The store could not be read (`diagnostics_io`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Delete one diagnostic snapshot.",
+        "description": "The explicit retention operation: the store also removes the oldest to\nstay under its caps, and this is how an operator removes one sooner.\nAnswers **204**; **404** when there is no such snapshot.",
+        "operationId": "api_v1_diagnostics_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The snapshot id from the collection listing",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The snapshot was removed"
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such snapshot (`snapshot_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The store could not be written (`diagnostics_io`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -669,6 +938,78 @@
           },
           "504": {
             "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/network/status": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the observed network state.",
+        "description": "What the network stack actually sees, distinct from the desired map at\n`/v1/network`: per interface the link and carrier state, the addresses\nwith where each came from, the DHCP lease, the DNS servers, and the\nWi-Fi association; the default routes; DNS reachability by a single\nbounded probe through resolved; and the radio and modem capabilities,\nwith cellular explicitly unsupported. Nothing from the settings tree is\nin this answer, so a configured interface with no carrier reads as\nexactly that.",
+        "operationId": "api_v1_network_status",
+        "responses": {
+          "200": {
+            "description": "`interfaces`, `defaultRoutes`, `dns`, `wifi` and `capabilities`, each carrying `available` or `supported`; absent evidence carries the reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to observe (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2222,6 +2563,150 @@
           },
           "504": {
             "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/info": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the system-information surface.",
+        "description": "One read answers what this device is: the machine id, the board, the\nkernel, the distribution release, the image version with its git stamp\nand build date, every installed package with its version (from the\nshipped manifest), the booted slot and the uptime. mosd assembles it at\nrequest time from the seams that already carry each fact; nothing is\nrestated. Every member carries `available`, and an absent fact says why.",
+        "operationId": "api_v1_system_info",
+        "responses": {
+          "200": {
+            "description": "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `buildDate`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to observe (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/telemetry": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "summary": "Read the board telemetry.",
+        "description": "Temperature (thermal zones and hwmon inputs), every watchdog device with\nits boot status, and the reset reason as far as the kernel's generic\nsources tell it: a watchdog's `cardReset` flag or a crash record in\npstore. Absence is explicit — a board that exports no source reports\n`available: false` with the reason, never a healthy reading.",
+        "operationId": "api_v1_system_telemetry",
+        "responses": {
+          "200": {
+            "description": "`thermal`, `watchdog` and `reset`, each carrying `available`; `reset.reason` is `watchdog`, `kernel-crash` or `unknown`, with the evidence beside it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceValue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to observe (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4169,6 +4654,156 @@
           "token": {
             "type": "string",
             "description": "The whole token, `mos_<id>_<secret>`.\n\n**It appears here and nowhere else, ever**, exactly as the mint route's\ndoes: only the SHA-256 digest is stored. The id is not a separate\nmember because it is the token's own second segment, so a caller that\nholds this string can address it for a later `DELETE` without being\ntold it twice."
+          }
+        }
+      },
+      "SnapshotCollected": {
+        "type": "object",
+        "description": "The answer to a collection: the stored snapshot and how collecting went.",
+        "required": [
+          "snapshot",
+          "elapsedMillis",
+          "sections",
+          "droppedFields",
+          "redactedFields"
+        ],
+        "properties": {
+          "droppedFields": {
+            "type": "integer",
+            "description": "Fields the redaction schema did not name and therefore dropped.",
+            "minimum": 0
+          },
+          "elapsedMillis": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall time the collection took.",
+            "minimum": 0
+          },
+          "redactedFields": {
+            "type": "integer",
+            "description": "Fields and strings the redaction pass replaced.",
+            "minimum": 0
+          },
+          "sections": {
+            "type": "object",
+            "description": "Per source, `ok`, `unavailable` or `timeout`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotSummary",
+            "description": "The snapshot as the list describes it."
+          }
+        }
+      },
+      "SnapshotList": {
+        "type": "object",
+        "description": "The snapshot collection.",
+        "required": [
+          "snapshots",
+          "retention"
+        ],
+        "properties": {
+          "retention": {
+            "$ref": "#/components/schemas/SnapshotRetention",
+            "description": "The bounds the store enforces."
+          },
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotSummary"
+            },
+            "description": "Every stored snapshot, oldest first."
+          }
+        }
+      },
+      "SnapshotRetention": {
+        "type": "object",
+        "description": "The retention and schema facts a client needs to read the collection.",
+        "required": [
+          "maxSnapshots",
+          "maxTotalBytes",
+          "maxSnapshotBytes",
+          "schemaVersion",
+          "redactionSchemaVersion"
+        ],
+        "properties": {
+          "maxSnapshotBytes": {
+            "type": "integer",
+            "description": "The most bytes one snapshot may be; larger is refused.",
+            "minimum": 0
+          },
+          "maxSnapshots": {
+            "type": "integer",
+            "description": "The most snapshots kept; publishing one more removes the oldest.",
+            "minimum": 0
+          },
+          "maxTotalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The most bytes kept across all snapshots.",
+            "minimum": 0
+          },
+          "redactionSchemaVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The redaction schema version this build applies.",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The snapshot schema version this build produces.",
+            "minimum": 0
+          }
+        }
+      },
+      "SnapshotSummary": {
+        "type": "object",
+        "description": "One stored snapshot, as the list route describes it.",
+        "required": [
+          "id",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The snapshot's size on disk.",
+            "minimum": 0
+          },
+          "collectedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The snapshot's `collectedAt`, when it carries one."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The store's sequence number, and the id in the routes.",
+            "minimum": 0
+          },
+          "machineId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The snapshot's machine id, when it carries one."
+          },
+          "schemaVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The snapshot's `schemaVersion`, when it carries one.",
+            "minimum": 0
           }
         }
       },

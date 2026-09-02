@@ -6,6 +6,7 @@
 //! assert lives below the fake backend's trait.
 
 mod broken_classes;
+mod diagnostics;
 mod power_bus;
 mod settings_signal;
 
@@ -2707,6 +2708,22 @@ impl SettingsApi for FailingSettings {
     }
 
     async fn get_storage_status(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_system_info(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_telemetry(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_observed_network(&self) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn get_failure_evidence(&self) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
 
