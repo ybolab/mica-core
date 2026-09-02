@@ -22,6 +22,9 @@ use crate::rauc::{self, RaucClient};
 use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
+use crate::storage_status::{
+    self, PressureTracker, StorageStatusSource, UnavailableStorageStatus,
+};
 use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 
@@ -104,6 +107,12 @@ pub struct MosdService {
     /// Read-only time-synchronization observation, on the same default for
     /// the same reason.
     time_status: Arc<dyn TimeStatusSource>,
+    /// Read-only storage observation, on the same default again.
+    storage_status: Arc<dyn StorageStatusSource>,
+    /// The low-space hysteresis state the storage surface classifies against.
+    /// Lives with the service rather than with the observer because it is the
+    /// REPORTED state, and it has to survive an observer being reattached.
+    storage_pressure: Arc<PressureTracker>,
 }
 
 /// The rotation a daemon with no key store has: none.
@@ -149,6 +158,8 @@ impl MosdService {
             wireguard: Arc::new(NoRotation),
             network_state: Arc::new(UnavailableNetworkState),
             time_status: Arc::new(UnavailableTimeStatus),
+            storage_status: Arc::new(UnavailableStorageStatus),
+            storage_pressure: Arc::new(PressureTracker::default()),
         }
     }
 
@@ -174,6 +185,17 @@ impl MosdService {
     #[must_use]
     pub fn with_time_status(mut self, time_status: Arc<dyn TimeStatusSource>) -> Self {
         self.time_status = time_status;
+        self
+    }
+
+    /// Attach the production storage observer.
+    ///
+    /// The default observes nothing, so a dry-run daemon or a test never
+    /// reads the host's sysfs, mount table or media — and never refuses an
+    /// install over free space it cannot see.
+    #[must_use]
+    pub fn with_storage_status(mut self, storage_status: Arc<dyn StorageStatusSource>) -> Self {
+        self.storage_status = storage_status;
         self
     }
 
@@ -328,6 +350,23 @@ impl MosdService {
     /// forging a message header.
     pub async fn request_install(&self, sender: &str, bundle_path: &str) -> fdo::Result<()> {
         let bundle = rauc::validate_bundle_path(bundle_path).map_err(fdo::Error::InvalidArgs)?;
+        // PLAN-049's reserved update workspace, enforced at the one seam
+        // where mos consumes DATA space for an update: the bundle staged
+        // there before this call names it. An install admitted onto a DATA
+        // tier with no workspace left is the failure the reservation exists
+        // to prevent, and it is cheaper to refuse here than halfway through
+        // writing a slot.
+        //
+        // A daemon whose observer sees nothing refuses nothing; see
+        // `storage_status::install_refusal`.
+        if let Ok(evidence) = self.storage_status.observe().await {
+            let bundle_bytes = std::fs::metadata(&bundle).map(|meta| meta.len()).unwrap_or(0);
+            if let Some(refusal) =
+                storage_status::install_refusal(evidence.data_tier(), &bundle, bundle_bytes)
+            {
+                return Err(fdo::Error::Failed(refusal));
+            }
+        }
         // The in-flight flag is taken BEFORE anything is recorded, in one
         // compare-exchange, so two racing calls cannot both proceed. It is
         // released only by the background task — including on install failure —
@@ -847,6 +886,22 @@ impl MosdService {
             )))
         })?;
         Ok(status_json(&evidence).to_string())
+    }
+
+    /// JSON storage status: the fixed tiers, the physical media and the
+    /// low-space policy, observed at call time.
+    ///
+    /// Observed rather than stored, for the `uptime` and `GetTimeStatus`
+    /// reason: space and wear move without any settings write, so a cached
+    /// copy would only ever be stale. Read-only, and deliberately with
+    /// nothing beside it: there is no bus method here that formats,
+    /// repartitions, resizes or erases anything, and the layout is fixed by
+    /// the image assembler.
+    async fn get_storage_status(&self) -> Result<String, SettingsFault> {
+        let evidence = self.storage_status.observe().await.map_err(|err| {
+            SettingsFault::Fdo(fdo::Error::Failed(format!("observe storage: {err:#}")))
+        })?;
+        Ok(storage_status::status_json(&evidence, &self.storage_pressure).to_string())
     }
 
     /// JSON snapshot returned by systemd-networkd's live `Describe` method.
@@ -1603,6 +1658,112 @@ mod tests {
             service.get_state("update").await.is_err(),
             "a refused install must record nothing"
         );
+    }
+
+    /// A storage observer the test controls, standing in for sysfs and the
+    /// mount table.
+    struct FixedStorage(crate::storage_status::StorageEvidence);
+
+    #[async_trait::async_trait]
+    impl crate::storage_status::StorageStatusSource for FixedStorage {
+        async fn observe(&self) -> anyhow::Result<crate::storage_status::StorageEvidence> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Evidence for a DATA tier at `/srv` with `free` bytes left.
+    fn data_evidence(free: u64) -> crate::storage_status::StorageEvidence {
+        use crate::storage_status::{FsSpace, MountEvidence, StorageEvidence, TierEvidence};
+        let mut tiers = std::collections::BTreeMap::new();
+        tiers.insert(
+            "data".to_string(),
+            TierEvidence {
+                device: Some("/dev/mmcblk0p11".to_string()),
+                mount: Some(MountEvidence {
+                    device: "/dev/mmcblk0p11".to_string(),
+                    mount: "/srv".to_string(),
+                    fstype: "ext4".to_string(),
+                    read_only: false,
+                }),
+                space: Some(FsSpace {
+                    total: 4 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES,
+                    used: 4 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES - free,
+                    free,
+                    reserved: 0,
+                }),
+                ..TierEvidence::default()
+            },
+        );
+        StorageEvidence {
+            tiers,
+            media: Vec::new(),
+        }
+    }
+
+    /// The storage surface is served from the observer, and a daemon without
+    /// one says so instead of answering with an empty layout.
+    #[tokio::test]
+    async fn the_storage_status_is_observed_and_absent_without_an_observer() {
+        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc::default());
+        let unobserved = service
+            .get_storage_status()
+            .await
+            .expect_err("a daemon with no observer cannot answer");
+        assert!(format!("{unobserved:?}").contains("storage"), "{unobserved:?}");
+
+        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(
+            10 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES / 100,
+        ))));
+        let status = service.get_storage_status().await.expect("observed");
+        let status: serde_json::Value = serde_json::from_str(&status).expect("json");
+        let data = status["tiers"]
+            .as_array()
+            .expect("tiers")
+            .iter()
+            .find(|tier| tier["name"] == "data")
+            .expect("a data tier")
+            .clone();
+        assert_eq!(data["mount"], "/srv");
+        assert_eq!(data["pressure"], "critical");
+        assert_eq!(data["updateWorkspace"]["available"], false);
+    }
+
+    /// The reservation, enforced at the install seam rather than only
+    /// reported: an install onto a DATA tier with no workspace left is
+    /// refused before the installer is touched.
+    #[tokio::test]
+    async fn an_install_is_refused_when_the_reserved_workspace_is_gone() {
+        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let bundle = dir.path().join("ok.raucb");
+        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
+        let bundle = bundle.to_str().expect("utf-8").to_string();
+
+        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(0))));
+        let refused = service
+            .request_install(":1.9", &bundle)
+            .await
+            .expect_err("a full DATA must refuse the install");
+        assert!(refused.to_string().contains("reserved update workspace"), "{refused}");
+        assert!(
+            rauc_calls.lock().expect("lock").is_empty(),
+            "a refused install must not reach the installer"
+        );
+        assert!(
+            service.get_state("update").await.is_err(),
+            "a refused install must record nothing"
+        );
+
+        // The positive control: the same request with the workspace intact
+        // is admitted, so the refusal above is the reservation and not a
+        // second path failure.
+        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(
+            crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES,
+        ))));
+        service
+            .request_install(":1.9", &bundle)
+            .await
+            .expect("an intact workspace admits the install");
+        wait_for_install_status(&service, "done").await;
     }
 
     #[tokio::test]

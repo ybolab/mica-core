@@ -38,6 +38,7 @@ mod provisioning;
 mod rauc;
 mod reconciler;
 mod scan;
+mod storage_status;
 mod time_status;
 mod transient;
 mod wgkeys;
@@ -241,6 +242,7 @@ async fn serve() -> anyhow::Result<()> {
         service = service.with_rauc(Arc::new(rauc::Rauc::new()));
         service = service.with_network_state(Arc::new(network_state::SystemdNetworkState));
         service = service.with_time_status(Arc::new(time_status::SystemdTimesync));
+        service = service.with_storage_status(Arc::new(storage_status::HostStorage::production()));
         // Same reasoning again: the rotation writes a private key onto STATE
         // and deletes a kernel device, so a dry-run daemon is never given one.
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));
