@@ -82,8 +82,16 @@ pub fn append_audit_line(dir: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(&path)?;
-    file.write_all(line.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))?;
+    // ONE write, not a line write followed by a newline write. Two processes
+    // append here now -- apid on a management action, mosd on a boot-time
+    // recovery action -- and O_APPEND makes a single write atomic against the
+    // other writer while two writes can interleave into `A-lineB-line\n\n`.
+    // A record that cannot be read back line by line is worth nothing in the
+    // one situation this file exists for.
+    let mut record = String::with_capacity(line.len() + 1);
+    record.push_str(line);
+    record.push('\n');
+    file.write_all(record.as_bytes())?;
     // Synced per line because the two most consequential events — reboot and
     // poweroff requests — are immediately followed by the power state the
     // fsync protects against, and every audited event is human-rate.
