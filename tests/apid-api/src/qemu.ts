@@ -79,7 +79,7 @@ export function readBoardEnv(text: string): Map<string, string> {
  * this board and only one of them holds a grub.cfg: the ESP (partition 1, at
  * 1 MiB) carries EFI/mos/grub.cfg and EFI/mos/grubenv, while BOOT-A
  * (partition 2, at 65 MiB) carries vmlinuz and cmdline.cfg at its FAT root and
- * has no EFI directory at all. It carried an initrd.img too until PLAN-073;
+ * has no EFI directory at all. It carried an initrd.img too until PLAN-074;
  * this board's kernel assembles the dm-verity root from the command line now.
  * Measured against
  * x64-mos-latest.img, 2026-08-28. Reading the boot slot here made mcopy
