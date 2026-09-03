@@ -493,7 +493,22 @@ export const zhCN: Translation = {
         deleteCopy: '从本设备删除快照 {{id}}？保留策略也会自动删除最旧的快照；此操作会立即删除它。',
       },
     },
+    backup: {
+      title: '配置备份',
+      description: '包含网络、服务、访问与应用设置，不包含应用数据。',
+      planned: '设备尚无备份或恢复端点，两个操作均已禁用。',
+      exportTitle: '下载备份', exportCopy: '使用管理员密码加密。', download: '下载 .mosbak',
+      importTitle: '从备份恢复', importCopy: '替换当前配置并重启设备，已安装的应用会保留。', restore: '上传并恢复',
+    },
+    support: {
+      title: '技术支持',
+      description: '面向支持工程师的限时远程访问，通过 PIN 授权。',
+      planned: '设备尚无支持访问端点。下面的开关只影响当前浏览器会话，不会签发 PIN。',
+      on: '支持访问将处于开启状态。', off: '当前没有开启任何远程支持访问。',
+    },
     recovery: {
+      additionTitle: '设计之外的恢复能力',
+      addition: '不属于已批准的设计。槽位回滚与凭据恢复是设备已发布的能力，在设计给出位置之前控制台先保留它们。',
       backupTitle: '配置备份', backupDescription: '创建或恢复可移植的加密设备配置。', create: '创建备份', restore: '恢复备份', created: '模拟备份已就绪。', restored: '模拟备份已恢复。',
       reset: {
         title: '重置', description: '每次重置都必须指明层级；请求会立即暂存，并在下次启动时优先于其他工作被应用。',
@@ -557,6 +572,18 @@ export const zhCN: Translation = {
       confirmReboot: '立即重启此设备？', confirmPowerOff: '立即关闭此设备？', accepted: '电源操作已接受。',
     },
     update: {
+      automaticTitle: '自动更新',
+      automaticDescription: '设备何时检查更新，以及自动执行到哪一步。',
+      automaticPlanned: '设备尚无自动更新策略端点。开关只影响当前浏览器会话，时间窗与策略已禁用。',
+      window: '维护窗口', policy: '策略', policyDownload: '仅下载',
+      manualTitle: '手动更新', manualDescription: '安装设备未自行获取的升级包。',
+      manualPlanned: '设备尚无升级包上传端点。',
+      manualFormats: '接受由 mos 或已登记密钥签名的 .raucb 包。',
+      manualUpload: '上传升级包',
+      checks: {
+        safeToReboot: '可安全重启', blocked: '被阻止', client: '更新客户端', clientOk: '可达', policy: '策略',
+        planned: '设计中展示的签名、兼容性、空间与维护窗口检查，设备尚未报告，因此未列出。',
+      },
       title: '更新', description: '更新生命周期、已暂存的更新包与安全重启门。只读；操作通过 API 执行。',
       checking: '正在读取更新状态', available: '可用更新', bundle: '已暂存更新包', bootedSlot: '当前启动槽', lastCheck: '上次检查',
       pendingReboot: '已安装的更新等待首次启动。', gateSafe: '可以安全重启。', gateBlocked: '重启被阻止：{{reasons}}。',

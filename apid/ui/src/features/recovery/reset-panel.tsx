@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { RefreshCcw } from 'lucide-react'
 import { ApiError, api, errorMessage, json } from '@/lib/api'
 import { Button } from '@/shared/components/ui/button'
-import { Card, CardHeader } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { formatDeviceClock } from '@/shared/components/fact'
 import {
   AlertDialog,
@@ -56,7 +55,6 @@ export function ResetPanel() {
   const record = staged.data
   return (
     <Card>
-      <CardHeader title={t('system.recovery.reset.title')} description={t('system.recovery.reset.description')} action={<RefreshCcw className="size-5 text-danger" />} />
       {record ? (
         <p className="callout warning" role="status">
           {t('system.recovery.reset.pending', { tier: tierLabel(record.tier, t) })}

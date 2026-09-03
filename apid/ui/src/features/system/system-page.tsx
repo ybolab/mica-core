@@ -2,11 +2,14 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouterState } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
-import { Database, ExternalLink, MonitorCog, PackageSearch, Power, RefreshCcw, Settings2, Stethoscope } from 'lucide-react'
+import { Download, ExternalLink, PackageSearch, Power, RefreshCcw, Settings2, Upload } from 'lucide-react'
 import { api, errorMessage, json } from '@/lib/api'
 import type { TaskAccepted, UiStatus } from '@/lib/types'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardHeader } from '@/components/ui/card'
+import { Section, Surface } from '@/shared/components/product-layout'
+import { StatusBadge } from '@/shared/components/status-badge'
+import { PlannedNotice } from '@/shared/simulation/planned'
 import { Field } from '@/shared/components/field'
 import { Input } from '@/shared/components/ui/input'
 import { Status } from '@/components/ui/status'
@@ -37,7 +40,11 @@ import {
 export function SystemPage() {
   const { t } = useTranslation()
   const hash = useRouterState({ select: (state) => state.location.hash })
-  const initialTab = ['general', 'information', 'time', 'update', 'storage', 'diagnostics', 'recovery'].includes(hash) ? hash : 'general'
+  // The prototype has six tabs: recovery is folded into update, general and
+  // diagnostics. The old anchor still resolves rather than dropping the reader
+  // on the first tab.
+  const tabs = ['general', 'information', 'time', 'update', 'storage', 'diagnostics']
+  const initialTab = tabs.includes(hash) ? hash : hash === 'recovery' ? 'update' : 'general'
   return (
     <div className="page">
       <header className="page-head"><div><h1>{t('system.title')}</h1></div></header>
@@ -49,15 +56,31 @@ export function SystemPage() {
           <TabsTrigger value="update">{t('system.tabs.update')}</TabsTrigger>
           <TabsTrigger value="storage">{t('system.tabs.storage')}</TabsTrigger>
           <TabsTrigger value="diagnostics">{t('system.tabs.diagnostics')}</TabsTrigger>
-          <TabsTrigger value="recovery">{t('system.tabs.recovery')}</TabsTrigger>
         </TabsList>
-        <TabsContent value="general" className="tab-panel"><div className="split-grid"><HostnamePanel /><UiPanel /></div><PowerPanel /></TabsContent>
+        <TabsContent value="general" className="tab-panel">
+          <Section title={t('system.identity.title')} description={t('system.identity.description')}><HostnamePanel /></Section>
+          <Section title={t('system.ui.title')} description={t('system.ui.description')}><UiPanel /></Section>
+          <Section title={t('system.power.title')} description={t('system.power.description')}><PowerPanel /></Section>
+          <Section title={t('system.recovery.reset.title')} description={t('system.recovery.reset.description')} className="danger-section"><ResetPanel /></Section>
+        </TabsContent>
         <TabsContent value="information" className="tab-panel"><InformationPanel /></TabsContent>
         <TabsContent value="time" className="tab-panel"><TimePanel /></TabsContent>
-        <TabsContent value="update" className="tab-panel"><UpdatePanel /><RollbackPanel /><UpdateActions /></TabsContent>
+        <TabsContent value="update" className="tab-panel">
+          <UpdatePanel />
+          <UpdateChecks />
+          <UpdateActions />
+          <Section title={t('system.update.automaticTitle')} description={t('system.update.automaticDescription')}><AutomaticUpdates /></Section>
+          <Section title={t('system.update.manualTitle')} description={t('system.update.manualDescription')}><ManualUpdate /></Section>
+          <Section title={t('system.backup.title')} description={t('system.backup.description')}><ConfigBackup /></Section>
+          <Section title={t('system.recovery.additionTitle')} description={t('system.recovery.addition')} className="marked-addition">
+            <div className="stack"><RollbackPanel /><CredentialRecoveryPanel /></div>
+          </Section>
+        </TabsContent>
         <TabsContent value="storage" className="tab-panel"><StoragePanel /></TabsContent>
-        <TabsContent value="diagnostics" className="tab-panel"><DiagnosticsPanel /></TabsContent>
-        <TabsContent value="recovery" className="tab-panel"><RecoveryPanel /></TabsContent>
+        <TabsContent value="diagnostics" className="tab-panel">
+          <DiagnosticsPanel />
+          <Section title={t('system.support.title')} description={t('system.support.description')}><SupportAccess /></Section>
+        </TabsContent>
       </Tabs>
       <SimulationNotice scope={t('system.simulationScope')} />
     </div>
@@ -85,7 +108,6 @@ export function UpdatePanel() {
   const { t } = useTranslation()
   const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateStateDoc>('/api/v1/update') })
   const lifecycle = status.data?.lifecycle
-  const gate = lifecycle?.reboot_gate
   const available = lifecycle?.available
   return (
     <Card>
@@ -99,9 +121,6 @@ export function UpdatePanel() {
         {lifecycle?.last_check ? <div><dt>{t('system.update.lastCheck')}</dt><dd>{lifecycle.last_check}</dd></div> : null}
       </dl>
       {status.data?.pending_not_confirmed ? <p className="callout warning" role="status">{t('system.update.pendingReboot')}</p> : null}
-      {gate ? (gate.safe
-        ? <p className="callout success" role="status">{t('system.update.gateSafe')}</p>
-        : <p className="callout warning" role="status">{t('system.update.gateBlocked', { reasons: (gate.reasons ?? []).join('; ') })}</p>) : null}
       {lifecycle?.client && lifecycle.client.available === false ? <p className="callout warning" role="status">{t('system.update.clientUnavailable', { reason: lifecycle.client.reason ?? '' })}</p> : null}
       {lifecycle?.policy_error ? <p className="callout error" role="alert">{t('system.update.policyError', { reason: lifecycle.policy_error })}</p> : null}
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
@@ -112,19 +131,103 @@ export function UpdatePanel() {
 function UpdateActions() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const simulation = useSimulation()
   const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, { method: 'POST' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
-  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="ui-selector"><div><strong>{t('system.update.automatic')}</strong><small>{t('system.update.automaticCopy')}</small></div><Switch aria-label={t('system.update.automatic')} checked={simulation.automaticUpdates} onCheckedChange={simulation.setAutomaticUpdates} /></div><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={action.isPending}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={action.isPending}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={action.isPending}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
+  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={action.isPending}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={action.isPending}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={action.isPending}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
 }
 
 /// The reset tiers and credential recovery bind REAL routes and are their own
 /// area; the two cards beside them are still simulated and stay behind the
 /// page's simulation notice.
-function RecoveryPanel() {
+/// The prototype's check table. Only the rows the device actually answers are
+/// rendered; the signature, compatibility and space checks it also shows have
+/// no endpoint, and are named as missing rather than invented.
+export function UpdateChecks() {
+  const { t } = useTranslation()
+  const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateStateDoc>('/api/v1/update') })
+  const lifecycle = status.data?.lifecycle
+  const gate = lifecycle?.reboot_gate
+  const rows = [
+    gate ? { id: 'reboot', tone: gate.safe ? 'success' as const : 'warning' as const, tag: t(gate.safe ? 'common.states.available' : 'system.update.checks.blocked'), label: t('system.update.checks.safeToReboot'), value: gate.safe ? t('system.update.gateSafe') : (gate.reasons ?? []).join('; ') } : undefined,
+    lifecycle?.client ? { id: 'client', tone: lifecycle.client.available ? 'success' as const : 'danger' as const, tag: t(lifecycle.client.available ? 'common.states.available' : 'common.states.unavailable'), label: t('system.update.checks.client'), value: lifecycle.client.reason ?? t('system.update.checks.clientOk') } : undefined,
+    lifecycle?.policy_error ? { id: 'policy', tone: 'danger' as const, tag: t('common.states.failed'), label: t('system.update.checks.policy'), value: lifecycle.policy_error } : undefined,
+  ].filter((row) => row !== undefined)
+  if (rows.length === 0) return null
+  return (
+    <Surface className="surface-compact">
+      {rows.map((row) => (
+        <div className="check-row" key={row.id}>
+          <span>{row.label}</span>
+          <span><StatusBadge tone={row.tone}>{row.tag}</StatusBadge><span>{row.value}</span></span>
+        </div>
+      ))}
+      <div className="panel-footer"><PlannedNotice>{t('system.update.checks.planned')}</PlannedNotice></div>
+    </Surface>
+  )
+}
+
+function AutomaticUpdates() {
   const { t } = useTranslation()
   const simulation = useSimulation()
-  const [message, setMessage] = useState('')
-  return <div className="stack"><ResetPanel /><CredentialRecoveryPanel /><Card><CardHeader title={t('system.recovery.backupTitle')} description={t('system.recovery.backupDescription')} action={<Database className="size-5 text-muted-foreground" />} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => setMessage(t('system.recovery.created'))}>{t('system.recovery.create')}</Button><Button variant="secondary" onClick={() => setMessage(t('system.recovery.restored'))}>{t('system.recovery.restore')}</Button></div>{message ? <p className="callout success">{message}</p> : null}</Card><Card><CardHeader title={t('system.recovery.supportTitle')} description={t('system.recovery.supportDescription')} action={<Stethoscope className="size-5 text-muted-foreground" />} /><div className="ui-selector"><div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div><Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} /></div><Status ok={!simulation.supportAccess}>{t(simulation.supportAccess ? 'system.recovery.supportExpires' : 'system.recovery.supportDisabled')}</Status></Card></div>
+  return (
+    <Surface>
+      <PlannedNotice>{t('system.update.automaticPlanned')}</PlannedNotice>
+      <div className="ui-selector">
+        <div><strong>{t('system.update.automatic')}</strong><small>{t('system.update.automaticCopy')}</small></div>
+        <Switch aria-label={t('system.update.automatic')} checked={simulation.automaticUpdates} onCheckedChange={simulation.setAutomaticUpdates} />
+      </div>
+      <div className="content-grid">
+        <Field label={t('system.update.window')}><Input disabled placeholder="02:00 – 04:00" /></Field>
+        <Field label={t('system.update.policy')}><Input disabled placeholder={t('system.update.policyDownload')} /></Field>
+      </div>
+    </Surface>
+  )
+}
+
+function ManualUpdate() {
+  const { t } = useTranslation()
+  return (
+    <Surface>
+      <PlannedNotice>{t('system.update.manualPlanned')}</PlannedNotice>
+      <div className="panel-head"><span>{t('system.update.manualFormats')}</span></div>
+      <Button variant="outline" size="sm" disabled><Upload />{t('system.update.manualUpload')}</Button>
+    </Surface>
+  )
+}
+
+function ConfigBackup() {
+  const { t } = useTranslation()
+  return (
+    <div className="stack">
+      <PlannedNotice>{t('system.backup.planned')}</PlannedNotice>
+      <div className="split-grid">
+        <Surface>
+          <strong>{t('system.backup.exportTitle')}</strong>
+          <p className="field-hint">{t('system.backup.exportCopy')}</p>
+          <Button variant="outline" size="sm" disabled><Download />{t('system.backup.download')}</Button>
+        </Surface>
+        <Surface>
+          <strong>{t('system.backup.importTitle')}</strong>
+          <p className="field-hint">{t('system.backup.importCopy')}</p>
+          <Button variant="outline" size="sm" disabled><Upload />{t('system.backup.restore')}</Button>
+        </Surface>
+      </div>
+    </div>
+  )
+}
+
+function SupportAccess() {
+  const { t } = useTranslation()
+  const simulation = useSimulation()
+  return (
+    <Surface>
+      <PlannedNotice>{t('system.support.planned')}</PlannedNotice>
+      <div className="ui-selector">
+        <div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div>
+        <Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} />
+      </div>
+      <p className="field-hint">{t(simulation.supportAccess ? 'system.support.on' : 'system.support.off')}</p>
+    </Surface>
+  )
 }
 
 function HostnamePanel() {
@@ -139,7 +242,6 @@ function HostnamePanel() {
   const value = draft ?? hostname.data ?? ''
   return (
     <Card>
-      <CardHeader title={t('system.identity.title')} description={t('system.identity.description')} />
       <form className="grid gap-4" onSubmit={(event: FormEvent) => { event.preventDefault(); update.mutate(value) }}>
         <Field label={t('system.identity.hostname')}><Input value={value} onChange={(event) => setDraft(event.target.value)} required /></Field>
         <Button type="submit" disabled={update.isPending || !draft}>{t('system.identity.save')}</Button>
@@ -174,7 +276,6 @@ export function UiPanel() {
   }
   return (
     <Card>
-      <CardHeader title={t('system.ui.title')} description={t('system.ui.description')} action={<MonitorCog className="size-5 text-muted-foreground" />} />
       <div className="service-state"><Status ok={!status.isPending && !status.isError}>{status.isPending ? t('system.ui.checking') : active ? t('system.ui.customActive') : t('system.ui.builtInActive')}</Status></div>
       <div className="ui-selector">
         <div><strong>{t('system.ui.useCustom')}</strong><small>{t('system.ui.recoveryCopy')}</small></div>
@@ -222,7 +323,6 @@ function PowerPanel() {
   const action = useMutation({ mutationFn: (name: 'reboot' | 'poweroff') => api<void>(`/api/v1/actions/${name}`, { method: 'POST' }) })
   return (
     <Card>
-      <CardHeader title={t('system.power.title')} description={t('system.power.description')} action={<Power className="size-5 text-muted-foreground" />} />
       <div className="flex flex-wrap gap-3"><PowerAction name="reboot" pending={action.isPending} onConfirm={() => action.mutate('reboot')} /><PowerAction name="poweroff" pending={action.isPending} onConfirm={() => action.mutate('poweroff')} /></div>
       {action.isSuccess ? <p className="callout success" role="status">{t('system.power.accepted')}</p> : null}
       {action.error ? <p className="callout error" role="alert">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}

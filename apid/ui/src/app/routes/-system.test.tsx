@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
 import type { UiStatus } from '@/lib/types'
 import { i18n } from '@/i18n/i18n'
-import { UiPanel, UpdatePanel } from './system'
+import { UiPanel, UpdateChecks, UpdatePanel } from './system'
 
 function response(value: UiStatus) {
   return new Response(JSON.stringify(value), {
@@ -130,6 +130,7 @@ function renderUpdatePanel() {
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <UpdatePanel />
+        <UpdateChecks />
       </QueryClientProvider>
     </I18nextProvider>,
   )
@@ -159,7 +160,8 @@ describe('update status panel', () => {
 
     expect(await screen.findByText('ready')).toBeTruthy()
     expect(screen.getByText('/mos/updates/verified/abc.update-1.1.0.raucb')).toBeTruthy()
-    expect(screen.getByText(/Reboot blocked/)).toBeTruthy()
+    expect(screen.getByText('Safe to reboot')).toBeTruthy()
+    expect(screen.getByText('Blocked')).toBeTruthy()
     expect(screen.getByText(/mid-transaction/)).toBeTruthy()
   })
 
