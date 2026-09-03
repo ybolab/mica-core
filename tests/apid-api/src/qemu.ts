@@ -78,8 +78,10 @@ export function readBoardEnv(text: string): Map<string, string> {
  * ESP_START_MIB, not BOOT_A_START_MIB. The two are different partitions on
  * this board and only one of them holds a grub.cfg: the ESP (partition 1, at
  * 1 MiB) carries EFI/mos/grub.cfg and EFI/mos/grubenv, while BOOT-A
- * (partition 2, at 65 MiB) carries vmlinuz, initrd.img and cmdline.cfg at its
- * FAT root and has no EFI directory at all. Measured against
+ * (partition 2, at 65 MiB) carries vmlinuz and cmdline.cfg at its FAT root and
+ * has no EFI directory at all. It carried an initrd.img too until PLAN-073;
+ * this board's kernel assembles the dm-verity root from the command line now.
+ * Measured against
  * x64-mos-latest.img, 2026-08-28. Reading the boot slot here made mcopy
  * fail with `File "::/EFI/mos/grub.cfg" not found`, which took the whole
  * prepare down -- and since the apid-api harness always sets MOS_QEMU_APPEND
