@@ -532,6 +532,7 @@ export const en = {
         title: 'Software and boot',
         description: 'Image build, daemon, active RAUC slot and monotonic uptime.',
         system: 'System image',
+        commitDate: 'Source commit date',
         daemon: 'mosd',
         slot: 'Active slot',
         primary: 'primary',

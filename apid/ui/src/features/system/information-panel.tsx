@@ -34,6 +34,7 @@ export function InformationPanel() {
               <CardHeader title={t('system.information.software.title')} description={t('system.information.software.description')} action={<Box className="size-5 text-muted-foreground" />} />
               <dl className="details">
                 <FactRow label={t('system.information.software.system')} fact={value.system} value={systemSummary(value)} />
+                <FactRow label={t('system.information.software.commitDate')} fact={value.system.commitDate ?? value.system} value={value.system.commitDate?.date} />
                 <FactRow label={t('system.information.software.daemon')} fact={value.daemon} value={join([value.daemon.name, value.daemon.version, value.daemon.commit])} />
                 <FactRow label={t('system.information.software.slot')} fact={value.slot} value={join([value.slot.booted, value.slot.bootname, value.slot.bootStatus, value.slot.primary ? t('system.information.software.primary') : undefined])} />
                 <FactRow label={t('system.information.software.uptime')} fact={value.uptime} value={value.uptime.seconds === undefined ? undefined : formatUptime(value.uptime.seconds, t)} />
@@ -104,13 +105,19 @@ function watchdogSummary(device: WatchdogDevice, t: ReturnType<typeof useTransla
   return join([device.device, device.identity, device.state, device.timeoutSeconds === undefined ? undefined : t('system.information.telemetry.timeout', { seconds: device.timeoutSeconds }), bootstatus]) ?? device.device
 }
 
-/// The image's own provenance: version, package, the git stamp with its
-/// consistency verdict, and the build date. An inconsistent stamp is stated,
-/// because it means the image was assembled from more than one tree.
+/// The image's own provenance: version, package and the git stamp with its
+/// consistency verdict. An inconsistent stamp is stated, because it means the
+/// image was assembled from more than one tree.
+///
+/// The date is NOT here: it is a fact of its own with an absence of its own,
+/// so it gets a row rather than a position in a joined line that would drop it
+/// without a word. The row falls back to the `system` member's own absence
+/// reason when there is no manifest at all -- the reason there is no commit
+/// date is then the reason there is no system member either.
 function systemSummary(value: SystemInformation) {
   const stamp = value.system.gitStamp
   const git = stamp?.commit ? `git ${stamp.commit}${stamp.dirty ? ' (dirty)' : ''}${stamp.consistent ? ' (consistent)' : ' (inconsistent)'}` : undefined
-  return join([value.system.version, value.system.package, git, value.system.buildDate])
+  return join([value.system.version, value.system.package, git])
 }
 
 function formatUptime(seconds: number, t: ReturnType<typeof useTranslation>['t']) {

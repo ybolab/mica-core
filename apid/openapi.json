@@ -2922,7 +2922,7 @@
         "operationId": "api_v1_system_info",
         "responses": {
           "200": {
-            "description": "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `buildDate`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`",
+            "description": "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`",
             "content": {
               "application/json": {
                 "schema": {
