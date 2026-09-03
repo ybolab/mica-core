@@ -17,7 +17,8 @@ function information(overrides: Partial<SystemInformation> = {}): SystemInformat
       version: '2026.09.0',
       package: 'mos-system',
       gitStamp: { commit: 'abc1234', dirty: false, consistent: true, stamps: ['abc1234'] },
-      buildDate: '2026-09-01',
+      commitDate: { available: true, date: '2026-09-01T12:34:56+08:00' },
+      fileEpoch: { available: true, epoch: 1_577_836_800, date: '2020-01-01T00:00:00Z' },
     },
     daemon: { ...available, name: 'mosd', version: '0.4.1', commit: 'abc1234' },
     packages: { ...available, count: 2, mosCount: 1, entries: [
@@ -48,7 +49,8 @@ describe('system information', () => {
 
     expect(await screen.findByText('7f1c2ad0f0e4')).toBeTruthy()
     expect(screen.getByText('Radxa CM3576 · device-tree')).toBeTruthy()
-    expect(screen.getByText('2026.09.0 · mos-system · git abc1234 (consistent) · 2026-09-01')).toBeTruthy()
+    expect(screen.getByText('2026.09.0 · mos-system · git abc1234 (consistent)')).toBeTruthy()
+    expect(screen.getByText('2026-09-01T12:34:56+08:00')).toBeTruthy()
     expect(screen.getByText('rootfs.0 · A · good · primary')).toBeTruthy()
     expect(screen.getByText('1d 2h 3m')).toBeTruthy()
     expect(screen.getByText('2 packages, including 1 mos packages.')).toBeTruthy()
@@ -68,6 +70,25 @@ describe('system information', () => {
     expect(await screen.findByText('Unavailable — /etc/machine-id is empty')).toBeTruthy()
     expect(screen.getByText('Unavailable — this image was not installed by RAUC')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('states an absent source commit date as absence, never as the image file epoch', async () => {
+    const base = information()
+    stubFetch({
+      '/api/v1/system/info': information({
+        system: {
+          ...base.system,
+          commitDate: { available: false, detail: '/usr/share/mos/release-identity.env states no COMMIT_DATE' },
+        },
+      }),
+      '/api/v1/system/telemetry': telemetryAbsent,
+    })
+    renderPanel(<InformationPanel />)
+
+    expect(await screen.findByText('Unavailable — /usr/share/mos/release-identity.env states no COMMIT_DATE')).toBeTruthy()
+    // The pinned file epoch is the same instant in every image ever built; it
+    // must never stand in for the date the image's source was committed.
+    expect(screen.queryByText('2020-01-01T00:00:00Z')).toBeNull()
   })
 
   it('states an empty manifest instead of drawing an empty table', async () => {

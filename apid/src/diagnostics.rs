@@ -40,7 +40,7 @@ use crate::settings_api::SettingsApi;
 /// The snapshot schema version; bumped when a member changes shape.
 pub const SCHEMA_VERSION: u64 = 1;
 /// The redaction schema version; bumped when the allowlist changes.
-pub const REDACTION_SCHEMA_VERSION: u64 = 1;
+pub const REDACTION_SCHEMA_VERSION: u64 = 2;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
@@ -183,9 +183,14 @@ fn schema() -> Rule {
         ("version", S),
         ("package", S),
         ("gitStamp", git_stamp),
-        ("buildEpoch", S),
-        ("buildDate", S),
-        ("buildDateDetail", S),
+        // The two times mosd's system_info reports, which are different facts:
+        // `commitDate` is when the source was committed, `fileEpoch` is the
+        // pinned SOURCE_DATE_EPOCH every file in the image carries. A key that
+        // is not named here is DROPPED from every snapshot without a word, so
+        // renaming a field on that surface without renaming it here would ship
+        // snapshots that silently lost it.
+        ("commitDate", obj(vec![("date", S)])),
+        ("fileEpoch", obj(vec![("epoch", S), ("date", S)])),
     ]);
     let packages = obj(vec![
         ("count", S),
@@ -1281,7 +1286,8 @@ mod tests {
                 "system": {
                     "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "mosd",
                     "gitStamp": { "available": true, "commit": "00b674ec0ffe", "dirty": false, "revision": "1", "consistent": true, "stamps": ["git00b674ec0ffe-1"] },
-                    "buildEpoch": 1756771200, "buildDate": "2026-09-02T00:00:00Z",
+                    "commitDate": { "available": true, "date": "2026-09-02T00:00:00Z" },
+                    "fileEpoch": { "available": true, "epoch": 1577836800, "date": "2020-01-01T00:00:00Z" },
                 },
                 "daemon": { "name": "mosd", "version": "0.1.0", "commit": "00b674ec0ffe" },
                 "packages": { "available": true, "count": 2, "mosCount": 1, "malformedRows": 0, "truncated": false,
@@ -1437,7 +1443,11 @@ mod tests {
                 json!("0123456789abcdef0123456789abcdef"),
             ),
             ("/system/system/gitStamp/commit", json!("00b674ec0ffe")),
-            ("/system/system/buildDate", json!("2026-09-02T00:00:00Z")),
+            (
+                "/system/system/commitDate/date",
+                json!("2026-09-02T00:00:00Z"),
+            ),
+            ("/system/system/fileEpoch/epoch", json!(1_577_836_800)),
             (
                 "/system/packages/entries/0/version",
                 json!("0.1.0+git00b674ec0ffe-1"),
