@@ -5330,7 +5330,7 @@
           },
           "mechanism": {
             "type": "string",
-            "description": "The mechanism that proved presence and published the credential."
+            "description": "The mechanism that proved presence and published the credential — the\nboard's own name for it, so the operator reading this and the operator\nreading the audit trail are looking at one word."
           }
         }
       },

@@ -110,7 +110,7 @@ impl AppState {
             // A path and no syscall, like the bundle and snapshot stores: the
             // marker is read when something asks for presence and never at
             // construction.
-            presence: Arc::new(ConsolePresence::at_default()),
+            presence: Arc::new(MarkerPresence::at_default()),
         }
     }
 
@@ -5777,49 +5777,34 @@ pub(crate) async fn api_v1_claim(
 
 /// The named board capability that decides what a presence assertion IS.
 ///
-/// **One seam, keyed by one capability.** `docs/design/recovery.md` §4.2
-/// admits three kinds of mechanism — a physical control across a power cycle,
-/// a local console the operator is attached to, and a file placed on the boot
-/// medium with the medium out of the device — and both mos boards answer this
-/// capability with [`PRESENCE_CONSOLE_ATTACH`] and nothing else. A board that
-/// later qualifies a different mechanism answers it differently and reaches
-/// the same gate; no flow reshapes, and nothing here anticipates one. In
-/// particular there is no button code in this crate and no document claiming a
-/// button flow: the cx3576 recovery button drops the board into rockusb loader
-/// mode today and no software recovery flow reads it, which §4.2 and §8 record
-/// as bench-dependent.
+/// **One seam, keyed by one capability, and the capability's answer is now the
+/// BOARD's** (`docs/design/recovery.md` §4). A board declares the physical
+/// recovery actions it implements and what each maps to; the mechanisms those
+/// actions name are what this board answers `recovery.presence` with, and this
+/// crate knows nothing about which of them produced an assertion. There is no
+/// per-board branch here and no button, console or medium code: adopting a
+/// mechanism is a change to a board's declaration and to the BSP that
+/// implements it, and to no flow, route or tier.
+///
+/// **Both shipped boards declare NONE**, so on a fielded mos device this
+/// capability is answered with nothing at all and every presence-gated flow
+/// refuses with [`NoPresence::BoardDeclaresNone`].
 pub(crate) const PRESENCE_CAPABILITY: &str = "recovery.presence";
 
-/// The capability's value on cx3576 and on x64: an operator attached to the
-/// device's local console.
-pub(crate) const PRESENCE_CONSOLE_ATTACH: &str = "console-attach";
-
-/// The §5.3 event name for the console-attach flow, which is the mechanism in
-/// the name rather than in a fourth member of the line.
+/// The §5.3 event a credential recovery is recorded under when there is no
+/// mechanism to name — every refusal taken before presence is established.
 ///
-/// §6's implemented line shape has exactly four members — timestamp, event,
-/// outcome, source — so one enumerated event per mechanism keeps the trail's
-/// grammar unchanged while making "which door was used" greppable. The
-/// siblings §5.3 names (`credential-recovery-button`,
-/// `credential-recovery-medium`, `credential-recovery-factory`) are NOT
-/// declared here: a constant for a door this build cannot open would be a
-/// claim the board table does not support.
-const CREDENTIAL_RECOVERY_CONSOLE_EVENT: &str = "credential-recovery-console";
-
-/// Where the console-attached asserter leaves its assertion.
-///
-/// On tmpfs and owned by root, which is what makes it presence rather than a
-/// flag: `docs/design/recovery.md` §4.2's rule is that the action must be one
-/// **no network client can perform**, and nothing reachable over the network
-/// writes here. apid only ever READS it — there is no route, no settings path
-/// and no code in this crate that creates it — so an API that could set it
-/// would have to be written first, which is the change §4.2 forbids.
-const PRESENCE_MARKER_PATH: &str = "/run/mos/presence";
+/// A refusal has no door to record, so it records none. The success and
+/// aborted lines carry `credential-recovery-<mechanism>` instead
+/// (`mosd_settings::credential_recovery_event`), which is what makes "which
+/// door was used" greppable.
+const CREDENTIAL_RECOVERY_EVENT: &str = "credential-recovery";
 
 /// A presence assertion made at the device.
 pub(crate) struct Assertion {
-    /// The mechanism, which is also what the audit event is named for.
-    mechanism: &'static str,
+    /// The mechanism, which is also what the audit event is named for. A
+    /// value the board declared; this crate never invents one.
+    mechanism: String,
     /// The channel that proved presence, and therefore the ONE channel a
     /// minted credential may be published on (§5.1 rule 2).
     channel: PathBuf,
@@ -5830,11 +5815,13 @@ impl Assertion {
     ///
     /// Test-only, and the channel is deliberately a path nothing opens: a test
     /// seam captures what it was asked to publish rather than writing it, so
-    /// there is no file anywhere for a minted credential to be left in.
+    /// there is no file anywhere for a minted credential to be left in. The
+    /// mechanism is the test's to choose, because a mechanism is a board fact
+    /// and no board in this tree declares one.
     #[cfg(test)]
-    pub(crate) fn console_for_test() -> Self {
+    pub(crate) fn for_test(mechanism: &str) -> Self {
         Self {
-            mechanism: board_presence_mechanism(),
+            mechanism: mechanism.to_string(),
             channel: PathBuf::from("/dev/null"),
         }
     }
@@ -5842,26 +5829,41 @@ impl Assertion {
 
 /// Why an assertion was not established. Named, because §5.3 audits a refusal
 /// and an operator has to be able to tell "nobody is at the device" from "the
-/// assertion has run out".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// assertion has run out" — and both of those from "this board has no way to
+/// assert presence at all", which is not a thing standing at the device fixes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoPresence {
+    /// The board declares no physical recovery action, so there is no action
+    /// an operator could take. Both shipped boards.
+    BoardDeclaresNone,
+    /// The board declares actions and this build cannot read the declaration.
+    DeclarationUnreadable,
     /// No assertion has been made.
     Absent,
     /// One was made and its window has passed.
     Expired,
     /// The marker is there but this build cannot read it as an assertion.
     Malformed,
-    /// The assertion names a mechanism this board does not answer the
-    /// capability with.
-    UnknownMechanism,
+    /// The assertion names a mechanism no action this board declares uses.
+    UnknownMechanism(Vec<String>),
 }
 
 impl NoPresence {
     /// The sentence the refusal carries. It names no path and no value the
     /// marker held: a refusal is read by whoever asked, and what it may tell
     /// them is that presence was not established.
-    fn message(self) -> String {
+    fn message(&self) -> String {
         match self {
+            Self::BoardDeclaresNone => format!(
+                "this board declares no physical recovery action, so presence cannot be asserted \
+                 on it; it answers `{PRESENCE_CAPABILITY}` with nothing, and the action a board \
+                 declares is implemented by its BSP"
+            ),
+            Self::DeclarationUnreadable => {
+                "this board's physical recovery actions could not be read, so no presence \
+                 assertion is accepted on it"
+                    .to_string()
+            }
             Self::Absent => {
                 "this operation requires physical presence at the device, and none is asserted"
                     .to_string()
@@ -5874,26 +5876,13 @@ impl NoPresence {
                 "the physical-presence assertion could not be read; assert it again at the device"
                     .to_string()
             }
-            Self::UnknownMechanism => format!(
+            Self::UnknownMechanism(declared) => format!(
                 "the physical-presence assertion names a mechanism this board does not offer; \
                  it answers `{PRESENCE_CAPABILITY}` with `{}`",
-                board_presence_mechanism()
+                declared.join("`, `")
             ),
         }
     }
-}
-
-/// What this board answers [`PRESENCE_CAPABILITY`] with.
-///
-/// **The whole of the board-specific part of the gate**, and it is one
-/// function so that a board qualifying a different mechanism changes this and
-/// nothing else — no flow reshapes, no route moves, no new field appears. Both
-/// mos boards answer [`PRESENCE_CONSOLE_ATTACH`] (`docs/design/recovery.md`
-/// §4.2, §8), which is why there is no per-board branch here to test: a branch
-/// with one arm reachable would be speculative code for a mechanism no board
-/// has evidenced.
-fn board_presence_mechanism() -> &'static str {
-    PRESENCE_CONSOLE_ATTACH
 }
 
 /// The ONE seam every presence-gated operation passes through.
@@ -5902,7 +5891,7 @@ fn board_presence_mechanism() -> &'static str {
 /// credential is returned "on the channel that proved presence", so whatever
 /// decides presence is also what decides where a secret may be written. A
 /// design that asserted here and published somewhere else could publish over
-/// the network, which is the one thing §4.2 forbids outright.
+/// the network, which is the one thing §4 forbids outright.
 pub(crate) trait Presence: Send + Sync {
     /// The assertion standing at this moment, or why there is none.
     fn assert(&self) -> Result<Assertion, NoPresence>;
@@ -5916,41 +5905,55 @@ pub(crate) trait Presence: Send + Sync {
     fn publish(&self, assertion: &Assertion, secret: &str) -> anyhow::Result<()>;
 }
 
-/// The shipped mechanism: an assertion left by an operator at the local
-/// console, published back to the console they are attached to.
-pub(crate) struct ConsolePresence {
+/// The shipped reader: the assertion mosd left after mapping a board-declared
+/// physical recovery action, published back on the channel that action named.
+///
+/// **This crate only ever READS the marker.** mosd writes it, from an intent
+/// that arrived on the kernel command line before Linux ran
+/// (`mosd_settings::Declaration::map_intent`); there is no route, no settings
+/// path and no line in apid that creates it, so an API that could set it would
+/// have to be written first — which is the change §4 forbids.
+pub(crate) struct MarkerPresence {
     marker: PathBuf,
+    declaration: PathBuf,
 }
 
-/// What [`PRESENCE_MARKER_PATH`] holds. Three members and no room for a
-/// fourth: an assertion is a mechanism, a channel and a deadline.
-#[derive(serde::Deserialize)]
-struct PresenceMarker {
-    /// The mechanism asserted, which must be the board capability's value.
-    mechanism: String,
-    /// The console device the operator is attached to.
-    channel: PathBuf,
-    /// UNIX seconds at which the assertion stops standing.
-    ///
-    /// **Required, and an assertion without one does not parse.** §5.4 gives
-    /// the flow its own bound — "one rotation per presence assertion, and the
-    /// assertion is re-performed physically for the next one" — and a marker
-    /// with no deadline would turn one visit to the device into a standing
-    /// permission, which is the permanent shell §4.3 refuses.
-    expires: u64,
-}
-
-impl ConsolePresence {
-    /// The shipped reader. A path and no syscall until something asserts.
+impl MarkerPresence {
+    /// The shipped reader. Two paths and no syscall until something asserts.
     pub(crate) fn at_default() -> Self {
+        Self::at(
+            mosd_settings::presence_marker_path(),
+            mosd_settings::declaration_path(),
+        )
+    }
+
+    /// The same reader over given paths, so a test can drive the SHIPPED one
+    /// rather than a seam that stands in for it.
+    pub(crate) fn at(marker: PathBuf, declaration: PathBuf) -> Self {
         Self {
-            marker: PathBuf::from(PRESENCE_MARKER_PATH),
+            marker,
+            declaration,
         }
     }
 }
 
-impl Presence for ConsolePresence {
+impl Presence for MarkerPresence {
     fn assert(&self) -> Result<Assertion, NoPresence> {
+        // The board's declaration FIRST, because what it says changes what an
+        // absent marker means: on a board that declares no action there is
+        // nothing an operator could have done, and telling them presence is
+        // merely "not asserted" would send them looking for a door that does
+        // not exist.
+        let declaration = mosd_settings::Declaration::read(&self.declaration);
+        match &declaration {
+            mosd_settings::Declaration::None => return Err(NoPresence::BoardDeclaresNone),
+            mosd_settings::Declaration::Unreadable(reason) => {
+                tracing::warn!(%reason, "the board's recovery declaration could not be read");
+                return Err(NoPresence::DeclarationUnreadable);
+            }
+            mosd_settings::Declaration::Actions(_) => {}
+        }
+
         let bytes = std::fs::read(&self.marker).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 NoPresence::Absent
@@ -5958,16 +5961,22 @@ impl Presence for ConsolePresence {
                 NoPresence::Malformed
             }
         })?;
-        let marker: PresenceMarker =
+        let marker: mosd_settings::PresenceMarker =
             serde_json::from_slice(&bytes).map_err(|_| NoPresence::Malformed)?;
-        if marker.mechanism != board_presence_mechanism() {
-            return Err(NoPresence::UnknownMechanism);
+        if !declaration.declares_mechanism(&marker.mechanism) {
+            return Err(NoPresence::UnknownMechanism(
+                declaration
+                    .mechanisms()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ));
         }
         if marker.expires <= device_clock_seconds() {
             return Err(NoPresence::Expired);
         }
         Ok(Assertion {
-            mechanism: board_presence_mechanism(),
+            mechanism: marker.mechanism,
             channel: marker.channel,
         })
     }
@@ -6031,19 +6040,12 @@ pub(crate) struct ResetStaged {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialRecovered {
-    /// The mechanism that proved presence and published the credential.
-    mechanism: &'static str,
+    /// The mechanism that proved presence and published the credential — the
+    /// board's own name for it, so the operator reading this and the operator
+    /// reading the audit trail are looking at one word.
+    mechanism: String,
     /// `access.device.generation` after the rotation (§5.1 rule 5).
     generation: u32,
-}
-
-/// The §6 audit event a staged tier is recorded under.
-fn reset_event(tier: ResetTier) -> &'static str {
-    match tier {
-        ResetTier::Configuration => "reset-configuration",
-        ResetTier::ApplicationData => "reset-application-data",
-        ResetTier::FullFactory => "reset-full-factory",
-    }
 }
 
 /// Whether a tier may only be reached with physical presence.
@@ -6056,7 +6058,7 @@ fn tier_needs_presence(tier: ResetTier) -> bool {
 }
 
 /// §4's refusal, in §2.4's envelope.
-fn presence_refusal(reason: NoPresence) -> Response {
+fn presence_refusal(reason: &NoPresence) -> Response {
     api_response(
         StatusCode::FORBIDDEN,
         ApiError::apid("presence_required", reason.message()),
@@ -6110,17 +6112,17 @@ pub(crate) async fn api_v1_reset(
         Ok(request) => request,
         Err(response) => return *response,
     };
-    let event = reset_event(request.tier);
+    let event = mosd_settings::reset_event(request.tier);
 
     // Presence BEFORE the write and before anything else this handler does, so
     // a refused tier 3 is exactly a refused tier 3: nothing staged, nothing
     // cleared, one audit line.
     let presence = if tier_needs_presence(request.tier) {
         match state.presence.assert() {
-            Ok(assertion) => Some(assertion.mechanism.to_string()),
+            Ok(assertion) => Some(assertion.mechanism),
             Err(reason) => {
                 state.audit.record(event, "refused", &source);
-                return presence_refusal(reason);
+                return presence_refusal(&reason);
             }
         }
     } else {
@@ -6135,7 +6137,13 @@ pub(crate) async fn api_v1_reset(
     if let Err(err) = state.api.set_settings(RESET_PATH, &intent).await {
         return bus_api_error(&err, Some(RESET_PATH));
     }
-    state.audit.record(event, "staged", &source);
+    // The mechanism rides in the SOURCE for a presence-gated tier: §5.3 keeps
+    // the line at four members, and an audit entry that records a factory
+    // reset without naming what authorized it cannot answer "how did this
+    // device get reset". A tier 1 or 2 has no mechanism, and its source stays
+    // the peer that asked.
+    let staged_source = presence.as_deref().unwrap_or(source.as_str());
+    state.audit.record(event, "staged", staged_source);
     api_response(
         StatusCode::ACCEPTED,
         ResetStaged {
@@ -6203,7 +6211,11 @@ pub(crate) async fn api_v1_recovery_credential(
     Source(source): Source,
     headers: HeaderMap,
 ) -> Response {
-    let event = CREDENTIAL_RECOVERY_CONSOLE_EVENT;
+    // Bare until presence establishes a mechanism: a refusal has no door to
+    // record. Everything after the assertion below is recorded under
+    // `credential-recovery-<mechanism>`, which is the board's declared name
+    // for the door that was used.
+    let event = CREDENTIAL_RECOVERY_EVENT;
 
     // §5.2's third authority does not exist, and the check that it does not is
     // here rather than in a comment. A caller holding a working credential is
@@ -6236,9 +6248,10 @@ pub(crate) async fn api_v1_recovery_credential(
         Ok(assertion) => assertion,
         Err(reason) => {
             state.audit.record(event, "refused", &source);
-            return presence_refusal(reason);
+            return presence_refusal(&reason);
         }
     };
+    let event = &mosd_settings::credential_recovery_event(&assertion.mechanism);
 
     let access = match state.api.get_settings(ACCESS_PATH).await {
         Ok(value) => value,

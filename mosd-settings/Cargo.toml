@@ -9,6 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# The audit ring stamps every line with an RFC 3339 UTC timestamp; both
+# binaries already link chrono, so the shared writer adds no crate to an image.
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

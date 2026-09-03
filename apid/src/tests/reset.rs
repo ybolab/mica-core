@@ -12,11 +12,31 @@ use axum::http::StatusCode;
 use serde_json::json;
 
 use super::*;
-use crate::routes::{Assertion, NoPresence, Presence};
+use crate::routes::{Assertion, MarkerPresence, NoPresence, Presence};
 use crate::settings_api::TaskNotFound;
 
 const RESET_PATH: &str = "/api/v1/reset";
 const RECOVERY_PATH: &str = "/api/v1/recovery/credential";
+
+/// The mechanism the fixtures assert presence under.
+///
+/// A mechanism is a BOARD fact and neither shipped board declares one
+/// (`docs/design/recovery.md` §4), so this is a fixture's name for a door no
+/// mos device has — never a value read out of the tree, which would be a claim
+/// the board table does not support.
+const FIXTURE_MECHANISM: &str = "boot-menu";
+
+/// What both shipped boards declare.
+const DECLARES_NONE: &str = "BOARD_RECOVERY_ACTIONS=\"\"\n";
+
+/// A board declaring one action under [`FIXTURE_MECHANISM`].
+const DECLARES_ONE: &str = "\
+BOARD_RECOVERY_ACTIONS=\"BOOT_MENU\"
+RECOVERY_BOOT_MENU_INTENT=recovery
+RECOVERY_BOOT_MENU_MECHANISM=boot-menu
+RECOVERY_BOOT_MENU_CHANNEL=/dev/tty0
+RECOVERY_BOOT_MENU_TIER=none
+";
 
 /// The password the fixtures claim the device with. A sentinel, so every
 /// assertion that it reached nowhere is about a string nothing else produces.
@@ -75,7 +95,7 @@ impl FakePresence {
 impl Presence for FakePresence {
     fn assert(&self) -> Result<Assertion, NoPresence> {
         if self.established {
-            Ok(Assertion::console_for_test())
+            Ok(Assertion::for_test(FIXTURE_MECHANISM))
         } else {
             Err(NoPresence::Absent)
         }
@@ -246,7 +266,7 @@ async fn a_full_factory_reset_is_staged_when_presence_is_asserted() {
     assert_eq!(fake.set_paths(), vec!["reset".to_string()]);
     let staged = fake.get_settings("reset").await.unwrap();
     assert_eq!(staged["tier"], json!("full-factory"));
-    assert_eq!(staged["presence"], json!("console-attach"));
+    assert_eq!(staged["presence"], json!(FIXTURE_MECHANISM));
     assert_eq!(
         audit_events(&audit_lines(dir.path())),
         [("reset-full-factory".to_string(), "staged".to_string())]
@@ -334,7 +354,7 @@ async fn recovery_mints_publishes_once_and_invalidates_at_the_same_commit() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_api_headers(&response, RECOVERY_PATH);
     let body = body_json(response).await;
-    assert_eq!(body["mechanism"], json!("console-attach"));
+    assert_eq!(body["mechanism"], json!(FIXTURE_MECHANISM));
     assert_eq!(body["generation"], json!(5), "the generation did not move");
 
     assert_eq!(
@@ -385,7 +405,7 @@ async fn recovery_mints_publishes_once_and_invalidates_at_the_same_commit() {
 
     assert!(
         audit_events(&audit_lines(dir.path())).contains(&(
-            "credential-recovery-console".to_string(),
+            "credential-recovery-boot-menu".to_string(),
             "success".to_string()
         )),
         "{:?}",
@@ -410,10 +430,7 @@ async fn recovery_is_refused_without_presence_and_publishes_nothing() {
     assert!(fake.set_paths().is_empty(), "{:?}", fake.set_paths());
     assert_eq!(
         audit_events(&audit_lines(dir.path())),
-        [(
-            "credential-recovery-console".to_string(),
-            "refused".to_string()
-        )]
+        [("credential-recovery".to_string(), "refused".to_string())]
     );
 }
 
@@ -453,9 +470,7 @@ async fn an_authenticated_session_cannot_run_credential_recovery() {
     assert_eq!(
         events
             .iter()
-            .filter(
-                |(event, outcome)| event == "credential-recovery-console" && outcome == "refused"
-            )
+            .filter(|(event, outcome)| event == "credential-recovery" && outcome == "refused")
             .count(),
         2,
         "{events:?}"
@@ -597,7 +612,7 @@ async fn a_rotation_that_cannot_publish_is_aborted_and_writes_nothing() {
     assert_eq!(
         audit_events(&audit_lines(dir.path())),
         [(
-            "credential-recovery-console".to_string(),
+            "credential-recovery-boot-menu".to_string(),
             "aborted".to_string()
         )]
     );
@@ -851,4 +866,167 @@ async fn a_refused_recovery_discloses_nothing_about_the_credential() {
         assert!(!haystack.contains(&hash), "{haystack}");
         assert!(!haystack.contains("argon2"), "{haystack}");
     }
+}
+
+// --- The shipped reader, against a board's own declaration ------------------
+
+/// A reader over a board that declares `declaration`, or over one that ships
+/// none at all, with `marker` as its assertion.
+fn shipped(declaration: Option<&str>, marker: Option<&str>) -> (TempDir, MarkerPresence) {
+    let dir = TempDir::new().unwrap();
+    let declaration_path = dir.path().join("recovery-actions.conf");
+    let marker_path = dir.path().join("presence");
+    if let Some(text) = declaration {
+        std::fs::write(&declaration_path, text).unwrap();
+    }
+    if let Some(text) = marker {
+        std::fs::write(&marker_path, text).unwrap();
+    }
+    (dir, MarkerPresence::at(marker_path, declaration_path))
+}
+
+/// A marker standing for `seconds` more.
+fn marker(mechanism: &str, seconds: u64) -> String {
+    let expires = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + seconds;
+    json!({ "mechanism": mechanism, "channel": "/dev/tty0", "expires": expires }).to_string()
+}
+
+/// **The shipped state of both mos boards.** A board that declares no physical
+/// recovery action refuses presence, and the refusal says so — an operator
+/// told only "none is asserted" would go looking for a door that does not
+/// exist on this hardware.
+#[test]
+fn a_board_that_declares_no_action_refuses_and_says_which() {
+    for declaration in [Some(DECLARES_NONE), None] {
+        let (_dir, presence) = shipped(declaration, None);
+        let refusal = presence
+            .assert()
+            .err()
+            .expect("presence is not established");
+        assert_eq!(refusal, NoPresence::BoardDeclaresNone);
+        let message = format!("{refusal:?}");
+        assert_eq!(message, "BoardDeclaresNone");
+    }
+
+    // And a marker cannot buy presence on such a board: the declaration is
+    // read first, so a file left in /run by anything at all reaches nothing.
+    let (_dir, presence) = shipped(Some(DECLARES_NONE), Some(&marker(FIXTURE_MECHANISM, 600)));
+    assert_eq!(presence.assert().err(), Some(NoPresence::BoardDeclaresNone));
+}
+
+/// Every state the shipped reader can be in, enumerated: exactly one of them
+/// establishes presence, and each refusal is reached.
+#[test]
+fn the_shipped_reader_establishes_presence_only_for_a_declared_live_assertion() {
+    /// One reader state: what it is called, what the board declares, what the
+    /// marker holds, and the refusal it must produce (`None` = presence).
+    struct Case {
+        label: &'static str,
+        declaration: Option<&'static str>,
+        assertion: Option<String>,
+        want: Option<NoPresence>,
+    }
+    fn case(
+        label: &'static str,
+        declaration: Option<&'static str>,
+        assertion: Option<String>,
+        want: Option<NoPresence>,
+    ) -> Case {
+        Case {
+            label,
+            declaration,
+            assertion,
+            want,
+        }
+    }
+
+    let cases = [
+        case(
+            "a declared mechanism, still standing",
+            Some(DECLARES_ONE),
+            Some(marker(FIXTURE_MECHANISM, 600)),
+            None,
+        ),
+        case(
+            "no assertion at all",
+            Some(DECLARES_ONE),
+            None,
+            Some(NoPresence::Absent),
+        ),
+        case(
+            "an assertion whose window has passed",
+            Some(DECLARES_ONE),
+            Some(
+                json!({
+                    "mechanism": FIXTURE_MECHANISM,
+                    "channel": "/dev/tty0",
+                    "expires": 1_u64,
+                })
+                .to_string(),
+            ),
+            Some(NoPresence::Expired),
+        ),
+        case(
+            "an assertion with no deadline",
+            Some(DECLARES_ONE),
+            Some(json!({ "mechanism": FIXTURE_MECHANISM, "channel": "/dev/tty0" }).to_string()),
+            Some(NoPresence::Malformed),
+        ),
+        case(
+            "an assertion that is not JSON",
+            Some(DECLARES_ONE),
+            Some("not an assertion".to_string()),
+            Some(NoPresence::Malformed),
+        ),
+        case(
+            "a mechanism no declared action uses",
+            Some(DECLARES_ONE),
+            Some(marker("some-other-door", 600)),
+            Some(NoPresence::UnknownMechanism(vec![
+                FIXTURE_MECHANISM.to_string(),
+            ])),
+        ),
+        case(
+            "a declaration this build cannot read",
+            Some("BOARD_RECOVERY_ACTIONS=\"A\"\nRECOVERY_A_INTENT=recovery\n"),
+            Some(marker(FIXTURE_MECHANISM, 600)),
+            Some(NoPresence::DeclarationUnreadable),
+        ),
+        case(
+            "a board that declares none",
+            Some(DECLARES_NONE),
+            None,
+            Some(NoPresence::BoardDeclaresNone),
+        ),
+    ];
+
+    let mut established = 0_usize;
+    let mut refusals = std::collections::BTreeSet::new();
+    for Case {
+        label,
+        declaration,
+        assertion,
+        want,
+    } in cases
+    {
+        let (_dir, presence) = shipped(declaration, assertion.as_deref());
+        match (presence.assert(), &want) {
+            (Ok(_), None) => established += 1,
+            (Err(got), Some(expected)) => {
+                assert_eq!(&got, expected, "{label}");
+                refusals.insert(format!("{got:?}"));
+            }
+            (got, want) => panic!("{label}: got ok={}, wanted {want:?}", got.is_ok()),
+        }
+    }
+    assert_eq!(established, 1, "exactly one input establishes presence");
+    assert_eq!(
+        refusals.len(),
+        6,
+        "every refusal the reader can produce must be reached: {refusals:?}"
+    );
 }

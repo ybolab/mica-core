@@ -9,21 +9,22 @@
  * THE HIGHEST-VALUE ASSERTION IN THIS SUITE IS THE 403. Tier 3 and
  * `POST /api/v1/recovery/credential` are gated on a physical-presence
  * assertion, and `pkgs/mosd/apid/src/tests/reset.rs` proves the gate against a
- * `FakePresence`. A fake that answers "absent" proves the branch; it does not
- * prove that the SHIPPED reader answers "absent" on a device where nothing has
- * asserted presence. That is exactly the gap this phase closes:
- * `ConsolePresence` reads a real marker path on a real booted root, finds
- * nothing there, and both gated operations are refused with
- * `presence_required`. §4 of recovery.md records that nothing in the image
- * writes that marker yet, so "absent" is the device's permanent state and the
- * gate cannot be crossed from here -- asserting it from the outside is
- * therefore the strongest statement available.
+ * `FakePresence`. A fake proves the branch; it does not prove that the SHIPPED
+ * reader refuses on a device where no physical action was taken. That is
+ * exactly the gap this phase closes: the shipped reader opens this board's own
+ * recovery declaration on a real booted root and both gated operations are
+ * refused with `presence_required`. Neither shipped board declares a physical
+ * recovery action (`docs/design/recovery.md` §4), so the refusal a guest
+ * produces is "this board declares none" -- the device's permanent state until
+ * a board declares one and its BSP implements it, which makes asserting it
+ * from the outside the strongest statement available.
  *
  * WHAT IS NOT ASSERTED, AND WHY. The applied side of a tier: staging is one
  * write, and seeing it carried out needs a second boot this one-boot harness
- * cannot afford. The gate's PASSING direction likewise needs a marker no
- * shipped code writes. Both are named as bench items in the workstream's
- * report rather than approximated here.
+ * cannot afford. The gate's PASSING direction needs a board that declares an
+ * action and a BSP that implements it, which no shipped board has. Both are
+ * named as bench items in the workstream's report rather than approximated
+ * here.
  */
 
 import type { JsonValue } from "../report.ts";

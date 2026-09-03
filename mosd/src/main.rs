@@ -42,6 +42,7 @@ mod provisioning;
 mod provisioning_doc;
 mod rauc;
 mod reconciler;
+mod recovery;
 mod reset;
 mod scan;
 mod storage_status;
@@ -201,6 +202,27 @@ async fn serve() -> anyhow::Result<()> {
         // and one more: the intent stays staged, so the next boot retries the
         // same tier rather than the operator losing the request
         // (`docs/design/recovery.md` §2.2).
+        // BEFORE the staged reset, because this is where a staged reset can
+        // come FROM: a board-declared physical recovery action
+        // (`docs/design/recovery.md` §4) arrives as an intent on the kernel
+        // command line, and mapping it stages the tier the board declared for
+        // it. Running it first is what makes the action take effect on THIS
+        // boot rather than the next one.
+        //
+        // Its failure never stops the daemon, for the same reason the two
+        // steps below never do: a device whose operator asked for recovery and
+        // whose assertion could not be written must still come up, legibly,
+        // rather than not boot at all. On both shipped boards this refuses —
+        // neither declares a physical action — and refusing is a recorded
+        // outcome, not an error.
+        match recovery::apply_boot_intent(&store, &mut settings, &recovery::Paths::from_env()) {
+            Ok(outcome) => tracing::info!(?outcome, "boot recovery intent checked"),
+            Err(err) => tracing::error!(
+                error = %err,
+                "a board-declared recovery action mapped and could not be carried out; \
+                 the device boots normally and nothing is asserted"
+            ),
+        }
         match reset::apply_pending(&store, &mut settings, &reset::Roots::from_env()) {
             Ok(outcome) => tracing::info!(?outcome, "staged reset checked"),
             Err(err) => tracing::error!(

@@ -7,14 +7,20 @@
 #![forbid(unsafe_code)]
 
 mod api_token;
+mod audit;
 mod authorized_key;
 mod error;
 mod migration;
 mod model;
 mod path;
+mod recovery;
 mod store;
 
 pub use api_token::{MAX_TOKENS, is_api_token_id, validate_api_tokens};
+pub use audit::{
+    AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES, DEFAULT_AUDIT_RING_DIR, append_audit_line,
+    audit_line, audit_ring_dir,
+};
 pub use authorized_key::{
     MAX_KEYS, decode_base64, encode_base64_nopad, parse_authorized_key, validate_authorized_keys,
 };
@@ -36,4 +42,12 @@ pub use model::{
     validate_timezone_name, validate_wifi_psk,
 };
 pub use path::{json_path_get, path_segments, quote_path_segment};
+pub use recovery::{
+    ACTIONS_KEY, CMDLINE_PATH_ENV, DECLARATION_PATH_ENV, DEFAULT_CMDLINE_PATH,
+    DEFAULT_DECLARATION_PATH, DEFAULT_PRESENCE_MARKER_PATH, Declaration, INTENT_PARAMETER,
+    INTENT_SOURCE, NoAction, PRESENCE_MARKER_PATH_ENV, PRESENCE_WINDOW_SECS, PresenceMarker,
+    RECOVERY_ACTION_EVENT, REFUSED_MALFORMED_INTENT, RecoveryAction, TIER_NONE, cmdline_path,
+    credential_recovery_event, declaration_path, intent_from_cmdline, presence_marker_path,
+    recovery_action_event, refusal_outcome, reset_event,
+};
 pub use store::{DEFAULT_PATH, RollbackReport, Store};

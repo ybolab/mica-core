@@ -1,6 +1,13 @@
-//! Bounded persistent audit trail (`docs/design/access.md` §6): one JSONL
-//! line per security-relevant action, in a two-file ring, mirrored to
-//! tracing so the (volatile) journal tells the same story.
+//! apid's half of the device audit trail (`docs/design/access.md` §6): one
+//! JSONL line per security-relevant action, mirrored to tracing so the
+//! (volatile) journal tells the same story.
+//!
+//! **The ring itself is `mosd_settings`'s**, because apid is not its only
+//! writer: mosd records what a board-declared physical recovery action did at
+//! boot (`docs/design/recovery.md` §4), before apid serves anything. The line
+//! shape, the cap and the rotation are stated once there; what is here is
+//! apid's sink — the journal mirror, the per-process lock and the peer address
+//! an API-side event carries.
 //!
 //! A line carries a UTC timestamp, the event, its outcome and the source
 //! address — and **never** a password, a hash or any other credential
@@ -9,27 +16,13 @@
 //! material.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
-use anyhow::Context;
 use axum::extract::FromRequestParts;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::request::Parts;
-
-/// Per-file rotation threshold. Two files bound the trail at ~512 KiB —
-/// noise on the 64 MiB STATE partition, yet thousands of events per file at
-/// ~130 bytes a line, which on an appliance whose audited actions are human
-/// logins and power requests is months of history. Writes are appends plus
-/// one rename per rotation, so eMMC wear is a handful of sectors per event.
-const ROTATE_BYTES: u64 = 256 * 1024;
-
-/// The live log file, appended to.
-const LOG: &str = "audit.log";
-
-/// The previous generation; each rotation replaces it, which is what drops
-/// the oldest events and bounds the total.
-const LOG_PREVIOUS: &str = "audit.log.1";
+use mosd_settings::{append_audit_line, audit_line};
 
 /// Append-only audit sink.
 pub struct Audit {
@@ -68,49 +61,15 @@ impl Audit {
     pub fn record(&self, event: &str, outcome: &str, source: &str) {
         tracing::info!(target: "audit", event, outcome, source, "audit event");
         let Some(dir) = &self.dir else { return };
-        let line = serde_json::json!({
-            "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "event": event,
-            "outcome": outcome,
-            "source": source,
-        })
-        .to_string();
+        let line = audit_line(event, outcome, source);
         let _guard = self
             .lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(err) = append(dir, &line) {
-            tracing::warn!(error = %err, "audit line could not be written");
+        if let Err(err) = append_audit_line(dir, &line) {
+            tracing::warn!(error = %err, dir = %dir.display(), "audit line could not be written");
         }
     }
-}
-
-/// Append `line` to the ring, rotating first when it would breach the cap.
-fn append(dir: &Path, line: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let path = dir.join(LOG);
-    let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-    if size + line.len() as u64 + 1 > ROTATE_BYTES {
-        std::fs::rename(&path, dir.join(LOG_PREVIOUS))
-            .with_context(|| format!("rotate {}", path.display()))?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)
-        .with_context(|| format!("open {}", path.display()))?;
-    file.write_all(line.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))
-        .with_context(|| format!("append to {}", path.display()))?;
-    // Synced per line because the two most consequential events — reboot and
-    // poweroff requests — are immediately followed by the power state the
-    // fsync protects against, and every audited event is human-rate.
-    file.sync_all()
-        .with_context(|| format!("flush {}", path.display()))?;
-    Ok(())
 }
 
 /// The requesting peer's address as text, for audit lines.
@@ -139,6 +98,8 @@ impl<S: Send + Sync> FromRequestParts<S> for Source {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
+    use mosd_settings::{AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES};
+
     use super::*;
 
     #[test]
@@ -152,7 +113,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let audit = Audit::at(dir.path().to_path_buf());
         audit.record("login", "wrong-password", "192.0.2.7:1234");
-        let path = dir.path().join(LOG);
+        let path = dir.path().join(AUDIT_LOG);
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -176,15 +137,15 @@ mod tests {
         // hundreds of writes rather than thousands.
         let padding = "x".repeat(1000);
         audit.record("marker", "oldest", &padding);
-        for _ in 0..3 * (ROTATE_BYTES / 1000) {
+        for _ in 0..3 * (AUDIT_ROTATE_BYTES / 1000) {
             audit.record("filler", "ok", &padding);
         }
         audit.record("marker", "newest", &padding);
 
-        let live = std::fs::read_to_string(dir.path().join(LOG)).unwrap();
-        let previous = std::fs::read_to_string(dir.path().join(LOG_PREVIOUS)).unwrap();
+        let live = std::fs::read_to_string(dir.path().join(AUDIT_LOG)).unwrap();
+        let previous = std::fs::read_to_string(dir.path().join(AUDIT_LOG_PREVIOUS)).unwrap();
         for contents in [&live, &previous] {
-            assert!(contents.len() as u64 <= ROTATE_BYTES + 1100);
+            assert!(contents.len() as u64 <= AUDIT_ROTATE_BYTES + 1100);
             for line in contents.lines() {
                 serde_json::from_str::<serde_json::Value>(line).expect("every line parses");
             }
