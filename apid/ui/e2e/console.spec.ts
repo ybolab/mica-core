@@ -161,6 +161,8 @@ async function mockDeviceApi(page: Page) {
   })
 }
 
+const FIVE_MINUTES_AGO = () => new Date(Date.now() - 5 * 60_000).toISOString()
+
 function payload(path: string, method: string): unknown {
   if (method !== 'GET') {
     if (path === '/api/v1/ui/active') return { mode: 'builtIn' }
@@ -187,8 +189,8 @@ function payload(path: string, method: string): unknown {
     configuredCount: 2,
     observed: { available: true, interfaceCount: 2, interfaces: [{ index: 2, name: 'eth0', kind: 'ether', operationalState: 'routable', addresses: ['192.168.1.24/24'] }, { index: 4, name: 'wg0', kind: 'wireguard', operationalState: 'routable', addresses: ['10.10.0.2/24'] }] },
   }
-  if (path === '/api/v1/tasks') return [{ id: 'task-1', operation: 'set', dotPath: 'hostname', source: 'api', status: 'finished', outcome: 'succeeded', enqueuedAt: '2026-09-02T09:00:00Z', foldedCount: 0 }]
-  if (path === '/api/v1/tasks/task-e2e') return { id: 'task-e2e', operation: 'set', dotPath: 'settings', source: 'api', status: 'finished', outcome: 'succeeded', enqueuedAt: '2026-09-02T09:00:00Z', foldedCount: 0 }
+  if (path === '/api/v1/tasks') return [{ id: 'task-1', operation: 'set', dotPath: 'hostname', source: 'api', status: 'finished', outcome: 'succeeded', enqueuedAt: FIVE_MINUTES_AGO(), foldedCount: 0 }]
+  if (path === '/api/v1/tasks/task-e2e') return { id: 'task-e2e', operation: 'set', dotPath: 'settings', source: 'api', status: 'finished', outcome: 'succeeded', enqueuedAt: FIVE_MINUTES_AGO(), foldedCount: 0 }
   if (path === '/api/v1/ui') return { mode: 'builtIn' }
   if (path === '/api/v1/settings/container.enabled' || path === '/api/v1/settings/mqtt.enabled' || path === '/api/v1/settings/access.ssh.enabled') return true
   if (path === '/api/v1/state/container' || path === '/api/v1/state/mqtt') return { state: 'running' }
