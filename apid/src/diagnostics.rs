@@ -40,11 +40,13 @@ use crate::settings_api::SettingsApi;
 /// The snapshot schema version; bumped when a member changes shape.
 ///
 /// 1 named the shape with `system.system.buildEpoch` / `buildDate` /
-/// `buildDateDetail`. 2 names the one shipped now, where those are the
-/// `commitDate` and `fileEpoch` objects instead. Nothing migrates a stored
+/// `buildDateDetail`. 2 replaced those with the `commitDate` and `fileEpoch`
+/// objects. 3 names the one shipped now, which adds `boot.update.install.time`
+/// -- the clock, the time-status document and a `clock_implicated` reading,
+/// recorded beside a failed install (PLAN-078 §S4). Nothing migrates a stored
 /// snapshot and nothing needs to: the number is what lets a reader holding
 /// two of them tell which shape each is.
-pub const SCHEMA_VERSION: u64 = 2;
+pub const SCHEMA_VERSION: u64 = 3;
 /// The redaction schema version; bumped when the allowlist changes.
 ///
 /// 2 is the allowlist that followed the rename above, 3 the one that added
@@ -53,8 +55,11 @@ pub const SCHEMA_VERSION: u64 = 2;
 /// only job is that two different allowlists never share it. 4 is the one that
 /// added `system.trust` -- the grade of the signing material the image was
 /// built from, which a support case reads before it reads anything else about
-/// a refused update.
-pub const REDACTION_SCHEMA_VERSION: u64 = 4;
+/// a refused update. 5 is the one that names `boot.update.install.time`, whose
+/// absence from the allowlist would have dropped it SILENTLY -- the snapshot
+/// would have carried a failed install's `certificate has expired` and not the
+/// clock that may have caused it.
+pub const REDACTION_SCHEMA_VERSION: u64 = 5;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
@@ -274,6 +279,31 @@ fn schema() -> Rule {
             ]),
         ),
     ]);
+    // A CLOSURE rather than a value, because two members carry this document:
+    // the top-level `time` section, and the time facts recorded beside a
+    // failed install (PLAN-078 §S4). One rule, used twice -- a second copy
+    // would let the allowlist drift into accepting different fields on the two
+    // surfaces, and the second is exactly the one a wrong-clock incident is
+    // read from.
+    let time = || {
+        obj(vec![
+            ("status", S),
+            ("synchronized", S),
+            ("server", obj(vec![("name", S), ("address", S)])),
+            (
+                "sample",
+                obj(vec![
+                    ("leap", S),
+                    ("stratum", S),
+                    ("spike", S),
+                    ("offsetSeconds", S),
+                    ("packetCount", S),
+                    ("correction", S),
+                ]),
+            ),
+        ])
+    };
+
     let update = obj(vec![
         ("operation", S),
         ("last_error", S),
@@ -302,6 +332,22 @@ fn schema() -> Rule {
                 ("bundle", S),
                 ("requested_by", S),
                 ("error", S),
+                // PLAN-078 §S4: the clock and the synchronization state,
+                // recorded BESIDE a failed install because RAUC's
+                // "certificate has expired" is the same sentence whether the
+                // signer really expired or this device's RTC read garbage.
+                // Named here or the allowlist drops it -- and a redaction that
+                // fails closed drops it silently, which would leave the
+                // snapshot carrying the ambiguous line and not its resolution.
+                (
+                    "time",
+                    obj(vec![
+                        ("clock", S),
+                        ("clock_implicated", S),
+                        ("detail", S),
+                        ("status", time()),
+                    ]),
+                ),
             ]),
         ),
         (
@@ -477,23 +523,6 @@ fn schema() -> Rule {
         ("lifecycle", map(S)),
     ]);
 
-    let time = obj(vec![
-        ("status", S),
-        ("synchronized", S),
-        ("server", obj(vec![("name", S), ("address", S)])),
-        (
-            "sample",
-            obj(vec![
-                ("leap", S),
-                ("stratum", S),
-                ("spike", S),
-                ("offsetSeconds", S),
-                ("packetCount", S),
-                ("correction", S),
-            ]),
-        ),
-    ]);
-
     let address = obj(vec![
         ("family", S),
         ("address", S),
@@ -620,7 +649,7 @@ fn schema() -> Rule {
         ("journal", journal),
         ("failures", failures),
         ("storage", storage),
-        ("time", time),
+        ("time", time()),
         (
             "telemetry",
             obj(vec![("thermal", thermal), ("watchdog", watchdog)]),
@@ -1725,7 +1754,9 @@ mod tests {
     /// `buildDateDetail`. 7d759112 replaced them with the `commitDate` and
     /// `fileEpoch` objects and left the version at 1, so two documents of
     /// different shapes both claimed it -- the one thing a schema version
-    /// exists to make impossible. Version 2 names the shape asserted below.
+    /// exists to make impossible. Version 2 named that shape; version 3 adds
+    /// the time facts recorded beside a failed install (PLAN-078 §S4), and
+    /// both are asserted below.
     ///
     /// Asserting against [`SCHEMA_VERSION`] cannot catch that: it puts the
     /// same value on both sides. The number is written out here beside the
@@ -1746,10 +1777,28 @@ mod tests {
             },
             "uptime": { "available": true, "seconds": 7 },
         }));
+        fake.set_state_entry(
+            "update",
+            json!({
+                "operation": "idle",
+                "install": {
+                    "status": "failed",
+                    "bundle": "/mos/updates/verified/x.raucb",
+                    "requested_by": ":1.7",
+                    "error": "signature verification failed",
+                    "time": {
+                        "clock": "2075-01-01T00:00:00Z",
+                        "clock_implicated": true,
+                        "detail": "the certificate window was rejected against a clock this device cannot vouch for",
+                        "status": { "status": "offline-degraded", "synchronized": false },
+                    },
+                },
+            }),
+        );
         let snapshot = Collector::new(&fake).collect().await.snapshot;
 
         assert_eq!(
-            snapshot["schemaVersion"], 2,
+            snapshot["schemaVersion"], 3,
             "the shipped version does not name the shape below"
         );
         let system = &snapshot["system"]["system"];
@@ -1759,6 +1808,15 @@ mod tests {
             system.get("buildDate").is_none() && system.get("buildEpoch").is_none(),
             "version 1's members are still shipped, so 2 is the wrong number: {system}"
         );
+        // Version 3's addition, asserted through the REAL redaction pass: a
+        // member the allowlist does not name is dropped silently, so a schema
+        // that forgot this one would ship a snapshot carrying `certificate has
+        // expired` and not the clock that may have caused it.
+        let install = &snapshot["boot"]["update"]["install"];
+        assert_eq!(install["error"], "signature verification failed");
+        assert_eq!(install["time"]["clock"], "2075-01-01T00:00:00Z");
+        assert_eq!(install["time"]["clock_implicated"], true);
+        assert_eq!(install["time"]["status"]["status"], "offline-degraded");
     }
 
     /// The time bound, enforced: sources that answer too slowly are

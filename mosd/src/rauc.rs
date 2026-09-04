@@ -504,6 +504,96 @@ pub fn rollback_eligibility(slots: &[SlotStatus], primary: Option<&str>) -> Roll
     }
 }
 
+/// The two RAUC verification failures a wrong clock can produce, in RAUC's
+/// own words.
+///
+/// RAUC compares a certificate's validity against the system clock of the
+/// process doing the verification, and there is no way to hand it a different
+/// notion of now (PLAN-078 §5, measured). So these two messages are the ones
+/// that are ambiguous between "the signer really is out of its window" and
+/// "this device's clock is wrong", and no other failure is.
+const CLOCK_AMBIGUOUS_FAILURES: [&str; 2] =
+    ["certificate has expired", "certificate is not yet valid"];
+
+/// A failure the clock cannot explain: the time facts are reported anyway.
+const CLOCK_NOT_APPLICABLE: &str = concat!(
+    "this failure does not name a certificate validity window, so the device's clock cannot ",
+    "explain it; the time facts are reported anyway so that a reader never has to make a second ",
+    "query to rule the clock out",
+);
+
+/// A window failure on a clock the kernel vouches for: a real expiry.
+const CLOCK_RULED_OUT: &str = concat!(
+    "the certificate window was rejected against a clock the kernel reports as synchronized, so ",
+    "the clock is NOT the explanation: treat this as a real expiry or a real not-yet-valid ",
+    "signer, and reissue rather than resetting the time",
+);
+
+/// A window failure on a clock nothing vouches for: the ambiguous case.
+const CLOCK_IMPLICATED: &str = concat!(
+    "the certificate window was rejected against a clock this device cannot vouch for. A wrong ",
+    "clock produces this exact message and no cryptography can tell the two apart, so check the ",
+    "time below before concluding the signer is at fault",
+);
+
+/// The time facts that belong beside a failed install, and an HONEST reading
+/// of whether the device's clock could be the cause.
+///
+/// WHY THIS EXISTS (PLAN-078 §5, §S4). There is no cryptographic answer to
+/// "the device's clock is wrong": RAUC verifies against the clock of the
+/// process doing the verifying, and a device whose RTC read garbage and got
+/// that value saved into the time floor refuses every valid signer while
+/// printing `signature verification failed: Verify error: certificate has
+/// expired` — a sentence indistinguishable from a genuine trust failure. The
+/// mitigation is therefore diagnostic: report the failure TOGETHER with the
+/// clock and the synchronization state, so an operator who sees
+/// `certificate has expired` next to `offline-degraded, clock reads
+/// 2075-01-01` diagnoses it in seconds rather than filing a bug against the
+/// release.
+///
+/// AND IT HAS TO BE HONEST IN BOTH DIRECTIONS. The time facts are rendered for
+/// every failure, including one the clock cannot explain — an operator should
+/// not have to make a second query to find out that the clock was fine. But
+/// `clock_implicated` is false there, and the detail says so: a diagnostic
+/// that blamed the clock whenever it was present would train readers to
+/// discount it, which costs exactly the case it exists for.
+///
+/// `time_status` is [`crate::time_status::status_json`]'s document, or `None`
+/// when this daemon has no observer. Absent evidence stays absent: nothing is
+/// substituted, and a device whose state could not be read is not a device
+/// whose clock was read and found good.
+pub fn install_failure_time_facts(error: &str, clock: &str, time_status: Option<Value>) -> Value {
+    let ambiguous = CLOCK_AMBIGUOUS_FAILURES
+        .iter()
+        .any(|needle| error.contains(needle));
+    // "Known good" is the one state that rests on the kernel's own bound on
+    // how wrong the clock may be (`NTPSynchronized`, i.e. maxerror < 16 s).
+    // Every other state — including `unknown`, which means a signal could not
+    // be READ — leaves the clock unvouched-for, and an unvouched-for clock may
+    // not be used to rule the clock out.
+    let clock_trusted = time_status
+        .as_ref()
+        .and_then(|s| s.get("status"))
+        .and_then(Value::as_str)
+        == Some("synchronized");
+    let implicated = ambiguous && !clock_trusted;
+    let detail = if !ambiguous {
+        CLOCK_NOT_APPLICABLE
+    } else if clock_trusted {
+        CLOCK_RULED_OUT
+    } else {
+        CLOCK_IMPLICATED
+    };
+    let mut facts = serde_json::Map::new();
+    facts.insert("clock".into(), json!(clock));
+    facts.insert("clock_implicated".into(), json!(implicated));
+    facts.insert("detail".into(), json!(detail));
+    if let Some(status) = time_status {
+        facts.insert("status".into(), status);
+    }
+    Value::Object(facts)
+}
+
 /// The `update` object in the live-state tree, created empty on first use.
 ///
 /// One accessor so every writer — the install task, the mark recorder, the
@@ -1242,6 +1332,121 @@ mod tests {
         update_entry(&mut state).insert("last_error".into(), json!(""));
         assert_eq!(state["update"]["install"]["status"], "running");
         assert_eq!(state["update"]["last_error"], "");
+    }
+
+    /// PLAN-078 §S4, first half: the clock and the state land BESIDE the
+    /// failure, and the diagnosis says the clock could be the cause.
+    #[test]
+    fn a_window_failure_on_an_undisciplined_clock_renders_both_facts_and_implicates_the_clock() {
+        let facts = install_failure_time_facts(
+            "rauc install failed: signature verification failed: Verify error: certificate has expired",
+            "2075-01-01T00:00:00Z",
+            Some(json!({ "status": "offline-degraded", "synchronized": false })),
+        );
+        // BOTH facts: the clock the device believes, and the state it is in.
+        assert_eq!(facts["clock"], "2075-01-01T00:00:00Z");
+        assert_eq!(facts["status"]["status"], "offline-degraded");
+        assert_eq!(facts["status"]["synchronized"], false);
+        assert_eq!(facts["clock_implicated"], true);
+        assert!(
+            facts["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("cannot vouch for"),
+            "{facts}"
+        );
+    }
+
+    /// The other window failure. A device whose floor is a year old accepts
+    /// signers that have since expired; one whose RTC read garbage forward
+    /// gets this instead, and it is equally a clock story.
+    #[test]
+    fn a_not_yet_valid_failure_is_treated_as_the_same_ambiguity() {
+        let facts = install_failure_time_facts(
+            "rauc install failed: signature verification failed: Verify error: certificate is not yet valid",
+            "2019-01-01T00:00:00Z",
+            Some(
+                json!({ "status": "unknown", "detail": "timedate1 did not answer NTPSynchronized" }),
+            ),
+        );
+        assert_eq!(facts["clock_implicated"], true);
+    }
+
+    /// PLAN-078 §S4, second half, and it is the one that catches a lazy
+    /// implementation: a trust failure with a GOOD clock still renders the
+    /// time facts, and does NOT attribute the failure to them.
+    #[test]
+    fn a_window_failure_on_a_synchronized_clock_renders_the_facts_and_does_not_blame_them() {
+        let facts = install_failure_time_facts(
+            "rauc install failed: signature verification failed: Verify error: certificate has expired",
+            "2026-09-04T00:00:00Z",
+            Some(json!({ "status": "synchronized", "synchronized": true })),
+        );
+        assert_eq!(facts["clock"], "2026-09-04T00:00:00Z");
+        assert_eq!(facts["status"]["status"], "synchronized");
+        assert_eq!(
+            facts["clock_implicated"], false,
+            "a clock the kernel vouches for may not be blamed: {facts}"
+        );
+        let detail = facts["detail"].as_str().expect("detail");
+        assert!(detail.contains("NOT the explanation"), "{detail}");
+        assert!(detail.contains("reissue"), "{detail}");
+    }
+
+    /// A failure the clock cannot explain at all -- a foreign CA. The facts
+    /// are still rendered, so a reader never has to make a second query to
+    /// rule the clock out, and the diagnosis says plainly that it is ruled out.
+    #[test]
+    fn a_failure_that_is_not_about_a_validity_window_renders_the_facts_without_blaming_them() {
+        let facts = install_failure_time_facts(
+            "rauc install failed: signature verification failed: Verify error: unable to get local issuer certificate",
+            "2075-01-01T00:00:00Z",
+            Some(json!({ "status": "offline-degraded", "synchronized": false })),
+        );
+        assert_eq!(facts["clock"], "2075-01-01T00:00:00Z");
+        assert_eq!(facts["status"]["status"], "offline-degraded");
+        assert_eq!(
+            facts["clock_implicated"], false,
+            "the clock is wrong AND irrelevant here; blaming it would send an operator to the wrong place: {facts}"
+        );
+        assert!(
+            facts["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("does not name a certificate validity window"),
+            "{facts}"
+        );
+    }
+
+    /// A daemon with no observer. Absent evidence stays absent: no `status`
+    /// member is manufactured, and an unread clock is NOT read as a good one.
+    #[test]
+    fn an_unobservable_clock_leaves_the_member_absent_and_still_implicates_it() {
+        let facts = install_failure_time_facts(
+            "rauc install failed: signature verification failed: Verify error: certificate has expired",
+            "2075-01-01T00:00:00Z",
+            None,
+        );
+        assert!(
+            facts.get("status").is_none(),
+            "a status nobody could read must not become a status: {facts}"
+        );
+        assert_eq!(facts["clock"], "2075-01-01T00:00:00Z");
+        assert_eq!(facts["clock_implicated"], true);
+    }
+
+    /// `polling` is not `synchronized`, and the distinction is the whole
+    /// reason time_status has five states: a device can hold `polling`
+    /// indefinitely with every reply spike-rejected, so its clock is not
+    /// vouched for by anything.
+    #[test]
+    fn polling_is_not_a_clock_the_diagnosis_may_vouch_for() {
+        let facts = install_failure_time_facts(
+            "signature verification failed: Verify error: certificate has expired",
+            "2026-09-04T00:00:00Z",
+            Some(json!({ "status": "polling", "synchronized": false })),
+        );
+        assert_eq!(facts["clock_implicated"], true);
     }
 
     #[test]
