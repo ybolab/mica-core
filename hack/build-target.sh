@@ -160,6 +160,9 @@ done < <(sed -n 's/^members = \[\(.*\)\]/\1/p' "${WORKSPACE}/Cargo.toml" | tr ',
 
 # `--network host` is not used and is not needed: cargo fetches through the
 # container's default network, and the only thing bound in is this repository.
+# mos-build-side: container-block -- the compiler is localhost/mos-build-rust's,
+# recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
+# carries no such record
 docker run --rm \
     --platform "linux/${IMAGE_ARCH}" \
     -v "${REPO_ROOT}:/src:ro" \
@@ -190,6 +193,7 @@ docker run --rm \
         cargo build --release --locked --target "${TARGET}" \
             -p mosd -p apid -p mos-mqttd -p mos-mqtt-broker
     '
+# mos-build-side: host
 
 # The ELF check is per binary, not just the first: a target that silently
 # produced a host-arch artifact for one crate would otherwise ship and fail at
