@@ -207,12 +207,23 @@ fn schema() -> Rule {
             ])),
         ),
     ]);
+    // What the image says about the grade of the material it was signed with,
+    // and the domains a development marker names. A support case that opens
+    // with "the update was refused" is answered differently depending on this
+    // value, so a snapshot that dropped it would send the one fact the reader
+    // needed back to the person who has to ask for it again.
+    let trust = obj(vec![
+        ("grade", S),
+        ("developmentDomains", arr(S)),
+        ("marker", S),
+    ]);
     let system = obj(vec![
         ("machineId", obj(vec![("id", S)])),
         ("board", board()),
         ("kernel", kernel()),
         ("release", release()),
         ("system", system_member),
+        ("trust", trust),
         (
             "daemon",
             obj(vec![("name", S), ("version", S), ("commit", S)]),
