@@ -51,6 +51,9 @@ else
     echo "apid UI build: ${image} -> ${OUTPUT}"
 fi
 
+# mos-build-side: container-block -- the UI is built by the bun pinned as IMAGE_BUN_1
+# with the source mounted read-only; a host bun produces different chunk hashes, so
+# there is deliberately no host route here
 docker run --rm \
     --label ai-agent=true \
     --user "$(id -u):$(id -g)" \
@@ -87,6 +90,7 @@ docker run --rm \
         }
         find /build/work -mindepth 1 -delete
     '
+# mos-build-side: host
 
 if [ "${RUN_CHECKS}" = 1 ]; then
     echo "APID UI CHECKS PASSED"
