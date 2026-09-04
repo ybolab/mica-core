@@ -592,8 +592,8 @@ export const en = {
         stepped: 'clock stepped (large correction)',
         slewing: 'slewing (ordinary drift)',
         states: {
-          synchronized: 'synchronized with network time',
-          synchronizing: 'synchronizing — a server is selected, the clock is not disciplined yet',
+          synchronized: 'synchronized — the kernel reports a bounded clock error',
+          polling: 'polling — a server is selected and answering; the kernel does not report a bounded clock error',
           'offline-degraded': 'degraded — no reachable time server; the device keeps retrying every 30 seconds',
           'invalid-source': 'invalid source — a server answered but its replies cannot be used',
           unknown: 'status unavailable — the time service is not observable',

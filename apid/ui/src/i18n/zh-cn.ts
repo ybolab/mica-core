@@ -388,8 +388,8 @@ export const zhCN: Translation = {
         stepped: '时钟已跳变（大幅校正）',
         slewing: '正在缓慢校正（常规漂移）',
         states: {
-          synchronized: '已与网络时间同步',
-          synchronizing: '正在同步——已选定服务器，时钟尚未校准',
+          synchronized: '已同步——内核报告时钟误差已收敛',
+          polling: '轮询中——已选定服务器并有应答；内核未报告时钟误差已收敛',
           'offline-degraded': '降级——没有可达的时间服务器；设备每 30 秒持续重试',
           'invalid-source': '来源无效——服务器有应答，但其回复不可用',
           unknown: '状态不可用——无法观测时间服务',

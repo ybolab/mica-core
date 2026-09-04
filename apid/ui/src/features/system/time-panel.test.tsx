@@ -22,7 +22,7 @@ describe('time synchronization status', () => {
     })
     renderPanel(<SyncStatusPanel />)
 
-    expect(await screen.findByText('synchronized with network time')).toBeTruthy()
+    expect(await screen.findByText('synchronized — the kernel reports a bounded clock error')).toBeTruthy()
     expect(screen.getByText('time.cloudflare.com (162.159.200.1)')).toBeTruthy()
     expect(screen.getByText('stratum 3, offset 2.4 ms')).toBeTruthy()
     expect(screen.getByText('slewing (ordinary drift)')).toBeTruthy()
@@ -53,7 +53,7 @@ describe('time synchronization status', () => {
     stubFetch({ '/api/v1/time/status': { status: 'synchronized', synchronized: true } satisfies TimeStatus })
     renderPanel(<SyncStatusPanel />)
 
-    await screen.findByText('synchronized with network time')
+    await screen.findByText('synchronized — the kernel reports a bounded clock error')
     expect(screen.queryAllByRole('switch')).toHaveLength(0)
     expect(screen.queryAllByRole('button')).toHaveLength(0)
   })

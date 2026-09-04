@@ -2314,11 +2314,15 @@ pub(crate) async fn api_v1_state(
 /// Read the time-synchronization status.
 ///
 /// Observed from timesyncd at request time and classified by mosd:
-/// `synchronized`, `synchronizing`, `offline-degraded` (no reachable server;
-/// retries continue on the pinned 30-second policy), `invalid-source` (a
-/// server answered and its replies cannot be used), or `unknown` (timesyncd
-/// itself is not observable). Read-only: there is no route that pauses or
-/// stops synchronization.
+/// `synchronized` (timedate1 reports a bounded clock error, which it computes
+/// as `adjtimex().maxerror < 16 s` — not "a reply arrived"), `polling` (a
+/// server is selected and packets are being exchanged, and that bound is not
+/// reported; a device can hold this state indefinitely, so it promises no
+/// convergence), `offline-degraded` (no reachable server; retries continue on
+/// the pinned 30-second policy), `invalid-source` (a server answered and its
+/// replies cannot be used), or `unknown` (timesyncd itself is not
+/// observable). Read-only: there is no route that pauses or stops
+/// synchronization.
 #[utoipa::path(
     get,
     path = V1_TIME_STATUS_PATH,

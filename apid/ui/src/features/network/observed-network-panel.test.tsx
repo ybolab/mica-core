@@ -24,7 +24,7 @@ function observed(overrides: Partial<ObservedNetworkState> = {}): ObservedNetwor
     defaultRoutes: {
       available: true,
       count: 1,
-      entries: [{ family: 'inet', gateway: '192.168.1.1', interface: 'eth0', metric: 100, protocol: 'dhcp', configSource: 'DHCPv4' }],
+      entries: [{ family: 'inet', gateway: '192.168.1.1', interface: 'eth0', metric: 100, protocol: 'dhcp', protocolId: 16, table: 'main', tableId: 254, configSource: 'DHCPv4' }],
     },
     dns: {
       available: true,

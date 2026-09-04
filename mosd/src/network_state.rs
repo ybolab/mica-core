@@ -542,6 +542,94 @@ fn family_name(family: Option<i64>, bytes_len: usize) -> &'static str {
     }
 }
 
+/// What an rtnetlink id with no name is reported as.
+///
+/// Not the number: the whole point of the name member is that a reader knows
+/// it is reading a name, so an unnamed id has to say so in the vocabulary of
+/// names and leave the number to the `…Id` member beside it. An operator can
+/// then tell "nothing names this id" from "this field is broken", which a
+/// bare number cannot.
+const UNNAMED_ID: &str = "unknown";
+
+/// Insert an rtnetlink enum as a name plus the raw id it was resolved from.
+///
+/// No id means neither member: networkd not describing the id is absence, and
+/// absence is not a name. `name` of `None` is an id nothing names.
+fn insert_named_id(root: &mut Map<String, Value>, key: &str, id: Option<u64>, name: Option<&str>) {
+    let Some(id) = id else { return };
+    root.insert(key.to_string(), json!(name.unwrap_or(UNNAMED_ID)));
+    root.insert(format!("{key}Id"), json!(id));
+}
+
+/// A route protocol id as `linux/rtnetlink.h` names it — the same set
+/// `/etc/iproute2/rt_protos` ships, plus `RTPROT_MROUTED`, which the kernel
+/// names and that file happens to omit.
+///
+/// Resolved here rather than taken from networkd's `ProtocolString`, which is
+/// a *different and much smaller* table: its JSON writer resolves the id
+/// against `route_protocol_table[]` (`kernel`, `boot`, `static`) and then
+/// formats the decimal id, so an ordinary DHCP route describes itself as
+/// `"16"`. systemd knows the name — `route_protocol_full_table[]` has it —
+/// and its own logging uses it; only the JSON does not.
+///
+/// Not total, and cannot be: ids are assigned to routing daemons at runtime,
+/// so anything past this list is [`UNNAMED_ID`].
+fn route_protocol_name(protocol: u64) -> Option<&'static str> {
+    Some(match protocol {
+        0 => "unspec",
+        1 => "redirect",
+        2 => "kernel",
+        3 => "boot",
+        4 => "static",
+        8 => "gated",
+        9 => "ra",
+        10 => "mrt",
+        11 => "zebra",
+        12 => "bird",
+        13 => "dnrouted",
+        14 => "xorp",
+        15 => "ntk",
+        16 => "dhcp",
+        17 => "mrouted",
+        18 => "keepalived",
+        42 => "babel",
+        99 => "openr",
+        186 => "bgp",
+        187 => "isis",
+        188 => "ospf",
+        189 => "rip",
+        192 => "eigrp",
+        _ => return None,
+    })
+}
+
+/// An address or route scope as `linux/rtnetlink.h` names it. The five values
+/// it defines are the whole named set; 1–199 and 201–252 are the range it
+/// hands to userspace, so a scope from there has no name to find.
+fn route_scope_name(scope: u64) -> Option<&'static str> {
+    Some(match scope {
+        0 => "global",
+        200 => "site",
+        253 => "link",
+        254 => "host",
+        255 => "nowhere",
+        _ => return None,
+    })
+}
+
+/// A route's table name, from networkd's `TableString`.
+///
+/// The one enum here NOT resolved from the id, and deliberately: table names
+/// come from configuration (`RouteTable=`) as well as from the three the
+/// kernel reserves, so networkd knows names this tree cannot derive. What it
+/// does not know it spells as the decimal id, the same fallback as
+/// `ProtocolString`, and that is the case this rejects — a table nothing
+/// named has no name, and says so.
+fn route_table_name(route: &Value) -> Option<&str> {
+    let name = route.get("TableString").and_then(Value::as_str)?;
+    name.parse::<u64>().is_err().then_some(name)
+}
+
 /// networkd's `HardwareAddress` (an array of octets) as colon-separated hex.
 fn hardware_address(link: &Value) -> Option<String> {
     let bytes = bytes_of(link.get("HardwareAddress")?)?;
@@ -574,9 +662,8 @@ fn address_json(entry: &Value) -> Option<Value> {
     if let Some(prefix) = entry.get("PrefixLength").and_then(Value::as_u64) {
         root.insert("prefixLength".to_string(), json!(prefix));
     }
-    if let Some(scope) = entry.get("ScopeString").and_then(Value::as_str) {
-        root.insert("scope".to_string(), json!(scope));
-    }
+    let scope = entry.get("Scope").and_then(Value::as_u64);
+    insert_named_id(&mut root, "scope", scope, scope.and_then(route_scope_name));
     if let Some(source) = entry.get("ConfigSource").and_then(Value::as_str) {
         root.insert("configSource".to_string(), json!(source));
     }
@@ -617,12 +704,15 @@ fn default_route_json(route: &Value, interface: Option<&str>, index: Option<u64>
     if let Some(metric) = route.get("Priority").and_then(Value::as_u64) {
         root.insert("metric".to_string(), json!(metric));
     }
-    if let Some(protocol) = route.get("ProtocolString").and_then(Value::as_str) {
-        root.insert("protocol".to_string(), json!(protocol));
-    }
-    if let Some(table) = route.get("TableString").and_then(Value::as_str) {
-        root.insert("table".to_string(), json!(table));
-    }
+    let protocol = route.get("Protocol").and_then(Value::as_u64);
+    insert_named_id(
+        &mut root,
+        "protocol",
+        protocol,
+        protocol.and_then(route_protocol_name),
+    );
+    let table = route.get("Table").and_then(Value::as_u64);
+    insert_named_id(&mut root, "table", table, route_table_name(route));
     if let Some(source) = route.get("ConfigSource").and_then(Value::as_str) {
         root.insert("configSource".to_string(), json!(source));
     }
@@ -976,6 +1066,12 @@ mod tests {
     /// A networkd `Describe` the way systemd 257 prints it: a loopback, a
     /// DHCP-configured Ethernet port with a default route, and a wireless
     /// interface with a static address and no default route.
+    ///
+    /// The rtnetlink enums carry BOTH forms networkd emits, and the string
+    /// forms are the ones its JSON writer really produces -- `ProtocolString`
+    /// is resolved against a three-entry table and falls back to the decimal
+    /// id, so the DHCP default route below says `"16"` and not `"dhcp"`. A
+    /// fixture spelling that member `"dhcp"` would test the fixture.
     fn describe_fixture() -> Value {
         json!({
             "Interfaces": [
@@ -983,8 +1079,8 @@ mod tests {
                     "Index": 1, "Name": "lo", "Type": "loopback",
                     "AdministrativeState": "unmanaged", "OperationalState": "carrier",
                     "CarrierState": "carrier", "OnlineState": null,
-                    "Addresses": [{"Family": 2, "Address": [127,0,0,1], "PrefixLength": 8, "ScopeString": "host", "ConfigSource": "foreign"}],
-                    "Routes": [{"Family": 2, "Destination": [127,0,0,0], "DestinationPrefixLength": 8, "TableString": "local"}]
+                    "Addresses": [{"Family": 2, "Address": [127,0,0,1], "PrefixLength": 8, "Scope": 254, "ScopeString": "host", "ConfigSource": "foreign"}],
+                    "Routes": [{"Family": 2, "Destination": [127,0,0,0], "DestinationPrefixLength": 8, "Scope": 254, "ScopeString": "host", "Protocol": 2, "ProtocolString": "kernel", "Table": 255, "TableString": "local"}]
                 },
                 {
                     "Index": 2, "Name": "eth0", "Type": "ether", "Driver": "stmmac", "MTU": 1500,
@@ -992,13 +1088,13 @@ mod tests {
                     "AdministrativeState": "configured", "OperationalState": "routable",
                     "CarrierState": "carrier", "OnlineState": "online", "AddressState": "routable",
                     "Addresses": [
-                        {"Family": 2, "Address": [192,0,2,10], "PrefixLength": 24, "ScopeString": "global", "ConfigSource": "DHCPv4", "ConfigProvider": [192,0,2,1]},
-                        {"Family": 10, "Address": [0xfe,0x80,0,0,0,0,0,0,0,0x42,0xac,0xff,0xfe,0x11,0,2], "PrefixLength": 64, "ScopeString": "link", "ConfigSource": "foreign"}
+                        {"Family": 2, "Address": [192,0,2,10], "PrefixLength": 24, "Scope": 0, "ScopeString": "global", "ConfigSource": "DHCPv4", "ConfigProvider": [192,0,2,1]},
+                        {"Family": 10, "Address": [0xfe,0x80,0,0,0,0,0,0,0,0x42,0xac,0xff,0xfe,0x11,0,2], "PrefixLength": 64, "Scope": 253, "ScopeString": "link", "ConfigSource": "foreign"}
                     ],
                     "DNS": [{"Family": 2, "Address": [192,0,2,1], "ConfigSource": "DHCPv4"}],
                     "Routes": [
-                        {"Family": 2, "Destination": [0,0,0,0], "DestinationPrefixLength": 0, "Gateway": [192,0,2,1], "Priority": 1024, "ProtocolString": "dhcp", "TableString": "main", "ConfigSource": "DHCPv4"},
-                        {"Family": 2, "Destination": [192,0,2,0], "DestinationPrefixLength": 24, "ProtocolString": "kernel", "TableString": "main"}
+                        {"Family": 2, "Destination": [0,0,0,0], "DestinationPrefixLength": 0, "Gateway": [192,0,2,1], "Priority": 1024, "Scope": 0, "ScopeString": "global", "Protocol": 16, "ProtocolString": "16", "Table": 254, "TableString": "main", "ConfigSource": "DHCPv4"},
+                        {"Family": 2, "Destination": [192,0,2,0], "DestinationPrefixLength": 24, "Scope": 253, "ScopeString": "link", "Protocol": 2, "ProtocolString": "kernel", "Table": 254, "TableString": "main"}
                     ],
                     "DHCPv4Client": {
                         "State": "bound",
@@ -1009,7 +1105,7 @@ mod tests {
                     "Index": 3, "Name": "wlan0", "Type": "wlan", "Driver": "aic8800",
                     "AdministrativeState": "configured", "OperationalState": "no-carrier",
                     "CarrierState": "no-carrier", "OnlineState": "offline",
-                    "Addresses": [{"Family": 2, "Address": [10,0,0,5], "PrefixLength": 24, "ScopeString": "global", "ConfigSource": "static"}],
+                    "Addresses": [{"Family": 2, "Address": [10,0,0,5], "PrefixLength": 24, "Scope": 0, "ScopeString": "global", "ConfigSource": "static"}],
                     "Routes": [],
                     "UnstableFutureField": "ignored"
                 }
@@ -1107,6 +1203,91 @@ mod tests {
                 "{desired} leaked into the observed surface"
             );
         }
+    }
+
+    /// RFCT-298: every rtnetlink enum on this surface is a NAME, and the id
+    /// it was resolved from travels beside it.
+    ///
+    /// The bench report was `protocol: "16"` for an ordinary DHCP default
+    /// route. The first half of this test is that case: the fixture carries
+    /// networkd's real `ProtocolString` of `"16"`, and the surface still has
+    /// to say `dhcp`, because the id is `RTPROT_DHCP` and networkd's JSON
+    /// writer simply does not consult the table that knows the name.
+    ///
+    /// The second half is the end of the map. Protocol ids are handed out to
+    /// daemons at runtime and route tables are named by configuration, so
+    /// neither mapping is total; an id with no name reports `unknown` and
+    /// never the number again, so "this id has no name" and "this field is
+    /// broken" cannot be confused.
+    #[test]
+    fn rtnetlink_enums_are_names_beside_the_ids_they_came_from() {
+        let observed = observed_json(
+            Ok(&describe_fixture()),
+            &WifiEvidence::default(),
+            None,
+            &RadioEvidence::default(),
+        );
+        let route = &observed["defaultRoutes"]["entries"][0];
+        assert_eq!(route["protocol"], "dhcp");
+        assert_eq!(route["protocolId"], 16);
+        assert_eq!(route["table"], "main");
+        assert_eq!(route["tableId"], 254);
+
+        let eth0 = &observed["interfaces"]["entries"][1];
+        assert_eq!(eth0["addresses"][0]["scope"], "global");
+        assert_eq!(eth0["addresses"][0]["scopeId"], 0);
+        assert_eq!(eth0["addresses"][1]["scope"], "link");
+        assert_eq!(eth0["addresses"][1]["scopeId"], 253);
+
+        // A routing daemon's runtime-assigned protocol, a scope out of the
+        // kernel's user-defined range, and a route table nothing named --
+        // networkd spells all three as the decimal id, and none of the three
+        // reaches the surface as a number.
+        let unnamed = json!({
+            "Interfaces": [{
+                "Index": 2, "Name": "eth0",
+                "Addresses": [{"Family": 2, "Address": [192,0,2,10], "PrefixLength": 24, "Scope": 77, "ScopeString": "77"}],
+                "Routes": [{
+                    "Family": 2, "Destination": [0,0,0,0], "DestinationPrefixLength": 0,
+                    "Gateway": [192,0,2,1], "Protocol": 70, "ProtocolString": "70",
+                    "Table": 100, "TableString": "100"
+                }]
+            }]
+        });
+        let observed = observed_json(
+            Ok(&unnamed),
+            &WifiEvidence::default(),
+            None,
+            &RadioEvidence::default(),
+        );
+        let route = &observed["defaultRoutes"]["entries"][0];
+        assert_eq!(route["protocol"], "unknown");
+        assert_eq!(route["protocolId"], 70);
+        assert_eq!(route["table"], "unknown");
+        assert_eq!(route["tableId"], 100);
+        let address = &observed["interfaces"]["entries"][0]["addresses"][0];
+        assert_eq!(address["scope"], "unknown");
+        assert_eq!(address["scopeId"], 77);
+
+        // Absence stays absence: a route networkd described without the
+        // numeric member gets no name invented for it.
+        let bare = json!({
+            "Interfaces": [{
+                "Index": 2, "Name": "eth0",
+                "Routes": [{"Family": 2, "Destination": [0,0,0,0], "DestinationPrefixLength": 0, "Gateway": [192,0,2,1]}]
+            }]
+        });
+        let observed = observed_json(
+            Ok(&bare),
+            &WifiEvidence::default(),
+            None,
+            &RadioEvidence::default(),
+        );
+        let route = &observed["defaultRoutes"]["entries"][0];
+        assert!(route.get("protocol").is_none());
+        assert!(route.get("protocolId").is_none());
+        assert!(route.get("table").is_none());
+        assert!(route.get("tableId").is_none());
     }
 
     /// networkd absent: the interface and route members say so, the radios

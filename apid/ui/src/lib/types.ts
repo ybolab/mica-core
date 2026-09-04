@@ -107,7 +107,7 @@ export interface AvailableFact {
 }
 
 export interface TimeStatus {
-  status: 'synchronized' | 'synchronizing' | 'offline-degraded' | 'invalid-source' | 'unknown'
+  status: 'synchronized' | 'polling' | 'offline-degraded' | 'invalid-source' | 'unknown'
   synchronized?: boolean
   detail?: string
   server?: { name?: string | null; address?: string | null }
@@ -346,7 +346,9 @@ export interface ObservedNetworkState {
       interfaceIndex?: number
       metric?: number
       protocol?: string
-      table?: number
+      protocolId?: number
+      table?: string
+      tableId?: number
       configSource?: string
     }[]
   }

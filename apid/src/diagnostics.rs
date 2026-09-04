@@ -40,7 +40,7 @@ use crate::settings_api::SettingsApi;
 /// The snapshot schema version; bumped when a member changes shape.
 pub const SCHEMA_VERSION: u64 = 1;
 /// The redaction schema version; bumped when the allowlist changes.
-pub const REDACTION_SCHEMA_VERSION: u64 = 2;
+pub const REDACTION_SCHEMA_VERSION: u64 = 3;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
@@ -474,6 +474,7 @@ fn schema() -> Rule {
         ("address", S),
         ("prefixLength", S),
         ("scope", S),
+        ("scopeId", S),
         ("configSource", S),
     ]);
     let lease = obj(vec![
@@ -530,7 +531,9 @@ fn schema() -> Rule {
         ("interfaceIndex", S),
         ("metric", S),
         ("protocol", S),
+        ("protocolId", S),
         ("table", S),
+        ("tableId", S),
         ("configSource", S),
     ]);
     let network = obj(vec![

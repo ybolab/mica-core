@@ -3228,7 +3228,7 @@
           "resources"
         ],
         "summary": "Read the time-synchronization status.",
-        "description": "Observed from timesyncd at request time and classified by mosd:\n`synchronized`, `synchronizing`, `offline-degraded` (no reachable server;\nretries continue on the pinned 30-second policy), `invalid-source` (a\nserver answered and its replies cannot be used), or `unknown` (timesyncd\nitself is not observable). Read-only: there is no route that pauses or\nstops synchronization.",
+        "description": "Observed from timesyncd at request time and classified by mosd:\n`synchronized` (timedate1 reports a bounded clock error, which it computes\nas `adjtimex().maxerror < 16 s` — not \"a reply arrived\"), `polling` (a\nserver is selected and packets are being exchanged, and that bound is not\nreported; a device can hold this state indefinitely, so it promises no\nconvergence), `offline-degraded` (no reachable server; retries continue on\nthe pinned 30-second policy), `invalid-source` (a server answered and its\nreplies cannot be used), or `unknown` (timesyncd itself is not\nobservable). Read-only: there is no route that pauses or stops\nsynchronization.",
         "operationId": "api_v1_time_status",
         "responses": {
           "200": {

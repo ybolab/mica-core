@@ -10,11 +10,20 @@
 //!
 //! Evidence comes from two well-known services: `org.freedesktop.timesync1`
 //! (the selected server and the last NTP reply) and
-//! `org.freedesktop.timedate1` (`NTPSynchronized`, the kernel's own view of
-//! whether the clock is disciplined). Every read is soft — a property that
-//! does not answer becomes absent evidence, never an error — because a status
-//! surface that fails when the thing it reports on is down has inverted its
-//! own job.
+//! `org.freedesktop.timedate1` (`NTPSynchronized`). Every read is soft — a
+//! property that does not answer becomes absent evidence, never an error —
+//! because a status surface that fails when the thing it reports on is down
+//! has inverted its own job.
+//!
+//! **What `NTPSynchronized` is, because the reported state rests on it.**
+//! timedated computes it as `adjtimex().maxerror < 16 s` — the kernel's own
+//! bound on how wrong the clock may be — and NOT as "an NTP reply arrived".
+//! The two are different claims and they can disagree for a long time:
+//! timesyncd writes `maxerror` back down only on a sample it accepts, so a
+//! spike-rejected reply leaves that bound growing at the kernel's tolerance
+//! while usable-looking replies keep arriving. The state names here are
+//! chosen to survive that: none of them promises the device is on its way to
+//! being synchronized (RFCT-299).
 
 use anyhow::Result;
 use serde_json::{Value as Json, json};
@@ -27,11 +36,19 @@ use zbus::zvariant::Value;
 /// there would claim network evidence nobody has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
-    /// The kernel reports a disciplined clock.
+    /// The kernel reports a bounded clock error: timedate1's
+    /// `NTPSynchronized`, which is `adjtimex().maxerror < 16 s`.
     Synchronized,
-    /// timesyncd has a server and is polling it, but the clock is not yet
-    /// disciplined.
-    Synchronizing,
+    /// timesyncd has a server and is exchanging packets with it, and the
+    /// kernel does not report a bounded clock error.
+    ///
+    /// Named for what is observed rather than for a destination. This is NOT
+    /// "nearly synchronized": a device can hold it indefinitely with usable
+    /// replies in hand — every reply rejected as a spike reaches no
+    /// `clock_adjtime` call at all — so a word promising convergence would be
+    /// a claim the evidence does not carry. `synchronized` in the payload is
+    /// the bit this rests on, and `sample` is what the server last said.
+    Polling,
     /// timesyncd is running and has no usable server — no network, no
     /// resolvable name — and keeps retrying on the pinned 30-second policy.
     OfflineDegraded,
@@ -48,7 +65,7 @@ impl SyncStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Synchronized => "synchronized",
-            Self::Synchronizing => "synchronizing",
+            Self::Polling => "polling",
             Self::OfflineDegraded => "offline-degraded",
             Self::InvalidSource => "invalid-source",
             Self::Unknown => "unknown",
@@ -102,7 +119,7 @@ const STEP_THRESHOLD_SECONDS: f64 = 0.4;
 ///
 /// Pure and deterministic — the whole of the status decision, tested without
 /// a bus. Order is meaning: a source that answered garbage outranks
-/// "synchronizing" (polling it harder will not help), and the kernel's
+/// "polling" (asking it harder will not help), and the kernel's
 /// synchronized bit outranks everything else that is still true, because a
 /// disciplined clock with a currently-unreachable server is a device whose
 /// time is RIGHT and whose retries continue on the pinned policy.
@@ -120,7 +137,7 @@ pub fn classify(evidence: &TimesyncEvidence) -> SyncStatus {
         return SyncStatus::Synchronized;
     }
     if evidence.server_name.is_some() || evidence.server_address.is_some() {
-        return SyncStatus::Synchronizing;
+        return SyncStatus::Polling;
     }
     SyncStatus::OfflineDegraded
 }
@@ -366,17 +383,43 @@ mod tests {
         assert_eq!(classify(&evidence), SyncStatus::Synchronized);
     }
 
-    /// A server is selected and polling has begun, but the kernel bit is not
-    /// set yet: synchronizing, not degraded.
+    /// A server is selected and packets are being exchanged, but the kernel
+    /// bit is not set: polling, not degraded.
     #[test]
-    fn a_selected_server_without_the_kernel_bit_is_synchronizing() {
+    fn a_selected_server_without_the_kernel_bit_is_polling() {
         let evidence = TimesyncEvidence {
             service_reachable: true,
             ntp_synchronized: Some(false),
             server_name: Some("0.pool.ntp.org".to_string()),
             ..TimesyncEvidence::default()
         };
-        assert_eq!(classify(&evidence), SyncStatus::Synchronizing);
+        assert_eq!(classify(&evidence), SyncStatus::Polling);
+    }
+
+    /// RFCT-299, the bench state: timesyncd reachable, a server selected, a
+    /// usable reply in hand, and timedate1's bit clear.
+    ///
+    /// The report has to be a word that does not promise the clock is about
+    /// to be right. `NTPSynchronized` is `adjtimex().maxerror < 16 s`, not
+    /// "a reply arrived", and this combination is not necessarily a moment on
+    /// the way to anything: a reply timesyncd rejects as a spike never
+    /// reaches `clock_adjtime`, so a device can hold usable samples here for
+    /// as long as that lasts. The evidence each half rests on stays in the
+    /// payload beside the state.
+    #[test]
+    fn a_usable_sample_without_the_kernel_bit_does_not_claim_convergence() {
+        let evidence = TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: Some(false),
+            server_name: Some("0.pool.ntp.org".to_string()),
+            server_address: Some("192.0.2.7".to_string()),
+            sample: Some(sample(0, 2, 0.004)),
+        };
+        let value = status_json(&evidence);
+        assert_eq!(value["status"], "polling");
+        assert_eq!(value["synchronized"], json!(false));
+        assert_eq!(value["sample"]["stratum"], 2);
+        assert_eq!(value["server"]["name"], "0.pool.ntp.org");
     }
 
     /// The offline path: the daemon runs, nothing resolved, no reply ever.
@@ -393,7 +436,7 @@ mod tests {
         assert_eq!(classify(&evidence), SyncStatus::OfflineDegraded);
     }
 
-    /// A source that answers garbage outranks "synchronizing": leap 3 and the
+    /// A source that answers garbage outranks "polling": leap 3 and the
     /// out-of-range strata each mark the reply unusable on its own.
     #[test]
     fn an_unusable_reply_is_invalid_source() {
@@ -414,7 +457,7 @@ mod tests {
             sample: Some(sample(0, 2, 0.0)),
             ..TimesyncEvidence::default()
         };
-        assert_eq!(classify(&evidence), SyncStatus::Synchronizing);
+        assert_eq!(classify(&evidence), SyncStatus::Polling);
     }
 
     /// No observer contact at all is `unknown`, not `offline-degraded`:
