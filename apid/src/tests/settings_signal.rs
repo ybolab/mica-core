@@ -220,23 +220,50 @@ async fn the_settings_changed_subscription_feeds_the_access_cache() {
 
     // A change elsewhere leaves a refilled cache standing: the filter is by
     // dot segments, not by 'any signal at all'.
+    //
+    // Nothing here waits a fixed 100 ms for the hostname signal to arrive, as
+    // this once did: a signal slower than the wait made the assertion vacuous
+    // rather than red, which on a loaded machine is whenever it mattered.
+    // What is counted instead is INVALIDATIONS, and the count is taken after
+    // the join below — see there.
     let generation = cache.generation();
     cache.fill(generation, serde_json::json!({ "webAdmin": {} }));
+    assert!(
+        cache.get().is_some(),
+        "the refill did not land, so the assertions below are about nothing"
+    );
     client
         .set_settings("hostname", &Value::String("probe".into()))
         .await
         .expect("hostname write");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    client
+        .set_settings(
+            "access.webAdmin",
+            &serde_json::json!({ "password_hash": "rotated again" }),
+        )
+        .await
+        .expect("second access write");
     assert!(
-        cache.get().is_some(),
-        "an unrelated change must not cost the cache"
+        settles(|| cache.get().is_none()).await,
+        "the second access change never invalidated the cache"
     );
 
     // The lapse: the bus dies under the stream, and the watcher's exit path
     // drops the cache back to direct reads — the lockout rule's fallback.
+    //
+    // The watchers are joined BEFORE anything below is asserted, because
+    // their exit is what performs the lapse: `watch_connection` returns when
+    // the stream ends and the wrapper then calls `lapsed()`, so a completed
+    // join is the event itself. Polling for the flag instead put a deadline
+    // on how fast the daemon could die and the runtime could reschedule,
+    // which is a property of the machine and not of the watcher.
     drop(bus);
+    watcher.await.expect("the watcher task must exit cleanly");
+    task_watcher
+        .await
+        .expect("the task watcher must exit cleanly");
     assert!(
-        settles(|| !cache.is_synchronised()).await,
+        !cache.is_synchronised(),
         "the stream's end was never observed as a lapse"
     );
     assert_eq!(cache.get(), None, "nothing may be served across a lapse");
@@ -245,8 +272,14 @@ async fn the_settings_changed_subscription_feeds_the_access_cache() {
         None,
         "a stale running task must not be served across a lapse"
     );
-    watcher.await.expect("the watcher task must exit cleanly");
-    task_watcher
-        .await
-        .expect("the task watcher must exit cleanly");
+    // The join is what makes this a count and not a sample: every signal the
+    // watcher was ever going to see has been seen. Two bumps are owed since
+    // `generation` was taken — the access write's invalidation and the
+    // lapse's. A third is the hostname write costing the cache, which is what
+    // segment-wise filtering exists to prevent.
+    assert_eq!(
+        cache.generation(),
+        generation + 2,
+        "an unrelated change invalidated the cache: the dot-segment filter matched `hostname`"
+    );
 }

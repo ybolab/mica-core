@@ -514,34 +514,31 @@ async fn recovery_refuses_an_unclaimed_device_and_points_at_setup() {
 async fn a_successful_rotation_clears_the_login_guard_and_a_refused_one_does_not() {
     // The refused rotation first, on its own device: it must leave the armed
     // window exactly as it found it.
-    let (router, _fake, _dir, _token) = device(FakePresence::absent());
-    arm_the_guard(&router).await;
+    let (router, _fake, dir, _token) = device(FakePresence::absent());
+    let armed = arm_the_guard(&router, dir.path()).await;
     let refused = post_json(&router, RECOVERY_PATH, "", None).await;
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-    let after_refusal = json_request(
-        &router,
-        "POST",
-        "/api/v1/session",
-        json!({ "password": PW_SENTINEL }),
-        None,
-        None,
-    )
-    .await;
     assert_eq!(
-        after_refusal.status(),
-        StatusCode::TOO_MANY_REQUESTS,
-        "a refused rotation cleared the guard"
+        guard_state(dir.path()),
+        armed,
+        "a refused rotation moved the guard: it must touch neither the failure run nor the \
+         armed window"
     );
 
     // The successful one, on a device whose guard is armed the same way.
     let presence = FakePresence::present();
-    let (router, _fake, _dir, _token) = device(presence.clone());
-    arm_the_guard(&router).await;
+    let (router, _fake, dir, _token) = device(presence.clone());
+    arm_the_guard(&router, dir.path()).await;
     let recovered = post_json(&router, RECOVERY_PATH, "", None).await;
     assert_eq!(
         recovered.status(),
         StatusCode::OK,
         "the rotation was throttled by the guard it is not subject to"
+    );
+    assert_eq!(
+        guard_state(dir.path()),
+        json!({ "failures": 0, "locked_until_unix": 0 }),
+        "a successful rotation left the guard armed"
     );
     let session = json_request(
         &router,
@@ -555,12 +552,28 @@ async fn a_successful_rotation_clears_the_login_guard_and_a_refused_one_does_not
     assert_eq!(
         session.status(),
         StatusCode::CREATED,
-        "a successful rotation left the guard armed"
+        "the rotated credential was refused"
     );
 }
 
-/// Arm the login guard with a wrong password, and confirm it is armed.
-async fn arm_the_guard(router: &Router) {
+/// The login-guard state `GuardStore` persisted, as JSON.
+///
+/// The guard is read here rather than probed with a second login request.
+/// A probe asserts "still throttled", which is only true while the window is
+/// armed — `BACKOFF_BASE` is one second, so every request that had to land
+/// inside it was a race against the machine's load rather than an assertion
+/// about the rotation. The file says what the guard holds, whenever it is
+/// read.
+fn guard_state(state_dir: &std::path::Path) -> serde_json::Value {
+    let path = state_dir.join("login_guard.json");
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("the guard state at {} is unreadable: {err}", path.display()));
+    serde_json::from_slice(&bytes).expect("the guard state is JSON")
+}
+
+/// Arm the login guard with a wrong password, and return the state it armed
+/// so a caller can require that state to be exactly what it finds later.
+async fn arm_the_guard(router: &Router, state_dir: &std::path::Path) -> serde_json::Value {
     let wrong = json_request(
         router,
         "POST",
@@ -571,20 +584,18 @@ async fn arm_the_guard(router: &Router) {
     )
     .await;
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
-    let throttled = json_request(
-        router,
-        "POST",
-        "/api/v1/session",
-        json!({ "password": PW_SENTINEL }),
-        None,
-        None,
-    )
-    .await;
+    let armed = guard_state(state_dir);
     assert_eq!(
-        throttled.status(),
-        StatusCode::TOO_MANY_REQUESTS,
-        "the guard is not armed, so this test asserts nothing"
+        armed["failures"], 1,
+        "the wrong password charged no failure, so the guard is not armed and the caller \
+         asserts nothing"
     );
+    assert_ne!(
+        armed["locked_until_unix"], 0,
+        "the charged failure armed no window, so the guard is not armed and the caller \
+         asserts nothing"
+    );
+    armed
 }
 
 /// The publication is attempted BEFORE the commit, so a console that cannot be
