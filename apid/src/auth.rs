@@ -490,29 +490,54 @@ mod tests {
     /// `GuardStore::with`'s changed-check is what makes this true, and
     /// without it an attacker hammering a throttled endpoint converts every
     /// refusal into an fsync — flash wear bought with an HTTP request.
+    ///
+    /// Nothing here is timed. The earlier form asserted that fifty
+    /// consecutive calls were all refused, which made the armed window a
+    /// deadline the whole loop had to fit inside: one failure arms
+    /// `BACKOFF_BASE`, a second, and on a loaded machine the window lapsed
+    /// mid-loop and the assertion read "still throttled" while the product
+    /// was behaving correctly. The loop below stops at the first ADMITTED
+    /// attempt instead — an admission is the window expiring, which is
+    /// allowed and legitimately writes — and asserts the property once per
+    /// refusal, so the count is evidence rather than a budget.
     #[test]
     fn a_refused_attempt_does_not_rewrite_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("login_guard.json");
         let store = GuardStore::load(path.clone());
-        store.begin_attempt();
+        assert!(store.begin_attempt(), "the first attempt is admitted");
+        // The run is seeded so the window this failure arms is the curve's
+        // cap. That is the PRECONDITION — "the store is refusing" — and not
+        // the property: which step of the curve is armed changes nothing
+        // below, and arming the base step made even entering the loop a bet
+        // on one second. The loop is what removes the race; this only stops
+        // the first iteration from being the same bet in miniature.
+        store.with(|guard| guard.failures = 10);
         store.confirm_failure();
 
         let before = std::fs::metadata(&path).unwrap().modified().unwrap();
         let armed = std::fs::read(&path).unwrap();
+        let mut refused = 0u32;
         for _ in 0..50 {
-            assert!(!store.begin_attempt(), "still throttled");
+            if store.begin_attempt() {
+                break;
+            }
+            refused += 1;
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                armed,
+                "a refused attempt changed the persisted state"
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                before,
+                "a refused attempt rewrote the file; each one is an fsync an unauthenticated \
+                 caller can trigger"
+            );
         }
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            armed,
-            "fifty refused attempts changed the persisted state"
-        );
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before,
-            "fifty refused attempts rewrote the file; each one is an fsync an unauthenticated \
-             caller can trigger"
+        assert!(
+            refused > 0,
+            "not one attempt was refused, so nothing above was asserted"
         );
     }
 

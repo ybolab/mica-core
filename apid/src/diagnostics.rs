@@ -38,8 +38,19 @@ use crate::redact;
 use crate::settings_api::SettingsApi;
 
 /// The snapshot schema version; bumped when a member changes shape.
-pub const SCHEMA_VERSION: u64 = 1;
+///
+/// 1 named the shape with `system.system.buildEpoch` / `buildDate` /
+/// `buildDateDetail`. 2 names the one shipped now, where those are the
+/// `commitDate` and `fileEpoch` objects instead. Nothing migrates a stored
+/// snapshot and nothing needs to: the number is what lets a reader holding
+/// two of them tell which shape each is.
+pub const SCHEMA_VERSION: u64 = 2;
 /// The redaction schema version; bumped when the allowlist changes.
+///
+/// 2 is the allowlist that followed the rename above, 3 the one that added
+/// the rtnetlink id members. Both changes are real; the second bump was made
+/// for the first change by mistake and is left standing, because the number's
+/// only job is that two different allowlists never share it.
 pub const REDACTION_SCHEMA_VERSION: u64 = 3;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
@@ -1274,7 +1285,7 @@ mod tests {
     /// planted at every kind of place a secret could land.
     fn fixture() -> Value {
         json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "collectedAt": "2026-09-02T00:00:00Z",
             "release": {
                 "board": { "available": true, "model": "Vendor CX3576", "source": "devicetree" },
@@ -1437,7 +1448,7 @@ mod tests {
     fn every_benign_member_survives_the_pass() {
         let (redacted, _) = redact_snapshot(fixture());
         for (pointer, expected) in [
-            ("/schemaVersion", json!(1)),
+            ("/schemaVersion", json!(2)),
             ("/collectedAt", json!("2026-09-02T00:00:00Z")),
             ("/release/board/model", json!("Vendor CX3576")),
             ("/release/kernel/release", json!("6.1.115-mos")),
@@ -1691,6 +1702,49 @@ mod tests {
             assert_eq!(snapshot["collection"]["sections"][*name], "ok");
         }
         assert_eq!(collected.report.sections.len(), 7);
+    }
+
+    /// The version names THIS shape, and the number is a literal rather than
+    /// the constant it came from.
+    ///
+    /// Under version 1 `system.system` carried `buildEpoch`, `buildDate` and
+    /// `buildDateDetail`. 7d759112 replaced them with the `commitDate` and
+    /// `fileEpoch` objects and left the version at 1, so two documents of
+    /// different shapes both claimed it -- the one thing a schema version
+    /// exists to make impossible. Version 2 names the shape asserted below.
+    ///
+    /// Asserting against [`SCHEMA_VERSION`] cannot catch that: it puts the
+    /// same value on both sides. The number is written out here beside the
+    /// members that define it, so a rename that leaves the number alone --
+    /// which is exactly what happened -- fails.
+    #[tokio::test]
+    async fn the_snapshot_version_names_the_shape_it_ships() {
+        let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
+        fake.set_system_info(json!({
+            "machineId": { "available": true, "id": "0123456789abcdef0123456789abcdef" },
+            "system": {
+                "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "mosd",
+                "commitDate": { "available": true, "date": "2026-09-02T00:00:00Z" },
+                "fileEpoch": {
+                    "available": true, "epoch": 1_577_836_800,
+                    "date": "2020-01-01T00:00:00Z",
+                },
+            },
+            "uptime": { "available": true, "seconds": 7 },
+        }));
+        let snapshot = Collector::new(&fake).collect().await.snapshot;
+
+        assert_eq!(
+            snapshot["schemaVersion"], 2,
+            "the shipped version does not name the shape below"
+        );
+        let system = &snapshot["system"]["system"];
+        assert_eq!(system["commitDate"]["date"], "2026-09-02T00:00:00Z");
+        assert_eq!(system["fileEpoch"]["epoch"], 1_577_836_800);
+        assert!(
+            system.get("buildDate").is_none() && system.get("buildEpoch").is_none(),
+            "version 1's members are still shipped, so 2 is the wrong number: {system}"
+        );
     }
 
     /// The time bound, enforced: sources that answer too slowly are
