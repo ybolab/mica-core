@@ -63,6 +63,10 @@ pub struct AppState {
     /// Serialises custom-UI pointer mutations so concurrent API requests are
     /// deterministic and cannot contend for the atomic replacement link.
     ui_selection: Arc<tokio::sync::Mutex<()>>,
+    /// Serialises the device claim, so `POST /api/v1/setup`'s "is this device
+    /// still unclaimed" and the write that claims it are one step rather than
+    /// two. See [`api_v1_setup`] for why the atomicity is here.
+    claim: Arc<tokio::sync::Mutex<()>>,
     /// The gate's cache of the `access` subtree, kept honest by the
     /// `SettingsChanged` watcher (`bus_client::watch_settings_changed`) and
     /// by the two handlers that write under `access` themselves.
@@ -103,6 +107,7 @@ impl AppState {
             audit: Arc::new(Audit::journal_only()),
             bundles: Arc::new(Store::at_default()),
             ui_selection: Arc::new(tokio::sync::Mutex::new(())),
+            claim: Arc::new(tokio::sync::Mutex::new(())),
             access_cache: Arc::new(AccessCache::new()),
             task_registry: Arc::new(TaskRegistry::new()),
             diagnostics: Arc::new(SnapshotStore::at_default()),
@@ -5306,6 +5311,27 @@ pub(crate) async fn api_v1_setup(
         Ok(request) => request,
         Err(response) => return *response,
     };
+    // THE CLAIM IS ONE STEP. From here to the `access` write below is a
+    // check-then-act -- the read decides the device is unclaimed, the write is
+    // what claims it -- and nothing underneath makes the pair atomic: mosd
+    // serialises each `SetSettings` under its own write lock but offers no
+    // compare-and-set, so two requests that both read an unclaimed tree both
+    // write one. It is not a race that is hard to win. The window is the
+    // argon2id hash below plus two bus round trips, and it was measured on the
+    // shipped path with no test seam in it: two concurrent requests against a
+    // real mosd over a real bus produced two 201s and two working
+    // administrator sessions in 200 of 200 runs, on a device that kept one
+    // token and the last password written.
+    //
+    // The guard is here, in apid, because apid is the only claimant for as
+    // long as the device can be asked: [`claim_status`] names the two writers
+    // that can create the first `access.webAdmin`, and the other one -- mosd's
+    // provisioning-document importer -- finishes before mosd requests its bus
+    // name. It is held across the hash and every write rather than released
+    // after the check, because the hash is the widest part of the window. The
+    // loser therefore waits out the winner's claim, re-reads a claimed tree
+    // and takes the 409 below, having written nothing.
+    let _claim_guard = state.claim.lock().await;
     // One read of `access`, answering two questions: whether the device is
     // still in setup mode, and what the token list holds. The form path's
     // condition is `password_hash(&access).is_some()` and this is that

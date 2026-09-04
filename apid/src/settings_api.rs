@@ -120,6 +120,27 @@ pub trait SettingsApi: Send + Sync {
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
 }
 
+/// A rendezvous armed over [`FakeSettings::hold_access_reads`]: the first
+/// `parties` reads of the `access` subtree wait for each other before they are
+/// answered.
+///
+/// It exists for the concurrent-claim test, which needs both claimants to have
+/// taken the read half of the claim's check-then-act before either takes the
+/// write half. **It widens a window it does not create** — the window is the
+/// argon2id hash and the bus round trips the route runs between its read and
+/// its write.
+///
+/// The wait is bounded, and the bound is load-bearing rather than defensive:
+/// once the claim is one step the second read cannot happen until the first
+/// request has finished, so the first read waits the bound out and then
+/// proceeds. An unbounded barrier would hang there instead.
+#[cfg(test)]
+struct AccessHold {
+    barrier: tokio::sync::Barrier,
+    parties: usize,
+    timeout: std::time::Duration,
+}
+
 /// In-memory [`SettingsApi`] used by the route tests.
 #[cfg(test)]
 pub struct FakeSettings {
@@ -169,6 +190,12 @@ pub struct FakeSettings {
     /// this fdo name and message — how a route test provokes the 409/422
     /// mappings the real mosd produces.
     update_refusal: std::sync::Mutex<Option<(&'static str, String)>>,
+    /// When armed, the first reads of the `access` subtree rendezvous before
+    /// they are answered. See [`AccessHold`].
+    access_hold: std::sync::Mutex<Option<std::sync::Arc<AccessHold>>>,
+    /// How many `access` reads have been taken, so a hold engages for the
+    /// first `parties` of them and for no others.
+    access_reads: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]
@@ -230,6 +257,8 @@ impl FakeSettings {
             tasks: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             update_log: std::sync::Mutex::new(Vec::new()),
             update_refusal: std::sync::Mutex::new(None),
+            access_hold: std::sync::Mutex::new(None),
+            access_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -323,6 +352,51 @@ impl FakeSettings {
         *self.diagnostic_delay.lock().unwrap() = Some(delay);
     }
 
+    /// Hold the first `parties` reads of the `access` subtree at a rendezvous,
+    /// each waiting at most `timeout` for the others.
+    ///
+    /// The seam a concurrent-claim test drives: it makes both claimants take
+    /// the read half of the claim's check-then-act before either takes the
+    /// write half. See [`AccessHold`] for what the bound means and for why
+    /// this widens a window rather than inventing one.
+    pub fn hold_access_reads(&self, parties: usize, timeout: std::time::Duration) {
+        *self.access_hold.lock().unwrap() = Some(std::sync::Arc::new(AccessHold {
+            barrier: tokio::sync::Barrier::new(parties),
+            parties,
+            timeout,
+        }));
+    }
+
+    /// Hold this read at the armed rendezvous, if it is an `access` read and
+    /// one of the first `parties` of them.
+    async fn hold_access_read(&self, path: &str) {
+        if path != "access" {
+            return;
+        }
+        // The lock is released before the await: a `std::sync` guard held
+        // across one would deadlock the second claimant against the first.
+        let hold = {
+            let armed = self.access_hold.lock().unwrap();
+            let Some(hold) = armed.as_ref() else { return };
+            let taken = self
+                .access_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if taken >= hold.parties {
+                return;
+            }
+            hold.clone()
+        };
+        if tokio::time::timeout(hold.timeout, hold.barrier.wait())
+            .await
+            .is_err()
+        {
+            // The rendezvous did not fill, so the parties it was waiting for
+            // are not coming. Disarm it rather than make every later read wait
+            // the bound out on its own.
+            *self.access_hold.lock().unwrap() = None;
+        }
+    }
+
     async fn diagnostic_pause(&self) {
         let delay = *self.diagnostic_delay.lock().unwrap();
         if let Some(delay) = delay {
@@ -402,7 +476,9 @@ fn fake_get(root: &Value, path: &str) -> anyhow::Result<Value> {
 impl SettingsApi for FakeSettings {
     async fn get_settings(&self, path: &str) -> anyhow::Result<Value> {
         self.get_log.lock().unwrap().push(path.to_string());
-        fake_get(&self.tree.lock().unwrap(), path)
+        let value = fake_get(&self.tree.lock().unwrap(), path);
+        self.hold_access_read(path).await;
+        value
     }
 
     async fn set_settings(&self, path: &str, value: &Value) -> anyhow::Result<String> {

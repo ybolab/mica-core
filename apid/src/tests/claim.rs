@@ -690,3 +690,151 @@ async fn a_route_claim_is_not_bound_by_the_rotation() {
     .await;
     assert_eq!(mint.status(), StatusCode::CREATED);
 }
+
+// --- One device, one owner --------------------------------------------------
+
+/// **A factory-fresh device must not issue two administrator sessions to
+/// concurrent claimants** — and the claimant that loses must be told so.
+///
+/// The claim is a check-then-act. `POST /api/v1/setup` reads `access` to
+/// decide the device is still unclaimed, and writes `access` to claim it;
+/// between the two sit the validators, the argon2id hash and the optional
+/// hostname and network writes. mosd serialises each `SetSettings` under its
+/// own write lock but offers no compare-and-set, so nothing below apid made
+/// that pair one step: two requests that both read an unclaimed tree both
+/// wrote one, the second silently replacing the first administrator's
+/// credential while apid handed each of them a session.
+///
+/// **Measured on the shipped path before it was fixed**, not inferred from the
+/// seam below: real mosd over a real private session bus, real apid over TLS,
+/// two concurrent `POST /api/v1/setup` requests per iteration and no
+/// instrumentation anywhere in the handler — 200 of 200 iterations issued two
+/// 201s, and every session so issued read protected settings.
+///
+/// [`FakeSettings::hold_access_reads`] makes that interleaving deterministic
+/// here by holding the first two `access` reads until both have been taken.
+/// **It widens the window; it does not create one** — the window is the work
+/// the route does between its own read and its own write, and it is wide
+/// enough to lose without any help at all. The hold is time-bounded because an
+/// atomic claim makes the second read unreachable until the first request has
+/// finished: reaching that bound is the property holding, not a hung test.
+#[tokio::test]
+async fn a_factory_fresh_device_issues_one_administrator_session_to_concurrent_claimants() {
+    const FIRST_PASSWORD: &str = "first-claimant-password";
+    const SECOND_PASSWORD: &str = "second-claimant-password";
+
+    let (router, fake) = test_app(seeded_tree());
+    fake.hold_access_reads(2, std::time::Duration::from_secs(1));
+
+    let first_body = json!({ "password": FIRST_PASSWORD }).to_string();
+    let second_body = json!({ "password": SECOND_PASSWORD }).to_string();
+    let (first, second) = tokio::join!(
+        post_json(&router, "/api/v1/setup", &first_body, None),
+        post_json(&router, "/api/v1/setup", &second_body, None),
+    );
+
+    let statuses = [first.status(), second.status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "A factory-fresh device must not issue two administrator sessions to \
+         concurrent claimants; the two claims answered {statuses:?}"
+    );
+
+    // Which request won is the scheduler's business and not this test's; which
+    // password the device ends up holding is not.
+    let first_won = first.status() == StatusCode::CREATED;
+    let (winner, loser) = if first_won {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let (winning_password, losing_password) = if first_won {
+        (FIRST_PASSWORD, SECOND_PASSWORD)
+    } else {
+        (SECOND_PASSWORD, FIRST_PASSWORD)
+    };
+
+    // The loser's outcome, which is the half a count of 201s does not state.
+    // A status an operator can act on -- the same refusal a later claim gets,
+    // naming the path and the route that changes a password -- and no session:
+    // a claim that was not granted must not leave a cookie behind that reads
+    // the appliance.
+    assert_eq!(
+        loser.status(),
+        StatusCode::CONFLICT,
+        "the losing claimant must be refused, not left to guess"
+    );
+    assert!(
+        loser.headers().get(SET_COOKIE).is_none(),
+        "the losing claim issued a session cookie: {:?}",
+        loser.headers().get(SET_COOKIE)
+    );
+    let refusal = envelope(loser).await;
+    assert_eq!(refusal["code"], "already_configured");
+    assert_eq!(refusal["path"], "access.webAdmin");
+
+    // One claim reached the device, and it is the winner's. The write list and
+    // not the tree, for `a_route_claim_commits_...`'s reason: a tree written
+    // twice looks exactly like a tree written once.
+    assert_eq!(
+        fake.set_paths(),
+        vec!["access".to_string()],
+        "a second claim reached the device"
+    );
+    let access = access_of(&fake).await;
+    assert_eq!(
+        access["apiTokens"].as_array().unwrap().len(),
+        1,
+        "one claim minted more than one first-run token: {access}"
+    );
+    assert_eq!(access["claim"]["via"], json!("setup"));
+
+    // The winner owns the device: its session reads protected settings.
+    let cookie = session_cookie_value(&winner);
+    let read = get(&router, "/api/v1/settings/hostname", Some(&cookie)).await;
+    assert_eq!(
+        read.status(),
+        StatusCode::OK,
+        "the granted claim's session cannot read the device it claimed"
+    );
+
+    // And the loser owns nothing. It holds no session, so the only thing it
+    // can present is none -- and the password it posted never became the
+    // device's credential, which is the assertion a last-write-wins claim
+    // fails even when it hands out a single cookie. The winning login goes
+    // first because a failed one arms §3.3's backoff.
+    let anonymous = get(&router, "/api/v1/settings/hostname", None).await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let granted = json_request(
+        &router,
+        "POST",
+        "/api/v1/session",
+        json!({ "password": winning_password }),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        granted.status(),
+        StatusCode::CREATED,
+        "the credential the device kept is not the one the granted claim set"
+    );
+    let refused = json_request(
+        &router,
+        "POST",
+        "/api/v1/session",
+        json!({ "password": losing_password }),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::UNAUTHORIZED,
+        "the refused claimant's password became a credential on the device"
+    );
+}
