@@ -24,6 +24,14 @@
 //! while usable-looking replies keep arriving. The state names here are
 //! chosen to survive that: none of them promises the device is on its way to
 //! being synchronized (RFCT-299).
+//!
+//! **A signal that did not answer is not a signal that answered no.** Absent
+//! evidence stays absent all the way to the wire: it never becomes a state
+//! that asserts something about the clock, and nothing else — a sample, a
+//! stratum, a previous reading — is substituted to fill the gap. Where the
+//! `NTPSynchronized` read is what went missing, the state is `unknown` and
+//! the payload's `synchronized` member is absent, and that pair is what tells
+//! a reader which of the two happened (RFCT-300).
 
 use anyhow::Result;
 use serde_json::{Value as Json, json};
@@ -31,9 +39,10 @@ use zbus::zvariant::Value;
 
 /// One classified synchronization state, the four PLAN-044 names.
 ///
-/// `Unknown` is deliberately a fifth, reachable only when the observer cannot
-/// see timesyncd at all (daemon down, bus gone): reporting "offline-degraded"
-/// there would claim network evidence nobody has.
+/// `Unknown` is deliberately a fifth, and it is the state for a signal that
+/// could not be READ rather than for a particular daemon being down: it is
+/// what the surface reports when the evidence a state rests on never
+/// arrived. Reporting one of the four there would claim evidence nobody has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
     /// The kernel reports a bounded clock error: timedate1's
@@ -55,7 +64,15 @@ pub enum SyncStatus {
     /// A server answered and its replies cannot be used: an unsynchronized
     /// leap indicator or an out-of-range stratum.
     InvalidSource,
-    /// timesyncd itself is not observable on the bus.
+    /// A signal the reported state would rest on could not be read:
+    /// timesyncd is not observable on the bus at all, or timedate1 did not
+    /// answer `NTPSynchronized`.
+    ///
+    /// Not a claim about the clock, and deliberately not one — a device
+    /// nobody could query is not a device that was queried and found out of
+    /// sync (RFCT-300). The payload says which read went missing in `detail`,
+    /// and the raw `synchronized` member stays absent beside it, so a reader
+    /// can tell "read and false" from "not read".
     Unknown,
 }
 
@@ -133,13 +150,38 @@ pub fn classify(evidence: &TimesyncEvidence) -> SyncStatus {
     {
         return SyncStatus::InvalidSource;
     }
-    if evidence.ntp_synchronized == Some(true) {
+    // Every state below rests on timedate1's bit: `synchronized` asserts it,
+    // `polling` and `offline-degraded` assert its absence, because both rank
+    // under `synchronized` and are only reached once it is ruled out. A read
+    // that did not answer is not a read that answered `false`, so none of the
+    // three may be reported off it (RFCT-300). `invalid-source` above is not
+    // affected: it rests on the sample alone, already outranks the bit, and
+    // claims nothing about the clock -- only that the source's replies are
+    // unusable, which WAS read.
+    let Some(synchronized) = evidence.ntp_synchronized else {
+        return SyncStatus::Unknown;
+    };
+    if synchronized {
         return SyncStatus::Synchronized;
     }
     if evidence.server_name.is_some() || evidence.server_address.is_some() {
         return SyncStatus::Polling;
     }
     SyncStatus::OfflineDegraded
+}
+
+/// Which unread signal left the state `unknown`.
+///
+/// The state is one word for "a signal this rests on did not answer", and the
+/// two signals live in different services, so the detail names the one that
+/// went missing: sending an operator to a daemon that answered fine is the
+/// failure a single fixed sentence would cause.
+fn unknown_detail(evidence: &TimesyncEvidence) -> &'static str {
+    if evidence.service_reachable {
+        "systemd-timedated did not answer NTPSynchronized: the kernel's bound on the clock error was not read"
+    } else {
+        "systemd-timesyncd is not reachable on the bus"
+    }
 }
 
 /// `evidence` rendered as the JSON the bus method serves.
@@ -185,10 +227,7 @@ pub fn status_json(evidence: &TimesyncEvidence) -> Json {
         );
     }
     if status == SyncStatus::Unknown {
-        root.insert(
-            "detail".to_string(),
-            json!("systemd-timesyncd is not reachable on the bus"),
-        );
+        root.insert("detail".to_string(), json!(unknown_detail(evidence)));
     }
     Json::Object(root)
 }
@@ -450,9 +489,14 @@ mod tests {
             };
             assert_eq!(classify(&evidence), SyncStatus::InvalidSource, "{bad:?}");
         }
-        // And a healthy reply is not: the positive control.
+        // And a healthy reply is not: the positive control. The kernel bit
+        // is stated rather than left at its default, because the state this
+        // control names is one of the three that rest on it having been read
+        // (RFCT-300) -- omitting it would make the control assert `unknown`
+        // for a reason that has nothing to do with the sample.
         let evidence = TimesyncEvidence {
             service_reachable: true,
+            ntp_synchronized: Some(false),
             server_name: Some("good.example".to_string()),
             sample: Some(sample(0, 2, 0.0)),
             ..TimesyncEvidence::default()
@@ -466,6 +510,99 @@ mod tests {
     #[test]
     fn an_unreachable_daemon_is_unknown() {
         assert_eq!(classify(&TimesyncEvidence::default()), SyncStatus::Unknown);
+    }
+
+    /// RFCT-300: timedate1's property read did not answer. `None` and
+    /// `Some(false)` are different facts — one is a device nobody could
+    /// query, the other a device that was queried and is not synchronized —
+    /// and every state below `invalid-source` rests on that bit: the first
+    /// asserts it, the other two assert its absence. So an unread bit is
+    /// `unknown`, and the states that would claim something about the clock
+    /// are unreachable without it.
+    ///
+    /// `invalid-source` is NOT: it rests on the sample alone, ranks above the
+    /// bit already, and says nothing about the clock — only that the source's
+    /// replies are unusable, which was read.
+    #[test]
+    fn an_unread_kernel_bit_is_unknown_not_a_state_that_asserts_one() {
+        // What would have been `polling`.
+        let polling_shaped = TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: None,
+            server_name: Some("0.pool.ntp.org".to_string()),
+            server_address: Some("192.0.2.7".to_string()),
+            sample: Some(sample(0, 2, 0.004)),
+        };
+        assert_eq!(classify(&polling_shaped), SyncStatus::Unknown);
+
+        // What would have been `offline-degraded`.
+        let degraded_shaped = TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: None,
+            ..TimesyncEvidence::default()
+        };
+        assert_eq!(classify(&degraded_shaped), SyncStatus::Unknown);
+
+        // The source's own verdict still stands: it never rested on the bit.
+        let unusable = TimesyncEvidence {
+            sample: Some(sample(3, 2, 0.0)),
+            ..polling_shaped.clone()
+        };
+        assert_eq!(classify(&unusable), SyncStatus::InvalidSource);
+
+        // The controls: the same two shapes with the bit actually read.
+        assert_eq!(
+            classify(&TimesyncEvidence {
+                ntp_synchronized: Some(false),
+                ..polling_shaped.clone()
+            }),
+            SyncStatus::Polling
+        );
+        assert_eq!(
+            classify(&TimesyncEvidence {
+                ntp_synchronized: Some(false),
+                ..degraded_shaped.clone()
+            }),
+            SyncStatus::OfflineDegraded
+        );
+    }
+
+    /// The raw signal stays faithfully absent, and the `detail` says WHICH
+    /// read did not answer.
+    ///
+    /// An absent `synchronized` member beside `unknown` is the pair that
+    /// lets a reader tell "read and false" from "not read" — the whole point
+    /// of not flattening the tri-state. Nothing is inferred to fill the gap:
+    /// the sample and the server are still reported as observed, and neither
+    /// is promoted into a claim about the clock.
+    #[test]
+    fn the_unread_signal_stays_absent_and_names_itself() {
+        let evidence = TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: None,
+            server_name: Some("0.pool.ntp.org".to_string()),
+            server_address: Some("192.0.2.7".to_string()),
+            sample: Some(sample(0, 2, 0.004)),
+        };
+        let value = status_json(&evidence);
+        assert_eq!(value["status"], "unknown");
+        assert_eq!(value.get("synchronized"), None);
+        // Observed evidence is still reported; it is simply not a state.
+        assert_eq!(value["server"]["name"], "0.pool.ntp.org");
+        assert_eq!(value["sample"]["stratum"], 2);
+
+        // The two ways this state is reached name different services, so an
+        // operator is not sent to look at a daemon that answered.
+        let detail = value["detail"].as_str().expect("unknown carries a detail");
+        assert!(detail.contains("timedated"), "{detail}");
+        assert!(!detail.contains("timesyncd"), "{detail}");
+        let off_bus = status_json(&TimesyncEvidence::default());
+        assert!(
+            off_bus["detail"]
+                .as_str()
+                .expect("unknown carries a detail")
+                .contains("timesyncd")
+        );
     }
 
     /// The step-versus-drift distinction, at timesyncd's own boundary: an

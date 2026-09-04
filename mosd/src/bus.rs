@@ -2003,6 +2003,54 @@ mod tests {
         );
     }
 
+    /// A time observer the test controls, standing in for the two bus reads.
+    struct FixedTimesync(crate::time_status::TimesyncEvidence);
+
+    #[async_trait::async_trait]
+    impl crate::time_status::TimeStatusSource for FixedTimesync {
+        async fn observe(&self) -> anyhow::Result<crate::time_status::TimesyncEvidence> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// RFCT-300, through the method that serves it: an observation whose
+    /// timedate1 read did not answer reaches the wire as `unknown` with the
+    /// `synchronized` member absent, not as a device that was asked and found
+    /// out of sync.
+    ///
+    /// The classifier is unit-tested next to itself; this is the seam that
+    /// matters to a caller, because `GetTimeStatus` is where the tri-state
+    /// stops being a `Option<bool>` and becomes a document a client reads.
+    #[tokio::test]
+    async fn the_time_status_reports_an_unread_kernel_bit_as_unknown() {
+        use crate::time_status::TimesyncEvidence;
+        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc::default());
+
+        let observed = TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: None,
+            server_name: Some("0.pool.ntp.org".to_string()),
+            ..TimesyncEvidence::default()
+        };
+        let service = service.with_time_status(Arc::new(FixedTimesync(observed.clone())));
+        let status = service.get_time_status().await.expect("observed");
+        let status: serde_json::Value = serde_json::from_str(&status).expect("json");
+        assert_eq!(status["status"], "unknown");
+        assert!(status.get("synchronized").is_none(), "{status}");
+        assert_eq!(status["server"]["name"], "0.pool.ntp.org");
+
+        // The same observation with the bit actually read is the state the
+        // unread one must not be confused with.
+        let service = service.with_time_status(Arc::new(FixedTimesync(TimesyncEvidence {
+            ntp_synchronized: Some(false),
+            ..observed
+        })));
+        let status = service.get_time_status().await.expect("observed");
+        let status: serde_json::Value = serde_json::from_str(&status).expect("json");
+        assert_eq!(status["status"], "polling");
+        assert_eq!(status["synchronized"], serde_json::json!(false));
+    }
+
     /// A storage observer the test controls, standing in for sysfs and the
     /// mount table.
     struct FixedStorage(crate::storage_status::StorageEvidence);

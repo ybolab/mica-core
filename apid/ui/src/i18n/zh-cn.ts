@@ -392,7 +392,7 @@ export const zhCN: Translation = {
           polling: '轮询中——已选定服务器并有应答；内核未报告时钟误差已收敛',
           'offline-degraded': '降级——没有可达的时间服务器；设备每 30 秒持续重试',
           'invalid-source': '来源无效——服务器有应答，但其回复不可用',
-          unknown: '状态不可用——无法观测时间服务',
+          unknown: '状态不可用——本状态所依据的某项信号无法读取',
         },
       },
     },

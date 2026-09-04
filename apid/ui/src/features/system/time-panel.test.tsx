@@ -36,7 +36,7 @@ describe('time synchronization status', () => {
     expect(screen.getByText(/keeps retrying every 30 seconds/)).toBeTruthy()
   })
 
-  it('renders an unobservable time service as absence with its reason', async () => {
+  it('renders a signal that could not be read as absence with its reason', async () => {
     stubFetch({
       '/api/v1/time/status': {
         status: 'unknown',
@@ -45,8 +45,27 @@ describe('time synchronization status', () => {
     })
     renderPanel(<SyncStatusPanel />)
 
-    expect(await screen.findByText('status unavailable — the time service is not observable')).toBeTruthy()
+    expect(await screen.findByText('status unavailable — a signal this status rests on could not be read')).toBeTruthy()
     expect(screen.getByText('systemd-timesyncd is not reachable on the bus')).toBeTruthy()
+  })
+
+  // RFCT-300: the other way this state is reached. The label cannot say which
+  // service went missing -- it is one string for both -- so the reason line is
+  // what an operator reads, and there is no `synchronized` member here at all:
+  // a device that could not be queried must not render as one that was.
+  it('says nothing about the clock when only the kernel bit went unread', async () => {
+    stubFetch({
+      '/api/v1/time/status': {
+        status: 'unknown',
+        detail: 'systemd-timedated did not answer NTPSynchronized: the kernel\'s bound on the clock error was not read',
+        server: { name: '0.pool.ntp.org', address: '192.0.2.7' },
+      } satisfies TimeStatus,
+    })
+    renderPanel(<SyncStatusPanel />)
+
+    expect(await screen.findByText('status unavailable — a signal this status rests on could not be read')).toBeTruthy()
+    expect(screen.getByText(/systemd-timedated did not answer NTPSynchronized/)).toBeTruthy()
+    expect(screen.getByText('0.pool.ntp.org (192.0.2.7)')).toBeTruthy()
   })
 
   it('offers no pause or enable control for synchronization', async () => {

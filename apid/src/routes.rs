@@ -2320,9 +2320,13 @@ pub(crate) async fn api_v1_state(
 /// reported; a device can hold this state indefinitely, so it promises no
 /// convergence), `offline-degraded` (no reachable server; retries continue on
 /// the pinned 30-second policy), `invalid-source` (a server answered and its
-/// replies cannot be used), or `unknown` (timesyncd itself is not
-/// observable). Read-only: there is no route that pauses or stops
-/// synchronization.
+/// replies cannot be used), or `unknown` (a signal the reported state would
+/// rest on could not be read: timesyncd is not observable at all, or
+/// timedate1 did not answer `NTPSynchronized`). `unknown` is not a claim
+/// about the clock — a device nobody could query is not a device that was
+/// queried and found out of sync — so the `synchronized` member is absent
+/// there and `detail` names the read that went missing. Read-only: there is
+/// no route that pauses or stops synchronization.
 #[utoipa::path(
     get,
     path = V1_TIME_STATUS_PATH,
