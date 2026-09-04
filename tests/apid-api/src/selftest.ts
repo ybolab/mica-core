@@ -863,12 +863,10 @@ try {
     'menuentry "mos slot A" --id A {',
     "    else",
     "        linux (${slot_a_root})/vmlinuz dm-mod.create=\"rootfs,,,ro,0 100 verity 1\"",
-    "        initrd (${slot_a_root})/initrd.img",
     "    fi",
     "}",
     'menuentry "mos slot B" --id B {',
     "        linux (${slot_b_root})/vmlinuz dm-mod.create=\"rootfs,,,ro,0 100 verity 1\"",
-    "        initrd (${slot_b_root})/initrd.img",
     "}",
     "",
   ].join("\n");
