@@ -568,6 +568,7 @@ impl MosdService {
         let rauc_client = Arc::clone(&self.rauc);
         let inner = Arc::clone(&self.inner);
         let installing = Arc::clone(&self.installing);
+        let time_status = Arc::clone(&self.time_status);
         let sender = sender.to_string();
         tokio::spawn(async move {
             let result = rauc_client.install_bundle(&bundle).await;
@@ -582,11 +583,38 @@ impl MosdService {
                 }
                 Err(err) => {
                     tracing::error!(bundle = %bundle.display(), error = %err, "update install failed");
+                    // PLAN-078 §5's diagnostic mitigation, and it is only a
+                    // diagnostic: there is no cryptographic answer to a wrong
+                    // clock. RAUC verifies a signer's window against the clock
+                    // of the process doing the verifying, so a device with a
+                    // grossly wrong RTC refuses every valid signer with the
+                    // same sentence a real expiry produces. The facts are
+                    // gathered here, while the failure is fresh, because a
+                    // clock read minutes later by a separate query is a
+                    // different clock.
+                    //
+                    // Read SOFTLY: a status source that does not answer leaves
+                    // the member absent rather than turning a failed install
+                    // into a failed record. Absent evidence is not evidence of
+                    // a good clock, and install_failure_time_facts treats it
+                    // as such.
+                    let observed = time_status
+                        .observe()
+                        .await
+                        .ok()
+                        .map(|evidence| status_json(&evidence));
+                    let error = format!("{err:#}");
+                    let facts = rauc::install_failure_time_facts(
+                        &error,
+                        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        observed,
+                    );
                     serde_json::json!({
                         "status": "failed",
                         "bundle": bundle.to_string_lossy(),
                         "requested_by": sender,
-                        "error": format!("{err:#}"),
+                        "error": error,
+                        "time": facts,
                     })
                 }
             };
@@ -2241,6 +2269,78 @@ mod tests {
             .request_install(":1.9", bundle)
             .await
             .expect("flag released");
+    }
+
+    /// PLAN-078 §S4, end to end: the recorded failure carries the device's own
+    /// clock and its time state, so an operator reading one document can tell
+    /// a real expiry from a wrong RTC.
+    ///
+    /// Both halves in one test, because the second is what catches an
+    /// implementation that just always blames the clock.
+    #[tokio::test]
+    async fn a_failed_install_records_the_clock_beside_the_reason_without_blaming_it_wrongly() {
+        use crate::time_status::TimesyncEvidence;
+
+        // A clock nothing vouches for: timesyncd reachable, the kernel bit
+        // read and false. This is the state a stranded device is in.
+        let (undisciplined, _c, _r, dir) = service_with_rauc(MockRauc {
+            install_error: Some(
+                "signature verification failed: Verify error: certificate has expired".to_string(),
+            ),
+            ..MockRauc::default()
+        });
+        let undisciplined =
+            undisciplined.with_time_status(Arc::new(FixedTimesync(TimesyncEvidence {
+                service_reachable: true,
+                ntp_synchronized: Some(false),
+                ..TimesyncEvidence::default()
+            })));
+        let bundle = verified_bundle(&dir, "expired.raucb");
+        undisciplined
+            .request_install(":1.9", bundle.as_str())
+            .await
+            .expect("admitted");
+        wait_for_install_status(&undisciplined, "failed").await;
+        let install = undisciplined
+            .get_state("update.install")
+            .await
+            .expect("state");
+        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
+        assert!(
+            install["time"]["clock"]
+                .as_str()
+                .is_some_and(|c| c.ends_with('Z')),
+            "the device's own clock must be recorded beside the failure: {install}"
+        );
+        assert_eq!(install["time"]["status"]["status"], "offline-degraded");
+        assert_eq!(install["time"]["clock_implicated"], true);
+
+        // The SAME failure, on a clock the kernel vouches for. The time facts
+        // are still rendered -- a reader must not need a second query -- and
+        // the diagnosis does not attribute the failure to them.
+        let (good, _c2, _r2, dir2) = service_with_rauc(MockRauc {
+            install_error: Some(
+                "signature verification failed: Verify error: certificate has expired".to_string(),
+            ),
+            ..MockRauc::default()
+        });
+        let good = good.with_time_status(Arc::new(FixedTimesync(TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: Some(true),
+            ..TimesyncEvidence::default()
+        })));
+        let bundle2 = verified_bundle(&dir2, "really-expired.raucb");
+        good.request_install(":1.9", bundle2.as_str())
+            .await
+            .expect("admitted");
+        wait_for_install_status(&good, "failed").await;
+        let install = good.get_state("update.install").await.expect("state");
+        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
+        assert_eq!(install["time"]["status"]["status"], "synchronized");
+        assert_eq!(
+            install["time"]["clock_implicated"], false,
+            "a good clock must not be blamed for a real expiry: {install}"
+        );
     }
 
     #[tokio::test]
