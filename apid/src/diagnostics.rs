@@ -50,8 +50,11 @@ pub const SCHEMA_VERSION: u64 = 2;
 /// 2 is the allowlist that followed the rename above, 3 the one that added
 /// the rtnetlink id members. Both changes are real; the second bump was made
 /// for the first change by mistake and is left standing, because the number's
-/// only job is that two different allowlists never share it.
-pub const REDACTION_SCHEMA_VERSION: u64 = 3;
+/// only job is that two different allowlists never share it. 4 is the one that
+/// added `system.trust` -- the grade of the signing material the image was
+/// built from, which a support case reads before it reads anything else about
+/// a refused update.
+pub const REDACTION_SCHEMA_VERSION: u64 = 4;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
