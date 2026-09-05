@@ -6171,14 +6171,13 @@ impl Presence for MarkerPresence {
         // `Assertion` in hand: an `Assertion` carries no deadline, and the
         // deadline is what distinguishes the assertion that was spent from a
         // later one written by a mosd that restarted inside this boot.
-        if let Ok(bytes) = std::fs::read(&self.marker) {
-            if let Ok(marker) = serde_json::from_slice::<mosd_settings::PresenceMarker>(&bytes) {
-                *self
-                    .spent
-                    .lock()
-                    .expect("the spent-assertion lock is never held across a panic") =
-                    Some(marker);
-            }
+        if let Ok(bytes) = std::fs::read(&self.marker)
+            && let Ok(marker) = serde_json::from_slice::<mosd_settings::PresenceMarker>(&bytes)
+        {
+            *self
+                .spent
+                .lock()
+                .expect("the spent-assertion lock is never held across a panic") = Some(marker);
         }
         match std::fs::remove_file(&self.marker) {
             Ok(()) => Ok(()),
@@ -6186,9 +6185,8 @@ impl Presence for MarkerPresence {
             // postcondition is that the marker authorizes nothing, and it
             // does not.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => {
-                Err(err).with_context(|| format!("spend the assertion at {}", self.marker.display()))
-            }
+            Err(err) => Err(err)
+                .with_context(|| format!("spend the assertion at {}", self.marker.display())),
         }
     }
 }

@@ -47,9 +47,8 @@ fn provisioning_app(tree: serde_json::Value) -> (Router, TempDir) {
     std::fs::create_dir(&updates).expect("meta/updates");
     std::fs::write(updates.join("manifest.json"), BAKED_MANIFEST).expect("baked manifest");
     let fake = Arc::new(FakeSettings::new(tree));
-    let router = app(
-        AppState::new(fake, SIGNING_KEY).with_meta_manifest(updates.join("manifest.json")),
-    );
+    let router =
+        app(AppState::new(fake, SIGNING_KEY).with_meta_manifest(updates.join("manifest.json")));
     (router, dir)
 }
 

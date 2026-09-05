@@ -1,15 +1,20 @@
 //! Integration tests for the mosd-settings public API.
 
+use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use mosd_settings::{
-    ApMode, ApiToken, AuthorizedKey, BridgeConfig, ClaimChannel, ClaimSettings, DEFAULT_CONFIG_DIR,
-    DEFAULT_PATH, IfaceKind, IfaceSettings, NETWORK_SCHEMA_VERSION, ProvisioningState,
-    ResetSettings, ResetTier, STATE_SCHEMA_VERSION, Settings, SettingsError, StaticConfig, Store,
-    VlanConfig, WebAdminSettings, WifiNetwork, WireguardConfig, WireguardPeer, encode_base64_nopad,
-    json_path_get, parse_authorized_key, validate_api_tokens, validate_authorized_keys,
+    ApMode, ApiToken, AuthorizedKey, BridgeConfig, CONFIG_DOCUMENTS, ClaimChannel, ClaimSettings,
+    DEFAULT_CONFIG_DIR, DEFAULT_PATH, DOCUMENT_MODE, IfaceKind, IfaceSettings, MQTT_DOCUMENT,
+    NETWORK_SCHEMA_VERSION, ProvisioningState, ResetSettings, ResetTier, STATE_SCHEMA_VERSION,
+    Settings, SettingsError, StaticConfig, Store, VlanConfig, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION,
+    WebAdminSettings, WifiNetwork, WireguardConfig, WireguardPeer, configuration,
+    encode_base64_nopad, json_path_get, parse_authorized_key, validate_api_tokens,
+    validate_authorized_keys,
 };
 
 /// A store over a temporary tree.
@@ -143,6 +148,14 @@ fn get_unknown_path_is_not_found() {
     ));
     assert!(matches!(
         settings.get("hostname..x"),
+        Err(SettingsError::NotFound(_))
+    ));
+    // `schema_version` stopped being a path of the tree when PLAN-070 §5.2.3
+    // put the version on each document. It is what the READ route resolves,
+    // so this is the leg that makes `GET /api/v1/settings/schema_version` the
+    // same 404 every other absent root gets rather than the named 409 it was.
+    assert!(matches!(
+        settings.get("schema_version"),
         Err(SettingsError::NotFound(_))
     ));
 }
@@ -1291,4 +1304,514 @@ fn an_unknown_claim_key_is_refused_and_writes_nothing() {
 
     assert!(matches!(err, SettingsError::Validation { .. }), "{err:?}");
     assert_eq!(settings, before);
+}
+
+// --- The documents: fail-closed, the tolerant rollback load, containment ----
+//
+// PLAN-070 §5.2 split the store into one document per reconciler and deleted
+// the `V0→V12` chain. Two properties that still hold went down with the tests
+// that carried them — the fail-closed rule for a key the schema does not know,
+// and the tolerant newer-schema load that is the A/B rollback path. These
+// restore both in the shape the split gave them, and add the property the
+// split itself created and nothing asserted: a rollback in one document costs
+// one document.
+
+/// Write raw bytes as one `/mos/config/` document, bypassing the store.
+///
+/// Every fixture here is written by hand rather than produced by a `save`,
+/// because what is under test is what the reader does with a document this
+/// build did not write.
+fn write_config(dir: &tempfile::TempDir, name: &str, text: &str) {
+    fs::write(dir.path().join("config").join(name), text).unwrap();
+}
+
+/// Every document one device holds, `/mos/config/` and STATE alike.
+fn document_paths(dir: &tempfile::TempDir) -> Vec<PathBuf> {
+    CONFIG_DOCUMENTS
+        .iter()
+        .map(|name| dir.path().join("config").join(name))
+        .chain([dir.path().join("settings.toml")])
+        .collect()
+}
+
+/// Bytes and inode of every document, keyed by file name.
+///
+/// The inode is half the claim. "The others are byte-identical" is what a
+/// reader cares about; "the others were not rewritten at all" is what the
+/// store actually promises, and only the inode separates them.
+fn fingerprints(dir: &tempfile::TempDir) -> BTreeMap<String, (Vec<u8>, u64)> {
+    document_paths(dir)
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let bytes = fs::read(&path).unwrap();
+            let ino = fs::metadata(&path).unwrap().ino();
+            (name, (bytes, ino))
+        })
+        .collect()
+}
+
+fn mode_of(path: &Path) -> u32 {
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// A device with something set in every one of the eight documents, so that a
+/// test about one document's loss can see the other seven survive.
+fn configured() -> Settings {
+    let mut settings = populated();
+    settings.hostname = "edge-42".to_string();
+    settings.access.console.shell_enabled = !settings.access.console.shell_enabled;
+    settings.access.ssh.enabled = true;
+    settings.access.web_admin = Some(WebAdminSettings {
+        password_hash: "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2".to_string(),
+    });
+    settings.wifi.ap.mode = ApMode::Always;
+    settings.wifi.ap.ssid = Some("mos-ap".to_string());
+    settings.mqtt.enabled = true;
+    settings.time.timezone = "Europe/Berlin".to_string();
+    settings.container.enabled = !settings.container.enabled;
+    settings
+}
+
+/// **Fail-closed on a key the schema does not know, now per document.**
+///
+/// The rule is unchanged by the move — a document that parses but carries an
+/// unknown key is refused rather than loaded with the key ignored — and the
+/// move adds a requirement to it: with seven documents, `unknown field
+/// `enabld`` on its own does not say which file to fix, so the refusal has to
+/// name the document.
+///
+/// `wifi.json` is spelled out because it is the document the namespace's
+/// `0600` exists for, and the key is nested inside the subtree the document
+/// carries rather than beside `schema_version`: the rule is `deny_unknown_fields`
+/// on the model types, which the document wrapper only inherits.
+#[test]
+fn a_document_with_an_unknown_key_fails_to_load_and_the_refusal_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        &json!({
+            "schema_version": WIFI_SCHEMA_VERSION,
+            "wifi": { "ap": { "mode": "always", "enabld": true } },
+        })
+        .to_string(),
+    );
+
+    let err = store.load().unwrap_err();
+    let SettingsError::Parse(message) = &err else {
+        panic!("expected a parse error, got {err:?}");
+    };
+    assert!(
+        message.contains("unknown field `enabld`"),
+        "the refusal must name the offending key: {message}"
+    );
+    assert!(
+        message.starts_with(WIFI_DOCUMENT),
+        "the refusal must name the document it came from: {message}"
+    );
+
+    // The same document without the typo loads, so what was refused is the key
+    // and not the fixture.
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        &json!({
+            "schema_version": WIFI_SCHEMA_VERSION,
+            "wifi": { "ap": { "mode": "always" } },
+        })
+        .to_string(),
+    );
+    assert_eq!(store.load().unwrap().wifi.ap.mode, ApMode::Always);
+}
+
+/// The reason the other six share, asserted rather than argued.
+///
+/// One case per document would be seven fixtures shaped by seven schemas; the
+/// rule they actually share is one line of `Store` — every document is read
+/// through the same `read_document`, which parses with the same
+/// `deny_unknown_fields` discipline and wraps the failure with the same
+/// document name. This drives all seven through it at their top level, which
+/// is the part every document does have in common.
+#[test]
+fn every_config_document_is_fail_closed_on_an_unknown_key() {
+    for document in CONFIG_DOCUMENTS {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_at(&dir);
+        write_config(&dir, document, r#"{"schema_version": 1, "bogus": true}"#);
+
+        let err = store.load().unwrap_err();
+        let SettingsError::Parse(message) = &err else {
+            panic!("{document}: expected a parse error, got {err:?}");
+        };
+        assert!(
+            message.contains("unknown field `bogus`"),
+            "{document}: {message}"
+        );
+        assert!(
+            message.starts_with(document),
+            "{document}: the refusal must name the document: {message}"
+        );
+    }
+}
+
+/// **A document that exists and does not parse is a refusal, not a default.**
+///
+/// The asymmetry the move rests on: an absent document is a subsystem nobody
+/// configured, so it takes its schema default; a document that is there and
+/// unreadable is a device whose configuration cannot be read, and rendering a
+/// schema default for it would configure the device the way nobody chose.
+/// Four ways to be unreadable, each of which has to name the document.
+#[test]
+fn a_document_that_does_not_parse_refuses_the_load_and_names_itself() {
+    for (text, needle) in [
+        // Not JSON at all. The wording after the document name is serde_json's
+        // and is not asserted; that it is a refusal and names `mqtt.json` is.
+        ("{ this is not json", None),
+        // Parses, but carries no version stamp, so nothing says which schema
+        // it is written against.
+        (r#"{"mqtt": {"enabled": true}}"#, Some("no schema_version")),
+        // A stamp that is not an integer.
+        (
+            r#"{"schema_version": "1", "mqtt": {}}"#,
+            Some("schema_version must be an integer"),
+        ),
+        // A document whose top level is not a table at all.
+        ("[]", Some("the top level is not a table")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_at(&dir);
+        write_config(&dir, MQTT_DOCUMENT, text);
+
+        let err = store.load().unwrap_err();
+        let SettingsError::Parse(message) = &err else {
+            panic!("{text}: expected a parse error, got {err:?}");
+        };
+        assert!(
+            message.starts_with(MQTT_DOCUMENT),
+            "{text}: the refusal must name the document: {message}"
+        );
+        if let Some(needle) = needle {
+            assert!(message.contains(needle), "{text}: {message}");
+        }
+
+        // And the contrast that makes the refusal mean something: remove the
+        // file and the very same store loads, because absence IS a default.
+        fs::remove_file(dir.path().join("config").join(MQTT_DOCUMENT)).unwrap();
+        assert_eq!(store.load().unwrap(), Settings::default());
+    }
+}
+
+/// A document from a build one schema version behind this one.
+///
+/// Unreachable while every document is at v1 except through the stamp `0`, and
+/// worth pinning because it is the arm the deleted migration registry used to
+/// serve: there is no chain any more, so the honest answer is a refusal that
+/// names the document rather than a silent default.
+#[test]
+fn an_older_document_is_refused_by_name_because_there_is_no_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(&dir, MQTT_DOCUMENT, r#"{"schema_version": 0, "mqtt": {}}"#);
+
+    let err = store.load().unwrap_err();
+    let SettingsError::Migration(message) = &err else {
+        panic!("expected a migration error, got {err:?}");
+    };
+    assert!(message.starts_with(MQTT_DOCUMENT), "{message}");
+    assert!(message.contains("no migration is registered"), "{message}");
+}
+
+/// `wifi.json` as a build one schema version AHEAD of this one wrote it: the
+/// A/B rollback path.
+///
+/// **The stamp is derived, not written.** Its deleted predecessor carried the
+/// literal `13` and had to be repaired nine times, because the moment the
+/// schema catches up with the fixture the document stops being newer, the
+/// tolerant path stops running, and the test goes on passing while asserting
+/// nothing about rollback. `WIFI_SCHEMA_VERSION + 1` cannot fall behind.
+///
+/// `band` is the key this schema does not know. Everything else is a key it
+/// does, and has to survive.
+fn newer_wifi_document() -> String {
+    json!({
+        "schema_version": WIFI_SCHEMA_VERSION + 1,
+        "wifi": {
+            "ap": { "mode": "always", "ssid": "mos-ap", "channel": 11, "band": "6ghz" },
+            "client": {
+                "enabled": true,
+                "interface": "wlan0",
+                "networks": [{ "ssid": "site", "psk": "hunter2hunter2", "priority": 3 }],
+            },
+        },
+    })
+    .to_string()
+}
+
+/// **The tolerant load, restored.** A document newer than this build writes is
+/// read by dropping the keys this schema does not know, one name at a time,
+/// and it never errors: refusing it would make the rolled-back-to slot a crash
+/// loop, which is a rollback that reaches no working slot at all.
+#[test]
+fn a_newer_document_loads_with_the_unknown_keys_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(&dir, WIFI_DOCUMENT, &newer_wifi_document());
+
+    let (settings, reports) = store.load_with_report().unwrap();
+
+    // Everything this schema understands survives.
+    assert_eq!(settings.wifi.ap.mode, ApMode::Always);
+    assert_eq!(settings.wifi.ap.ssid.as_deref(), Some("mos-ap"));
+    assert_eq!(settings.wifi.ap.channel, 11);
+    assert!(settings.wifi.client.enabled);
+    assert_eq!(settings.wifi.client.networks.len(), 1);
+    assert_eq!(settings.wifi.client.networks[0].ssid, "site");
+    assert_eq!(settings.wifi.client.networks[0].priority, 3);
+
+    // The report names what the rollback cost, for mosd to log, and names the
+    // document it cost it in — which is the part the split added.
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].document, WIFI_DOCUMENT);
+    assert_eq!(reports[0].from, WIFI_SCHEMA_VERSION + 1);
+    assert_eq!(reports[0].dropped_keys, vec!["band".to_string()]);
+    assert!(!reports[0].defaulted);
+}
+
+/// The strip is by NAME and reaches everywhere, arrays included: one pass
+/// removes the same key at every depth, and the report records it once.
+#[test]
+fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        &json!({
+            "schema_version": WIFI_SCHEMA_VERSION + 1,
+            "wifi": {
+                "ap": { "mode": "always", "extra": "at a table" },
+                "client": {
+                    "enabled": true,
+                    "networks": [{ "ssid": "site", "extra": "inside an array" }],
+                },
+            },
+        })
+        .to_string(),
+    );
+
+    let (settings, reports) = store.load_with_report().unwrap();
+
+    assert_eq!(settings.wifi.ap.mode, ApMode::Always);
+    assert!(settings.wifi.client.enabled);
+    assert_eq!(settings.wifi.client.networks[0].ssid, "site");
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].dropped_keys, vec!["extra".to_string()]);
+    assert!(!reports[0].defaulted);
+}
+
+/// Rolling forward again restores the defaults, not the values: the tolerated
+/// document is persisted at THIS schema version with the newer schema's key
+/// gone, so the next load is the ordinary path and reports nothing.
+#[test]
+fn a_tolerated_document_saves_back_at_this_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    store.save(&Settings::default()).unwrap();
+    write_config(&dir, WIFI_DOCUMENT, &newer_wifi_document());
+
+    let (settings, reports) = store.load_with_report().unwrap();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    store.save(&settings).unwrap();
+
+    let text = fs::read_to_string(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap();
+    assert!(
+        !text.contains("band"),
+        "the newer schema's key is gone: {text}"
+    );
+    assert_eq!(
+        config_document(&dir, WIFI_DOCUMENT)["schema_version"],
+        json!(WIFI_SCHEMA_VERSION)
+    );
+
+    let (reloaded, reports) = store.load_with_report().unwrap();
+    assert_eq!(reloaded, settings);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+/// **The containment the split is for, and the property nothing asserted.**
+///
+/// A newer document that stripping cannot rescue — a future schema RESHAPED a
+/// key — falls back to a schema default. Before the split that default was
+/// `Settings::default()` entire: every setting, the network, the ssh policy
+/// and the admin credential, which is a device back in setup mode because one
+/// subsystem's schema moved. Per document, the loss is that document's
+/// subtree and the other seven are untouched.
+#[test]
+fn a_reshaped_newer_document_costs_its_own_subtree_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    let settings = configured();
+    store.save(&settings).unwrap();
+
+    // `wifi` became a scalar. No amount of unknown-key stripping makes this
+    // build parse it.
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        &json!({ "schema_version": WIFI_SCHEMA_VERSION + 1, "wifi": "reshaped" }).to_string(),
+    );
+
+    let (loaded, reports) = store.load_with_report().unwrap();
+
+    // The loss, and its whole extent: everything except `wifi` is what was
+    // saved, compared as one value so a subtree this test forgot to name is
+    // still covered.
+    let mut expected = settings.clone();
+    expected.wifi = Settings::default().wifi;
+    assert_eq!(
+        loaded, expected,
+        "a reshaped wifi.json must cost the wifi subtree and nothing else"
+    );
+    // Named separately because it is the one that put the device back in setup
+    // mode, and it is not even in the same file.
+    assert_eq!(loaded.access.web_admin, settings.access.web_admin);
+
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].document, WIFI_DOCUMENT);
+    assert_eq!(reports[0].from, WIFI_SCHEMA_VERSION + 1);
+    assert!(reports[0].defaulted);
+}
+
+/// **A key written to one document leaves the others byte-identical** — the
+/// claim the split is made of, checked on the inodes as well as on the bytes:
+/// an unchanged document is not rewritten at all.
+#[test]
+fn a_write_to_one_document_leaves_the_others_byte_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    let settings = configured();
+    store.save(&settings).unwrap();
+    let before = fingerprints(&dir);
+
+    let changed = Settings {
+        mqtt: mosd_settings::MqttSettings {
+            enabled: !settings.mqtt.enabled,
+            ..settings.mqtt.clone()
+        },
+        ..settings.clone()
+    };
+    store.save(&changed).unwrap();
+
+    let after = fingerprints(&dir);
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>()
+    );
+    for (name, fingerprint) in &before {
+        if name == MQTT_DOCUMENT {
+            assert_ne!(
+                &after[name], fingerprint,
+                "the document that was written must have changed"
+            );
+        } else {
+            assert_eq!(
+                &after[name], fingerprint,
+                "{name} must be byte-identical, inode included"
+            );
+        }
+    }
+    assert_eq!(store.load().unwrap(), changed);
+}
+
+/// **Every document is written `0600`, including over a laxer one.**
+///
+/// The namespace is credential material — `wifi.json` carries the site's WPA2
+/// pre-shared key — so a document reachable under its final name at `0644` has
+/// already published it.
+///
+/// The second half is what the mode-before-rename ordering is for: a document
+/// that REPLACES a laxer one lands `0600` rather than inheriting the mode of
+/// the file it replaced. Note what this does and does not pin. The ordering
+/// itself is not observable from outside the process — a mode set after the
+/// rename would leave the same end state — so this asserts the consequence,
+/// and the ordering is `write_document`'s to keep.
+#[test]
+fn every_document_is_written_0600_including_over_a_laxer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    store.save(&Settings::default()).unwrap();
+
+    let paths = document_paths(&dir);
+    assert_eq!(paths.len(), CONFIG_DOCUMENTS.len() + 1);
+    for path in &paths {
+        assert!(path.exists(), "{} was not written", path.display());
+        assert_eq!(mode_of(path), DOCUMENT_MODE, "{}", path.display());
+    }
+
+    // Publish every one of them, then write a settings tree that changes all
+    // eight — an unchanged document is deliberately not rewritten, so a
+    // narrower edit would leave most of them at 0666 for a reason that is not
+    // this test's subject.
+    for path in &paths {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert_eq!(mode_of(path), 0o666);
+    }
+    store.save(&configured()).unwrap();
+
+    for path in &paths {
+        assert_eq!(
+            mode_of(path),
+            DOCUMENT_MODE,
+            "{} kept the mode of the file it replaced",
+            path.display()
+        );
+    }
+}
+
+/// **A namespace that is not there is a refusal, and the refusal names the
+/// mount.** Both directions: nothing is loaded on schema defaults and nothing
+/// is written.
+#[test]
+fn a_missing_configuration_namespace_refuses_and_names_the_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("settings.toml");
+    // Deliberately NOT created: this is the DATA medium being gone, not a
+    // document that was never written.
+    let store = Store::new(&state, dir.path().join("mos").join("config"));
+
+    for err in [
+        store.load().unwrap_err(),
+        store.save(&Settings::default()).unwrap_err(),
+    ] {
+        let SettingsError::Unavailable { directory, mount } = &err else {
+            panic!("expected an unavailable error, got {err:?}");
+        };
+        assert!(directory.ends_with("/mos/config"), "{directory}");
+        assert!(mount.ends_with("/mos"), "{mount}");
+        let message = err.to_string();
+        assert!(
+            message.contains(mount) && message.contains("not mounted"),
+            "the refusal must name the mount an operator has to fix: {message}"
+        );
+    }
+    assert!(!state.exists(), "a refused save must write nothing");
+}
+
+/// The two spellings of one directory agree.
+///
+/// `configuration::DEFAULT_UPDATES_PATH` and `DEFAULT_CONFIG_DIR` are both
+/// literals, and a `const &str` cannot be built from another without a macro
+/// crate — so nothing but this line makes them move together when the
+/// namespace relocates. The separator is part of the assertion: without it
+/// `/mos/configuration/…` would satisfy it.
+#[test]
+fn the_update_document_lives_inside_the_configuration_namespace() {
+    assert!(
+        configuration::DEFAULT_UPDATES_PATH.starts_with(&format!("{DEFAULT_CONFIG_DIR}/")),
+        "{} is not inside {DEFAULT_CONFIG_DIR}",
+        configuration::DEFAULT_UPDATES_PATH
+    );
 }
