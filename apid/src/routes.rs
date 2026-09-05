@@ -1791,8 +1791,17 @@ pub(crate) async fn api_versions() -> Response {
 /// Report what the caller is talking to.
 ///
 /// Answers the API major version, the daemon name, and
-/// `settingsSchemaVersion` — the shape of the settings tree on disk, which
-/// moves independently of the API version. Authenticated.
+/// `settingsSchemaVersion` — a settings document format version, which moves
+/// independently of the API version. Authenticated.
+///
+/// **After PLAN-070 §5.2.3 the settings tree has no single version.** Storage
+/// is one document per reconciler in `/mos/config/` plus the remainder on
+/// STATE, and each carries its own `schema_version` starting at v1, because a
+/// namespace-wide version could not be bumped without rewriting every document
+/// across renames with no transaction between them. This member therefore
+/// reports the STATE document's version — the one document that is still one
+/// document — and it is read live from `mosd_settings` rather than copied,
+/// which is the property §2.1 of `docs/design/api.md` actually asks for.
 #[utoipa::path(
     get,
     path = V1_META_PATH,
@@ -1809,7 +1818,7 @@ pub(crate) async fn api_v1_meta(_credential: ApiCredential) -> Response {
         StatusCode::OK,
         ApiMeta {
             api: CURRENT_VERSION,
-            settings_schema_version: mosd_settings::SCHEMA_VERSION,
+            settings_schema_version: mosd_settings::STATE_SCHEMA_VERSION,
             daemon: "apid",
         },
     )
@@ -2123,12 +2132,12 @@ fn settings_write_refusal(path: &str) -> Response {
     if !is_settings_root(root) {
         return item_not_found(SETTINGS_COLLECTION, path);
     }
+    // `schema_version` used to take an arm of its own here. It is not a
+    // settings root any more: PLAN-070 §5.2.3 put the version on each document
+    // instead of on the tree, so a path naming it is a path that names nothing
+    // and `is_settings_root` above answers it with the 404 every other absent
+    // root gets.
     refused(match root {
-        // Read-only in the tree itself and not merely here, which is a
-        // different sentence from the one below: `Settings::set` answers
-        // `SettingsError::ReadOnly` for it, and no later milestone widens this
-        // route to cover it.
-        "schema_version" => "`schema_version` is read-only in the settings tree itself: the store refuses every write that would change it, and the version moves only when a migration moves it".to_string(),
         // Named rather than folded into the sentence below, because this is
         // the subtree where a passthrough is actively destructive rather than
         // merely wrong.

@@ -149,6 +149,12 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
 
     let dir = tempfile::tempdir()?;
     let settings_path = dir.path().join("settings.toml");
+    // The `/mos/config/` namespace mosd reads its configuration from. It must
+    // exist before the daemon starts: an absent namespace is the DATA medium
+    // being gone, and mosd refuses to start rather than render a configuration
+    // nobody chose (PLAN-070 §5.2.6).
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir)?;
     let shadow_path = dir.path().join("shadow");
     std::fs::write(&shadow_path, "root:!:20000:0:99999:7:::\n")?;
     let _mosd_guard = ChildGuard(
@@ -157,6 +163,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
             .env("MOSD_BUS", "session")
             .env("MOSD_DRY_RUN", "1")
             .env("MOSD_SETTINGS_PATH", &settings_path)
+            .env("MOSD_CONFIG_DIR", &config_dir)
             .env("MOSD_SHADOW_PATH", &shadow_path)
             .spawn()?,
     );

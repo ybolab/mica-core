@@ -159,30 +159,51 @@ async fn serve() -> anyhow::Result<()> {
 
     let settings_path = std::env::var("MOSD_SETTINGS_PATH")
         .unwrap_or_else(|_| mosd_settings::DEFAULT_PATH.to_string());
+    // The `/mos/config/` namespace. Relocatable for the same reason the
+    // settings path is — the bus tests run a real daemon against a temporary
+    // tree — and by a variable of its own rather than derived from
+    // `MOS_DATA_ROOT`, because what mosd reads is the `/mos` BIND and what
+    // `mos-data-layout` and `reset.rs` write is the pool underneath it.
+    let config_dir = std::env::var("MOSD_CONFIG_DIR")
+        .unwrap_or_else(|_| mosd_settings::DEFAULT_CONFIG_DIR.to_string());
     let bus_kind = std::env::var("MOSD_BUS").unwrap_or_else(|_| "system".to_string());
     let dry_run = std::env::var("MOSD_DRY_RUN").is_ok_and(|value| value == "1");
 
-    let store = Store::new(&settings_path);
+    let store = Store::new(&settings_path, &config_dir);
+    // **Fail closed on the medium** (PLAN-070 §5.2.6). System configuration
+    // lives on DATA now, so a DATA pool that does not mount is a device with
+    // no configuration — and a device that cannot read its configuration must
+    // not render a different one. Without this it would come up on schema
+    // defaults, DHCP on every interface and sshd off, and look fine to
+    // everything except the operator who configured a static address.
+    // `RequiresMountsFor=/mos` on the unit is the first half; this is the half
+    // that names the mount in the journal, and the error carries that name.
+    // The recovery route is `docs/design/recovery.md`'s — the serial console
+    // and the reset tiers — not a silently degraded network.
     let (mut settings, rollback) = store
         .load_with_report()
-        .with_context(|| format!("load settings from {settings_path}"))?;
-    // The A/B rollback path: the settings file was written by a NEWER schema
-    // and was loaded tolerantly instead of crash-looping the daemon
+        .with_context(|| format!("load settings from {settings_path} and {config_dir}"))?;
+    // The A/B rollback path: a document was written by a NEWER schema and was
+    // loaded tolerantly instead of crash-looping the daemon
     // (docs/design/api.md §10.3 item 5). Loud on purpose — this is the one
-    // place the loss `mosd.md` §5.2 prices is actually paid.
-    if let Some(report) = rollback {
+    // place the loss `mosd.md` §5.2 prices is actually paid. One report per
+    // document, because after PLAN-070 §5.2.3 the version is per document and
+    // so is the loss.
+    for report in rollback {
         if report.defaulted {
             tracing::error!(
+                document = report.document,
                 from_schema = report.from,
                 dropped = ?report.dropped_keys,
-                "settings file is from a newer, reshaped schema; ALL settings \
-                 abandoned and defaults loaded — the device is back in setup mode"
+                "a settings document is from a newer, reshaped schema; everything it \
+                 stored is abandoned and its defaults loaded"
             );
         } else {
             tracing::warn!(
+                document = report.document,
                 from_schema = report.from,
                 dropped = ?report.dropped_keys,
-                "settings file is from a newer schema; unknown keys dropped \
+                "a settings document is from a newer schema; unknown keys dropped \
                  (the documented cost of an A/B rollback across a schema bump)"
             );
         }
@@ -306,6 +327,7 @@ async fn serve() -> anyhow::Result<()> {
     let registry = scan_enabled.then(|| Arc::new(scan::Registry::new()));
     tracing::info!(
         settings_path,
+        config_dir,
         dry_run,
         reconcilers = reconcilers.len(),
         service_scan = scan_enabled,

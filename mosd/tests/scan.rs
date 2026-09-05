@@ -197,6 +197,12 @@ impl Harness {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("settings.toml");
+        // The `/mos/config/` namespace mosd reads its configuration from. It
+        // must exist before the daemon starts: an absent namespace is the DATA
+        // medium being gone, and mosd refuses to start rather than render a
+        // configuration nobody chose (PLAN-070 §5.2.6).
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).expect("create the config namespace");
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
 
@@ -211,6 +217,7 @@ impl Harness {
             .env("MOSD_BUS", "session")
             .env("MOSD_DRY_RUN", "1")
             .env("MOSD_SETTINGS_PATH", &settings_path)
+            .env("MOSD_CONFIG_DIR", &config_dir)
             .env("MOSD_SHADOW_PATH", &shadow_path)
             .stdout(Stdio::piped());
         if scan {

@@ -996,7 +996,12 @@ fn to_bus_error(err: SettingsError) -> SettingsFault {
         SettingsError::Validation { .. } => {
             SettingsFault::Fdo(fdo::Error::InvalidArgs(err.to_string()))
         }
-        SettingsError::Io(_) => SettingsFault::Fdo(fdo::Error::IOError(err.to_string())),
+        // The configuration medium being gone is an IO condition and not a
+        // malformed request: the caller asked for something reasonable and the
+        // device cannot reach the store. The message already names the mount.
+        SettingsError::Io(_) | SettingsError::Unavailable { .. } => {
+            SettingsFault::Fdo(fdo::Error::IOError(err.to_string()))
+        }
         SettingsError::Parse(_) | SettingsError::Migration(_) => {
             SettingsFault::Fdo(fdo::Error::Failed(err.to_string()))
         }
@@ -1756,12 +1761,24 @@ mod tests {
     /// A mock's shared call log ([`MockPower::calls`] / [`MockRauc::calls`]).
     type CallLog = Arc<Mutex<Vec<String>>>;
 
+    /// A store over a throwaway tree: the STATE document and the
+    /// `/mos/config/` namespace beside it.
+    ///
+    /// The namespace is created, because an absent one is the DATA medium
+    /// being gone and the store refuses that rather than defaulting
+    /// (PLAN-070 §5.2.6).
+    fn store_in(dir: &tempfile::TempDir) -> mosd_settings::Store {
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).expect("create the config namespace");
+        mosd_settings::Store::new(dir.path().join("settings.toml"), config)
+    }
+
     /// Service backed by a throwaway settings file, a throwaway shadow file,
     /// a recording power mock and the given RAUC mock; the power log and the
     /// RAUC call log are returned alongside.
     fn service_with_rauc(rauc: MockRauc) -> (MosdService, CallLog, CallLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = mosd_settings::Store::new(dir.path().join("settings.toml"));
+        let store = store_in(&dir);
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1822,7 +1839,7 @@ mod tests {
             }) as Box<dyn crate::reconciler::Reconciler>
         };
         let service = MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             settings,
             vec![
                 reconciler("sshd", "access.ssh"),
@@ -1927,7 +1944,7 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let service = Arc::new(MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             mosd_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
                 name: "hostname",
@@ -1972,7 +1989,7 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let service = Arc::new(MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             mosd_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
                 name: "sshd",
@@ -2737,7 +2754,7 @@ mod tests {
             },
         );
         let service = MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             settings,
             Vec::new(),
             Box::new(MockPower {

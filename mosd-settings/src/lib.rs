@@ -1,8 +1,10 @@
 //! Settings library for mosd.
 //!
-//! Provides the typed settings tree (schema v12), a Venus-style dot-path
-//! get/set API, atomic TOML persistence on STATE, and a Bottlerocket-style
-//! bidirectional migration framework.
+//! Provides the typed settings tree, a Venus-style dot-path get/set API, and
+//! the split persistence PLAN-070 §5.2 decided: system configuration as one
+//! JSON document per reconciler under `/mos/config/` on DATA, and what the
+//! device mints or observes about itself as one TOML document on STATE. Each
+//! document carries its own schema version.
 
 #![forbid(unsafe_code)]
 
@@ -11,10 +13,15 @@ mod audit;
 mod authorized_key;
 // A public module rather than a re-export: `/mos/config/` is a namespace with
 // several documents and two processes reading it, so callers name the
-// namespace (PLAN-070 §5.2).
+// namespace (PLAN-070 §5.2). It carries the update policy document and the
+// baked layer it overrides (§5.1).
 pub mod configuration;
+// The settings store's own occupants of that namespace, plus the STATE
+// remainder (§5.2). Private, because the store is the only thing that reads
+// or writes them: `configuration`'s documents have two processes and these
+// have one.
+mod documents;
 mod error;
-mod migration;
 mod model;
 mod path;
 mod recovery;
@@ -28,22 +35,25 @@ pub use audit::{
 pub use authorized_key::{
     MAX_KEYS, decode_base64, encode_base64_nopad, parse_authorized_key, validate_authorized_keys,
 };
-pub use error::SettingsError;
-pub use migration::{
-    MigrateV0ToV1, MigrateV1ToV2, MigrateV2ToV3, MigrateV3ToV4, MigrateV4ToV5, MigrateV5ToV6,
-    MigrateV6ToV7, MigrateV7ToV8, MigrateV8ToV9, MigrateV9ToV10, MigrateV10ToV11, MigrateV11ToV12,
-    Migration, MigrationRegistry, migrate,
+pub use documents::{
+    CONFIG_DIR_MODE, CONFIG_DOCUMENTS, CONTAINER_DOCUMENT, CONTAINER_SCHEMA_VERSION,
+    ContainerDocument, DEFAULT_CONFIG_DIR, DOCUMENT_MODE, MQTT_DOCUMENT, MQTT_SCHEMA_VERSION,
+    MqttDocument, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, NetworkDocument, SSH_DOCUMENT,
+    SSH_SCHEMA_VERSION, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION, SshDocument,
+    StateAccessSettings, StateDocument, SystemDocument, TIME_DOCUMENT, TIME_SCHEMA_VERSION,
+    TimeDocument, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, WifiDocument,
 };
+pub use error::SettingsError;
 pub use model::{
     AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ClaimChannel, ClaimSettings,
     ConsoleSettings, ContainerSettings, DEVICE_ID_LEN, DeviceCredentialSettings, IfaceKind,
     IfaceSettings, MAX_NTP_SERVERS, MAX_PASSPHRASE_LEN, MIN_ADMIN_PASSWORD_LEN, MIN_PASSPHRASE_LEN,
     MqttAuthSettings, MqttListenSettings, MqttSettings, NtpSettings, ProvisioningDocumentSettings,
     ProvisioningImport, ProvisioningSettings, ProvisioningState, RAW_PMK_LEN, ResetSettings,
-    ResetTier, SCHEMA_VERSION, Settings, SshSettings, StaticConfig, TimeSettings, VlanConfig,
-    WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
-    WireguardConfig, WireguardPeer, is_wpa_quotable, validate_device_id, validate_ntp_servers,
-    validate_timezone_name, validate_wifi_psk,
+    ResetTier, Settings, SshSettings, StaticConfig, TimeSettings, VlanConfig, WebAdminSettings,
+    WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings, WireguardConfig, WireguardPeer,
+    is_wpa_quotable, validate_device_id, validate_ntp_servers, validate_timezone_name,
+    validate_wifi_psk,
 };
 pub use path::{json_path_get, path_segments, quote_path_segment};
 pub use recovery::{

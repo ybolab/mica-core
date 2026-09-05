@@ -805,7 +805,7 @@
           "discovery"
         ],
         "summary": "Report what the caller is talking to.",
-        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — the shape of the settings tree on disk, which\nmoves independently of the API version. Authenticated.",
+        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mos/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `mosd_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
         "operationId": "api_v1_meta",
         "responses": {
           "200": {
