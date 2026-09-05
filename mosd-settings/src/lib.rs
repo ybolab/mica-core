@@ -9,6 +9,10 @@
 mod api_token;
 mod audit;
 mod authorized_key;
+// A public module rather than a re-export: `/mos/config/` is a namespace with
+// several documents and two processes reading it, so callers name the
+// namespace (PLAN-070 §5.2).
+pub mod configuration;
 mod error;
 mod migration;
 mod model;
