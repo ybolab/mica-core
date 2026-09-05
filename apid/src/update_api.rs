@@ -206,7 +206,7 @@ pub(crate) struct InstallRequest {
 
 /// Install a bundle through mosd.
 ///
-/// With no body (or no `bundlePath`), installs the bundle the lifecycle has
+/// With a JSON body omitting `bundlePath` (`{}`), installs the bundle the lifecycle has
 /// staged as `ready` — the path `rauc-update` verified. With `bundlePath`,
 /// forwards that explicit operator path to `InstallUpdate` unchanged, which
 /// is the manual/offline route after `rauc-update import`; mosd admits it

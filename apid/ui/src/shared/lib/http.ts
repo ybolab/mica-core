@@ -33,6 +33,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('x-csrf-token', csrfToken)
 
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+  if (response.status === 401) rememberSession({ state: 'unauthenticated' })
   if (!response.ok) {
     let body: ApiErrorBody = {}
     try {
@@ -71,6 +72,7 @@ export function uploadZip<T>(path: string, file: File, onProgress: (percent: num
       if (event.lengthComputable && event.total > 0) onProgress(Math.round((event.loaded / event.total) * 100))
     })
     request.addEventListener('load', () => {
+      if (request.status === 401) rememberSession({ state: 'unauthenticated' })
       let body: ApiErrorBody & T
       try {
         body = request.responseText ? JSON.parse(request.responseText) as ApiErrorBody & T : {} as ApiErrorBody & T

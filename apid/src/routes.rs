@@ -924,6 +924,7 @@ pub(crate) async fn api_v1_session_create(
             ),
         );
     }
+    let generation = state.sessions.generation();
     let access = match state.api.get_settings("access").await {
         Ok(value) => value,
         Err(err) => return bus_api_error(&err, Some("access")),
@@ -957,9 +958,18 @@ pub(crate) async fn api_v1_session_create(
         );
     }
 
+    let Some(session) = state.sessions.create_if_current(generation) else {
+        state.audit.record("login", "credential-changed", &source);
+        return api_response(
+            StatusCode::UNAUTHORIZED,
+            ApiError::apid(
+                "invalid_credentials",
+                "the credential changed during sign-in; sign in again".to_string(),
+            ),
+        );
+    };
     state.guard.record_success();
     state.audit.record("login", "success", &source);
-    let session = state.sessions.create();
     (
         StatusCode::CREATED,
         [

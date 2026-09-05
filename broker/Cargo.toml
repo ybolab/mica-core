@@ -22,3 +22,5 @@ tracing-subscriber = { workspace = true }
 # rumqttc is the same client mos-mqttd uses, which is the point: the test
 # fails for exactly the reason the bridge would have failed.
 rumqttc = { workspace = true }
+mos-mqttd = { path = "../mqttd" }
+tempfile = { workspace = true }

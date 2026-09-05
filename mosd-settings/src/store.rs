@@ -354,33 +354,6 @@ fn read_document<T: DeserializeOwned + Default>(
     serde_json::from_value(doc).map_err(|err| SettingsError::Parse(format!("{document}: {err}")))
 }
 
-/// Write one document atomically at [`DOCUMENT_MODE`], and only if its bytes
-/// changed.
-///
-/// **The mode is set before the rename**, the discipline
-/// `mosd::fswrite::write_config` already carries: a document is never
-/// reachable under its final name at a laxer mode, including when it replaces
-/// one that was laxer.
-///
-/// **Unchanged documents are not rewritten.** That is what makes a write's
-/// blast radius one document: setting `mqtt.enabled` leaves the other six
-/// byte-identical, with their inodes untouched.
-fn write_document<T: Serialize>(
-    path: &Path,
-    document: &str,
-    format: Format,
-    value: &T,
-) -> Result<(), SettingsError> {
-    let text = format
-        .render(value)
-        .map_err(|message| SettingsError::Parse(format!("{document}: {message}")))?;
-    if fs::read_to_string(path).is_ok_and(|current| current == text) {
-        return Ok(());
-    }
-    write_atomically(path, &text)?;
-    Ok(())
-}
-
 /// Replace `path` with `text` atomically at [`DOCUMENT_MODE`]: a temporary
 /// sibling, the mode set **before** the rename, the bytes fsynced, the rename,
 /// and the directory fsynced after it.
@@ -595,6 +568,7 @@ impl Store {
         mut refusals: Option<&mut Vec<DocumentRefusal>>,
     ) -> Result<LoadedStore, SettingsError> {
         self.ensure_config_medium()?;
+        crate::transaction::recover(&self.path, &self.config_dir)?;
         let mut reports = Vec::new();
         let documents = DocumentSet {
             system: self.read_config(
@@ -686,51 +660,45 @@ impl Store {
         }
     }
 
-    /// Split `settings` into its documents and persist each atomically.
+    /// Persist changed documents with a durable undo journal on STATE.
     ///
-    /// **The STATE document is written last.** There is no transaction across
-    /// the renames — which is the reason the schema version is per document
-    /// and not per namespace — and the one ordering that matters is the staged
-    /// reset intent's: it lives in the STATE document, so a power loss between
-    /// the configuration documents and it leaves the intent staged and the
-    /// next boot replays an idempotent tier, never a tier that looks finished.
+    /// A failed or interrupted save restores the previous documents before the
+    /// store can load or save again. The single writer removes the journal only
+    /// after every replacement is durable. Unchanged and refused files retain
+    /// their bytes and inodes.
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError::Unavailable`] when the configuration medium is
-    /// not mounted, [`SettingsError::Io`] on filesystem failures and
-    /// [`SettingsError::Parse`] when serialization fails.
+    /// Returns an error for an unavailable medium, serialization failure, or I/O
+    /// failure. A rollback that cannot finish leaves its journal for recovery.
     pub fn save(&self, settings: &Settings) -> Result<(), SettingsError> {
         self.ensure_config_medium()?;
+        crate::transaction::recover(&self.path, &self.config_dir)?;
         let documents = DocumentSet::of(settings);
-        self.write_config(SYSTEM_DOCUMENT, &documents.system)?;
-        self.write_config(NETWORK_DOCUMENT, &documents.network)?;
-        self.write_config(WIFI_DOCUMENT, &documents.wifi)?;
-        self.write_config(SSH_DOCUMENT, &documents.ssh)?;
-        self.write_config(MQTT_DOCUMENT, &documents.mqtt)?;
-        self.write_config(TIME_DOCUMENT, &documents.time)?;
-        self.write_config(CONTAINER_DOCUMENT, &documents.container)?;
-        // The STATE directory is created if it is missing: unlike
-        // `/mos/config/`, its absence is not a medium failing closed —
-        // `provisioning::ensure_provisioned` already treats an unwritable
-        // STATE as a hard failure with a message of its own.
-        let parent = match self.path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
-        };
-        fs::create_dir_all(parent)?;
-        write_document(&self.path, STATE_DOCUMENT, Format::Toml, &documents.state)
-    }
-
-    fn write_config<T: Serialize>(&self, document: &str, value: &T) -> Result<(), SettingsError> {
-        let path = self.config_dir.join(document);
-        // [`Store::preserving`]: a refused document keeps its bytes, and only
-        // while it still has any. A name whose file is gone -- a tier-1 reset
-        // emptied the namespace -- is written, because that is what the reset
-        // asked for.
-        if self.preserve.iter().any(|name| name == document) && path.exists() {
-            return Ok(());
+        let mut writes = Vec::new();
+        for (name, rendered) in [
+            (SYSTEM_DOCUMENT, Format::Json.render(&documents.system)),
+            (NETWORK_DOCUMENT, Format::Json.render(&documents.network)),
+            (WIFI_DOCUMENT, Format::Json.render(&documents.wifi)),
+            (SSH_DOCUMENT, Format::Json.render(&documents.ssh)),
+            (MQTT_DOCUMENT, Format::Json.render(&documents.mqtt)),
+            (TIME_DOCUMENT, Format::Json.render(&documents.time)),
+            (
+                CONTAINER_DOCUMENT,
+                Format::Json.render(&documents.container),
+            ),
+            (STATE_DOCUMENT, Format::Toml.render(&documents.state)),
+        ] {
+            if self.preserve.iter().any(|document| document == name)
+                && self.config_dir.join(name).exists()
+            {
+                continue;
+            }
+            let text =
+                rendered.map_err(|message| SettingsError::Parse(format!("{name}: {message}")))?;
+            writes.push((name.to_string(), text));
         }
-        write_document(&path, document, Format::Json, value)
+        crate::transaction::save(&self.path, &self.config_dir, &writes)?;
+        Ok(())
     }
 }

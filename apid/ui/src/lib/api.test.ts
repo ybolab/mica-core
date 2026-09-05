@@ -7,6 +7,17 @@ afterEach(() => {
 })
 
 describe('api client', () => {
+  it('discards the stale CSRF token after an authentication failure', async () => {
+    rememberSession({ state: 'authenticated', csrfToken: 'expired-token' })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":{"code":"not_authenticated"}}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(api('/api/v1/health')).rejects.toMatchObject({ status: 401 })
+    await api('/api/v1/session', json('POST', { password: 'new-password' }))
+    expect(new Headers(fetch.mock.calls[1][1]?.headers).has('x-csrf-token')).toBe(false)
+  })
+
   it('adds the session CSRF token only to mutations', async () => {
     rememberSession({ state: 'authenticated', csrfToken: 'csrf-value' })
     const fetch = vi.fn()
@@ -97,6 +108,21 @@ describe('api client', () => {
     const cancelled = uploadZip('/upload', file, vi.fn())
     requests[3].emit('abort')
     await expect(cancelled).rejects.toEqual(new ApiError('The upload was cancelled.', 0, 'ui_upload_interrupted'))
+  })
+
+  it('discards the stale CSRF token when an upload returns a non-JSON 401', async () => {
+    rememberSession({ state: 'authenticated', csrfToken: 'expired-token' })
+    const requests: MockXmlHttpRequest[] = []
+    vi.stubGlobal('XMLHttpRequest', class extends MockXmlHttpRequest {
+      constructor() { super(); requests.push(this) }
+    })
+    const upload = uploadZip('/upload', new File(['zip'], 'ui.zip'), vi.fn())
+    requests[0].respond(401, 'Authentication required')
+    await expect(upload).rejects.toMatchObject({ status: 401 })
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    await api('/api/v1/session', json('POST', { password: 'new-password' }))
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).has('x-csrf-token')).toBe(false)
   })
 })
 

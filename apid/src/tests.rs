@@ -7,6 +7,7 @@
 
 mod broken_classes;
 mod claim;
+mod credential_rotation;
 mod diagnostics;
 mod power_bus;
 mod provisioning_api;

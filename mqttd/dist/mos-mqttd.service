@@ -32,6 +32,10 @@ Environment=MOS_MQTT_BROKER_PORT=1883
 Environment=MOS_MQTT_CLIENT_ID=mos-mqttd
 Environment=MOS_MQTT_MODE=read-only
 EnvironmentFile=-/var/lib/mos/mqttd.env
+# For an authenticated broker, provision /var/lib/mos/mqttd-credentials.json
+# with {"username":"<enrolled user>","password":"<matching password>"}.
+# Own it by mos-mqttd:mos-mqttd at 0600. Absence selects anonymous MQTT;
+# a malformed or publicly readable file refuses startup. No secret is in argv.
 # Root-rendered, one-purpose runtime input. It carries only the topic identity
 # and is deliberately separate from the management settings document.
 EnvironmentFile=/run/mos/mqttd-device.env

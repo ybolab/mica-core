@@ -23,17 +23,14 @@
 //!
 //! # Atomicity, and why a power loss cannot half-configure a device
 //!
-//! Every apply commits through exactly ONE [`Store::save`], for
-//! [`crate::provisioning`]'s reason and by the same construction: the document
-//! is parsed and TOTALLY validated first, then written into a private clone of
-//! the settings tree, and only after the save returns is the caller's tree
-//! replaced. `Store::save` writes a temporary file, fsyncs it, renames it over
-//! the target and fsyncs the directory, so the rename is the commit point and
-//! it is atomic on every filesystem mos uses. A power loss therefore leaves
-//! either the old settings file or the new one, never a blend of the two, and
-//! a failure at any step before the rename leaves STATE and the caller
-//! untouched — the device stays exactly as configured as it was, and the next
-//! boot offers it the same document again.
+//! The whole document is validated and applied to a private settings clone.
+//! `Store::save` records the previous DATA and STATE documents in a private,
+//! fsynced undo journal before replacing any of them. Removing that journal
+//! after all replacements are durable commits the import. On failure, or on
+//! startup after an interruption, the store restores the previous documents
+//! before loading or saving again. An incomplete rollback refuses use of the
+//! store until recovery succeeds. Only a successful save replaces the caller's
+//! tree; the applied-document marker participates in the same transaction.
 //!
 //! Validation being TOTAL is the other half of that guarantee. A document with
 //! one bad field applies NOTHING: no field is written into the settings tree
@@ -1667,9 +1664,8 @@ timezone = "Europe/Berlin"
         ));
     }
 
-    // A failing save leaves STATE and the caller's tree exactly as they were,
-    // which is what makes a power loss mid-apply harmless: the commit is one
-    // rename and there is nothing before it that reaches STATE.
+    // An unusable STATE parent fails before any configuration replacement;
+    // the caller retains its previous tree.
     #[test]
     fn a_failed_save_leaves_state_and_the_caller_untouched() {
         let dir = TempDir::new().expect("tempdir");
@@ -1814,5 +1810,22 @@ timezone = "Europe/Berlin"
         if std::env::var_os("MOSD_PROVISIONING_ROOT").is_none() {
             assert_eq!(staging_root_from_env(), PathBuf::from(DEFAULT_STAGING_ROOT));
         }
+    }
+    #[test]
+    fn a_failed_import_does_not_modify_configuration_on_disk() {
+        let dir = TempDir::new().expect("tempdir");
+        let blocker = dir.path().join("blocked");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let config = dir.path().join("config");
+        fs::create_dir_all(&config).unwrap();
+        let store = Store::new(blocker.join("settings.toml"), config.clone());
+        let root = stage(dir.path(), Source::Boot, time_only_document());
+        let mut settings = Settings::default();
+        import(&store, &mut settings, &root).expect_err("STATE commit must fail");
+        assert_eq!(settings, Settings::default());
+        assert!(
+            !config.join("time.json").exists(),
+            "The import failed but time.json already contains the new provisioning configuration"
+        );
     }
 }

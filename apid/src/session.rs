@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
@@ -30,6 +31,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct SessionStore {
     key: [u8; 32],
     sessions: Mutex<HashMap<String, StoredSession>>,
+    generation: AtomicU64,
 }
 
 struct StoredSession {
@@ -51,6 +53,7 @@ impl SessionStore {
         Self {
             key,
             sessions: Mutex::new(HashMap::new()),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -62,6 +65,29 @@ impl SessionStore {
 
     /// Create a session and return its cookie and CSRF credentials.
     pub fn create(&self) -> CreatedSession {
+        self.create_in(
+            &mut self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Capture before reading the password used to authenticate a login.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Issue only if no credential rotation completed during authentication.
+    pub fn create_if_current(&self, generation: u64) -> Option<CreatedSession> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (self.generation() == generation).then(|| self.create_in(&mut sessions))
+    }
+
+    fn create_in(&self, sessions: &mut HashMap<String, StoredSession>) -> CreatedSession {
         let mut id_bytes = [0u8; 16];
         rand::rngs::OsRng.fill_bytes(&mut id_bytes);
         let id = hex_encode(&id_bytes);
@@ -69,16 +95,13 @@ impl SessionStore {
         rand::rngs::OsRng.fill_bytes(&mut csrf_bytes);
         let csrf_token = hex_encode(&csrf_bytes);
         let mac = hex_encode(&self.mac(&id).finalize().into_bytes());
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                id.clone(),
-                StoredSession {
-                    expires_at: Instant::now() + SESSION_TTL,
-                    csrf_token: csrf_token.clone(),
-                },
-            );
+        sessions.insert(
+            id.clone(),
+            StoredSession {
+                expires_at: Instant::now() + SESSION_TTL,
+                csrf_token: csrf_token.clone(),
+            },
+        );
         CreatedSession {
             cookie: format!("{id}.{mac}"),
             csrf_token,
@@ -152,6 +175,9 @@ impl SessionStore {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The check and insertion in create_if_current take the same lock.
+        // A login either predates this removal or sees the new generation.
+        self.generation.fetch_add(1, Ordering::Release);
         match keep {
             Some(id) => sessions.retain(|key, _| *key == id),
             None => sessions.clear(),

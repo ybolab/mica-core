@@ -61,9 +61,27 @@ pub struct Settings {
     pub broker_host: String,
     pub broker_port: u16,
     pub client_id: String,
+    /// Optional-on-disk JSON credentials, readable only by the bridge account.
+    pub credentials_file: PathBuf,
     pub mode: Mode,
     pub session_bus: bool,
     pub timings: Timings,
+}
+
+/// Construct the broker connection used by the runtime and integration tests.
+pub fn mqtt_options(settings: &Settings) -> anyhow::Result<MqttOptions> {
+    let mut options = MqttOptions::new(
+        settings.client_id.clone(),
+        settings.broker_host.clone(),
+        settings.broker_port,
+    );
+    options.set_keep_alive(Duration::from_secs(30));
+    if let Some((username, password)) =
+        crate::config::broker_credentials(&settings.credentials_file)?
+    {
+        options.set_credentials(username, password);
+    }
+    Ok(options)
 }
 
 const REQUEST_CAPACITY: usize = 64;
@@ -423,12 +441,7 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     let mut owners = Box::pin(MessageStream::for_match_rule(owner_rule, &connection, None).await?);
     let bus = zbus::fdo::DBusProxy::new(&connection).await?;
 
-    let mut options = MqttOptions::new(
-        settings.client_id.clone(),
-        settings.broker_host.clone(),
-        settings.broker_port,
-    );
-    options.set_keep_alive(Duration::from_secs(30));
+    let options = mqtt_options(&settings)?;
     let (client, mut eventloop) = AsyncClient::new(options, REQUEST_CAPACITY);
     let transport = MqttTransport::new(client);
 

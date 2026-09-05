@@ -27,6 +27,10 @@ struct Args {
     #[arg(long, default_value_t = 1883)]
     broker_port: u16,
 
+    /// Private JSON file containing the broker username and password.
+    #[arg(long, default_value = "/var/lib/mos/mqttd-credentials.json")]
+    credentials_file: std::path::PathBuf,
+
     /// MQTT client id. Must be unique on the broker.
     #[arg(long, default_value = "mos-mqttd")]
     client_id: String,
@@ -58,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         broker_host: args.broker_host,
         broker_port: args.broker_port,
         client_id: args.client_id,
+        credentials_file: args.credentials_file,
         mode: args.mode,
         session_bus: args.session_bus,
         timings: Timings::default(),

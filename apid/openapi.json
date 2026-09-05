@@ -4445,7 +4445,7 @@
           "update"
         ],
         "summary": "Install a bundle through mosd.",
-        "description": "With no body (or no `bundlePath`), installs the bundle the lifecycle has\nstaged as `ready` — the path `rauc-update` verified. With `bundlePath`,\nforwards that explicit operator path to `InstallUpdate` unchanged, which\nis the manual/offline route after `rauc-update import`; mosd admits it\nonly when it is a regular file inside `/mos/updates/verified` and not a\n`.part`, so a partial or a file anywhere else is never handed to RAUC.\nAnswers **202**: the install runs on mosd's background task; poll the\nstate document.",
+        "description": "With a JSON body omitting `bundlePath` (`{}`), installs the bundle the lifecycle has\nstaged as `ready` — the path `rauc-update` verified. With `bundlePath`,\nforwards that explicit operator path to `InstallUpdate` unchanged, which\nis the manual/offline route after `rauc-update import`; mosd admits it\nonly when it is a regular file inside `/mos/updates/verified` and not a\n`.part`, so a partial or a file anywhere else is never handed to RAUC.\nAnswers **202**: the install runs on mosd's background task; poll the\nstate document.",
         "operationId": "api_v1_update_install",
         "requestBody": {
           "content": {

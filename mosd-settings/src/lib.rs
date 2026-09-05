@@ -26,6 +26,7 @@ mod model;
 mod path;
 mod recovery;
 mod store;
+mod transaction;
 
 pub use api_token::{MAX_TOKENS, is_api_token_id, validate_api_tokens};
 pub use audit::{

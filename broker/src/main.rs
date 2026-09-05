@@ -392,4 +392,73 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn the_bridge_connects_with_its_private_credentials_when_auth_is_enabled() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path().join("credentials.json");
+        std::fs::write(
+            &credentials,
+            r#"{"username":"bridge","password":"test-only-password"}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let listen = loopback(free_port());
+
+        // `start` blocks and rumqttd offers no shutdown, so this thread is
+        // deliberately never joined. nextest runs each test in its own
+        // process, so it ends when the process does.
+        std::thread::spawn(move || {
+            let mut broker = Broker::new(broker_config(
+                listen,
+                Some(HashMap::from([(
+                    "bridge".to_string(),
+                    "test-only-password".to_string(),
+                )])),
+            ));
+            if let Err(err) = broker.start() {
+                eprintln!("the broker exited: {err}");
+            }
+        });
+        wait_until_listening(listen);
+
+        let options = mos_mqttd::runtime::mqtt_options(&mos_mqttd::runtime::Settings {
+            device_id: "test-device".into(),
+            applications_dir: dir.path().join("applications"),
+            broker_host: listen.ip().to_string(),
+            broker_port: listen.port(),
+            client_id: "authenticated-bridge-test".into(),
+            credentials_file: credentials,
+            mode: mos_mqttd::config::Mode::ReadOnly,
+            session_bus: true,
+            timings: mos_mqttd::config::Timings::default(),
+        })
+        .unwrap();
+        // Bound to a name, not to `_`: dropping the client closes the request
+        // channel and ends the event loop before it can see a CONNACK.
+        let (_client, mut connection) = rumqttc::Client::new(options, 10);
+
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "no CONNACK from {listen} within {TEST_TIMEOUT:?}"
+            );
+            match connection.recv_timeout(Duration::from_millis(500)) {
+                Ok(Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(ack)))) => {
+                    assert_eq!(
+                        ack.code,
+                        rumqttc::ConnectReturnCode::Success,
+                        "the broker refused the bridge credentials"
+                    );
+                    return;
+                }
+                // Outgoing CONNECT, and anything else on the way to the ack.
+                Ok(Ok(_)) => continue,
+                Ok(Err(err)) => panic!("connecting to {listen}: {err}"),
+                Err(rumqttc::RecvTimeoutError::Timeout) => continue,
+                Err(err) => panic!("the client's event loop ended early: {err:?}"),
+            }
+        }
+    }
 }

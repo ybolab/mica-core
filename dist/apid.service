@@ -54,13 +54,14 @@ RuntimeDirectory=mos
 RuntimeDirectoryPreserve=yes
 
 # The filesystem, read-only independently of dm-verity. apid writes exactly
-# three trees: its StateDirectory (TLS material, the session signing key, the
-# login-backoff counters, the audit ring), the /mos/ui bundle store, and
+# four trees: its StateDirectory (TLS material, the session signing key, the
+# login-backoff counters, the audit ring), the UI and diagnostics stores, and
 # /run/mos, where its only write is the removal of a spent presence assertion.
 # StateDirectory=mos/apid and RuntimeDirectory=mos above already exempt
-# /var/lib/mos/apid and /run/mos from strict, so the list is /mos/ui alone.
+# /var/lib/mos/apid and /run/mos from strict. mos-data-layout creates the two
+# DATA directories before this unit starts.
 ProtectSystem=strict
-ReadWritePaths=/mos/ui
+ReadWritePaths=/mos/ui /mos/diagnostics
 
 [Install]
 WantedBy=multi-user.target

@@ -105,9 +105,19 @@ interface UpdateStateDoc {
   pending_not_confirmed?: boolean
 }
 
+const activeUpdateStates = new Set(['checking', 'downloading', 'installing'])
+
+function useUpdateState() {
+  return useQuery({
+    queryKey: ['update-state'],
+    queryFn: () => api<UpdateStateDoc>('/api/v1/update'),
+    refetchInterval: (query) => activeUpdateStates.has(query.state.data?.lifecycle?.state ?? '') ? 1000 : false,
+  })
+}
+
 export function UpdatePanel() {
   const { t } = useTranslation()
-  const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateStateDoc>('/api/v1/update') })
+  const status = useUpdateState()
   const lifecycle = status.data?.lifecycle
   const available = lifecycle?.available
   return (
@@ -129,11 +139,13 @@ export function UpdatePanel() {
   )
 }
 
-function UpdateActions() {
+export function UpdateActions() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, { method: 'POST' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
-  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={action.isPending}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={action.isPending}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={action.isPending}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
+  const status = useUpdateState()
+  const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, json('POST', name === 'install' ? {} : undefined)), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
+  const busy = action.isPending || status.isPending || activeUpdateStates.has(status.data?.lifecycle?.state ?? '')
+  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={busy}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={busy}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={busy}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
 }
 
 /// The reset tiers and credential recovery bind REAL routes and are their own
