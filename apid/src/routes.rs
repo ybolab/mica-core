@@ -6345,15 +6345,18 @@ pub(crate) async fn api_v1_reset(
 /// here would be a third channel that can claim a device —
 /// `mosd_settings::ClaimChannel` has exactly two members and says why.
 ///
-/// **One rotation per presence assertion**, which is §5.4's own bound and is
-/// enforced here rather than described: the assertion is read and spent inside
-/// one guard, so a second request — concurrent or later in the same fifteen
-/// minutes — finds it spent and is refused. Before this guard existed the
-/// marker was read and never taken, and a single assertion authorized
-/// unbounded rotations: measured on the shipped path, one assertion answered
-/// two rotations in 100 attempts out of 100, and two concurrent callers were
-/// both answered 200 in 100 iterations out of 100, of which only the
-/// last-written credential authenticated.
+/// **One rotation per presence assertion** (§5.4). The assertion is read and
+/// spent inside one guard, so a second request — concurrent, or later inside
+/// the same fifteen-minute window — finds it spent and is refused `403`
+/// `presence_required`, having minted, published and written nothing. The next
+/// rotation needs presence asserted again at the device.
+// NOT a doc comment, deliberately: everything above is PUBLISHED — `utoipa`
+// copies this rustdoc into `apid/openapi.json` as the operation's description,
+// and `the_committed_openapi_document_is_the_generated_one` fails until the
+// committed document is regenerated. So what goes above is the contract a
+// caller needs, never the history of the defect that used to break it; that
+// history is in the body, at the guard. A note to the next editor does not
+// belong in a published API document either, which is what this line is.
 #[utoipa::path(
     post,
     path = V1_RECOVERY_CREDENTIAL_PATH,
@@ -6405,9 +6408,19 @@ pub(crate) async fn api_v1_recovery_credential(
     // §5.4's other bound, and the one the code did not keep: "one rotation per
     // presence assertion, and the assertion is re-performed physically for the
     // next one". Held from BEFORE the assertion is read to AFTER it is spent,
-    // so the two are one step; without it two concurrent callers both read a
-    // live assertion, both mint, both publish and both commit, and the device
-    // hands out two credentials of which only the last one written works.
+    // so the two are one step.
+    //
+    // **What it was before, measured rather than argued** (RFCT-322, against
+    // the shipped binaries on a private session bus — no barrier, no fake).
+    // The marker was read and never taken, so this was not only a race: a
+    // second rotation on the SAME marker was answered 200 in 100 attempts out
+    // of 100 with no concurrency at all. Two concurrent callers were both
+    // answered 200 in 100 iterations out of 100, and at concurrency 8 every
+    // one of 50 iterations answered eight — 400 rotations from 50 assertions,
+    // of which 50 credentials worked. And in 5 of the 100 concurrency-2
+    // iterations the credential published LAST was not the one whose write
+    // landed last, so an operator could not tell which console line was real
+    // by reading down.
     //
     // **Here rather than under the marker or in mosd**, on `api_v1_setup`'s
     // reading: this route is the only thing in the tree that spends an
