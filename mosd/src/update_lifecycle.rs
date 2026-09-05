@@ -276,6 +276,27 @@ pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, String> {
     }
 }
 
+/// What an awaited lifecycle operation did, in the four answers the recorded
+/// state distinguishes.
+///
+/// `request_check` and `request_fetch` throw this away — an operator reads
+/// the outcome back out of `update.lifecycle` — while the automatic driver
+/// ([`crate::update_auto`]) has to decide what to do next, and deciding
+/// needs the answer rather than the state string it renders to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Settled<T> {
+    /// The operation produced its result: a selected candidate, a staged
+    /// bundle path.
+    Done(T),
+    /// Nothing published is compatible — the device is up to date, or the
+    /// selected channel holds nothing newer than the running system.
+    NoneCompatible,
+    /// The `/mos/updates` workspace refused it before anything was acquired.
+    Unready(Unready),
+    /// It failed, with the same reason recorded beside the `failed` state.
+    Failed(String),
+}
+
 /// The workspace is not ready, as `rauc-update` named it: `status` is
 /// `unavailable` (`/mos` not mounted, or not the DATA pool) or `degraded`
 /// (the pool, but read-only, exhausted, or the probe itself failed); `kind`
@@ -631,6 +652,30 @@ impl UpdateLifecycle {
     /// `check`). Returns as soon as the work is handed to a background task;
     /// progress and the outcome land in `update.lifecycle`.
     pub async fn request_check(self: &Arc<Self>, sender: &str) -> Result<(), Refusal> {
+        let policy = self.admit_check(sender).await?;
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let result = this.run_check(&policy).await;
+            this.settle_check(result).await;
+        });
+        Ok(())
+    }
+
+    /// The same check, awaited to its outcome instead of spawned.
+    ///
+    /// Same admission, same subprocess, same recording — the difference is
+    /// only that the caller learns what it found, which the automatic driver
+    /// needs to decide its next step and an operator does not.
+    pub async fn check_now(&self, sender: &str) -> Result<Settled<Available>, Refusal> {
+        let policy = self.admit_check(sender).await?;
+        let result = self.run_check(&policy).await;
+        Ok(self.settle_check(result).await)
+    }
+
+    /// Admit a check: the policy refusal, the client, the busy slot. The
+    /// policy it answers is the one the run must use, loaded once so the
+    /// decision and the subprocess cannot read two different files.
+    async fn admit_check(&self, sender: &str) -> Result<EffectivePolicy, Refusal> {
         let loaded = self.policy.load();
         if let Some(reason) = update_policy::check_refusal(&loaded) {
             self.record_refusal("check", &reason).await;
@@ -642,46 +687,71 @@ impl UpdateLifecycle {
         }
         self.begin("checking").await?;
         tracing::info!(sender, "update check requested");
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let result = this.run_check(&loaded.policy).await;
-            let mut machine = this.machine.lock().await;
-            machine.operation = None;
-            match result {
-                Ok(CheckOutcome::Selected(available)) => {
-                    tracing::info!(
-                        name = %available.name,
-                        version = %available.version,
-                        "update check selected a candidate"
-                    );
-                    machine.last_check = Some(now_rfc3339());
-                    machine.available = Some(available);
-                }
-                Ok(CheckOutcome::NoneCompatible) => {
-                    tracing::info!("update check found no compatible target");
-                    machine.last_check = Some(now_rfc3339());
-                    machine.available = None;
-                }
-                Err(Failure::Unready(unready)) => {
-                    tracing::warn!(reason = %unready.reason(), "update workspace not ready; check not started");
-                    machine.unready = Some(unready);
-                }
-                Err(Failure::Error(reason)) => {
-                    tracing::warn!(reason, "update check failed");
-                    machine.last_check = Some(now_rfc3339());
-                    machine.failed = Some(reason);
-                }
+        Ok(loaded.policy)
+    }
+
+    /// Record a finished check and answer what it found.
+    async fn settle_check(&self, result: Result<CheckOutcome, Failure>) -> Settled<Available> {
+        let mut machine = self.machine.lock().await;
+        machine.operation = None;
+        let settled = match result {
+            Ok(CheckOutcome::Selected(available)) => {
+                tracing::info!(
+                    name = %available.name,
+                    version = %available.version,
+                    "update check selected a candidate"
+                );
+                machine.last_check = Some(now_rfc3339());
+                machine.available = Some(available.clone());
+                Settled::Done(available)
             }
-            drop(machine);
-            this.record_snapshot().await;
-        });
-        Ok(())
+            Ok(CheckOutcome::NoneCompatible) => {
+                tracing::info!("update check found no compatible target");
+                machine.last_check = Some(now_rfc3339());
+                machine.available = None;
+                Settled::NoneCompatible
+            }
+            Err(Failure::Unready(unready)) => {
+                tracing::warn!(reason = %unready.reason(), "update workspace not ready; check not started");
+                machine.unready = Some(unready.clone());
+                Settled::Unready(unready)
+            }
+            Err(Failure::Error(reason)) => {
+                tracing::warn!(reason, "update check failed");
+                machine.last_check = Some(now_rfc3339());
+                machine.failed = Some(reason.clone());
+                Settled::Failed(reason)
+            }
+        };
+        drop(machine);
+        self.record_snapshot().await;
+        settled
     }
 
     /// Start a bundle fetch. Selection happens inside `rauc-update fetch`
     /// itself, so a fetch does not require a prior check; on success the
     /// verified bundle path is recorded and the state becomes `ready`.
     pub async fn request_fetch(self: &Arc<Self>, sender: &str) -> Result<(), Refusal> {
+        let policy = self.admit_fetch(sender).await?;
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let result = this.run_fetch(&policy).await;
+            this.settle_fetch(result).await;
+        });
+        Ok(())
+    }
+
+    /// The same fetch, awaited to its outcome instead of spawned; see
+    /// [`Self::check_now`] for why the awaited form exists.
+    pub async fn fetch_now(&self, sender: &str) -> Result<Settled<String>, Refusal> {
+        let policy = self.admit_fetch(sender).await?;
+        let result = self.run_fetch(&policy).await;
+        Ok(self.settle_fetch(result).await)
+    }
+
+    /// Admit a fetch: the policy refusal (which includes every check
+    /// refusal, plus metered), the client, the busy slot.
+    async fn admit_fetch(&self, sender: &str) -> Result<EffectivePolicy, Refusal> {
         let loaded = self.policy.load();
         if let Some(reason) = update_policy::fetch_refusal(&loaded) {
             self.record_refusal("fetch", &reason).await;
@@ -693,33 +763,79 @@ impl UpdateLifecycle {
         }
         self.begin("downloading").await?;
         tracing::info!(sender, "update fetch requested");
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let result = this.run_fetch(&loaded.policy).await;
-            let mut machine = this.machine.lock().await;
-            machine.operation = None;
-            match result {
-                Ok(FetchOutcome::Staged(path)) => {
-                    tracing::info!(bundle = %path, "update fetch staged a verified bundle");
-                    machine.bundle = Some(path);
-                }
-                Ok(FetchOutcome::NoneCompatible) => {
-                    tracing::info!("update fetch found no compatible target");
-                    machine.available = None;
-                }
-                Ok(FetchOutcome::Unready(unready)) | Err(Failure::Unready(unready)) => {
-                    tracing::warn!(reason = %unready.reason(), "update workspace not ready; fetch not started");
-                    machine.unready = Some(unready);
-                }
-                Err(Failure::Error(reason)) => {
-                    tracing::warn!(reason, "update fetch failed");
-                    machine.failed = Some(reason);
-                }
+        Ok(loaded.policy)
+    }
+
+    /// Record a finished fetch and answer what it staged.
+    async fn settle_fetch(&self, result: Result<FetchOutcome, Failure>) -> Settled<String> {
+        let mut machine = self.machine.lock().await;
+        machine.operation = None;
+        let settled = match result {
+            Ok(FetchOutcome::Staged(path)) => {
+                tracing::info!(bundle = %path, "update fetch staged a verified bundle");
+                machine.bundle = Some(path.clone());
+                Settled::Done(path)
             }
-            drop(machine);
-            this.record_snapshot().await;
-        });
-        Ok(())
+            Ok(FetchOutcome::NoneCompatible) => {
+                tracing::info!("update fetch found no compatible target");
+                machine.available = None;
+                Settled::NoneCompatible
+            }
+            Ok(FetchOutcome::Unready(unready)) | Err(Failure::Unready(unready)) => {
+                tracing::warn!(reason = %unready.reason(), "update workspace not ready; fetch not started");
+                machine.unready = Some(unready.clone());
+                Settled::Unready(unready)
+            }
+            Err(Failure::Error(reason)) => {
+                tracing::warn!(reason, "update fetch failed");
+                machine.failed = Some(reason.clone());
+                Settled::Failed(reason)
+            }
+        };
+        drop(machine);
+        self.record_snapshot().await;
+        settled
+    }
+
+    /// The candidate the last check selected, if it selected one.
+    pub async fn available(&self) -> Option<Available> {
+        self.machine.lock().await.available.clone()
+    }
+
+    /// The verified bundle path the last fetch staged, if one is staged.
+    pub async fn staged_bundle(&self) -> Option<String> {
+        self.machine.lock().await.bundle.clone()
+    }
+
+    /// Delete the staged verified bundle and forget it, recording `why`.
+    ///
+    /// PLAN-071 §5's answer to a release withdrawn between the fetch and the
+    /// window: the automatic path installs only what the current metadata
+    /// still names, and deletes what it does not. The path is the recorded
+    /// one and [`Self::installable`] re-validates it first, so the only file
+    /// this can unlink is one it would otherwise have installed. The bundle
+    /// is forgotten whether or not the unlink succeeded — a file automation
+    /// refuses to install is not one it may go on offering.
+    pub async fn discard_bundle(&self, why: &str) {
+        let Some(bundle) = self.machine.lock().await.bundle.clone() else {
+            return;
+        };
+        match self.installable(Path::new(&bundle)) {
+            Ok(()) => match std::fs::remove_file(&bundle) {
+                Ok(()) => tracing::warn!(bundle, why, "staged bundle deleted"),
+                Err(err) => {
+                    tracing::warn!(bundle, why, error = %err, "staged bundle could not be deleted");
+                }
+            },
+            Err(reason) => tracing::warn!(
+                bundle,
+                reason,
+                "recorded bundle is no longer installable; leaving the file alone"
+            ),
+        }
+        self.machine.lock().await.bundle = None;
+        self.record_snapshot_with(Some(format!("staged bundle {bundle} discarded: {why}")))
+            .await;
     }
 
     /// Take the busy slot for `operation`, refusing when anything runs.
@@ -1111,22 +1227,25 @@ fn render_entry(
         "policy".into(),
         json!({
             "file": policy_path.map(|path| path.display().to_string()),
+            // The four values PLAN-070 §5.1's precedence resolves, and `null`
+            // for all four when the operator document did not load --
+            // `policy_error` below is what distinguishes "unknown" from
+            // "unset", and the baked default is deliberately NOT shown here as
+            // a stand-in. F9 adds the baked/operator/effective reading to
+            // `GET /api/v1/provisioning/status`, which is where §8 puts it.
+            "policy": selection.map(|selection| selection.mode.as_str()),
+            "checkIntervalMinutes": selection.map(|selection| selection.check_interval_minutes),
+            "sourceUrl": selection.and_then(|selection| selection.url.clone()),
+            "channel": selection.map(|selection| selection.channel.clone()),
+            // Layer 2 owns this one outright, so it answers even when the
+            // selection does not.
+            "rebootPolicy": policy.reboot_policy.as_str(),
             "networkMode": match policy.network.mode {
                 crate::update_policy::NetworkMode::Online => "online",
                 crate::update_policy::NetworkMode::Metered => "metered",
                 crate::update_policy::NetworkMode::Offline => "offline",
             },
             "meteredAllowsFetch": policy.network.metered_allows_fetch,
-            // The effective values after PLAN-070 §5.1's precedence, and
-            // `null` for all four when the operator document did not load --
-            // `policy_error` below is what distinguishes "unknown" from
-            // "unset", and the baked default is deliberately NOT shown here
-            // as a stand-in. F9 adds the baked/operator/effective reading to
-            // `GET /api/v1/provisioning/status`, which is where §8 puts it.
-            "sourceUrl": selection.and_then(|selection| selection.url.clone()),
-            "channel": selection.map(|selection| selection.channel.clone()),
-            "policy": selection.map(|selection| selection.mode),
-            "checkIntervalMinutes": selection.map(|selection| selection.check_interval_minutes),
             "maintenanceWindows": windows,
             "installAllowedNow": update_policy::install_refusal(loaded, Utc::now()).is_none(),
             "blockingStatuses": policy.reboot_gate.blocking_statuses,
@@ -1148,32 +1267,6 @@ fn render_entry(
     }
     entry.insert("reboot_gate".into(), gate_entry);
     Value::Object(entry)
-}
-
-/// The automatic check cadence: sleep the policy's interval, then run a
-/// check when policy and client allow it. The interval is re-read every
-/// turn, so an operator edit takes effect without a restart; a device that
-/// initiates nothing -- `policy = "off"`, an interval of `0`, or a document
-/// that did not load -- is re-polled every five minutes rather than never
-/// again.
-///
-/// Checks only. Nothing is fetched and nothing is installed automatically —
-/// downloads and installs stay operator actions gated by their own policies.
-pub async fn auto_check_loop(lifecycle: Arc<UpdateLifecycle>) {
-    const DISABLED_POLL: Duration = Duration::from_secs(300);
-    loop {
-        let Some(interval) = lifecycle.policy.load().auto_check_minutes() else {
-            tokio::time::sleep(DISABLED_POLL).await;
-            continue;
-        };
-        tokio::time::sleep(Duration::from_secs(interval * 60)).await;
-        if lifecycle.policy.load().auto_check_minutes().is_none() {
-            continue;
-        }
-        if let Err(refusal) = lifecycle.request_check("auto-check").await {
-            tracing::debug!(reason = refusal.message(), "auto-check skipped");
-        }
-    }
 }
 
 #[cfg(test)]

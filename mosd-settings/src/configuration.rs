@@ -95,20 +95,74 @@ pub const DEFAULT_MANIFEST_PATH: &str = "/usr/share/mos/meta/updates/manifest.js
 /// The baked document's first key, and the one value of it this reader accepts.
 pub const MANIFEST_SCHEMA_TAG: &str = "mos/meta/v1";
 
-/// What the device does on its own (PLAN-071 §1). Baked as a default and
-/// overridable per PLAN-070 §5.1; the semantics are PLAN-071's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+/// What the device does on its own, and the one key that says it.
+///
+/// Baked as a default and overridden per PLAN-070 §5.1; the semantics are
+/// PLAN-071 §1's. One enum rather than three booleans (`autoCheck`,
+/// `autoFetch`, `autoInstall`): three booleans admit combinations with no
+/// meaning — install without fetch — and the one combination worth having,
+/// fetch-but-not-install, is [`RebootPolicy::Manual`] under [`Self::Auto`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateMode {
-    /// The device initiates nothing. Manual check, fetch and install stay
-    /// available behind their own gates, and so does offline import.
+    /// The device initiates nothing and no timer arms. Manual check, fetch
+    /// and install stay available behind their existing gates, and so does
+    /// the offline import: `off` is not "updates disabled", it is "the
+    /// device starts nothing".
     Off,
-    /// Metadata checks on the interval; never fetches, never installs.
+    /// Metadata checks on `checkIntervalMinutes` and nothing else — never
+    /// fetches, never installs. The code default, so what a device with
+    /// neither layer configured does is what it did before this enum
+    /// existed.
+    #[default]
     Check,
-    /// Checks, then fetches, then installs inside a maintenance window. The
-    /// fetch and install halves are PLAN-071's slice and are not built:
-    /// today this behaves as [`UpdateMode::Check`].
+    /// Checks, then fetches, then installs inside a maintenance window, then
+    /// reboots or does not per [`RebootPolicy`]. The driver and every gate
+    /// it meets are mosd's `update_auto`.
     Auto,
+}
+
+impl UpdateMode {
+    /// The document's spelling, for the recorded state and for a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Check => "check",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// What the automatic path does once a bundle is installed and the new slot
+/// waits for its first boot.
+///
+/// Separate from [`UpdateMode`] because "install automatically" and "reboot
+/// automatically" are not the same promise: an appliance running a machine
+/// may well want the new slot written and staged while the reboot is
+/// reserved for a human. Layer 2 owns it outright — `meta/` bakes no default
+/// for it (PLAN-070 §5.1's table), so an absent key is the code default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RebootPolicy {
+    /// Stop at `reboot-required` and wait for an operator. The default,
+    /// because it is what makes `auto` safe to recommend to someone who has
+    /// not read the design.
+    #[default]
+    Manual,
+    /// Reboot inside the same maintenance window, honouring the
+    /// safe-to-reboot gate exactly as `Reboot` does — and never arming its
+    /// override.
+    Window,
+}
+
+impl RebootPolicy {
+    /// The document's spelling, for the recorded state and for a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Window => "window",
+        }
+    }
 }
 
 /// The baked document.
@@ -418,6 +472,24 @@ const ANCHOR_KEYS: [&str; 6] = [
     "keyring",
 ];
 
+/// Why `auto` may not drive with no maintenance window.
+///
+/// Zero windows means "any time", which is right for a manual install — a
+/// device with no operator-set window must still be updatable by a human who
+/// is standing there — and wrong for an automatic one, where it would mean
+/// "install the moment a bundle lands". Requiring the window is what makes
+/// "automatic installation inside a time window" literally true, and it
+/// forces the operator to name the hour rather than inherit one.
+///
+/// One sentence with two callers, because the condition is reachable two
+/// ways: a document that *says* `auto` is refused at load and at the write
+/// route ([`validate`]), and a document that *inherits* `auto` from the baked
+/// default while naming no window is refused by the driver
+/// ([`EffectivePolicy::auto_window_refusal`]). Precedence created the second
+/// case and PLAN-071 §2 was written before it existed.
+pub const AUTO_NEEDS_A_WINDOW: &str = "policy `auto` requires at least one maintenance window: zero windows means \
+      `any time`, which for an automatic install means `the moment a bundle lands`";
+
 /// An overridable key: absent, explicitly `null`, or set.
 ///
 /// `Option<Option<T>>` with serde's absent/present split. Both `None` (the
@@ -450,6 +522,11 @@ pub struct UpdatesDocument {
     /// `update.checkIntervalMinutes`.
     #[serde(default, deserialize_with = "present")]
     pub check_interval_minutes: Override<u64>,
+    /// What the automatic path does after an install. Read only under
+    /// [`UpdateMode::Auto`], which is the only mode that installs. Not an
+    /// override: layer 1 carries no default for it.
+    #[serde(default)]
+    pub reboot_policy: RebootPolicy,
     #[serde(default)]
     pub source: UpdatesSource,
     #[serde(default)]
@@ -758,8 +835,14 @@ fn anchor_key(value: &Value) -> Option<String> {
 }
 
 /// Validate what serde cannot: the schema tag when the document names one,
-/// and that window times parse and days are day names.
-fn validate(document: &UpdatesDocument) -> Result<(), String> {
+/// that window times parse and days are day names, and that a document
+/// *naming* `auto` names a window to install in.
+///
+/// Public because there is one rule set and it has two callers: this
+/// module's reader, which fails closed on a document that reached the disk,
+/// and the write route that must refuse the same document at the API with
+/// the same sentence. Two spellings of one rule is how they drift.
+pub fn validate(document: &UpdatesDocument) -> Result<(), String> {
     if let Some(schema) = &document.schema
         && schema != UPDATES_SCHEMA_TAG
     {
@@ -777,6 +860,14 @@ fn validate(document: &UpdatesDocument) -> Result<(), String> {
                 format!("maintenance window day `{day}` is not mon/tue/wed/thu/fri/sat/sun")
             })?;
         }
+    }
+    // The document-local half of the rule. The half precedence creates -- a
+    // baked `auto` under a document that names no policy -- cannot be seen
+    // from here, and is [`EffectivePolicy::auto_window_refusal`].
+    if document.policy.flatten() == Some(UpdateMode::Auto)
+        && document.maintenance.windows.is_empty()
+    {
+        return Err(AUTO_NEEDS_A_WINDOW.to_string());
     }
     Ok(())
 }
@@ -829,6 +920,7 @@ pub struct EffectivePolicy {
     pub network: NetworkPolicy,
     pub maintenance: MaintenancePolicy,
     pub reboot_gate: RebootGatePolicy,
+    pub reboot_policy: RebootPolicy,
 }
 
 impl EffectivePolicy {
@@ -841,6 +933,22 @@ impl EffectivePolicy {
     /// come up on the code defaults so the device stays operable.
     pub fn unknown_selection() -> Self {
         Self::default()
+    }
+
+    /// Why the automatic path may not install right now, or `None`.
+    ///
+    /// The half of [`AUTO_NEEDS_A_WINDOW`] that [`validate`] cannot see: an
+    /// operator document that names no `policy` at all, over a `meta/` that
+    /// bakes `auto`. Layer 1 carries no windows — they are layer 2's
+    /// outright — so a baked `auto` means zero windows until an operator
+    /// writes one, and the rule has to be checked after precedence rather
+    /// than on the document alone. Refuses the automatic install only: the
+    /// manual routes still work, which is §5.1's fail-closed-on-the-action
+    /// and fail-open-on-the-device split.
+    pub fn auto_window_refusal(&self) -> Option<&'static str> {
+        let selection = self.selection.as_ref()?;
+        (selection.mode == UpdateMode::Auto && self.maintenance.windows.is_empty())
+            .then_some(AUTO_NEEDS_A_WINDOW)
     }
 }
 
@@ -877,6 +985,7 @@ pub fn resolve(baked: &BakedUpdate, document: UpdatesDocument) -> EffectivePolic
         network: document.network,
         maintenance: document.maintenance,
         reboot_gate: document.reboot_gate,
+        reboot_policy: document.reboot_policy,
     }
 }
 

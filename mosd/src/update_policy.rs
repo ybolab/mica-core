@@ -36,13 +36,14 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use mosd_settings::configuration::{self, BakedUpdate, UpdateMode};
+use mosd_settings::configuration::{self, BakedUpdate};
 
-// Re-exported so the lifecycle and `main.rs` name one module for the policy,
-// not two: the types are the library's, the semantics below are this module's.
+// Re-exported so the lifecycle, the automatic driver and `main.rs` name one
+// module for the policy, not two: the types are the library's, the semantics
+// below are this module's.
 pub use mosd_settings::configuration::{
     DEFAULT_UPDATES_PATH as DEFAULT_POLICY_PATH, EffectivePolicy, NetworkMode, RebootGatePolicy,
-    Selection, Workspace,
+    RebootPolicy, Selection, UpdateMode, Workspace,
 };
 
 /// The pinned trusted root passed to `rauc-update --root`.
