@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use zbus::fdo;
 use zbus::message::Header;
-use zbus::object_server::SignalEmitter;
+use zbus::object_server::{InterfaceRef, SignalEmitter};
 
 use crate::apply_queue::{ApplyJob, ApplyQueue, TaskRecord};
 use crate::diagnostics::{FailureEvidenceSource, UnavailableFailureEvidence};
@@ -28,10 +28,12 @@ use crate::system_info::{self, SystemInfoSource, UnavailableSystemInfo};
 use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
 use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
+use crate::update_auto::{AutoRoutes, UpdateFacts};
 use crate::update_lifecycle::{
-    DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, UpdateClient, UpdateLifecycle,
+    Available, DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, Settled, UpdateClient,
+    UpdateLifecycle,
 };
-use crate::update_policy::PolicyStore;
+use crate::update_policy::{LoadedPolicy, PolicyStore};
 
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mos.mosd";
@@ -1515,6 +1517,103 @@ impl MosdService {
     /// is one JSON-encoded [`TaskRecord`].
     #[zbus(signal)]
     async fn task_changed(emitter: &SignalEmitter<'_>, task_json: &str) -> zbus::Result<()>;
+}
+
+/// The automatic driver's window onto the daemon.
+///
+/// Assembled here because its two halves live in different places: the check
+/// and the fetch are the lifecycle's, which the manual `CheckUpdate` and
+/// `FetchUpdate` routes also call, and the install and the reboot are this
+/// service's, which the object server owns once the connection is built —
+/// reached the way [`crate::scan`] reaches it, through the served interface.
+///
+/// What is deliberately NOT here is `SetRebootOverride`. The automatic path
+/// holds this object and nothing else, so it cannot arm the reboot-gate
+/// override; see [`AutoRoutes`].
+pub struct BusRoutes {
+    lifecycle: Arc<UpdateLifecycle>,
+    service: InterfaceRef<MosdService>,
+}
+
+impl BusRoutes {
+    pub fn new(lifecycle: Arc<UpdateLifecycle>, service: InterfaceRef<MosdService>) -> Self {
+        Self { lifecycle, service }
+    }
+
+    /// `GetUpdateState`'s own document, read exactly as an operator polling
+    /// the API reads it.
+    async fn update_state(&self) -> Option<Value> {
+        let rendered = self
+            .service
+            .get()
+            .await
+            .refresh_update_state()
+            .await
+            .map_err(|err| {
+                tracing::debug!(error = %err, "automatic driver could not read the update state");
+            })
+            .ok()?;
+        serde_json::from_str(&rendered).ok()
+    }
+}
+
+#[async_trait::async_trait]
+impl AutoRoutes for BusRoutes {
+    fn policy(&self) -> LoadedPolicy {
+        self.lifecycle.policy().load()
+    }
+
+    async fn check(&self, sender: &str) -> Result<Settled<Available>, Refusal> {
+        self.lifecycle.check_now(sender).await
+    }
+
+    async fn fetch(&self, sender: &str) -> Result<Settled<String>, Refusal> {
+        self.lifecycle.fetch_now(sender).await
+    }
+
+    async fn available(&self) -> Option<Available> {
+        self.lifecycle.available().await
+    }
+
+    async fn staged(&self) -> Option<String> {
+        self.lifecycle.staged_bundle().await
+    }
+
+    async fn discard_staged(&self, why: &str) {
+        self.lifecycle.discard_bundle(why).await;
+    }
+
+    async fn facts(&self) -> Option<UpdateFacts> {
+        let entry = self.update_state().await?;
+        Some(UpdateFacts {
+            reboot_pending: entry
+                .get("pending_not_confirmed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            install_status: entry
+                .pointer("/install/status")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+
+    async fn install(&self, sender: &str, bundle: &str) -> Result<(), String> {
+        self.service
+            .get()
+            .await
+            .request_install(sender, bundle)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn reboot(&self, sender: &str) -> Result<(), String> {
+        self.service
+            .get()
+            .await
+            .request_reboot(sender)
+            .await
+            .map_err(|err| err.to_string())
+    }
 }
 
 #[cfg(test)]
