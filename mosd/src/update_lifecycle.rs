@@ -1935,7 +1935,10 @@ mod tests {
         ));
         assert!(matches!(
             lifecycle
-                .set_reboot_override("op", update_policy::OVERRIDE_CEILING_SECONDS + 1)
+                .set_reboot_override(
+                    "op",
+                    mosd_settings::configuration::OVERRIDE_CEILING_SECONDS + 1,
+                )
                 .await,
             Err(Refusal::Invalid(_))
         ));

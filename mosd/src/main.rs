@@ -13,10 +13,12 @@
 //! - `MOSD_META_MANIFEST_PATH` — the baked update configuration
 //!   (default `/usr/share/mos/meta/updates/manifest.json`, inside the
 //!   read-only root); layer 1 of PLAN-070 §5.1. Read once at startup, since
-//!   nothing on the device can write it. See [`baked_meta`].
+//!   nothing on the device can write it. See
+//!   [`mosd_settings::configuration`].
 //! - `MOSD_UPDATE_POLICY_PATH` — the operator document layer 1's defaults are
-//!   overridden by (default `/mos/config/updates.json`, on DATA). See
-//!   [`update_policy`].
+//!   overridden by (default `/mos/config/updates.json`, on DATA). apid reads
+//!   the same two documents through the same resolver, so a status route and
+//!   the update subsystem cannot disagree. See [`update_policy`].
 //! - `MOSD_PROVISIONING_ROOT` — where the offline provisioning transport
 //!   stages the media it found (default `/run/mos/provisioning`); tests point
 //!   it at a temporary directory. See [`provisioning_doc`].
@@ -39,7 +41,6 @@
 #![forbid(unsafe_code)]
 
 mod apply_queue;
-mod baked_meta;
 mod bus;
 mod diagnostics;
 mod fswrite;
@@ -320,10 +321,10 @@ async fn serve() -> anyhow::Result<()> {
     // touches nothing -- so a test daemon reports the same shape a device
     // does, with the error saying the host has no baked manifest.
     let meta_path = std::env::var("MOSD_META_MANIFEST_PATH").map_or_else(
-        |_| PathBuf::from(baked_meta::DEFAULT_MANIFEST_PATH),
+        |_| PathBuf::from(mosd_settings::configuration::DEFAULT_MANIFEST_PATH),
         PathBuf::from,
     );
-    let meta = baked_meta::load(&meta_path);
+    let meta = mosd_settings::configuration::load_manifest(&meta_path);
     if let Some(error) = &meta.error {
         // Not fatal: the reader always answers with a document, and every
         // action the missing values gate refuses on its own terms. A build
