@@ -1671,11 +1671,11 @@
           "resources"
         ],
         "summary": "Read what a provisioning document did to this device.",
-        "description": "Two settings reads and no other source: the record mosd wrote when it last\nmet a document, and whether an administrator credential exists. Nothing is\nobserved from a medium at request time — the media are staged and read\nbefore anything is listening, so a request cannot make a device look at a\nstick.",
+        "description": "Two settings reads plus the public baked configuration: the record mosd\nwrote when it last met a document, and whether an administrator credential\nexists. Nothing is observed from a medium at request time — the media are staged and read\nbefore anything is listening, so a request cannot make a device look at a\nstick.",
         "operationId": "api_v1_provisioning_status",
         "responses": {
           "200": {
-            "description": "The applied document's version and canonical digest (`null` when none was ever applied), the last import attempt with its source, outcome, rejection reason and clock reading, and whether the device is still unclaimed. No value the document carried is returned.",
+            "description": "Import history and claim state, the public baked manifest with SHA-256 digests by baked file path, and the operator and effective readings of `update.source`, `update.channel` and `update.policy` beside the baked `fleet` pair. The secret-bearing import document is never returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1705,7 +1705,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to answer (`mosd_failed`)",
+            "description": "mosd failed to answer (`mosd_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value",
             "content": {
               "application/json": {
                 "schema": {
@@ -5816,9 +5816,26 @@
         "type": "object",
         "description": "What a provisioning document did to this device.",
         "required": [
-          "unclaimed"
+          "unclaimed",
+          "baked",
+          "bakedDigests",
+          "operator",
+          "effective"
         ],
         "properties": {
+          "baked": {
+            "description": "The public configuration baked into the verity root, as read."
+          },
+          "bakedDigests": {
+            "type": "object",
+            "description": "SHA-256 by relative path under `/usr/share/mos/meta/`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "documentDigest": {
             "type": [
               "string",
@@ -5835,8 +5852,14 @@
             "description": "`version` of the document last applied; `null` when none ever was.",
             "minimum": 0
           },
+          "effective": {
+            "description": "What this device actually runs on after §5.1's precedence:\n`update.source`, `update.channel`, `update.policy`, and `fleet.url` /\n`fleet.enabled`.\n\nThe fleet pair is the **baked** value and is not a placeholder for a\nresolution not yet written: `/mos/config/`'s fleet document is\nPLAN-072 §2's and does not exist, so nothing on the device reads an\noperator layer for it either. When that slice lands it extends the\nlibrary's resolver; it does not add a second one here."
+          },
           "lastImport": {
             "description": "The last import ATTEMPT: `source` (`boot` or `media`), `outcome`\n(`applied`, `unchanged` or `rejected`), `reason` for a rejection, and\n`at`, the device clock's reading when it happened. `null` when no\nmedium has ever been offered to this device."
+          },
+          "operator": {
+            "description": "What the operator wrote in `/mos/config/updates.json`, projected onto\n`update.source`, `update.channel` and `update.policy` and nothing else.\n\nA field the operator did not write is **absent**; one they wrote as\n`null` is **`null`**. Both resolve to the baked default and they are\nstill two different statements about the document, so the reading is\npreserved rather than flattened. `{}` when the document overrides\nnothing, which is a factory-reset device (PLAN-070 §4.1)."
           },
           "unclaimed": {
             "type": "boolean",

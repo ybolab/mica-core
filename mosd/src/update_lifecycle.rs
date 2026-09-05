@@ -1340,16 +1340,15 @@ fn selection_of(policy: &EffectivePolicy) -> Result<&Selection, Failure> {
 
 /// The `check` argument vector; `fetch` extends it.
 ///
-/// `--root` is a build-side constant rather than a policy key: the anchor
-/// left the operator document with the move (PLAN-070 §5.3.5) and F7 replaces
-/// the flag with the baked manifest's `trust.signingKeys`.
+/// No `--root`: the anchor left the operator document with the move
+/// (PLAN-070 §5.3.5) and F7 removed the flag from the client entirely — the
+/// keys it will accept come from the baked manifest's `trust.signingKeys`,
+/// which mosd cannot name or override.
 fn check_args(selection: &Selection, workspace: &Workspace) -> Vec<String> {
     vec![
         "check".to_string(),
         "--repo".to_string(),
         workspace.repo_dir.clone(),
-        "--root".to_string(),
-        crate::update_policy::DEFAULT_ROOT_PATH.to_string(),
         "--state".to_string(),
         workspace.state_path.clone(),
         "--channel".to_string(),

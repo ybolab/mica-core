@@ -46,16 +46,6 @@ pub use mosd_settings::configuration::{
     RebootPolicy, Selection, UpdateMode, Workspace,
 };
 
-/// The pinned trusted root passed to `rauc-update --root`.
-///
-/// **No longer an operator key.** `source.rootPath` was the anchor half of
-/// the old `[source]` block and PLAN-070 §5.3.5 keeps it retired while the
-/// URL beside it became overridable: the address is the operator's, what the
-/// device will accept is not. The value is a build-side constant until F7
-/// replaces the flag with the baked manifest's `trust.signingKeys`, which is
-/// where the anchor now lives; nothing provisions a file here today.
-pub const DEFAULT_ROOT_PATH: &str = "/usr/share/mos/uptane/root.json";
-
 /// One load of the operator document: the effective policy, or the reason it
 /// could not be read. Both, never neither — a caller always has a policy
 /// object to evaluate the gate with, and always knows whether it may trust
