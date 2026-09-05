@@ -167,16 +167,18 @@ impl AutoDriver {
     /// One turn of the driver.
     pub async fn tick(&mut self) {
         let loaded = self.routes.policy();
-        if loaded.error.is_some() {
+        let Some(selection) = loaded.policy.selection.as_ref() else {
             // A document that exists and does not parse refuses every
-            // restricted action already, and `load` answers the DEFAULTS
-            // beside the error — so reading a mode out of it would be
-            // reading a mode nobody wrote. The device initiates nothing
-            // until the file is fixed; the operator's manual routes still
-            // refuse with the error naming the file.
+            // restricted action already, and the load answers with NO
+            // selection beside the error — so there is no mode to read, which
+            // is stronger than declining to read one: PLAN-070 §5.1 forbids
+            // falling back to the baked channel here, and there is nothing
+            // here to fall back to. The device initiates nothing until the
+            // file is fixed; the operator's manual routes still refuse with
+            // the error naming the file.
             return;
-        }
-        match loaded.policy.mode {
+        };
+        match selection.mode {
             UpdateMode::Off => {
                 // No timer arms, and an owed automatic reboot is dropped
                 // rather than carried: the operator has just said the device
@@ -187,16 +189,31 @@ impl AutoDriver {
             UpdateMode::Check => {
                 self.check_if_due(&loaded).await;
             }
-            UpdateMode::Auto => self.drive(&loaded).await,
+            UpdateMode::Auto => {
+                if let Some(reason) = loaded.policy.auto_window_refusal() {
+                    // `auto` inherited from the baked default over a document
+                    // that names no window. The document-local case is a load
+                    // error (`configuration::validate`); this is the case
+                    // precedence creates, and it refuses the automatic
+                    // install only — the check cadence and every manual route
+                    // keep working.
+                    tracing::warn!(reason, "automatic install refused");
+                    self.check_if_due(&loaded).await;
+                    return;
+                }
+                self.drive(&loaded).await;
+            }
         }
     }
 
     /// Step 1: the check cadence, shared by `check` and `auto`.
     async fn check_if_due(&mut self, loaded: &LoadedPolicy) {
-        let interval = loaded.policy.check_interval_minutes;
-        if interval == 0 {
+        // `auto_check_minutes` is the one reading of "does this device check
+        // on its own": `off`, a zero interval and a document that did not
+        // load all answer `None`, so no caller re-derives the three.
+        let Some(interval) = loaded.auto_check_minutes() else {
             return;
-        }
+        };
         if self.last_check.elapsed() < Duration::from_secs(interval.saturating_mul(60)) {
             return;
         }

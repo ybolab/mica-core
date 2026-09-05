@@ -11,6 +11,15 @@
 mod api_token;
 mod audit;
 mod authorized_key;
+// A public module rather than a re-export: `/mos/config/` is a namespace with
+// several documents and two processes reading it, so callers name the
+// namespace (PLAN-070 §5.2). It carries the update policy document and the
+// baked layer it overrides (§5.1).
+pub mod configuration;
+// The settings store's own occupants of that namespace, plus the STATE
+// remainder (§5.2). Private, because the store is the only thing that reads
+// or writes them: `configuration`'s documents have two processes and these
+// have one.
 mod documents;
 mod error;
 mod model;

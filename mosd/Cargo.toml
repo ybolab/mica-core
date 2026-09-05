@@ -15,8 +15,10 @@ mosd-settings = { path = "../mosd-settings" }
 mos-busname = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-# The update policy file (`update-policy.toml`) is TOML like the settings
-# store; the crate is already in the workspace graph via mosd-settings.
+# The settings store and the offline provisioning document are both TOML; the
+# crate is already in the workspace graph via mosd-settings. The update policy
+# document is no longer among them -- PLAN-070 F6b moved it to
+# /mos/config/updates.json, which is JSON.
 toml = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }

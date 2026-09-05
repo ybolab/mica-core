@@ -2542,8 +2542,8 @@ mod tests {
     #[tokio::test]
     async fn an_invalid_policy_file_fails_installs_closed() {
         let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
-        let policy_path = dir.path().join("update-policy.toml");
-        std::fs::write(&policy_path, "not = valid = toml").expect("seed policy");
+        let policy_path = dir.path().join("updates.json");
+        std::fs::write(&policy_path, "{not json").expect("seed policy");
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path),
