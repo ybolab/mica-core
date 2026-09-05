@@ -4481,7 +4481,10 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
     assert!(fake.set_paths().is_empty(), "{:?}", fake.set_paths());
 }
 
-// The nine top-level keys the write route's not-found rule is derived from.
+// The eight top-level keys the write route's not-found rule is derived from.
+//
+// Nine until PLAN-070 §5.2.3 took `schema_version` off the tree and put a
+// version on each document; the count moved with it.
 //
 // `is_settings_root` reads them out of `Settings::default()` rather than
 // carrying a list, so this asserts the derivation rather than a copy of it: a
@@ -4490,7 +4493,7 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
 // drop a real root out of the default tree and turn its 409 into a 404 --
 // fails here.
 #[test]
-fn the_settings_schema_has_the_nine_roots_the_write_route_knows() {
+fn the_settings_schema_has_the_eight_roots_the_write_route_knows() {
     let tree = serde_json::to_value(mosd_settings::Settings::default()).unwrap();
     let mut keys: Vec<&str> = tree
         .as_object()

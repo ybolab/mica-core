@@ -2969,6 +2969,18 @@ mod tests {
                 SettingsError::Migration("stuck".into()),
                 "org.freedesktop.DBus.Error.Failed",
             ),
+            // PLAN-070 §5.2.6's variant. An IO name and not `InvalidArgs`:
+            // the caller asked for something reasonable and the device cannot
+            // reach the store. It was added with the medium check and left out
+            // of this table, which is the one place that says what a variant
+            // travels as.
+            (
+                SettingsError::Unavailable {
+                    directory: "/mos/config".into(),
+                    mount: "/mos".into(),
+                },
+                "org.freedesktop.DBus.Error.IOError",
+            ),
         ] {
             let message = err.to_string();
             let fault = super::to_bus_error(err);
