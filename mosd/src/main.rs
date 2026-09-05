@@ -10,6 +10,15 @@
 //! - `MOSD_SHADOW_PATH` — the shadow file a transient root password is written
 //!   into (default `/etc/shadow`, a symlink onto STATE on the mos image); the
 //!   sshd reconciler honours the same variable.
+//! - `MOSD_META_MANIFEST_PATH` — the baked update configuration
+//!   (default `/usr/share/mos/meta/updates/manifest.json`, inside the
+//!   read-only root); layer 1 of PLAN-070 §5.1. Read once at startup, since
+//!   nothing on the device can write it. See
+//!   [`mosd_settings::configuration`].
+//! - `MOSD_UPDATE_POLICY_PATH` — the operator document layer 1's defaults are
+//!   overridden by (default `/mos/config/updates.json`, on DATA). apid reads
+//!   the same two documents through the same resolver, so a status route and
+//!   the update subsystem cannot disagree. See [`update_policy`].
 //! - `MOSD_PROVISIONING_ROOT` — where the offline provisioning transport
 //!   stages the media it found (default `/run/mos/provisioning`); tests point
 //!   it at a temporary directory. See [`provisioning_doc`].
@@ -50,6 +59,7 @@ mod system_info;
 mod telemetry;
 mod time_status;
 mod transient;
+mod update_auto;
 mod update_lifecycle;
 mod update_policy;
 mod wgkeys;
@@ -305,6 +315,25 @@ async fn serve() -> anyhow::Result<()> {
     if dry_run {
         state.insert("dry_run".to_string(), Value::Bool(true));
     }
+    // Layer 1 (PLAN-070 §5.1), read here and only here: the manifest is inside
+    // the read-only dm-verity root, so its value cannot change while this
+    // process runs and a re-read per decision would answer the same thing.
+    // Read under dry-run too -- it is a read of one file in /usr/share and
+    // touches nothing -- so a test daemon reports the same shape a device
+    // does, with the error saying the host has no baked manifest.
+    let meta_path = std::env::var("MOSD_META_MANIFEST_PATH").map_or_else(
+        |_| PathBuf::from(mosd_settings::configuration::DEFAULT_MANIFEST_PATH),
+        PathBuf::from,
+    );
+    let meta = mosd_settings::configuration::load_manifest(&meta_path);
+    if let Some(error) = &meta.error {
+        // Not fatal: the reader always answers with a document, and every
+        // action the missing values gate refuses on its own terms. A build
+        // refuses a manifest this reader would reject, so reaching this on a
+        // device means the image is not the one the build produced.
+        tracing::warn!(error, "baked update configuration unavailable");
+    }
+    state.insert("meta".to_string(), meta.to_json());
 
     let mut service = bus::MosdService::new(
         store,
@@ -345,28 +374,31 @@ async fn serve() -> anyhow::Result<()> {
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));
         // The update lifecycle's client and policy, same reasoning once more:
         // only here is it known that /usr/bin/rauc-update may exist and that
-        // the policy file beside the settings store is the host's. The client
+        // the operator document on the DATA pool is the host's. The client
         // binary's ABSENCE is a reported state, not a failure — a sibling
-        // workstream ships it into the image.
+        // workstream ships it into the image. The baked layer travels with the
+        // store, so precedence is resolved in one place rather than at each
+        // reader (PLAN-070 §5.1).
         let update_bin = std::env::var("MOSD_RAUC_UPDATE_BIN")
             .unwrap_or_else(|_| update_lifecycle::DEFAULT_CLIENT_PATH.to_string());
         let policy_path = std::env::var("MOSD_UPDATE_POLICY_PATH").map_or_else(
-            |_| state_dir_for(&settings_path).join("update-policy.toml"),
+            |_| PathBuf::from(update_policy::DEFAULT_POLICY_PATH),
             PathBuf::from,
         );
         service = service.with_update(
             Arc::new(update_lifecycle::SubprocessClient::new(PathBuf::from(
                 update_bin,
             ))),
-            update_policy::PolicyStore::at(policy_path),
+            update_policy::PolicyStore::at(policy_path).with_baked(meta.manifest.update.clone()),
         );
-        // The auto-check cadence: policy-driven, checks only, never running
-        // under dry-run (whose lifecycle has no client to call anyway).
-        tokio::spawn(update_lifecycle::auto_check_loop(service.update_handle()));
     }
     if let Some(registry) = &registry {
         service = service.with_service_registry(Arc::clone(registry));
     }
+    // Taken before the service moves onto the bus: the automatic driver
+    // shares the lifecycle with the manual check and fetch routes, so both
+    // read one policy and record into one state entry.
+    let update_handle = service.update_handle();
     service.apply_all().await;
     let builder = match bus_kind.as_str() {
         "system" => zbus::connection::Builder::system()?,
@@ -390,6 +422,23 @@ async fn serve() -> anyhow::Result<()> {
             .await
             .context("look up served MosdService")?;
         tokio::spawn(scan::run(connection.clone(), registry, service_ref));
+    }
+    // The automatic update driver: the check cadence under `policy = check`,
+    // and under `auto` the whole check/fetch/re-check/install pass with its
+    // reboot. Started here rather than beside the lifecycle because the
+    // install and reboot routes it calls live on the service the object
+    // server now owns — the same reason the scan is started here. Never
+    // under dry-run, whose lifecycle has no client to call anyway.
+    if !dry_run {
+        let service_ref = connection
+            .object_server()
+            .interface::<_, bus::MosdService>(bus::OBJECT_PATH)
+            .await
+            .context("look up served MosdService")?;
+        tokio::spawn(update_auto::run(Arc::new(bus::BusRoutes::new(
+            update_handle,
+            service_ref,
+        ))));
     }
     connection
         .request_name(bus::BUS_NAME)

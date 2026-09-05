@@ -1,261 +1,113 @@
-//! Update policy: maintenance windows, metered/offline mode, auto-check
+//! Update policy: the refusals, the maintenance window, the auto-check
 //! cadence and the safe-to-reboot gate.
 //!
-//! The policy lives in its own TOML file beside the settings store
-//! (`update-policy.toml` in the STATE directory) rather than in the settings
-//! tree. Deliberate: adding settings keys means a schema bump plus a
-//! migration, and a concurrent workstream owns the next bump — a second
-//! bumper would hand the merge an unresolvable version conflict. STATE is
-//! the right tier for it, too: PLAN-061 keeps small authoritative metadata on
-//! STATE and sends only large bytes to the `/mos` DATA workspace, and a
-//! policy file is a few hundred bytes whose loss would make the workspace
-//! ambiguous. The file is operator-edited, read fresh on every policy
-//! decision, and a missing file is the default policy. A file that exists but does not parse is NOT the
-//! default policy: every action the policy could restrict is refused until
-//! the file is fixed, because "unreadable" silently becoming "unrestricted"
-//! is how a metered device downloads a 500 MB bundle.
+//! **The documents and the precedence are not here.** They live in
+//! [`mosd_settings::configuration`], because apid reports the effective
+//! policy on `GET /api/v1/provisioning/status` and a status route computing
+//! its own answer would eventually disagree with the subsystem it describes.
+//! This module is the *semantics*: what the resolved document lets a device
+//! do right now, and why it refuses when it refuses.
+//!
+//! What that leaves here is the one thing mosd needs and apid does not: a
+//! policy object that **always exists**, even when the operator document did
+//! not load. [`LoadedPolicy`] is the shape — the effective policy plus the
+//! reason it may not be trusted — and the split it encodes is PLAN-070 §5.1's:
+//!
+//! - **Absent document** → the baked defaults. A device that has never been
+//!   configured follows what it shipped with.
+//! - **Malformed document** → fail closed on the *actions*, fail open on the
+//!   *device*, and **never** silently adopt the baked channel. Every
+//!   capability the document gates is refused with a message naming the file;
+//!   the reboot gate keeps evaluating with the code defaults, because an
+//!   unreadable file must not brick the reboot button. `EffectivePolicy` then
+//!   carries no selection at all, so there is nothing for a later caller to
+//!   read a channel out of.
+//!
+//! The file is read fresh on every policy decision — a handful of bytes per
+//! action is cheaper than a watch, and an operator edit takes effect on the
+//! next decision with no restart and no reload verb.
 //!
 //! What this module does not do: hold state. The reboot-gate override and the
 //! lifecycle machine live in [`crate::update_lifecycle`]; everything here is
-//! a pure function of the policy document, the clock and the health tree, so
-//! every rule is unit-testable without a daemon.
+//! a pure function of the resolved document, the clock and the health tree.
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-/// Longest administrative reboot-gate override a policy may allow, and the
-/// built-in default. One hour: long enough to carry a maintenance action,
-/// short enough that a forgotten override does not stand disarmed for a week.
-pub const OVERRIDE_CEILING_SECONDS: u64 = 3600;
+use mosd_settings::configuration::{self, BakedUpdate};
 
-/// The policy document. Every field has a default, so an absent file — the
-/// state of every device until an operator writes one — is a complete policy.
-///
-/// `deny_unknown_fields` for the reason the settings tree carries it: a
-/// mistyped key must fail loudly, not silently configure nothing.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct UpdatePolicy {
-    #[serde(default)]
-    pub source: SourcePolicy,
-    #[serde(default)]
-    pub network: NetworkPolicy,
-    #[serde(default)]
-    pub auto_check: AutoCheckPolicy,
-    #[serde(default)]
-    pub maintenance: MaintenancePolicy,
-    #[serde(default)]
-    pub reboot_gate: RebootGatePolicy,
-}
+// Re-exported so the lifecycle, the automatic driver and `main.rs` name one
+// module for the policy, not two: the types are the library's, the semantics
+// below are this module's.
+pub use mosd_settings::configuration::{
+    DEFAULT_UPDATES_PATH as DEFAULT_POLICY_PATH, EffectivePolicy, NetworkMode, RebootGatePolicy,
+    RebootPolicy, Selection, UpdateMode, Workspace,
+};
 
-/// Where updates come from and how much of the `/mos/updates` workspace
-/// they may hold. The paths default to the deployment contract
-/// `docs/design/updates.md` records; `url` has no default because there is
-/// no fleet mirror to assume. Where bundles are staged is NOT a policy
-/// knob: the client's workspace is `/mos/updates` and nothing else
-/// (PLAN-061/063), so there is no key that could point it elsewhere.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct SourcePolicy {
-    /// Base URL of the published TUF repository. Absent = no online source:
-    /// `check`/`fetch` are refused and the offline import path remains.
-    pub url: Option<String>,
-    /// Release channel to follow (`rauc-update check --channel`).
-    #[serde(default = "default_channel")]
-    pub channel: String,
-    /// Local metadata mirror directory (`rauc-update --repo`).
-    #[serde(default = "default_repo_dir")]
-    pub repo_dir: String,
-    /// Persistent rollback state (`rauc-update --state`).
-    #[serde(default = "default_state_path")]
-    pub state_path: String,
-    /// Byte budget for the workspace — downloads/, verified/ and staging/
-    /// together (`rauc-update --max-bytes`); readiness also requires the
-    /// DATA pool to back what is unspent of it.
-    #[serde(default = "default_max_bytes")]
-    pub max_bytes: u64,
-}
-
-fn default_channel() -> String {
-    "stable".to_string()
-}
-fn default_repo_dir() -> String {
-    "/var/lib/mos/update/tuf-mirror".to_string()
-}
-fn default_state_path() -> String {
-    "/var/lib/mos/update/uptane-state.json".to_string()
-}
-fn default_max_bytes() -> u64 {
-    // Half a gigabyte: comfortably one compressed rootfs bundle, a small
-    // share of the growable DATA pool the workspace lives on. The operator
-    // raises it deliberately for larger bundles; PLAN-049 owns the quota.
-    500_000_000
-}
-
-impl Default for SourcePolicy {
-    fn default() -> Self {
-        Self {
-            url: None,
-            channel: default_channel(),
-            repo_dir: default_repo_dir(),
-            state_path: default_state_path(),
-            max_bytes: default_max_bytes(),
-        }
-    }
-}
-
-/// How the device's connectivity is classed. Declared by the operator, not
-/// detected: mosd has no metering signal to read, and a policy that guessed
-/// would be wrong in exactly the deployments that care.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum NetworkMode {
-    /// Unrestricted: metadata sync and bundle downloads allowed.
-    #[default]
-    Online,
-    /// Metered: metadata checks (KiB) allowed, bundle downloads (hundreds of
-    /// MiB) refused unless `meteredAllowsFetch` says otherwise.
-    Metered,
-    /// No network use at all: import-only. `check` and `fetch` are refused;
-    /// the offline lockbox path is the update channel.
-    Offline,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct NetworkPolicy {
-    #[serde(default)]
-    pub mode: NetworkMode,
-    /// Permit bundle downloads on a metered link. Explicitly the exception,
-    /// so the metered default is the cheap one.
-    #[serde(default)]
-    pub metered_allows_fetch: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct AutoCheckPolicy {
-    /// Minutes between automatic metadata checks; `0` disables them.
-    /// Checks only — nothing is ever fetched or installed automatically.
-    #[serde(default = "default_check_interval")]
-    pub interval_minutes: u64,
-}
-
-fn default_check_interval() -> u64 {
-    // Daily. A check is a bounded metadata read, safe on the default online
-    // mode; metered/offline modes refuse it wholesale regardless of cadence.
-    1440
-}
-
-impl Default for AutoCheckPolicy {
-    fn default() -> Self {
-        Self {
-            interval_minutes: default_check_interval(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct MaintenancePolicy {
-    /// When installs may run. An empty list means "any time" — maintenance
-    /// windows are opt-in, because a device with no operator-set window must
-    /// still be updatable.
-    #[serde(default)]
-    pub windows: Vec<MaintenanceWindow>,
-}
-
-/// One recurring window, in UTC. UTC rather than local time because the
-/// appliance has no trustworthy local-time configuration to read, and a
-/// window that silently shifted with a timezone guess would fire in
-/// somebody's business hours.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct MaintenanceWindow {
-    /// Days the window opens on: `mon`..`sun`. Empty means every day.
-    #[serde(default)]
-    pub days: Vec<String>,
-    /// Opening time, `HH:MM` UTC.
-    pub start: String,
-    /// Closing time, `HH:MM` UTC. A close at or before the open wraps past
-    /// midnight into the next day.
-    pub end: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RebootGatePolicy {
-    /// Health statuses (live-state `health.<component>.status`) that close
-    /// the safe-to-reboot gate. The default contract is the single word
-    /// `blocking`: an application that must not be interrupted reports
-    /// `ReportHealth(component, "blocking", why)` and clears it when done.
-    /// `mos-health`'s `degraded` (disk pressure) deliberately does NOT block
-    /// — a reboot neither worsens nor is worsened by a full `/var`.
-    #[serde(default = "default_blocking_statuses")]
-    pub blocking_statuses: Vec<String>,
-    /// Longest override TTL this device grants, capped at
-    /// [`OVERRIDE_CEILING_SECONDS`] whatever the file says.
-    #[serde(default = "default_override_max")]
-    pub override_max_seconds: u64,
-}
-
-fn default_blocking_statuses() -> Vec<String> {
-    vec!["blocking".to_string()]
-}
-fn default_override_max() -> u64 {
-    OVERRIDE_CEILING_SECONDS
-}
-
-impl Default for RebootGatePolicy {
-    fn default() -> Self {
-        Self {
-            blocking_statuses: default_blocking_statuses(),
-            override_max_seconds: default_override_max(),
-        }
-    }
-}
-
-impl RebootGatePolicy {
-    /// The TTL ceiling actually granted: the file's value, never above the
-    /// built-in ceiling — a policy file cannot mint a week-long override.
-    pub fn override_ceiling(&self) -> u64 {
-        self.override_max_seconds.min(OVERRIDE_CEILING_SECONDS)
-    }
-}
-
-/// One load of the policy file: the policy, or the reason it could not be
-/// read. Both, never neither — a caller always has a policy object to
-/// evaluate the gate with, and always knows whether it may trust it.
+/// One load of the operator document: the effective policy, or the reason it
+/// could not be read. Both, never neither — a caller always has a policy
+/// object to evaluate the gate with, and always knows whether it may trust
+/// the selection inside it.
 pub struct LoadedPolicy {
-    pub policy: UpdatePolicy,
-    /// `Some` when the file exists and does not parse or validate. The
-    /// restricted actions are refused while this is set (fail closed); the
-    /// reboot gate keeps evaluating with the defaults (fail open there would
-    /// mean an unreadable file bricks the reboot button).
+    pub policy: EffectivePolicy,
+    /// `Some` when the file exists and does not read, parse or validate.
+    /// The restricted actions are refused while this is set.
     pub error: Option<String>,
 }
 
-/// Reads the policy file fresh per decision. A handful of bytes per action
-/// is cheaper than a watch, and an operator edit takes effect on the next
-/// decision with no restart and no reload verb.
+impl LoadedPolicy {
+    /// Minutes between automatic checks, or `None` when this device
+    /// initiates nothing: `policy = "off"`, an interval of `0`, or a document
+    /// that did not load — a device whose configuration is unreadable does
+    /// not go and check on its own.
+    pub fn auto_check_minutes(&self) -> Option<u64> {
+        let selection = self.policy.selection.as_ref()?;
+        match selection.mode {
+            UpdateMode::Off => None,
+            // `auto` checks on the same cadence `check` does; the fetch and
+            // install steps behind it are PLAN-071's slice.
+            UpdateMode::Check | UpdateMode::Auto => {
+                (selection.check_interval_minutes > 0).then_some(selection.check_interval_minutes)
+            }
+        }
+    }
+}
+
+/// Reads the operator document fresh per decision, resolved over the baked
+/// defaults it was built with.
 #[derive(Clone)]
 pub struct PolicyStore {
-    /// `None` = no file to read (dry-run daemons): defaults, always.
+    /// `None` = no file to read (dry-run daemons): the baked layer, always.
     path: Option<PathBuf>,
+    /// Layer 1. [`BakedUpdate::code_defaults`] until `main.rs` attaches the
+    /// device's own, so a test store resolves against something inert.
+    baked: BakedUpdate,
 }
 
 impl PolicyStore {
-    /// Store reading `path`; a missing file is the default policy.
+    /// Store reading `path`; a missing file is the baked defaults.
     pub fn at(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+        Self {
+            path: Some(path),
+            baked: BakedUpdate::code_defaults(),
+        }
     }
 
     /// Store with no file at all — the dry-run/test shape.
     pub fn defaults() -> Self {
-        Self { path: None }
+        Self {
+            path: None,
+            baked: BakedUpdate::code_defaults(),
+        }
+    }
+
+    /// Attach the baked layer read from the image (PLAN-070 §5.1 layer 1).
+    #[must_use]
+    pub fn with_baked(mut self, baked: BakedUpdate) -> Self {
+        self.baked = baked;
+        self
     }
 
     /// The path decisions are read from, for the recorded state.
@@ -263,135 +115,45 @@ impl PolicyStore {
         self.path.as_deref()
     }
 
-    /// Load the current policy. Missing file = defaults; unreadable or
-    /// invalid file = defaults plus the error that makes actions refuse.
+    /// Load the current policy through the shared reader and the shared
+    /// precedence, and turn the two outcomes into the shape a daemon needs.
+    ///
+    /// This is the *only* difference between mosd's view and apid's: the
+    /// library returns `Err` for a document that did not load, and mosd needs
+    /// a policy object anyway so the reboot gate keeps working. It does not
+    /// invent one from the baked layer — [`EffectivePolicy::unknown_selection`]
+    /// cannot see it — so both callers still answer the same question the
+    /// same way.
     pub fn load(&self) -> LoadedPolicy {
         let Some(path) = &self.path else {
             return LoadedPolicy {
-                policy: UpdatePolicy::default(),
+                policy: configuration::resolve(
+                    &self.baked,
+                    configuration::UpdatesDocument::default(),
+                ),
                 error: None,
             };
         };
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return LoadedPolicy {
-                    policy: UpdatePolicy::default(),
-                    error: None,
-                };
-            }
-            Err(err) => {
-                return LoadedPolicy {
-                    policy: UpdatePolicy::default(),
-                    error: Some(format!("read {}: {err}", path.display())),
-                };
-            }
-        };
-        match toml::from_str::<UpdatePolicy>(&raw) {
-            Ok(policy) => match validate(&policy) {
-                Ok(()) => LoadedPolicy {
-                    policy,
-                    error: None,
-                },
-                Err(reason) => LoadedPolicy {
-                    policy: UpdatePolicy::default(),
-                    error: Some(format!("{}: {reason}", path.display())),
-                },
+        match configuration::load_updates(path) {
+            Ok(document) => LoadedPolicy {
+                policy: configuration::resolve(&self.baked, document),
+                error: None,
             },
             Err(err) => LoadedPolicy {
-                policy: UpdatePolicy::default(),
-                error: Some(format!("parse {}: {err}", path.display())),
+                policy: EffectivePolicy::unknown_selection(),
+                error: Some(err.to_string()),
             },
         }
     }
 }
 
-/// Validate what serde cannot: window times parse and days are day names.
-fn validate(policy: &UpdatePolicy) -> Result<(), String> {
-    for window in &policy.maintenance.windows {
-        minutes_of_day(&window.start)
-            .ok_or_else(|| format!("maintenance window start `{}` is not HH:MM", window.start))?;
-        minutes_of_day(&window.end)
-            .ok_or_else(|| format!("maintenance window end `{}` is not HH:MM", window.end))?;
-        for day in &window.days {
-            day_index(day).ok_or_else(|| {
-                format!("maintenance window day `{day}` is not mon/tue/wed/thu/fri/sat/sun")
-            })?;
-        }
-    }
-    Ok(())
-}
-
-/// `HH:MM` → minutes since midnight, or `None` when it is not that.
-fn minutes_of_day(clock: &str) -> Option<u32> {
-    let (hours, minutes) = clock.split_once(':')?;
-    if hours.len() != 2 || minutes.len() != 2 {
-        return None;
-    }
-    let hours: u32 = hours.parse().ok()?;
-    let minutes: u32 = minutes.parse().ok()?;
-    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
-}
-
-/// `mon`..`sun` → 0..6, Monday first (chrono's `num_days_from_monday`).
-fn day_index(day: &str) -> Option<u32> {
-    Some(match day {
-        "mon" => 0,
-        "tue" => 1,
-        "wed" => 2,
-        "thu" => 3,
-        "fri" => 4,
-        "sat" => 5,
-        "sun" => 6,
-        _ => return None,
-    })
-}
-
-/// Minutes into the UTC week (Monday 00:00 = 0) for `now`.
-fn minutes_of_week(now: DateTime<Utc>) -> u32 {
-    now.weekday().num_days_from_monday() * 1440 + now.hour() * 60 + now.minute()
-}
-
-const WEEK_MINUTES: u32 = 7 * 1440;
-
-/// Whether `now` (UTC) falls inside `window`.
-///
-/// A window whose end is at or before its start wraps past midnight; a
-/// window listing no days opens every day.
-fn window_contains(window: &MaintenanceWindow, now: DateTime<Utc>) -> bool {
-    // Validation ran at load; an unparseable window here (impossible via
-    // `PolicyStore::load`) simply never matches, which is the closed side.
-    let Some(start) = minutes_of_day(&window.start) else {
-        return false;
-    };
-    let Some(end) = minutes_of_day(&window.end) else {
-        return false;
-    };
-    let now_week = minutes_of_week(now);
-    let days: Vec<u32> = if window.days.is_empty() {
-        (0..7).collect()
-    } else {
-        window
-            .days
-            .iter()
-            .filter_map(|day| day_index(day))
-            .collect()
-    };
-    for day in days {
-        let open = day * 1440 + start;
-        let span = if end > start {
-            end - start
-        } else {
-            // Wrapping: 23:00–01:00 is two hours into the next day. Equal
-            // start and end reads as a full 24 hours.
-            1440 - start + end
-        };
-        let offset = (now_week + WEEK_MINUTES - open) % WEEK_MINUTES;
-        if offset < span {
-            return true;
-        }
-    }
-    false
+/// The refusal for a document that did not load. Reached only alongside
+/// [`LoadedPolicy::error`], and written once so no caller has to decide what
+/// an unknown selection means.
+fn unknown_selection_refusal() -> String {
+    "the update policy document did not load, so this device's channel and \
+     source are unknown"
+        .to_string()
 }
 
 /// Why `check` is refused right now, or `None` when it may run.
@@ -399,12 +161,15 @@ pub fn check_refusal(loaded: &LoadedPolicy) -> Option<String> {
     if let Some(error) = &loaded.error {
         return Some(format!("update policy file is invalid ({error})"));
     }
+    let Some(selection) = &loaded.policy.selection else {
+        return Some(unknown_selection_refusal());
+    };
     match loaded.policy.network.mode {
         NetworkMode::Offline => {
             Some("network mode is offline: updates arrive by import only".to_string())
         }
         NetworkMode::Online | NetworkMode::Metered => {
-            if loaded.policy.source.url.is_none() {
+            if selection.url.is_none() {
                 Some("no update source configured (source.url is unset)".to_string())
             } else {
                 None
@@ -439,7 +204,7 @@ pub fn install_refusal(loaded: &LoadedPolicy, now: DateTime<Utc>) -> Option<Stri
         return Some(format!("update policy file is invalid ({error})"));
     }
     let windows = &loaded.policy.maintenance.windows;
-    if windows.is_empty() || windows.iter().any(|window| window_contains(window, now)) {
+    if windows.is_empty() || windows.iter().any(|window| window.contains(now)) {
         return None;
     }
     Some("outside every configured maintenance window".to_string())
@@ -512,6 +277,9 @@ pub fn evaluate_gate(
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use mosd_settings::configuration::{
+        MaintenanceWindow, OVERRIDE_CEILING_SECONDS, UpdatesDocument,
+    };
     use serde_json::json;
 
     use super::*;
@@ -531,45 +299,65 @@ mod tests {
         }
     }
 
-    fn loaded(policy: UpdatePolicy) -> LoadedPolicy {
+    fn loaded(policy: EffectivePolicy) -> LoadedPolicy {
         LoadedPolicy {
             policy,
             error: None,
         }
     }
 
+    /// An effective policy resolved from the code defaults on both layers --
+    /// the shape a device with no operator document has.
+    fn effective() -> EffectivePolicy {
+        configuration::resolve(&BakedUpdate::code_defaults(), UpdatesDocument::default())
+    }
+
+    fn with_url(url: &str) -> EffectivePolicy {
+        let mut policy = effective();
+        policy
+            .selection
+            .as_mut()
+            .expect("resolved")
+            .url
+            .replace(url.to_string());
+        policy
+    }
+
     #[test]
-    fn a_missing_file_is_the_default_policy_and_no_error() {
+    fn a_missing_file_is_the_baked_default_and_no_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = PolicyStore::at(dir.path().join("update-policy.toml"));
+        let store = PolicyStore::at(dir.path().join("updates.json"));
         let loaded = store.load();
         assert!(loaded.error.is_none());
         assert_eq!(loaded.policy.network.mode, NetworkMode::Online);
-        assert_eq!(loaded.policy.auto_check.interval_minutes, 1440);
+        assert_eq!(
+            loaded.policy.selection.expect("a document").channel,
+            "stable"
+        );
         assert!(loaded.policy.maintenance.windows.is_empty());
     }
 
     #[test]
     fn a_parseable_file_is_read_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("update-policy.toml");
+        let path = dir.path().join("updates.json");
         std::fs::write(
             &path,
-            "[network]\nmode = \"metered\"\n\n[source]\nurl = \"http://mirror/tuf\"\n",
+            r#"{"network": {"mode": "metered"}, "source": {"url": "http://mirror/tuf"}}"#,
         )
         .expect("seed");
         let store = PolicyStore::at(path.clone());
         assert_eq!(store.load().policy.network.mode, NetworkMode::Metered);
         // An edit takes effect on the next load, with no reload verb.
-        std::fs::write(&path, "[network]\nmode = \"offline\"\n").expect("edit");
+        std::fs::write(&path, r#"{"network": {"mode": "offline"}}"#).expect("edit");
         assert_eq!(store.load().policy.network.mode, NetworkMode::Offline);
     }
 
     #[test]
     fn an_unparseable_file_fails_closed_not_open() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("update-policy.toml");
-        std::fs::write(&path, "network = \"not a table\"").expect("seed");
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, "{not json").expect("seed");
         let loaded = PolicyStore::at(path).load();
         let error = loaded
             .error
@@ -580,31 +368,34 @@ mod tests {
         assert!(check_refusal(&loaded).expect("refused").contains("invalid"));
         assert!(fetch_refusal(&loaded).is_some());
         assert!(install_refusal(&loaded, Utc::now()).is_some());
+        // And the selection is unknown rather than the baked default: this is
+        // the whole rule, so it is asserted here and not only in the library.
+        assert!(loaded.policy.selection.is_none());
     }
 
     #[test]
     fn an_unknown_key_is_an_error_not_a_silent_noop() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("update-policy.toml");
-        std::fs::write(&path, "[network]\nmoed = \"offline\"\n").expect("seed");
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, r#"{"network": {"moed": "offline"}}"#).expect("seed");
         assert!(PolicyStore::at(path).load().error.is_some());
     }
 
     #[test]
     fn a_malformed_window_is_a_load_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("update-policy.toml");
+        let path = dir.path().join("updates.json");
         for (body, needle) in [
             (
-                "[[maintenance.windows]]\nstart = \"2:00\"\nend = \"04:00\"\n",
+                r#"{"maintenance": {"windows": [{"start": "2:00", "end": "04:00"}]}}"#,
                 "not HH:MM",
             ),
             (
-                "[[maintenance.windows]]\nstart = \"02:00\"\nend = \"24:00\"\n",
+                r#"{"maintenance": {"windows": [{"start": "02:00", "end": "24:00"}]}}"#,
                 "not HH:MM",
             ),
             (
-                "[[maintenance.windows]]\ndays = [\"monday\"]\nstart = \"02:00\"\nend = \"04:00\"\n",
+                r#"{"maintenance": {"windows": [{"days": ["monday"], "start": "02:00", "end": "04:00"}]}}"#,
                 "not mon/tue",
             ),
         ] {
@@ -619,8 +410,7 @@ mod tests {
 
     #[test]
     fn offline_mode_refuses_check_and_fetch() {
-        let mut policy = UpdatePolicy::default();
-        policy.source.url = Some("http://mirror/tuf".to_string());
+        let mut policy = with_url("http://mirror/tuf");
         policy.network.mode = NetworkMode::Offline;
         let loaded = loaded(policy);
         assert!(check_refusal(&loaded).expect("refused").contains("offline"));
@@ -629,8 +419,7 @@ mod tests {
 
     #[test]
     fn metered_mode_allows_check_but_refuses_fetch_until_allowed() {
-        let mut policy = UpdatePolicy::default();
-        policy.source.url = Some("http://mirror/tuf".to_string());
+        let mut policy = with_url("http://mirror/tuf");
         policy.network.mode = NetworkMode::Metered;
         assert_eq!(check_refusal(&loaded(policy.clone())), None);
         assert!(
@@ -644,7 +433,7 @@ mod tests {
 
     #[test]
     fn no_configured_source_refuses_check_with_its_own_reason() {
-        let loaded = loaded(UpdatePolicy::default());
+        let loaded = loaded(effective());
         assert!(
             check_refusal(&loaded)
                 .expect("refused")
@@ -654,14 +443,15 @@ mod tests {
 
     #[test]
     fn no_windows_means_installs_run_any_time() {
-        let mut policy = UpdatePolicy::default();
-        policy.source.url = Some("http://mirror/tuf".to_string());
-        assert_eq!(install_refusal(&loaded(policy), Utc::now()), None);
+        assert_eq!(
+            install_refusal(&loaded(with_url("http://mirror/tuf")), Utc::now()),
+            None
+        );
     }
 
     #[test]
     fn a_window_admits_inside_and_refuses_outside() {
-        let mut policy = UpdatePolicy::default();
+        let mut policy = effective();
         policy.maintenance.windows = vec![window(&["mon"], "02:00", "04:00")];
         let loaded = loaded(policy);
         // 2026-09-07 is a Monday.
@@ -682,7 +472,7 @@ mod tests {
 
     #[test]
     fn a_wrapping_window_covers_past_midnight() {
-        let mut policy = UpdatePolicy::default();
+        let mut policy = effective();
         policy.maintenance.windows = vec![window(&["mon"], "23:00", "01:00")];
         let loaded = loaded(policy);
         assert_eq!(
@@ -703,7 +493,7 @@ mod tests {
 
     #[test]
     fn a_dayless_window_opens_every_day() {
-        let mut policy = UpdatePolicy::default();
+        let mut policy = effective();
         policy.maintenance.windows = vec![window(&[], "02:00", "04:00")];
         let loaded = loaded(policy);
         for day in 7..14 {
