@@ -41,7 +41,9 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::rauc::SlotStatus;
-use crate::update_policy::{self, GateVerdict, LoadedPolicy, PolicyStore, UpdatePolicy};
+use crate::update_policy::{
+    self, EffectivePolicy, GateVerdict, LoadedPolicy, PolicyStore, Selection, Workspace,
+};
 
 /// Where the device-side update client lives unless `MOSD_RAUC_UPDATE_BIN`
 /// says otherwise. Shipping the binary there is the image side's half of the
@@ -744,11 +746,11 @@ impl UpdateLifecycle {
     /// The PLAN-061 readiness probe, before any acquisition: `rauc-update
     /// probe` against the policy's budget. A passing probe records the
     /// workspace report; a failing one is the `update-unavailable` state.
-    async fn probe(&self, policy: &UpdatePolicy) -> Result<(), Failure> {
+    async fn probe(&self, workspace: &Workspace) -> Result<(), Failure> {
         let args = vec![
             "probe".to_string(),
             "--max-bytes".to_string(),
-            policy.source.max_bytes.to_string(),
+            workspace.max_bytes.to_string(),
         ];
         let output = self
             .client
@@ -764,16 +766,16 @@ impl UpdateLifecycle {
         }
     }
 
-    async fn run_check(&self, policy: &UpdatePolicy) -> Result<CheckOutcome, Failure> {
-        self.probe(policy).await?;
-        let source = &policy.source;
-        if let Some(url) = &source.url {
+    async fn run_check(&self, policy: &EffectivePolicy) -> Result<CheckOutcome, Failure> {
+        self.probe(&policy.workspace).await?;
+        let selection = selection_of(policy)?;
+        if let Some(url) = &selection.url {
             let sync_args = vec![
                 "sync".to_string(),
                 "--url".to_string(),
                 url.clone(),
                 "--repo".to_string(),
-                source.repo_dir.clone(),
+                policy.workspace.repo_dir.clone(),
             ];
             let output = self
                 .client
@@ -790,29 +792,29 @@ impl UpdateLifecycle {
         }
         let output = self
             .client
-            .run(&check_args(source), CHECK_TIMEOUT)
+            .run(&check_args(selection, &policy.workspace), CHECK_TIMEOUT)
             .await
             .map_err(|err| Failure::Error(format!("check: {err:#}")))?;
         parse_check(&output).map_err(Failure::Error)
     }
 
-    async fn run_fetch(&self, policy: &UpdatePolicy) -> Result<FetchOutcome, Failure> {
-        self.probe(policy).await?;
-        let source = &policy.source;
-        let Some(url) = &source.url else {
+    async fn run_fetch(&self, policy: &EffectivePolicy) -> Result<FetchOutcome, Failure> {
+        self.probe(&policy.workspace).await?;
+        let selection = selection_of(policy)?;
+        let Some(url) = &selection.url else {
             // Unreachable through `request_fetch` (the policy refusal caught
             // it), kept as an error rather than a panic all the same.
             return Err(Failure::Error("no update source configured".to_string()));
         };
         // No `--reserve-dir`: the client's default is the workspace's
         // downloads/, and there is no other place a partial may go.
-        let mut args = check_args(source);
+        let mut args = check_args(selection, &policy.workspace);
         args[0] = "fetch".to_string();
         args.extend([
             "--url".to_string(),
             url.clone(),
             "--max-bytes".to_string(),
-            source.max_bytes.to_string(),
+            policy.workspace.max_bytes.to_string(),
         ]);
         let output = self
             .client
@@ -966,18 +968,37 @@ fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// The selection an acquisition runs against, or the failure that says the
+/// operator document did not load.
+///
+/// Unreachable through `request_check`/`request_fetch`, whose policy refusal
+/// catches the same condition first; kept as an error rather than an unwrap
+/// because "the document did not load" must never resolve to the baked
+/// channel (PLAN-070 §5.1).
+fn selection_of(policy: &EffectivePolicy) -> Result<&Selection, Failure> {
+    policy.selection.as_ref().ok_or_else(|| {
+        Failure::Error(
+            "the update policy document did not load, so there is no channel to check".to_string(),
+        )
+    })
+}
+
 /// The `check` argument vector; `fetch` extends it.
-fn check_args(source: &crate::update_policy::SourcePolicy) -> Vec<String> {
+///
+/// `--root` is a build-side constant rather than a policy key: the anchor
+/// left the operator document with the move (PLAN-070 §5.3.5) and F7 replaces
+/// the flag with the baked manifest's `trust.signingKeys`.
+fn check_args(selection: &Selection, workspace: &Workspace) -> Vec<String> {
     vec![
         "check".to_string(),
         "--repo".to_string(),
-        source.repo_dir.clone(),
+        workspace.repo_dir.clone(),
         "--root".to_string(),
-        source.root_path.clone(),
+        crate::update_policy::DEFAULT_ROOT_PATH.to_string(),
         "--state".to_string(),
-        source.state_path.clone(),
+        workspace.state_path.clone(),
         "--channel".to_string(),
-        source.channel.clone(),
+        selection.channel.clone(),
     ]
 }
 
@@ -1073,6 +1094,7 @@ fn render_entry(
     }
     entry.insert("workspace".into(), Value::Object(workspace));
     let policy = &loaded.policy;
+    let selection = policy.selection.as_ref();
     let windows: Vec<Value> = policy
         .maintenance
         .windows
@@ -1095,9 +1117,16 @@ fn render_entry(
                 crate::update_policy::NetworkMode::Offline => "offline",
             },
             "meteredAllowsFetch": policy.network.metered_allows_fetch,
-            "sourceUrl": policy.source.url,
-            "channel": policy.source.channel,
-            "autoCheckMinutes": policy.auto_check.interval_minutes,
+            // The effective values after PLAN-070 §5.1's precedence, and
+            // `null` for all four when the operator document did not load --
+            // `policy_error` below is what distinguishes "unknown" from
+            // "unset", and the baked default is deliberately NOT shown here
+            // as a stand-in. F9 adds the baked/operator/effective reading to
+            // `GET /api/v1/provisioning/status`, which is where §8 puts it.
+            "sourceUrl": selection.and_then(|selection| selection.url.clone()),
+            "channel": selection.map(|selection| selection.channel.clone()),
+            "policy": selection.map(|selection| selection.mode),
+            "checkIntervalMinutes": selection.map(|selection| selection.check_interval_minutes),
             "maintenanceWindows": windows,
             "installAllowedNow": update_policy::install_refusal(loaded, Utc::now()).is_none(),
             "blockingStatuses": policy.reboot_gate.blocking_statuses,
@@ -1123,21 +1152,22 @@ fn render_entry(
 
 /// The automatic check cadence: sleep the policy's interval, then run a
 /// check when policy and client allow it. The interval is re-read every
-/// turn, so an operator edit takes effect without a restart; a disabled
-/// cadence (`0`) is re-polled every five minutes rather than never again.
+/// turn, so an operator edit takes effect without a restart; a device that
+/// initiates nothing -- `policy = "off"`, an interval of `0`, or a document
+/// that did not load -- is re-polled every five minutes rather than never
+/// again.
 ///
 /// Checks only. Nothing is fetched and nothing is installed automatically —
 /// downloads and installs stay operator actions gated by their own policies.
 pub async fn auto_check_loop(lifecycle: Arc<UpdateLifecycle>) {
     const DISABLED_POLL: Duration = Duration::from_secs(300);
     loop {
-        let interval = lifecycle.policy.load().policy.auto_check.interval_minutes;
-        if interval == 0 {
+        let Some(interval) = lifecycle.policy.load().auto_check_minutes() else {
             tokio::time::sleep(DISABLED_POLL).await;
             continue;
-        }
+        };
         tokio::time::sleep(Duration::from_secs(interval * 60)).await;
-        if lifecycle.policy.load().policy.auto_check.interval_minutes == 0 {
+        if lifecycle.policy.load().auto_check_minutes().is_none() {
             continue;
         }
         if let Err(refusal) = lifecycle.request_check("auto-check").await {
@@ -1445,7 +1475,7 @@ mod tests {
     }
 
     fn policy_file(dir: &tempfile::TempDir, body: &str) -> PolicyStore {
-        let path = dir.path().join("update-policy.toml");
+        let path = dir.path().join("updates.json");
         std::fs::write(&path, body).expect("seed policy");
         PolicyStore::at(path)
     }
@@ -1497,7 +1527,7 @@ mod tests {
     #[tokio::test]
     async fn a_check_syncs_then_checks_and_records_the_selection() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
             ("sync", Ok(output(0, "synced root v1 ...\n", ""))),
@@ -1546,7 +1576,7 @@ mod tests {
     #[tokio::test]
     async fn a_fetch_records_the_verified_path_as_ready() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
             (
@@ -1585,7 +1615,7 @@ mod tests {
             "/var/lib/mos/update/reserve/x.raucb",
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+            let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
             let client = MockClient::new(vec![
                 ready_probe(),
                 ("fetch", Ok(output(0, &format!("{printed}\n"), ""))),
@@ -1616,7 +1646,7 @@ mod tests {
             ("degraded", "probe-failed"),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+            let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
             let verdict = format!("{status} {kind}: the detail for {kind}\n");
             // The probe refuses; then, on the second request, passes — and
             // only then are sync and check ever asked for.
@@ -1673,7 +1703,7 @@ mod tests {
     #[tokio::test]
     async fn a_fetch_the_workspace_refuses_is_the_same_named_state() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
             (
@@ -1745,7 +1775,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_check_is_a_failed_state_with_its_reason() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
             (
@@ -1774,7 +1804,7 @@ mod tests {
         // Offline: both verbs refused, nothing ever reaches the client.
         let policy = policy_file(
             &dir,
-            "[source]\nurl = \"http://mirror/tuf\"\n[network]\nmode = \"offline\"\n",
+            r#"{"source": {"url": "http://mirror/tuf"}, "network": {"mode": "offline"}}"#,
         );
         let client = MockClient::new(vec![]);
         let host = TestHost::new();
@@ -1800,7 +1830,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy = policy_file(
             &dir,
-            "[source]\nurl = \"http://mirror/tuf\"\n[network]\nmode = \"metered\"\n",
+            r#"{"source": {"url": "http://mirror/tuf"}, "network": {"mode": "metered"}}"#,
         );
         let client = MockClient::new(vec![
             ready_probe(),
@@ -1823,7 +1853,7 @@ mod tests {
     #[tokio::test]
     async fn an_absent_client_is_reported_never_panicked_over() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::absent("/usr/bin/rauc-update is not present on this image");
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
@@ -1842,7 +1872,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_operation_is_refused_while_one_runs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "[source]\nurl = \"http://mirror/tuf\"\n");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         // The sync never answers within the test: an Err after a long sleep
         // would leak; instead gate on a channel-free trick — a script entry
         // that sleeps far longer than the test's second request needs.
@@ -1882,7 +1912,7 @@ mod tests {
     #[tokio::test]
     async fn the_reboot_gate_blocks_lifts_and_expires() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "");
+        let policy = policy_file(&dir, "{}");
         let client = MockClient::new(vec![]);
         let host = TestHost::new();
         let (lifecycle, installing) = lifecycle(client, policy, Arc::clone(&host));
@@ -1937,7 +1967,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_derives_the_boot_phase_from_fresh_slots() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "");
+        let policy = policy_file(&dir, "{}");
         let client = MockClient::new(vec![]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
@@ -1965,7 +1995,7 @@ mod tests {
         // through the pure function and only the wiring here.
         let policy = policy_file(
             &dir,
-            "[[maintenance.windows]]\ndays = [\"mon\"]\nstart = \"00:00\"\nend = \"00:01\"\n",
+            r#"{"maintenance": {"windows": [{"days": ["mon"], "start": "00:00", "end": "00:01"}]}}"#,
         );
         let client = MockClient::new(vec![]);
         let host = TestHost::new();
