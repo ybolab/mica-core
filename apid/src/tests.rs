@@ -2780,6 +2780,10 @@ impl SettingsApi for FailingSettings {
     async fn set_reboot_override(&self, _seconds: u32) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
+
+    async fn clear_update_suppression(&self, _version: &str) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
 }
 
 // A router whose resource reads fail the way `fdo_name` says, plus a session

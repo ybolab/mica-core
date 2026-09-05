@@ -1,6 +1,6 @@
-//! The update cluster: one state read and six actions over mosd's update
+//! The update cluster: one state read and seven actions over mosd's update
 //! surface (`GetUpdateState`, `CheckUpdate`, `FetchUpdate`, `InstallUpdate`,
-//! `MarkUpdate`, `SetRebootOverride`).
+//! `MarkUpdate`, `SetRebootOverride`, `ClearUpdateSuppression`).
 //!
 //! Six actions over five action members and no sixth: the guarded rollback is
 //! composed here out of `GetUpdateState` (which carries mosd's own rollback
@@ -34,6 +34,7 @@ pub(crate) const V1_UPDATE_INSTALL_PATH: &str = "/v1/update/install";
 pub(crate) const V1_UPDATE_MARK_PATH: &str = "/v1/update/mark";
 pub(crate) const V1_UPDATE_ROLLBACK_PATH: &str = "/v1/update/rollback";
 pub(crate) const V1_UPDATE_REBOOT_OVERRIDE_PATH: &str = "/v1/update/reboot-override";
+pub(crate) const V1_UPDATE_CLEAR_SUPPRESSION_PATH: &str = "/v1/update/clear-suppression";
 
 /// The D-Bus error name mosd's update surface refuses policy-forbidden
 /// actions with. Not in `routes.rs`'s table: only this cluster produces it.
@@ -544,6 +545,74 @@ pub(crate) async fn api_v1_update_reboot_override(
                 .audit
                 .record("update-reboot-override", "armed", &source);
             api_response(StatusCode::OK, RebootOverride(record))
+        }
+        Err(err) => update_bus_error(&err),
+    }
+}
+
+/// `POST /api/v1/update/clear-suppression` request body.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ClearSuppressionRequest {
+    /// The suppressed version to permit again, exactly as
+    /// `lifecycle.suppressed[].version` spells it.
+    version: String,
+}
+
+/// The suppression that was cleared, as mosd recorded it.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClearedSuppression(Value);
+
+/// Permit automatic installs of a version this device rolled back.
+///
+/// A version is suppressed when the slot it was installed into exhausted its
+/// boot attempts and the bootloader fell back; the automatic path then
+/// refuses to select it again, which is what stops `auto` from installing the
+/// same bad bundle once per maintenance window forever. A **manual** install
+/// of that version is never refused, so this route lifts a restriction on the
+/// machine and not on the operator.
+///
+/// The version is named explicitly and there is deliberately no route that
+/// empties the store: an operator who has diagnosed one bad release has not
+/// thereby diagnosed the others. Audited on both sides — this route records
+/// the event, and mosd logs who cleared what.
+#[utoipa::path(
+    post,
+    path = V1_UPDATE_CLEAR_SUPPRESSION_PATH,
+    context_path = API,
+    tag = "update",
+    request_body = ClearSuppressionRequest,
+    responses(
+        (status = 200, description = "The suppression that was cleared: `version`, `slot`, `at`, `bootStatus`, `detail`", body = ClearedSuppression),
+        (status = 400, description = "The body is not JSON or not this shape (`request_invalid`)", body = ApiError),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 422, description = "That version is not suppressed (`validation_failed`)", body = ApiError),
+        (status = 500, description = "mosd failed to clear it, e.g. the store could not be written (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_update_clear_suppression(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    body: Result<Json<ClearSuppressionRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => return body_rejection(rejection),
+    };
+    match state.api.clear_update_suppression(&request.version).await {
+        Ok(record) => {
+            state.audit.record(
+                "update-clear-suppression",
+                &format!("version {}", request.version),
+                &source,
+            );
+            api_response(StatusCode::OK, ClearedSuppression(record))
         }
         Err(err) => update_bus_error(&err),
     }

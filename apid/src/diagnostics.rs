@@ -1935,6 +1935,10 @@ mod tests {
             async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
                 self.0.set_reboot_override(seconds).await
             }
+
+            async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
+                self.0.clear_update_suppression(version).await
+            }
         }
 
         let api = HalfFailing(FakeSettings::new(

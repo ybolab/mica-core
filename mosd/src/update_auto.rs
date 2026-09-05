@@ -15,7 +15,7 @@
 //! reservation and the safe-to-reboot gate. There is no automatic bypass of
 //! anything, because there is no second implementation to bypass it in.
 //!
-//! Two things the automatic path adds, and one it refuses to add:
+//! Three things the automatic path adds, and one it refuses to add:
 //!
 //! - **The re-check before an install** (§5). A verified bundle sitting in
 //!   `verified/` may have been withdrawn since it was fetched, and TUF
@@ -27,16 +27,26 @@
 //! - **The pending-slot guard.** A device whose other slot is installed and
 //!   waiting for its first boot has already been updated; installing again
 //!   would write over the slot the fallback needs.
+//! - **The suppression and the clock predicate** (§6, §7). A version whose
+//!   slot rolled back is not selected again — without that, `auto` is a
+//!   reboot loop, and PLAN-071 calls it the single most important safety
+//!   property in the plan — and an automatic install requires a clock the
+//!   device believes, because a maintenance window is UTC wall-clock and a
+//!   window verdict computed from a clock nobody vouches for is not a
+//!   verdict. Both refuse where a human is not refused: a manual install of
+//!   a suppressed version stays available, on the same reasoning as the
+//!   re-check above.
 //! - **It never arms the reboot-gate override** (§2 step 4). That is a
 //!   human's judgement that this reboot outranks what an application
 //!   declared it must not be interrupted for, and a machine cannot make it.
 //!   Enforced by construction: [`AutoRoutes`] has no method that arms it.
 //!
-//! **What is not here yet, and it matters.** PLAN-071 §6's version
-//! suppression is U4 and is not built. Without it, a bundle that installs
-//! and fails to confirm is selected again by the next check, installed
-//! again, and fails again — the reboot loop §6 exists to prevent. The one
-//! place U4 belongs is marked below.
+//! **Every refusal is recorded, not logged and forgotten** (§2). Each
+//! `defer` call names a reason from the plan's vocabulary and lands in
+//! `update.lifecycle.deferred` with the refusing rule, when the reason first
+//! applied and how many attempts it has refused since. A permanently
+//! blocking application permanently defers the reboot, which is correct and
+//! is also indistinguishable from a stuck update unless the device says so.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -44,8 +54,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 
+use crate::time_status::ClockTrust;
 use crate::update_lifecycle::{Available, Refusal, Settled};
 use crate::update_policy::{self, LoadedPolicy, RebootPolicy, UpdateMode};
+use crate::update_suppress::Suppression;
 
 /// Who the driver's actions are attributed to, wherever an operator's bus
 /// name would be. One name, so an audit reading `requested_by` can tell a
@@ -112,6 +124,22 @@ pub trait AutoRoutes: Send + Sync {
     /// `Reboot`, honouring the safe-to-reboot gate; the error is the gate's
     /// refusal, verbatim.
     async fn reboot(&self, sender: &str) -> Result<(), String>;
+
+    /// PLAN-071 §6's record for `version`, or the store's own error.
+    ///
+    /// The error is carried rather than swallowed: a suppression store that
+    /// exists and does not parse must not read as "nothing is suppressed",
+    /// because that reading is exactly the loop the store exists to break.
+    async fn suppression(&self, version: &str) -> Result<Option<Suppression>, String>;
+
+    /// The two signals PLAN-071 §7's clock predicate reads.
+    async fn clock(&self) -> ClockTrust;
+
+    /// Record why this pass did not proceed (§2, U5).
+    async fn defer(&self, reason: &str, detail: &str);
+
+    /// Forget a recorded deferral; `only` clears just that reason.
+    async fn resume(&self, only: Option<&str>);
 }
 
 /// Where the driver is between ticks.
@@ -201,8 +229,29 @@ impl AutoDriver {
             return;
         }
         self.last_check = Instant::now();
-        if let Err(refusal) = self.routes.check(SENDER).await {
-            tracing::debug!(reason = refusal.message(), "automatic check skipped");
+        match self.routes.check(SENDER).await {
+            // The channel is up to date. Recorded rather than passed over:
+            // the lifecycle renders this as plain `idle`, which is also what
+            // a device that has never checked renders as, and an operator
+            // watching a release they expect needs to be told that the
+            // device looked and the channel does not carry it.
+            Ok(Settled::NoneCompatible) => {
+                self.defer(
+                    "no-newer-release",
+                    &format!(
+                        "channel `{}` publishes nothing newer than the running system",
+                        loaded.policy.source.channel
+                    ),
+                )
+                .await;
+            }
+            // It found one: that supersedes the fact above and nothing else.
+            // A window that was shut a minute ago is still shut.
+            Ok(_) => self.routes.resume(Some("no-newer-release")).await,
+            Err(refusal) => {
+                tracing::debug!(reason = refusal.message(), "automatic check skipped");
+                self.defer("check-refused", refusal.message()).await;
+            }
         }
     }
 
@@ -221,11 +270,30 @@ impl AutoDriver {
         // and the window: the newer target is fetched, and the older staged
         // file is left where a human can still install it.
         if let Some(candidate) = self.routes.available().await {
+            // §6 again, one step earlier than the refusal that closes the
+            // loop: a version this device has already rolled back is not
+            // downloaded again either, which is what stops a metered link
+            // from paying for the same bad bundle once per window. The pass
+            // stops here rather than falling through to an install step that
+            // would refuse it anyway, so the recorded reason names the
+            // suppression instead of whatever happens to be staged.
+            match self.routes.suppression(&candidate.version).await {
+                Ok(Some(record)) => {
+                    self.defer("version-suppressed", &record.detail).await;
+                    return;
+                }
+                Err(error) => {
+                    self.defer("suppression-unreadable", &error).await;
+                    return;
+                }
+                Ok(None) => {}
+            }
             let staged = self.routes.staged().await;
             if staged.as_deref().and_then(bundle_name) != Some(candidate.name.as_str())
                 && let Err(refusal) = self.routes.fetch(SENDER).await
             {
                 tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
+                self.defer("fetch-refused", refusal.message()).await;
                 return;
             }
         }
@@ -235,51 +303,64 @@ impl AutoDriver {
         }
     }
 
-    /// Step 3: the window, the pending-slot guard, the re-check, the install.
+    /// Step 3: the clock, the window, the pending-slot guard, the re-check,
+    /// the suppression, the install.
     async fn install_if_allowed(&mut self, loaded: &LoadedPolicy, bundle: &str) {
+        // PLAN-071 §7, and FIRST in the list on purpose. Every other
+        // precondition below is judged against a wall clock: the maintenance
+        // window is UTC `HH:MM`, so a window verdict computed from a clock
+        // nobody vouches for is not a verdict, and refusing on the window
+        // afterwards would report the wrong reason for the same refusal.
+        // `believes` is `docs/design/time.md` §3's floor and §5's
+        // `synchronized`, not a notion invented here. Checks and fetches are
+        // deliberately unaffected — neither is time-keyed, and refusing them
+        // would make a clockless device stop even discovering updates.
+        if let Some(reason) = self.routes.clock().await.untrusted_reason() {
+            self.defer("clock-untrusted", &reason).await;
+            return;
+        }
         // The same refusal `InstallUpdate` answers an operator with: the
         // maintenance window, which `auto` requires the document to name.
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason);
+            self.defer("outside-window", &reason).await;
             return;
         }
         let Some(facts) = self.routes.facts().await else {
-            self.defer("slot-status-unknown", "RAUC did not answer the slot query");
+            self.defer("slot-status-unknown", "RAUC did not answer the slot query")
+                .await;
             return;
         };
         if facts.reboot_pending {
             self.defer(
                 "reboot-pending",
                 "a slot is already installed and waiting for its first boot",
-            );
+            )
+            .await;
             return;
         }
-        // The re-check of §5. Its answer is also where PLAN-071 §6's version
-        // suppression goes when U4 lands: the candidate below carries the
-        // version, and a suppressed one is refused HERE, between the re-check
-        // and the install, with `version-suppressed` as its deferral reason.
-        // Until it does, a bundle that installs and fails to confirm is
-        // selected again by the next check and installed again — the loop §6
-        // exists to close.
+        // The re-check of §5, and the version it answers with is what §6's
+        // suppression is consulted on immediately below.
         let named = match self.routes.check(SENDER).await {
             Ok(Settled::Done(candidate)) => Some(candidate),
             Ok(Settled::NoneCompatible) => None,
             Ok(Settled::Unready(unready)) => {
-                self.defer("workspace-unready", &unready.reason());
+                self.defer("workspace-unready", &unready.reason()).await;
                 return;
             }
             Ok(Settled::Failed(reason)) => {
-                self.defer("recheck-failed", &reason);
+                self.defer("recheck-failed", &reason).await;
                 return;
             }
             Err(refusal) => {
-                self.defer("recheck-refused", refusal.message());
+                self.defer("recheck-refused", refusal.message()).await;
                 return;
             }
         };
-        match named {
-            // The metadata still names it: install.
-            Some(candidate) if Some(candidate.name.as_str()) == bundle_name(bundle) => {}
+        let version = match named {
+            // The metadata still names it: this is the version to install.
+            Some(candidate) if Some(candidate.name.as_str()) == bundle_name(bundle) => {
+                candidate.version
+            }
             // It names something else. The staged bundle is superseded rather
             // than provably withdrawn — a check reports the selection, not the
             // whole target list — so it is not deleted, and the next pass
@@ -288,7 +369,8 @@ impl AutoDriver {
                 self.defer(
                     "superseded",
                     &format!("the check now names {}", candidate.name),
-                );
+                )
+                .await;
                 return;
             }
             // Nothing compatible is published at all, so the current metadata
@@ -299,13 +381,38 @@ impl AutoDriver {
                     .await;
                 return;
             }
+        };
+        // PLAN-071 §6, HERE: between the re-check and the install, because
+        // this is the first point at which the version about to be written
+        // is known rather than guessed at. Without this refusal `auto` is a
+        // reboot loop — the fallback leaves the device on the older system,
+        // which makes the failed version newer again, and the next window
+        // installs it again. The refusal binds the AUTOMATIC path only: a
+        // manual install of this same bundle is still permitted, because the
+        // operator reading the record has been told and is choosing.
+        match self.routes.suppression(&version).await {
+            Ok(Some(record)) => {
+                self.defer("version-suppressed", &record.detail).await;
+                return;
+            }
+            // A store that exists and cannot be read is not an empty store.
+            // Reading it as one is precisely how the loop restarts, so the
+            // closed side here is refusing the install.
+            Err(error) => {
+                self.defer("suppression-unreadable", &error).await;
+                return;
+            }
+            Ok(None) => {}
         }
         match self.routes.install(SENDER, bundle).await {
             Ok(()) => {
-                tracing::warn!(bundle, "automatic install started");
+                tracing::warn!(bundle, version, "automatic install started");
                 self.stage = Stage::Installing;
+                // The pass ran to its end; every reason it was refused for
+                // before now is stale.
+                self.routes.resume(None).await;
             }
-            Err(refusal) => self.defer("install-refused", &refusal),
+            Err(refusal) => self.defer("install-refused", &refusal).await,
         }
     }
 
@@ -343,7 +450,7 @@ impl AutoDriver {
             return;
         }
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason);
+            self.defer("outside-window", &reason).await;
             return;
         }
         if let Err(refusal) = self.routes.reboot(SENDER).await {
@@ -351,21 +458,27 @@ impl AutoDriver {
             // reporting a blocking health status. Automation defers and the
             // next window re-attempts. It does not arm the override — there
             // is no method on `AutoRoutes` to arm it with.
-            self.defer("reboot-gate-closed", &refusal);
+            self.defer("reboot-gate-closed", &refusal).await;
             return;
         }
-        // The machine is going down; the stage it leaves behind is moot.
+        // The machine is going down; the stage it leaves behind is moot, and
+        // so is every reason the pass was refused for on the way here.
+        self.routes.resume(None).await;
         self.stage = Stage::Idle;
     }
 
-    /// Say why an automatic step did not proceed.
+    /// Say why an automatic step did not proceed, in the log AND in the
+    /// state (PLAN-071 §2, U5).
     ///
-    /// A log line today. PLAN-071 §2 wants it visible in the lifecycle as a
-    /// `deferred` fact naming the reason and how long the pending slot has
-    /// waited — that is U5, and every reason it names is already a call
-    /// site here, so U5 replaces this body rather than hunting for them.
-    fn defer(&self, reason: &str, detail: &str) {
+    /// The log line is for whoever is reading the journal at the time; the
+    /// recorded fact is for the operator who opens the update page a week
+    /// later, which is the reader §2 is written for. The lifecycle keeps the
+    /// instant the reason first applied and the number of attempts it has
+    /// refused, so "a permanently blocking application" and "a stuck update"
+    /// stop looking the same from outside.
+    async fn defer(&self, reason: &str, detail: &str) {
         tracing::info!(reason, detail, "automatic update deferred");
+        self.routes.defer(reason, detail).await;
     }
 }
 
