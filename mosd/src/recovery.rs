@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use mosd_settings::{
-    Declaration, INTENT_SOURCE, NoAction, PRESENCE_WINDOW_SECS, PresenceMarker,
+    ACTOR_DEVICE, Declaration, INTENT_SOURCE, NoAction, PRESENCE_WINDOW_SECS, PresenceMarker,
     RECOVERY_ACTION_EVENT, REFUSED_MALFORMED_INTENT, RecoveryAction, ResetSettings, ResetTier,
     Settings, Store, append_audit_line, audit_line, audit_ring_dir, cmdline_path, declaration_path,
     intent_from_cmdline, presence_marker_path, recovery_action_event, refusal_outcome, reset_event,
@@ -248,14 +248,22 @@ fn record(paths: &Paths, event: &str, outcome: &str) {
 
 /// One audit line.
 ///
+/// The actor is [`ACTOR_DEVICE`]: a recovery action is asserted at the console
+/// by somebody standing at the board, and what this module can honestly say is
+/// that the device acted on what it found at boot — not that an authenticated
+/// operator asked, which is a different claim and the one the API side makes.
+///
 /// A failed write is logged and swallowed, as it is on apid's side: refusing
 /// to boot a device because its audit ring is unwritable is a lockdown
 /// decision this design does not take (`docs/design/access.md` §6).
 fn record_source(paths: &Paths, event: &str, outcome: &str, source: &str) {
-    tracing::info!(target: "audit", event, outcome, source, "audit event");
-    if let Err(err) = std::fs::create_dir_all(&paths.audit_dir)
-        .and_then(|()| append_audit_line(&paths.audit_dir, &audit_line(event, outcome, source)))
-    {
+    tracing::info!(target: "audit", event, outcome, source, actor = ACTOR_DEVICE, "audit event");
+    if let Err(err) = std::fs::create_dir_all(&paths.audit_dir).and_then(|()| {
+        append_audit_line(
+            &paths.audit_dir,
+            &audit_line(event, outcome, source, ACTOR_DEVICE),
+        )
+    }) {
         tracing::warn!(
             error = %err,
             dir = %paths.audit_dir.display(),

@@ -4,14 +4,15 @@
 //! **Here, rather than in apid, because there are two writers.** apid records
 //! what an operator asked over the API; mosd records what a board-declared
 //! physical recovery action did at boot (`docs/design/recovery.md` §4), which
-//! happens before apid is serving anything. Two implementations of one ring
-//! would be two rotation policies and two line shapes over one file, so the
-//! shape, the cap and the rotation live in the crate both binaries link and
-//! neither owns a private copy.
+//! happens before apid is serving anything, and what the update policy's
+//! automatic driver did with nobody watching (PLAN-071 §3). Two
+//! implementations of one ring would be two rotation policies and two line
+//! shapes over one file, so the shape, the cap and the rotation live in the
+//! crate both binaries link and neither owns a private copy.
 //!
-//! A line carries a UTC timestamp, the event, the outcome and the source — and
-//! **never** a password, a hash or any other credential material. Callers pass
-//! fixed strings; nothing operator-typed flows in.
+//! A line carries a UTC timestamp, the event, the outcome, the source and the
+//! actor — and **never** a password, a hash or any other credential material.
+//! Callers pass fixed strings; nothing operator-typed flows in.
 
 use std::path::{Path, PathBuf};
 
@@ -47,14 +48,66 @@ pub fn audit_ring_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from(DEFAULT_AUDIT_RING_DIR), PathBuf::from)
 }
 
-/// One audit line: four members, and there is never a fifth.
+/// The actor of an action a human took: an authenticated operator, through
+/// the management API.
+///
+/// Not the session's own identifier, deliberately. The cookie is a
+/// credential and has no place in a file this one; the peer address is
+/// already the line's `source`; and the question PLAN-071 §3 requires the
+/// trail to answer is *did a human do this*, which two values answer and a
+/// session id does not answer any better.
+pub const ACTOR_OPERATOR: &str = "operator";
+
+/// The actor of an action the device took on its own: the update policy's
+/// automatic driver (PLAN-071 §2).
+pub const ACTOR_POLICY: &str = "policy";
+
+/// The actor of an action the device took that no policy and no operator
+/// asked for: a boot-time recovery mechanism, or a daemon acting on what it
+/// found on the disk at startup.
+pub const ACTOR_DEVICE: &str = "device";
+
+/// The update events, whose whole point is that **both daemons spell them the
+/// same** (PLAN-071 §3).
+///
+/// apid records them when an operator asked; mosd's automatic driver records
+/// them when the policy did. If the two spellings drifted, the actor field
+/// would still be there and the trail would answer *did a human do this* with
+/// two event sets that never meet — so the names are constants in the crate
+/// both binaries link rather than literals in each.
+pub const UPDATE_CHECK_EVENT: &str = "update-check";
+/// See [`UPDATE_CHECK_EVENT`].
+pub const UPDATE_FETCH_EVENT: &str = "update-fetch";
+/// See [`UPDATE_CHECK_EVENT`].
+pub const UPDATE_INSTALL_EVENT: &str = "update-install";
+
+/// The event recorded when the operator's update document is written
+/// (PLAN-071 §3). Only ever an operator's: mosd is the file's writer and no
+/// automatic path asks it to write one.
+pub const UPDATE_CONFIG_EVENT: &str = "update-config";
+
+/// The outcome the three update events carry when the action was admitted and
+/// is running. The work itself lands in `update.lifecycle`, which carries far
+/// more than an audit line could; what this file answers is *who asked*.
+pub const REQUESTED: &str = "requested";
+
+/// One audit line: five members, and there is never a sixth.
+///
+/// **`actor` is the fifth and PLAN-071 §3 is why it exists**: the same event
+/// names are recorded whether an operator asked or the automatic driver did,
+/// so without it an update trail cannot answer *did a human do this* — and an
+/// event set that cannot is a support tool that lies during exactly the
+/// incident it exists for. It is one of [`ACTOR_OPERATOR`], [`ACTOR_POLICY`]
+/// and [`ACTOR_DEVICE`]; nothing operator-typed reaches it, the same rule the
+/// other four members follow.
 #[must_use]
-pub fn audit_line(event: &str, outcome: &str, source: &str) -> String {
+pub fn audit_line(event: &str, outcome: &str, source: &str, actor: &str) -> String {
     serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "event": event,
         "outcome": outcome,
         "source": source,
+        "actor": actor,
     })
     .to_string()
 }

@@ -1,5 +1,17 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
+/// The prototype's in-memory device, for the surfaces the daemon does not
+/// serve yet.
+///
+/// **The automatic-update policy left this file** (PLAN-071 U7). The channel,
+/// the address, the mode, the cadence and the maintenance windows are now
+/// writes against `POST /api/v1/update/config`, so there is no simulated
+/// `automaticUpdates` to hold: a control that wrote in production and
+/// simulated in the demo would be one code path that behaves two ways, which
+/// is the shape that hides a regression. `updatePhase` stays, because it backs
+/// the applications prototype's progress animation and nothing on the update
+/// tab reads it.
+
 export type SimulatedRuntime = 'not-installed' | 'running' | 'stopped' | 'blocked'
 
 export interface SimulatedApp {
@@ -30,7 +42,6 @@ interface SimulationValue {
   activity: SimulatedActivity[]
   terminalEnabled: boolean
   updatePhase: UpdatePhase
-  automaticUpdates: boolean
   supportAccess: boolean
   installApp: (id: string) => void
   toggleApp: (id: string) => void
@@ -38,7 +49,6 @@ interface SimulationValue {
   updateApp: (id: string) => void
   setTerminalEnabled: (enabled: boolean) => void
   advanceUpdate: () => void
-  setAutomaticUpdates: (enabled: boolean) => void
   setSupportAccess: (enabled: boolean) => void
 }
 
@@ -65,7 +75,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [activity, setActivity] = useState(initialActivity)
   const [terminalEnabled, setTerminalEnabled] = useState(false)
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('ready')
-  const [automaticUpdates, setAutomaticUpdates] = useState(true)
   const [supportAccess, setSupportAccess] = useState(false)
 
   const record = (action: SimulatedActivity['action'], app: SimulatedApp) => {
@@ -101,7 +110,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     activity,
     terminalEnabled,
     updatePhase,
-    automaticUpdates,
     supportAccess,
     installApp,
     toggleApp,
@@ -109,9 +117,8 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     updateApp,
     setTerminalEnabled,
     advanceUpdate,
-    setAutomaticUpdates,
     setSupportAccess,
-  }), [apps, activity, terminalEnabled, updatePhase, automaticUpdates, supportAccess])
+  }), [apps, activity, terminalEnabled, updatePhase, supportAccess])
 
   return <SimulationContext value={value}>{children}</SimulationContext>
 }

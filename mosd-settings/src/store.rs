@@ -286,6 +286,21 @@ fn write_document<T: Serialize>(
     if fs::read_to_string(path).is_ok_and(|current| current == text) {
         return Ok(());
     }
+    write_atomically(path, &text)?;
+    Ok(())
+}
+
+/// Replace `path` with `text` atomically at [`DOCUMENT_MODE`]: a temporary
+/// sibling, the mode set **before** the rename, the bytes fsynced, the rename,
+/// and the directory fsynced after it.
+///
+/// **The one write discipline of the `/mos/config/` namespace** (PLAN-070
+/// §5.2), and it is `pub(crate)` for that reason: the settings documents above
+/// and [`crate::configuration::save_updates`] are two writers of one
+/// namespace, and a second implementation of this sequence would be a second
+/// answer to "what does a reader see when the power fails here". A reader sees
+/// the old document or the new one.
+pub(crate) fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),

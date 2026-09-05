@@ -370,3 +370,87 @@ async fn a_session_mutation_without_csrf_is_403() {
         "a CSRF-refused mutation must not reach mosd"
     );
 }
+
+const CONFIG_PATH: &str = "/api/v1/update/config";
+
+/// The write route: administrator authority, the patch forwarded to mosd
+/// verbatim, and the saved document answered.
+#[tokio::test]
+async fn the_config_write_takes_a_credential_and_hands_the_patch_to_mosd() {
+    let (router, fake, token) = update_app(json!({}));
+    let patch = json!({ "source": { "channel": "beta" } });
+
+    let anonymous = json_request(&router, "POST", CONFIG_PATH, patch.clone(), None, None).await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        fake.update_calls().is_empty(),
+        "an unauthenticated write must not reach mosd"
+    );
+
+    let response = bearer_json(&router, "POST", CONFIG_PATH, &token, &patch.to_string()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await, patch);
+    assert_eq!(
+        fake.update_calls(),
+        vec![format!("config {patch}")],
+        "apid forwards the patch and writes no file of its own"
+    );
+}
+
+/// The refusals mosd produces, mapped: a rejected patch is the request's
+/// fault (422) and an unreadable document on the device is not (409).
+#[tokio::test]
+async fn the_config_write_maps_the_refusals_and_names_the_offending_field() {
+    let (router, fake, token) = update_app(json!({}));
+    fake.refuse_updates(
+        INVALID_ARGS,
+        "/mos/config/updates.json: policy `auto` requires at least one maintenance window",
+    );
+    let response = bearer_json(
+        &router,
+        "POST",
+        CONFIG_PATH,
+        &token,
+        &json!({ "policy": "auto" }).to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "validation_failed");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("a message")
+            .contains("maintenance window"),
+        "the rule reaches the operator: {body}"
+    );
+
+    let (router, fake, token) = update_app(json!({}));
+    fake.refuse_updates(
+        ACCESS_DENIED,
+        "parse /mos/config/updates.json: expected value",
+    );
+    let response = bearer_json(
+        &router,
+        "POST",
+        CONFIG_PATH,
+        &token,
+        &json!({ "policy": "off" }).to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(response).await["error"]["code"], "policy_refused");
+}
+
+/// A body that is not JSON is the envelope's 400 and never reaches mosd.
+#[tokio::test]
+async fn the_config_write_refuses_a_body_that_is_not_json() {
+    let (router, fake, token) = update_app(json!({}));
+    let response = bearer_json(&router, "POST", CONFIG_PATH, &token, "{not json").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "request_invalid"
+    );
+    assert!(fake.update_calls().is_empty());
+}

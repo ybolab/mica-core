@@ -81,6 +81,14 @@ pub enum ConfigError {
     /// The document parses and says something the schema cannot mean.
     #[error("{path}: {message}")]
     Validation { path: PathBuf, message: String },
+    /// The document validated and could not be put on the disk. Its own
+    /// variant because it is the only one that is not about the operator's
+    /// input: the request was right and the device failed it.
+    #[error("write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -517,18 +525,34 @@ where
 }
 
 /// The operator document, exactly as parsed — layer 2, and nothing resolved.
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// **`Serialize` is the write half and it round-trips.** An absent key stays
+/// absent and an explicit `null` stays `null`, because the two are different
+/// statements about the document (§1.1) and a save that flattened them would
+/// silently rewrite the operator's meaning. [`save_updates`] is the only
+/// caller, and a test loads back what it writes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UpdatesDocument {
-    /// Checked against [`UPDATES_SCHEMA_TAG`] when present.
-    #[serde(default)]
+    /// Checked against [`UPDATES_SCHEMA_TAG`] when present, and always
+    /// written: [`save_updates`] stamps it, so a machine-written document
+    /// names its schema even when the one it replaced did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     /// What the device does on its own. Overrides `update.policy`.
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub policy: Override<UpdateMode>,
     /// Minutes between automatic checks; `0` disables them. Overrides
     /// `update.checkIntervalMinutes`.
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub check_interval_minutes: Override<u64>,
     /// What the automatic path does after an install. Read only under
     /// [`UpdateMode::Auto`], which is the only mode that installs. Not an
@@ -556,16 +580,24 @@ pub struct UpdatesDocument {
 /// no `rootPath`: it was the anchor half of the old `[source]` block and
 /// PLAN-070 §5.3.5 keeps it retired while the URL beside it became
 /// overridable.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UpdatesSource {
     /// Base URL of the published repository. Absent or `null` = the baked
     /// default, which may itself be absent — no online source, so
     /// `check`/`fetch` are refused and the offline import path remains.
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub url: Override<String>,
     /// Release channel to follow (`rauc-update check --channel`).
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub channel: Override<String>,
     /// Local metadata mirror directory (`rauc-update --repo`).
     #[serde(default = "default_repo_dir")]
@@ -622,7 +654,7 @@ pub enum NetworkMode {
     Offline,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NetworkPolicy {
     #[serde(default)]
@@ -633,7 +665,7 @@ pub struct NetworkPolicy {
     pub metered_allows_fetch: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MaintenancePolicy {
     /// When installs may run. An empty list means "any time" — maintenance
@@ -647,7 +679,7 @@ pub struct MaintenancePolicy {
 /// appliance has no trustworthy local-time configuration to read, and a
 /// window that silently shifted with a timezone guess would fire in
 /// somebody's business hours.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MaintenanceWindow {
     /// Days the window opens on: `mon`..`sun`. Empty means every day.
@@ -660,7 +692,7 @@ pub struct MaintenanceWindow {
     pub end: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RebootGatePolicy {
     /// Health statuses (live-state `health.<component>.status`) that close
@@ -881,6 +913,211 @@ pub fn validate(document: &UpdatesDocument) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// The write (PLAN-071 §3, U11)
+// ---------------------------------------------------------------------------
+
+/// A change to the operator document: the keys the write route names, merged
+/// over what is on the disk.
+///
+/// **A patch and not a replacement, because a replacement cannot be written
+/// honestly from a console.** The four overridable keys resolve through
+/// precedence, so a client that read the *effective* channel and sent the
+/// whole document back would pin the baked default into layer 2 — the device
+/// would stop following the image on the day the image changed, and nobody
+/// asked it to. A patch names what the operator changed and leaves the rest of
+/// the document exactly as it was, including the keys no console renders.
+///
+/// **Three states per overridable key, the document's own three** (§1.1):
+/// absent = leave it alone, `null` = clear the override and take the baked
+/// default again, a value = override. The workspace keys (`repoDir`,
+/// `statePath`, `maxBytes`) are deliberately not here: where bundles are
+/// staged is not a policy knob, and `deny_unknown_fields` is what says so at
+/// the API rather than a sentence in a document.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UpdatesPatch {
+    /// What the device does on its own.
+    #[serde(default, deserialize_with = "present")]
+    pub policy: Override<UpdateMode>,
+    /// Minutes between automatic checks; `0` disables them.
+    #[serde(default, deserialize_with = "present")]
+    pub check_interval_minutes: Override<u64>,
+    /// What the automatic path does after an install. Not an override —
+    /// layer 1 bakes no default for it — so it has two states, not three.
+    #[serde(default)]
+    pub reboot_policy: Option<RebootPolicy>,
+    #[serde(default)]
+    pub source: Option<UpdatesSourcePatch>,
+    /// Replaced whole when named: the object's own serde defaults apply to
+    /// the keys the caller leaves out of it.
+    #[serde(default)]
+    pub network: Option<NetworkPolicy>,
+    #[serde(default)]
+    pub maintenance: Option<MaintenancePolicy>,
+    #[serde(default)]
+    pub reboot_gate: Option<RebootGatePolicy>,
+}
+
+/// The two overridable keys of `source`, and nothing else it holds.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UpdatesSourcePatch {
+    /// Where this device dials. `null` returns it to the baked address —
+    /// which is a *default*, never a fallback (PLAN-070 §5.1).
+    #[serde(default, deserialize_with = "present")]
+    pub url: Override<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub channel: Override<String>,
+}
+
+/// Merge `patch` over `document`, key by key.
+pub fn apply_patch(mut document: UpdatesDocument, patch: UpdatesPatch) -> UpdatesDocument {
+    if let Some(policy) = patch.policy {
+        document.policy = Some(policy);
+    }
+    if let Some(minutes) = patch.check_interval_minutes {
+        document.check_interval_minutes = Some(minutes);
+    }
+    if let Some(reboot_policy) = patch.reboot_policy {
+        document.reboot_policy = reboot_policy;
+    }
+    if let Some(source) = patch.source {
+        if let Some(url) = source.url {
+            document.source.url = Some(url);
+        }
+        if let Some(channel) = source.channel {
+            document.source.channel = Some(channel);
+        }
+    }
+    if let Some(network) = patch.network {
+        document.network = network;
+    }
+    if let Some(maintenance) = patch.maintenance {
+        document.maintenance = maintenance;
+    }
+    if let Some(reboot_gate) = patch.reboot_gate {
+        document.reboot_gate = reboot_gate;
+    }
+    document
+}
+
+/// Why a write did not happen, split by **whose** problem it is.
+///
+/// The split is the whole reason this is not a bare [`ConfigError`]: the same
+/// parse failure means "your request is malformed" when it is the patch and
+/// "this device's configuration is unreadable" when it is the file, and a
+/// route that answered both the same way would tell an operator their input
+/// was wrong about a document they never sent. Each variant carries the error
+/// that names the file and the offending field.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteRefusal {
+    /// The patch itself, or the document it would produce: not JSON, an
+    /// unknown key, a trust anchor, or a value the reader would refuse.
+    #[error(transparent)]
+    Rejected(ConfigError),
+    /// The document on the disk did not load, so there is no base to merge
+    /// over. Nothing was written.
+    #[error(transparent)]
+    Unreadable(ConfigError),
+    /// It validated and the device could not store it.
+    #[error(transparent)]
+    Unwritable(ConfigError),
+}
+
+/// Apply `patch_json` to the document at `path` and write the result.
+///
+/// **The whole write route, in one function, so the order cannot drift**
+/// (PLAN-071 §3): parse the patch, refuse an anchor-shaped key by name, load
+/// what is on the disk, merge, validate, and only then save. Every refusal
+/// happens before anything is written, which is what makes *the on-disk
+/// document is never replaced by one that would fail to load* structural
+/// rather than a convention two callers have to keep.
+///
+/// **A document that does not load is not patched.** Merging over a base
+/// nobody can read would keep or drop keys the operator cannot see, so the
+/// load error is reported as [`WriteRefusal::Unreadable`], naming the file.
+/// The way out of a corrupt document is the configuration reset that re-seeds
+/// it (PLAN-070 §4.1), not a blind overwrite.
+///
+/// Answers the document as saved, which is what the operator's layer now says.
+///
+/// # Errors
+///
+/// See [`WriteRefusal`]: the patch, the base document, or the disk.
+pub fn write_updates(path: &Path, patch_json: &str) -> Result<UpdatesDocument, WriteRefusal> {
+    let value = serde_json::from_str::<Value>(patch_json).map_err(|err| {
+        WriteRefusal::Rejected(ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })
+    })?;
+    // Before deserialization and at any depth, exactly as the reader does it:
+    // an anchor must be refused by name rather than by whatever
+    // `deny_unknown_fields` happens to say on the day the schema grows
+    // (PLAN-070 §5.3.5). The write route is the surface where somebody would
+    // *try*.
+    if let Some(key) = anchor_key(&value) {
+        return Err(WriteRefusal::Rejected(ConfigError::Anchor {
+            path: path.to_path_buf(),
+            key,
+        }));
+    }
+    let patch = serde_json::from_value::<UpdatesPatch>(value).map_err(|err| {
+        WriteRefusal::Rejected(ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })
+    })?;
+    let base = load_updates(path).map_err(WriteRefusal::Unreadable)?;
+    let document = apply_patch(base, patch);
+    save_updates(path, &document).map_err(|err| match err {
+        validation @ ConfigError::Validation { .. } => WriteRefusal::Rejected(validation),
+        other => WriteRefusal::Unwritable(other),
+    })?;
+    Ok(document)
+}
+
+/// Validate `document` and replace the file at `path` with it, atomically.
+///
+/// **Validation first, and the same [`validate`] the reader runs.** §2's
+/// `auto`-requires-a-window rule fires here, at the API, rather than hours
+/// later at the next check — which is the whole reason the rule has two
+/// callers.
+///
+/// **The save is [`crate::store::write_atomically`]**, the discipline the
+/// settings documents beside this one already use: a temporary sibling, the
+/// mode set before the rename, the bytes fsynced, the rename, the directory
+/// fsynced. This plan invents no second discipline, so a reader sees the old
+/// document or the new one.
+///
+/// **A missing `/mos/config/` is a failure and not a directory to create.**
+/// Its absence is the DATA medium not being mounted (PLAN-070 §5.2.6), and a
+/// device that created it would write the operator's channel onto the root
+/// filesystem, where the next boot would not find it.
+///
+/// # Errors
+///
+/// [`ConfigError::Validation`] naming the offending field, or
+/// [`ConfigError::Write`] naming the file.
+pub fn save_updates(path: &Path, document: &UpdatesDocument) -> Result<(), ConfigError> {
+    validate(document).map_err(|message| ConfigError::Validation {
+        path: path.to_path_buf(),
+        message,
+    })?;
+    let mut stamped = document.clone();
+    stamped.schema = Some(UPDATES_SCHEMA_TAG.to_string());
+    let mut text = serde_json::to_string_pretty(&stamped).map_err(|err| ConfigError::Write {
+        path: path.to_path_buf(),
+        source: std::io::Error::other(err),
+    })?;
+    text.push('\n');
+    crate::store::write_atomically(path, &text).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The resolution
 // ---------------------------------------------------------------------------
 
@@ -1085,4 +1322,296 @@ pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, 
             },
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A document with something in every shape the write has to preserve:
+    /// an override that is set, an override cleared to `null`, an override
+    /// left absent, and a key layer 2 owns outright.
+    fn seeded(path: &Path) {
+        std::fs::write(
+            path,
+            r#"{
+              "schema": "mos/update-config/v1",
+              "policy": "check",
+              "checkIntervalMinutes": null,
+              "source": { "channel": "beta", "repoDir": "/var/lib/mos/mirror" },
+              "maintenance": { "windows": [ { "days": ["mon"], "start": "02:00", "end": "04:00" } ] }
+            }"#,
+        )
+        .expect("seed the document");
+    }
+
+    #[test]
+    fn a_saved_document_loads_back_with_absent_and_null_still_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        seeded(&path);
+
+        let before = load_updates(&path).expect("the seed loads");
+        save_updates(&path, &before).expect("it saves");
+        let after = load_updates(&path).expect("it loads back");
+
+        // `policy` was set, `checkIntervalMinutes` was an explicit `null` and
+        // `source.url` was never named. A save that flattened the last two
+        // into each other would rewrite what the operator said.
+        assert_eq!(after.policy, Some(Some(UpdateMode::Check)));
+        assert_eq!(after.check_interval_minutes, Some(None));
+        assert_eq!(after.source.url, None);
+        assert_eq!(after.source.channel, Some(Some("beta".to_string())));
+        assert_eq!(after.source.repo_dir, "/var/lib/mos/mirror");
+        assert_eq!(after.maintenance.windows.len(), 1);
+
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["checkIntervalMinutes"], Value::Null);
+        assert!(
+            !written.as_object().unwrap().contains_key("policy")
+                || written["policy"] == json!("check")
+        );
+        assert!(
+            written["source"].as_object().unwrap().get("url").is_none(),
+            "a key the operator never wrote must not appear: {written}"
+        );
+    }
+
+    #[test]
+    fn a_saved_document_names_its_schema_even_when_the_one_it_replaced_did_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, r#"{ "policy": "off" }"#).unwrap();
+
+        write_updates(&path, r#"{ "policy": "check" }"#).expect("the write lands");
+
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["schema"], json!(UPDATES_SCHEMA_TAG));
+    }
+
+    #[test]
+    fn a_saved_document_is_mode_0600_and_leaves_no_temporary_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        write_updates(&path, r#"{ "policy": "off" }"#).expect("the write lands");
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the namespace's documents are 0600 (PLAN-070 §5.2.4)"
+        );
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("updates.json")],
+            "the rename consumed the temporary sibling"
+        );
+    }
+
+    #[test]
+    fn a_patch_changes_the_keys_it_names_and_leaves_every_other_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        seeded(&path);
+
+        let saved = write_updates(&path, r#"{ "source": { "channel": "stable" } }"#)
+            .expect("the write lands");
+
+        assert_eq!(saved.source.channel, Some(Some("stable".to_string())));
+        // Everything the patch did not name survived, including the keys no
+        // console renders.
+        assert_eq!(saved.policy, Some(Some(UpdateMode::Check)));
+        assert_eq!(saved.check_interval_minutes, Some(None));
+        assert_eq!(saved.source.repo_dir, "/var/lib/mos/mirror");
+        assert_eq!(saved.maintenance.windows.len(), 1);
+    }
+
+    #[test]
+    fn an_explicit_null_clears_an_override_and_an_absent_key_leaves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        seeded(&path);
+
+        let saved =
+            write_updates(&path, r#"{ "source": { "url": null } }"#).expect("the write lands");
+
+        // `null` is the operator saying "take the baked address again", and
+        // it is recorded as `null` rather than as absence.
+        assert_eq!(saved.source.url, Some(None));
+        assert_eq!(saved.source.channel, Some(Some("beta".to_string())));
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["source"]["url"], Value::Null);
+    }
+
+    #[test]
+    fn a_patch_may_re_point_the_device_at_another_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        seeded(&path);
+
+        write_updates(
+            &path,
+            r#"{ "source": { "url": "https://updates.example/repo" } }"#,
+        )
+        .expect("the write lands");
+
+        let baked = BakedUpdate {
+            source: Some("https://baked.example/repo".to_string()),
+            ..BakedUpdate::code_defaults()
+        };
+        let effective = resolve(&baked, load_updates(&path).unwrap());
+        assert_eq!(
+            effective.selection.unwrap().url.as_deref(),
+            Some("https://updates.example/repo"),
+            "the override wins over the baked default (PLAN-070 §5.1, §5.3)"
+        );
+    }
+
+    #[test]
+    fn auto_with_no_window_is_refused_at_the_write_and_the_document_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, r#"{ "policy": "off" }"#).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let err = write_updates(&path, r#"{ "policy": "auto" }"#)
+            .expect_err("`auto` with no window is not a document this device may hold");
+
+        assert!(
+            matches!(err, WriteRefusal::Rejected(_)),
+            "the operator's input is what was wrong: {err}"
+        );
+        assert!(
+            err.to_string().contains(AUTO_NEEDS_A_WINDOW),
+            "the refusal states the rule: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a refused write replaces nothing"
+        );
+    }
+
+    #[test]
+    fn auto_with_a_window_in_the_same_patch_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, r#"{ "policy": "off" }"#).unwrap();
+
+        let saved = write_updates(
+            &path,
+            r#"{ "policy": "auto",
+                 "maintenance": { "windows": [ { "start": "02:00", "end": "04:00" } ] } }"#,
+        )
+        .expect("the rule is about the resulting document, not about the order of two writes");
+
+        assert_eq!(saved.policy, Some(Some(UpdateMode::Auto)));
+    }
+
+    #[test]
+    fn a_patch_naming_a_trust_anchor_is_refused_by_that_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        // At the top level, nested inside an object the schema does have, and
+        // inside an array: the scan must have no hole, because the write
+        // route is the surface where somebody would try.
+        let patches = [
+            r#"{ "trust": { "signingKeys": ["k"] } }"#,
+            r#"{ "signingKeys": ["k"] }"#,
+            r#"{ "signingKeyId": "abc" }"#,
+            r#"{ "signingKeyIds": ["abc"] }"#,
+            r#"{ "source": { "rootPath": "/tmp/root.json" } }"#,
+            r#"{ "source": { "keyring": "/tmp/keys" } }"#,
+            r#"{ "maintenance": { "windows": [ { "start": "02:00", "end": "04:00", "keyring": "x" } ] } }"#,
+        ];
+        for patch in patches {
+            let err = write_updates(&path, patch).expect_err("an anchor is not the operator's");
+            let WriteRefusal::Rejected(ConfigError::Anchor { key, .. }) = &err else {
+                panic!("{patch} must be refused as an anchor, was {err}");
+            };
+            assert!(
+                patch.contains(key.as_str()),
+                "the refusal names the key it found: {key} not in {patch}"
+            );
+            assert!(
+                err.to_string().contains(key),
+                "the message carries the key: {err}"
+            );
+            assert!(!path.exists(), "a refused write creates nothing");
+        }
+    }
+
+    #[test]
+    fn a_patch_naming_a_key_this_document_does_not_have_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        seeded(&path);
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        for (patch, key) in [
+            (r#"{ "source": { "repoDir": "/tmp/mirror" } }"#, "repoDir"),
+            (r#"{ "source": { "maxBytes": 1 } }"#, "maxBytes"),
+            (r#"{ "autoCheck": { "intervalMinutes": 60 } }"#, "autoCheck"),
+            (r#"{ "schema": "mos/update-config/v1" }"#, "schema"),
+        ] {
+            let err = write_updates(&path, patch).expect_err("{patch} is not a key of the patch");
+            assert!(
+                err.to_string().contains(key),
+                "the refusal names the offending field: {err}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn a_document_that_does_not_load_is_not_patched_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        std::fs::write(&path, "{ this is not json").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let err = write_updates(&path, r#"{ "policy": "off" }"#)
+            .expect_err("there is no base to merge over");
+
+        assert!(
+            matches!(err, WriteRefusal::Unreadable(_)),
+            "the file is what is wrong, not the request: {err}"
+        );
+        assert!(err.to_string().contains("updates.json"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a blind overwrite would drop keys the operator cannot see"
+        );
+    }
+
+    #[test]
+    fn a_write_into_a_missing_namespace_refuses_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // `/mos/config/` absent is the DATA medium not mounted (§5.2.6), so a
+        // device that created it would write the operator's channel onto the
+        // root filesystem where the next boot would not look.
+        let path = dir.path().join("not-mounted").join("updates.json");
+
+        let err = write_updates(&path, r#"{ "policy": "off" }"#).expect_err("nowhere to write");
+
+        assert!(matches!(err, WriteRefusal::Unwritable(_)), "{err}");
+        assert!(!dir.path().join("not-mounted").exists());
+    }
+
+    #[test]
+    fn a_patch_that_is_not_json_is_the_requests_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        let err = write_updates(&path, "not json").expect_err("not a patch");
+        assert!(matches!(err, WriteRefusal::Rejected(_)), "{err}");
+    }
 }

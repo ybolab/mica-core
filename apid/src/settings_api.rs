@@ -121,6 +121,16 @@ pub trait SettingsApi: Send + Sync {
     /// Clear the automatic-update suppression on `version`; answers the
     /// record that was removed.
     async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value>;
+    /// Ask mosd to merge `patch` into `/mos/config/updates.json` and write
+    /// it; answers the document as saved.
+    ///
+    /// Deliberately not a file apid opens. mosd owns that document and is its
+    /// only writer (PLAN-070 §5.2.7, PLAN-071 §3), so one fact has one writer
+    /// all the way down to the filesystem — and the validation that decides
+    /// what may be written is the same code the reader runs, in the same
+    /// process, rather than a second copy here that would eventually disagree
+    /// with it.
+    async fn set_update_config(&self, patch: &Value) -> anyhow::Result<Value>;
 }
 
 /// A rendezvous armed over [`FakeSettings::hold_access_reads`]: the first
@@ -643,5 +653,15 @@ impl SettingsApi for FakeSettings {
             "bootStatus": "bad",
             "detail": format!("version {version} was installed into slot rootfs.1"),
         }))
+    }
+
+    async fn set_update_config(&self, patch: &Value) -> anyhow::Result<Value> {
+        self.update_call(&format!("config {patch}"))?;
+        // The patch echoed as the document, which is what merging it over an
+        // empty one produces. The merge itself is mosd's and is tested there:
+        // this route's job is the transport, the authority and the audit, and
+        // a fake that re-implemented the precedence would be a second answer
+        // to a question the library already answers once.
+        Ok(patch.clone())
     }
 }

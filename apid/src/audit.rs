@@ -9,11 +9,18 @@
 //! apid's sink — the journal mirror, the per-process lock and the peer address
 //! an API-side event carries.
 //!
-//! A line carries a UTC timestamp, the event, its outcome and the source
-//! address — and **never** a password, a hash or any other credential
+//! A line carries a UTC timestamp, the event, its outcome, the source address
+//! and the actor — and **never** a password, a hash or any other credential
 //! material. Callers pass fixed strings and a peer address; nothing operator-
 //! typed flows in, and a test asserts the file stays free of password
 //! material.
+//!
+//! **Every event this sink records is an operator's**, because every route
+//! that reaches it is behind the credential extractor. That is what makes the
+//! actor a constant here rather than a parameter threaded through fifty call
+//! sites, and it is the half of PLAN-071 §3's distinction apid owns: mosd
+//! records the same update event names under `policy` when the automatic
+//! driver did the work.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,7 +29,7 @@ use std::sync::Mutex;
 use axum::extract::FromRequestParts;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::request::Parts;
-use mosd_settings::{append_audit_line, audit_line};
+use mosd_settings::{ACTOR_OPERATOR, append_audit_line, audit_line};
 
 /// Append-only audit sink.
 pub struct Audit {
@@ -51,7 +58,13 @@ impl Audit {
         }
     }
 
-    /// Record one event.
+    /// Record one event a human asked for.
+    ///
+    /// Every route on this surface is behind the credential extractor, so the
+    /// actor is [`ACTOR_OPERATOR`] — the distinction PLAN-071 §3 requires is
+    /// against mosd's automatic driver, which records the same event names
+    /// under [`mosd_settings::ACTOR_POLICY`]. [`Self::record_as`] is for the
+    /// one apid event no operator asked for.
     ///
     /// A failed write is logged and swallowed, deliberately: §6's ideal is
     /// "no audit trail ⇒ no shell", but refusing to serve management when the
@@ -59,9 +72,14 @@ impl Audit {
     /// recorded as such in `docs/design/access.md` §6. The journal mirror is
     /// emitted first so a failing disk cannot silence the event entirely.
     pub fn record(&self, event: &str, outcome: &str, source: &str) {
-        tracing::info!(target: "audit", event, outcome, source, "audit event");
+        self.record_as(event, outcome, source, ACTOR_OPERATOR);
+    }
+
+    /// Record one event under a named actor.
+    pub fn record_as(&self, event: &str, outcome: &str, source: &str, actor: &str) {
+        tracing::info!(target: "audit", event, outcome, source, actor, "audit event");
         let Some(dir) = &self.dir else { return };
-        let line = audit_line(event, outcome, source);
+        let line = audit_line(event, outcome, source, actor);
         let _guard = self
             .lock
             .lock()
@@ -123,6 +141,8 @@ mod tests {
         assert_eq!(line["event"], "login");
         assert_eq!(line["outcome"], "wrong-password");
         assert_eq!(line["source"], "192.0.2.7:1234");
+        // U8's fifth member. A route reached this sink, so a human asked.
+        assert_eq!(line["actor"], "operator");
         // RFC 3339, UTC ("Z"): parseable without knowing the writer's zone.
         let ts = line["ts"].as_str().unwrap();
         assert!(ts.ends_with('Z'), "timestamp must be UTC: {ts}");

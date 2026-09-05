@@ -4232,6 +4232,128 @@
         }
       }
     },
+    "/api/v1/update/config": {
+      "post": {
+        "tags": [
+          "update"
+        ],
+        "summary": "Write the operator's update configuration.",
+        "description": "The one route that changes what this device does on its own: which channel\nit follows, which address it dials, whether it checks, fetches and installs\nunattended, and inside which maintenance window. It takes the same\nadministrator authority every other management write takes, and there is no\nunauthenticated or fleet-derived path to it.\n\n**apid does not write the file.** mosd owns `/mos/config/updates.json` and\nis its only writer; this route asks. The validation is therefore the same\ncode the update subsystem reads the document with, so a document that is\naccepted here is one that loads, and a rejected one is refused with the\noffending field named **before** anything is replaced. `auto` with no\nmaintenance window is refused here rather than failing closed some hours\nlater at a check the operator would have to go looking for.\n\nAnswers **200** with the document as saved.",
+        "operationId": "api_v1_update_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateConfigWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The operator document as saved: the keys layer 2 carries, absent and `null` still distinct",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The document already on the device does not load, so there is no base to change; nothing was written (`policy_refused`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The patch names a key this document does not have, a trust anchor, or a value the reader would refuse — `auto` with no maintenance window, a window that is not `HH:MM` (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd could not store it (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/update/fetch": {
       "post": {
         "tags": [
@@ -6437,6 +6559,12 @@
             "description": "`builtIn` when no custom bundle is active, otherwise `custom`."
           }
         }
+      },
+      "UpdateConfig": {
+        "description": "The operator's update document as mosd saved it: the layer-2 keys and\nnothing resolved.\n\nA key the operator never set is **absent** and one they set to `null` is\n**`null`**; both mean \"take the baked default\" and they are still two\ndifferent statements about the document. The resolved values — what this\ndevice will actually dial and follow — are `GET /api/v1/update`'s\n`lifecycle.policy` and `GET /api/v1/provisioning/status`'s `effective`."
+      },
+      "UpdateConfigWrite": {
+        "description": "The body of the update-configuration write: a **patch**, not a document.\n\nA key this body omits is left exactly as it is on the device; a key set to\n`null` clears an operator override so the baked default applies again; a\nkey with a value overrides it. That is what makes the write safe from a\nconsole: a client that sent the whole resolved document back would pin the\nimage's defaults into the operator's layer and the device would stop\nfollowing its image, which nobody asked for.\n\nAccepted keys: `policy` (`off`/`check`/`auto`), `checkIntervalMinutes`,\n`rebootPolicy` (`manual`/`window`), `source.url`, `source.channel`,\n`network`, `maintenance` and `rebootGate`. Anything else — including a\ntrust anchor under any name, at any depth — is **422** naming the key: the\naddress this device dials is the operator's, what it will accept is baked\ninto the image, and no body may move that line."
       },
       "UpdateState": {
         "description": "The update state document, verbatim from mosd: `lifecycle` (state machine,\npolicy, reboot gate), per-slot status, `booted_slot`, `primary`,\n`pending_not_confirmed`, `rollback`, `install` and `last_mark`.\n\n`rollback` is the one place slot state is offered as a decision: mosd's\n`rollback_eligibility` resolves the alternate slot, says whether a manual\nrollback is permitted, and names the refusal otherwise. There is no second\nread route for it — this document is the single writer of that fact."

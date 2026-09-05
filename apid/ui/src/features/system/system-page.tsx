@@ -23,6 +23,7 @@ import { TimePanel } from '@/features/system/time-panel'
 import { StoragePanel } from '@/features/system/storage-panel'
 import { DiagnosticsPanel } from '@/features/system/diagnostics-panel'
 import { RollbackPanel } from '@/features/system/rollback-panel'
+import { AutomaticUpdatesPanel } from '@/features/system/automatic-updates-panel'
 import { CredentialRecoveryPanel } from '@/features/recovery/credential-recovery-panel'
 import { ResetPanel } from '@/features/recovery/reset-panel'
 import {
@@ -69,7 +70,7 @@ export function SystemPage() {
           <UpdatePanel />
           <UpdateChecks />
           <UpdateActions />
-          <Section title={t('system.update.automaticTitle')} description={t('system.update.automaticDescription')}><AutomaticUpdates /></Section>
+          <Section title={t('system.update.automaticTitle')} description={t('system.update.automaticDescription')}><AutomaticUpdatesPanel /></Section>
           <Section title={t('system.update.manualTitle')} description={t('system.update.manualDescription')}><ManualUpdate /></Section>
           <Section title={t('system.backup.title')} description={t('system.backup.description')}><ConfigBackup /></Section>
           <Section title={t('system.recovery.additionTitle')} description={t('system.recovery.addition')} className="marked-addition">
@@ -161,24 +162,6 @@ export function UpdateChecks() {
         </div>
       ))}
       <div className="panel-footer"><PlannedNotice>{t('system.update.checks.planned')}</PlannedNotice></div>
-    </Surface>
-  )
-}
-
-function AutomaticUpdates() {
-  const { t } = useTranslation()
-  const simulation = useSimulation()
-  return (
-    <Surface>
-      <PlannedNotice>{t('system.update.automaticPlanned')}</PlannedNotice>
-      <div className="ui-selector">
-        <div><strong>{t('system.update.automatic')}</strong><small>{t('system.update.automaticCopy')}</small></div>
-        <Switch aria-label={t('system.update.automatic')} checked={simulation.automaticUpdates} onCheckedChange={simulation.setAutomaticUpdates} />
-      </div>
-      <div className="content-grid">
-        <Field label={t('system.update.window')}><Input disabled placeholder="02:00 – 04:00" /></Field>
-        <Field label={t('system.update.policy')}><Input disabled placeholder={t('system.update.policyDownload')} /></Field>
-      </div>
     </Surface>
   )
 }

@@ -216,7 +216,15 @@ fn pick_up_staged(store: &Store, audit: &crate::audit::Audit, served: &[&str]) {
                 compat = %describe(&activation.compat),
                 "picked up a staged UI bundle at start-up"
             );
-            audit.record("custom-ui", "activated", "local");
+            // The device acted on what it found on the disk at start-up.
+            // Recording it as an operator's would be the exact lie U8's actor
+            // field exists to prevent: nobody asked for this one.
+            audit.record_as(
+                "custom-ui",
+                "activated",
+                "local",
+                mosd_settings::ACTOR_DEVICE,
+            );
         }
         Err(err) => tracing::warn!(
             error = %format!("{err:#}"),

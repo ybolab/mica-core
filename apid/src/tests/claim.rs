@@ -248,6 +248,13 @@ impl SettingsApi for InterruptOnce {
     async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<serde_json::Value> {
         self.inner.clear_update_suppression(version).await
     }
+
+    async fn set_update_config(
+        &self,
+        patch: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.inner.set_update_config(patch).await
+    }
 }
 
 /// The interrupted path, then the retry: nothing half-lands, and the retry

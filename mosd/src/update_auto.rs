@@ -54,6 +54,8 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 
+use mosd_settings::{UPDATE_CHECK_EVENT, UPDATE_FETCH_EVENT, UPDATE_INSTALL_EVENT};
+
 use crate::time_status::ClockTrust;
 use crate::update_lifecycle::{Available, Refusal, Settled};
 use crate::update_policy::{self, LoadedPolicy, RebootPolicy, UpdateMode};
@@ -134,6 +136,16 @@ pub trait AutoRoutes: Send + Sync {
 
     /// The two signals PLAN-071 §7's clock predicate reads.
     async fn clock(&self) -> ClockTrust;
+
+    /// Record one automatic action in the device's audit ring (U8).
+    ///
+    /// **The same event names the manual routes record**, under the `policy`
+    /// actor rather than an operator's: PLAN-071 §3 requires the trail to be
+    /// able to answer *did a human do this*, and an event set that cannot is
+    /// a support tool that lies during exactly the incident it exists for.
+    /// The names are `mosd_settings`'s constants on both sides, so the two
+    /// halves of one trail cannot drift into two.
+    async fn audit(&self, event: &str);
 
     /// Record why this pass did not proceed (§2, U5).
     async fn defer(&self, reason: &str, detail: &str);
@@ -246,6 +258,7 @@ impl AutoDriver {
             return;
         }
         self.last_check = Instant::now();
+        self.routes.audit(UPDATE_CHECK_EVENT).await;
         match self.routes.check(SENDER).await {
             // The channel is up to date. Recorded rather than passed over:
             // the lifecycle renders this as plain `idle`, which is also what
@@ -314,12 +327,13 @@ impl AutoDriver {
                 Ok(None) => {}
             }
             let staged = self.routes.staged().await;
-            if staged.as_deref().and_then(bundle_name) != Some(candidate.name.as_str())
-                && let Err(refusal) = self.routes.fetch(SENDER).await
-            {
-                tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
-                self.defer("fetch-refused", refusal.message()).await;
-                return;
+            if staged.as_deref().and_then(bundle_name) != Some(candidate.name.as_str()) {
+                self.routes.audit(UPDATE_FETCH_EVENT).await;
+                if let Err(refusal) = self.routes.fetch(SENDER).await {
+                    tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
+                    self.defer("fetch-refused", refusal.message()).await;
+                    return;
+                }
             }
         }
         // Step 3 — install, in the window, only what the metadata still names.
@@ -364,7 +378,10 @@ impl AutoDriver {
             return;
         }
         // The re-check of §5, and the version it answers with is what §6's
-        // suppression is consulted on immediately below.
+        // suppression is consulted on immediately below. Audited like the
+        // cadence check above, because it IS a check: the trail records what
+        // the device did, not a summary of what a pass was for.
+        self.routes.audit(UPDATE_CHECK_EVENT).await;
         let named = match self.routes.check(SENDER).await {
             Ok(Settled::Done(candidate)) => Some(candidate),
             Ok(Settled::NoneCompatible) => None,
@@ -429,6 +446,7 @@ impl AutoDriver {
             }
             Ok(None) => {}
         }
+        self.routes.audit(UPDATE_INSTALL_EVENT).await;
         match self.routes.install(SENDER, bundle).await {
             Ok(()) => {
                 tracing::warn!(bundle, version, "automatic install started");

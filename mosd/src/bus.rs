@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use mosd_settings::{Settings, SettingsError, Store, json_path_get};
+use mosd_settings::{
+    ACTOR_POLICY, REQUESTED, Settings, SettingsError, Store, append_audit_line, audit_line,
+    audit_ring_dir, json_path_get,
+};
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use zbus::fdo;
@@ -28,7 +31,7 @@ use crate::system_info::{self, SystemInfoSource, UnavailableSystemInfo};
 use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
 use crate::time_status::{self, ClockTrust, TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
-use crate::update_auto::{AutoRoutes, UpdateFacts};
+use crate::update_auto::{self, AutoRoutes, UpdateFacts};
 use crate::update_lifecycle::{
     Available, DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, Settled, UpdateClient,
     UpdateLifecycle,
@@ -1457,6 +1460,37 @@ impl MosdService {
         Ok(record.to_string())
     }
 
+    /// Write the operator's update configuration document; answers the
+    /// document as saved, as JSON.
+    ///
+    /// Exported as `SetUpdateConfig`, and it is the **only** writer of
+    /// `/mos/config/updates.json` (PLAN-071 §3, PLAN-070 §5.2.7). apid holds
+    /// no path to that file and asks here instead, so one fact has one writer
+    /// all the way down to the filesystem.
+    ///
+    /// The argument is a **patch**: the keys the operator changed, merged over
+    /// what is on the disk. Absent leaves a key alone, `null` clears an
+    /// override back to the baked default, a value overrides. A patch naming
+    /// a key this document does not have, or a trust anchor at any depth, or
+    /// one that would produce a document the reader refuses — `auto` with no
+    /// maintenance window, a window that is not `HH:MM` — is `InvalidArgs`
+    /// with the offending field named, and the file is not touched.
+    ///
+    /// Audited on both sides: mosd logs who wrote what, apid records the
+    /// event with the actor that asked.
+    async fn set_update_config(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        patch_json: &str,
+    ) -> fdo::Result<String> {
+        let document = self
+            .update
+            .write_config(sender_of(&header), patch_json)
+            .await
+            .map_err(refusal_to_fdo)?;
+        Ok(document.to_string())
+    }
+
     /// Set a TRANSIENT root password, then re-apply the SSH subtree.
     ///
     /// Exported as `SetTransientRootPassword`. The password lives until the
@@ -1681,6 +1715,10 @@ impl AutoRoutes for BusRoutes {
         self.service.get().await.clock_trust().await
     }
 
+    async fn audit(&self, event: &str) {
+        record_policy_action(&audit_ring_dir(), event);
+    }
+
     async fn defer(&self, reason: &str, detail: &str) {
         self.lifecycle.defer(reason, detail).await;
     }
@@ -1690,14 +1728,56 @@ impl AutoRoutes for BusRoutes {
     }
 }
 
+/// One audit line for an action the update policy took on its own (U8).
+///
+/// The device's ONE ring, the same file apid appends an operator's actions to
+/// and the same writer — `append_audit_line`'s single `O_APPEND` write is what
+/// makes two processes on one file safe. The source is the daemon rather than
+/// a peer address, because no peer asked: [`update_auto::SENDER`] is already
+/// the name the lifecycle records this driver's requests under, so the audit
+/// trail and `update.lifecycle` name the same actor with the same word.
+///
+/// A failed write is logged and swallowed, as it is on both other sides:
+/// refusing to update a device because its audit ring is unwritable is a
+/// lockdown decision this campaign does not take.
+///
+/// `dir` is a parameter rather than [`audit_ring_dir`] read here, because the
+/// only other way to point a test at a temporary ring is the environment, and
+/// setting one is `unsafe` under this workspace's `forbid(unsafe_code)`.
+fn record_policy_action(dir: &std::path::Path, event: &str) {
+    tracing::info!(
+        target: "audit",
+        event,
+        outcome = REQUESTED,
+        source = update_auto::SENDER,
+        actor = ACTOR_POLICY,
+        "audit event"
+    );
+    if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| {
+        append_audit_line(
+            dir,
+            &audit_line(event, REQUESTED, update_auto::SENDER, ACTOR_POLICY),
+        )
+    }) {
+        tracing::warn!(
+            error = %err,
+            dir = %dir.display(),
+            "the automatic update audit line could not be written"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use super::{Inner, MosdService, paths_overlap, run_apply_worker};
+    use serde_json::Value;
+
+    use super::{Inner, MosdService, paths_overlap, record_policy_action, run_apply_worker};
     use crate::power::MockPower;
     use crate::rauc::{MockRauc, SlotStatus};
+    use crate::update_lifecycle::Refusal;
 
     struct RecordingReconciler {
         name: &'static str,
@@ -2633,6 +2713,155 @@ mod tests {
         assert!(
             rauc_calls.lock().expect("lock").is_empty(),
             "the refused install must not reach the installer"
+        );
+    }
+
+    /// The write route's whole point: mosd is the file's only writer, and a
+    /// patch changes what it names and nothing else.
+    #[tokio::test]
+    async fn the_write_route_merges_a_patch_and_the_next_state_read_reports_it() {
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("updates.json");
+        std::fs::write(
+            &policy_path,
+            r#"{ "policy": "check", "source": { "channel": "beta" } }"#,
+        )
+        .expect("seed policy");
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path.clone()),
+            crate::update_suppress::SuppressionStore::none(),
+        );
+
+        let saved = service
+            .update_handle()
+            .write_config(":1.5", r#"{ "source": { "channel": "stable" } }"#)
+            .await
+            .expect("a well-formed patch is written");
+
+        assert_eq!(saved["source"]["channel"], "stable");
+        assert_eq!(saved["policy"], "check", "an unnamed key is left alone");
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+        assert_eq!(on_disk["source"]["channel"], "stable");
+        // The snapshot is retaken on the write, so an operator polling the
+        // state reads what they just set rather than what the last action saw.
+        let recorded = service.trees().await.1;
+        assert_eq!(
+            recorded["update"]["lifecycle"]["policy"]["channel"],
+            "stable"
+        );
+    }
+
+    /// §2's rule fires at the API, which is the difference between telling an
+    /// operator now and a device failing closed some hours later.
+    #[tokio::test]
+    async fn the_write_route_refuses_auto_without_a_window_and_replaces_nothing() {
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("updates.json");
+        std::fs::write(&policy_path, r#"{ "policy": "check" }"#).expect("seed policy");
+        let before = std::fs::read_to_string(&policy_path).unwrap();
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path.clone()),
+            crate::update_suppress::SuppressionStore::none(),
+        );
+
+        let refused = service
+            .update_handle()
+            .write_config(":1.5", r#"{ "policy": "auto" }"#)
+            .await
+            .expect_err("`auto` with no window is refused on write");
+
+        assert!(
+            matches!(refused, Refusal::Invalid(_)),
+            "an InvalidArgs, which apid answers 422: {}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains("maintenance window"),
+            "the refusal names the rule: {}",
+            refused.message()
+        );
+        assert_eq!(std::fs::read_to_string(&policy_path).unwrap(), before);
+    }
+
+    /// The address is the operator's; what the device will accept is not.
+    #[tokio::test]
+    async fn the_write_route_refuses_a_trust_anchor_by_name() {
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("updates.json");
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path.clone()),
+            crate::update_suppress::SuppressionStore::none(),
+        );
+
+        let refused = service
+            .update_handle()
+            .write_config(
+                ":1.5",
+                r#"{ "source": { "url": "https://x/", "keyring": "/k" } }"#,
+            )
+            .await
+            .expect_err("an anchor-shaped key is not writable");
+
+        assert!(
+            matches!(refused, Refusal::Invalid(_)),
+            "{}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains("keyring"),
+            "the refusal names the key: {}",
+            refused.message()
+        );
+        assert!(!policy_path.exists(), "nothing was written");
+    }
+
+    /// A document that does not load is refused the way every other action on
+    /// it is refused — 409, not 422 — because it is the file that is wrong.
+    #[tokio::test]
+    async fn the_write_route_refuses_to_patch_over_a_document_that_does_not_load() {
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let policy_path = dir.path().join("updates.json");
+        std::fs::write(&policy_path, "{not json").expect("seed policy");
+        let service = service.with_update(
+            Arc::new(crate::update_lifecycle::NoClient),
+            crate::update_policy::PolicyStore::at(policy_path.clone()),
+            crate::update_suppress::SuppressionStore::none(),
+        );
+
+        let refused = service
+            .update_handle()
+            .write_config(":1.5", r#"{ "policy": "off" }"#)
+            .await
+            .expect_err("there is no base to merge over");
+
+        assert!(
+            matches!(refused, Refusal::Policy(_)),
+            "{}",
+            refused.message()
+        );
+        assert_eq!(std::fs::read_to_string(&policy_path).unwrap(), "{not json");
+    }
+
+    /// U8: an action the policy took names `policy`, in the same ring and
+    /// under the same event names an operator's action lands in.
+    #[test]
+    fn an_automatic_action_is_audited_under_the_policy_actor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        record_policy_action(dir.path(), mosd_settings::UPDATE_CHECK_EVENT);
+
+        let contents =
+            std::fs::read_to_string(dir.path().join(mosd_settings::AUDIT_LOG)).expect("a line");
+        let line: Value = serde_json::from_str(contents.trim()).expect("JSONL");
+        assert_eq!(line["event"], "update-check");
+        assert_eq!(line["outcome"], "requested");
+        assert_eq!(line["actor"], "policy");
+        assert_eq!(
+            line["source"], "auto-update",
+            "the name the lifecycle already records this driver's requests under"
         );
     }
 

@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
+use mosd_settings::configuration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -1133,6 +1134,67 @@ impl UpdateLifecycle {
             "suppression on version {version} cleared by {sender}"
         )))
         .await;
+        Ok(rendered)
+    }
+
+    /// Write the operator's update document (PLAN-071 §3, U11).
+    ///
+    /// **mosd is the file's only writer and this is where it writes.** apid
+    /// does not hold a path to `/mos/config/updates.json`; it asks over the
+    /// bus, which is PLAN-070 §5.2's one-writer rule rather than a choice made
+    /// here. The ordering — parse the patch, refuse an anchor by name, load
+    /// the base, merge, validate, save atomically — is
+    /// [`configuration::write_updates`]'s and exists once, so *the on-disk
+    /// document is never replaced by one that would fail to load* is a shape
+    /// and not a convention.
+    ///
+    /// Answers the saved document, absent and `null` still distinct.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Invalid`] for a patch or a resulting document the reader
+    /// would refuse, with the offending field named — including §2's
+    /// `auto`-requires-a-window rule, which fires here rather than hours
+    /// later at the next check. [`Refusal::Policy`] when the document on the
+    /// disk does not load, which is the same refusal every other action on it
+    /// already gives. [`Refusal::Unavailable`] when the device could not store
+    /// it.
+    pub async fn write_config(&self, sender: &str, patch_json: &str) -> Result<Value, Refusal> {
+        let Some(path) = self.policy.path() else {
+            // The dry-run store, which was told to read no file. Refused
+            // rather than defaulted to `/mos/config/`: a daemon that reads
+            // nothing must not write the device's real configuration.
+            return Err(Refusal::Unavailable(
+                "this daemon has no update policy document".to_string(),
+            ));
+        };
+        let document = configuration::write_updates(path, patch_json).map_err(|err| match err {
+            configuration::WriteRefusal::Rejected(err) => Refusal::Invalid(err.to_string()),
+            configuration::WriteRefusal::Unreadable(err) => Refusal::Policy(err.to_string()),
+            configuration::WriteRefusal::Unwritable(err) => Refusal::Unavailable(err.to_string()),
+        })?;
+        let rendered = serde_json::to_value(&document).map_err(|err| {
+            // Unreachable: the document was just serialized onto the disk by
+            // the call above. Reported rather than unwrapped, because a
+            // panic here would take the daemon down over a write that
+            // succeeded.
+            Refusal::Unavailable(format!("the saved document could not be rendered: {err}"))
+        })?;
+        // The audit trail's mosd half, the pair `ClearUpdateSuppression` is
+        // recorded by: who changed the device's update configuration, and
+        // where. apid records the event with U8's actor beside it.
+        //
+        // **The document is deliberately not in this line.** It carries no
+        // secret by schema, but `source.url` is an operator-typed URL and a
+        // URL can carry credentials in its userinfo; the journal is not where
+        // that should be discovered. Who and where is what a support case
+        // needs, and what the document now says is one authenticated read
+        // away.
+        tracing::warn!(sender, path = %path.display(), "update configuration written");
+        // A fresh snapshot rather than a note: the policy is re-read here, so
+        // the very next state read reports what was just written instead of
+        // what the last action saw.
+        self.record_snapshot().await;
         Ok(rendered)
     }
 

@@ -693,6 +693,10 @@ fn api_router() -> Router<AppState> {
             crate::update_api::V1_UPDATE_CLEAR_SUPPRESSION_PATH,
             post(crate::update_api::api_v1_update_clear_suppression),
         )
+        .route(
+            crate::update_api::V1_UPDATE_CONFIG_PATH,
+            post(crate::update_api::api_v1_update_config),
+        )
         // Actions are POST-only so navigation and prefetch cannot trigger
         // state changes.
         .route(V1_REBOOT_PATH, post(api_v1_reboot))

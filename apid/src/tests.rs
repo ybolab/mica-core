@@ -2786,6 +2786,13 @@ impl SettingsApi for FailingSettings {
     async fn clear_update_suppression(&self, _version: &str) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
+
+    async fn set_update_config(
+        &self,
+        _patch: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
 }
 
 // A router whose resource reads fail the way `fdo_name` says, plus a session

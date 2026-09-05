@@ -29,8 +29,9 @@ mod store;
 
 pub use api_token::{MAX_TOKENS, is_api_token_id, validate_api_tokens};
 pub use audit::{
-    AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES, DEFAULT_AUDIT_RING_DIR, append_audit_line,
-    audit_line, audit_ring_dir,
+    ACTOR_DEVICE, ACTOR_OPERATOR, ACTOR_POLICY, AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES,
+    DEFAULT_AUDIT_RING_DIR, REQUESTED, UPDATE_CHECK_EVENT, UPDATE_CONFIG_EVENT, UPDATE_FETCH_EVENT,
+    UPDATE_INSTALL_EVENT, append_audit_line, audit_line, audit_ring_dir,
 };
 pub use authorized_key::{
     MAX_KEYS, decode_base64, encode_base64_nopad, parse_authorized_key, validate_authorized_keys,

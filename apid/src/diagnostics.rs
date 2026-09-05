@@ -1939,6 +1939,10 @@ mod tests {
             async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
                 self.0.clear_update_suppression(version).await
             }
+
+            async fn set_update_config(&self, patch: &Value) -> anyhow::Result<Value> {
+                self.0.set_update_config(patch).await
+            }
         }
 
         let api = HalfFailing(FakeSettings::new(

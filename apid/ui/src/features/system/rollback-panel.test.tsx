@@ -51,7 +51,7 @@ describe('the guarded rollback', () => {
       ['no_alternate_slot', /RAUC names no booted slot/],
       ['alternate_is_booted_slot', /single slot/],
       ['alternate_marked_bad', /already condemned the other slot/],
-      ['alternate_is_newer', /pending update, not a rollback target/],
+      ['alternate_is_newer', /already on the previous system/],
       ['install_order_unknown', /cannot be ordered by install time/],
       ['booted_slot_not_confirmed', /attempt counter/],
       ['something_new', /slot state refuses a rollback/],

@@ -22,6 +22,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::Value;
 
+use mosd_settings::{
+    REQUESTED, UPDATE_CHECK_EVENT, UPDATE_CONFIG_EVENT, UPDATE_FETCH_EVENT, UPDATE_INSTALL_EVENT,
+};
+
 use crate::audit::Source;
 use crate::routes::{API, ApiCredential, ApiError, AppState, api_response, bus_api_error};
 
@@ -35,6 +39,7 @@ pub(crate) const V1_UPDATE_MARK_PATH: &str = "/v1/update/mark";
 pub(crate) const V1_UPDATE_ROLLBACK_PATH: &str = "/v1/update/rollback";
 pub(crate) const V1_UPDATE_REBOOT_OVERRIDE_PATH: &str = "/v1/update/reboot-override";
 pub(crate) const V1_UPDATE_CLEAR_SUPPRESSION_PATH: &str = "/v1/update/clear-suppression";
+pub(crate) const V1_UPDATE_CONFIG_PATH: &str = "/v1/update/config";
 
 /// The D-Bus error name mosd's update surface refuses policy-forbidden
 /// actions with. Not in `routes.rs`'s table: only this cluster produces it.
@@ -148,7 +153,7 @@ pub(crate) async fn api_v1_update_check(
 ) -> Response {
     match state.api.check_update().await {
         Ok(()) => {
-            state.audit.record("update-check", "requested", &source);
+            state.audit.record(UPDATE_CHECK_EVENT, REQUESTED, &source);
             accepted()
         }
         Err(err) => update_bus_error(&err),
@@ -182,7 +187,7 @@ pub(crate) async fn api_v1_update_fetch(
 ) -> Response {
     match state.api.fetch_update().await {
         Ok(()) => {
-            state.audit.record("update-fetch", "requested", &source);
+            state.audit.record(UPDATE_FETCH_EVENT, REQUESTED, &source);
             accepted()
         }
         Err(err) => update_bus_error(&err),
@@ -266,7 +271,7 @@ pub(crate) async fn api_v1_update_install(
     };
     match state.api.install_update(&bundle).await {
         Ok(()) => {
-            state.audit.record("update-install", "requested", &source);
+            state.audit.record(UPDATE_INSTALL_EVENT, REQUESTED, &source);
             accepted()
         }
         Err(err) => update_bus_error(&err),
@@ -613,6 +618,91 @@ pub(crate) async fn api_v1_update_clear_suppression(
                 &source,
             );
             api_response(StatusCode::OK, ClearedSuppression(record))
+        }
+        Err(err) => update_bus_error(&err),
+    }
+}
+
+/// The operator's update document as mosd saved it: the layer-2 keys and
+/// nothing resolved.
+///
+/// A key the operator never set is **absent** and one they set to `null` is
+/// **`null`**; both mean "take the baked default" and they are still two
+/// different statements about the document. The resolved values — what this
+/// device will actually dial and follow — are `GET /api/v1/update`'s
+/// `lifecycle.policy` and `GET /api/v1/provisioning/status`'s `effective`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct UpdateConfig(Value);
+
+/// The body of the update-configuration write: a **patch**, not a document.
+///
+/// A key this body omits is left exactly as it is on the device; a key set to
+/// `null` clears an operator override so the baked default applies again; a
+/// key with a value overrides it. That is what makes the write safe from a
+/// console: a client that sent the whole resolved document back would pin the
+/// image's defaults into the operator's layer and the device would stop
+/// following its image, which nobody asked for.
+///
+/// Accepted keys: `policy` (`off`/`check`/`auto`), `checkIntervalMinutes`,
+/// `rebootPolicy` (`manual`/`window`), `source.url`, `source.channel`,
+/// `network`, `maintenance` and `rebootGate`. Anything else — including a
+/// trust anchor under any name, at any depth — is **422** naming the key: the
+/// address this device dials is the operator's, what it will accept is baked
+/// into the image, and no body may move that line.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(transparent)]
+pub(crate) struct UpdateConfigWrite(Value);
+
+/// Write the operator's update configuration.
+///
+/// The one route that changes what this device does on its own: which channel
+/// it follows, which address it dials, whether it checks, fetches and installs
+/// unattended, and inside which maintenance window. It takes the same
+/// administrator authority every other management write takes, and there is no
+/// unauthenticated or fleet-derived path to it.
+///
+/// **apid does not write the file.** mosd owns `/mos/config/updates.json` and
+/// is its only writer; this route asks. The validation is therefore the same
+/// code the update subsystem reads the document with, so a document that is
+/// accepted here is one that loads, and a rejected one is refused with the
+/// offending field named **before** anything is replaced. `auto` with no
+/// maintenance window is refused here rather than failing closed some hours
+/// later at a check the operator would have to go looking for.
+///
+/// Answers **200** with the document as saved.
+#[utoipa::path(
+    post,
+    path = V1_UPDATE_CONFIG_PATH,
+    context_path = API,
+    tag = "update",
+    request_body = UpdateConfigWrite,
+    responses(
+        (status = 200, description = "The operator document as saved: the keys layer 2 carries, absent and `null` still distinct", body = UpdateConfig),
+        (status = 400, description = "The body is not JSON (`request_invalid`)", body = ApiError),
+        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "The document already on the device does not load, so there is no base to change; nothing was written (`policy_refused`)", body = ApiError),
+        (status = 422, description = "The patch names a key this document does not have, a trust anchor, or a value the reader would refuse — `auto` with no maintenance window, a window that is not `HH:MM` (`validation_failed`)", body = ApiError),
+        (status = 500, description = "mosd could not store it (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
+    ),
+)]
+pub(crate) async fn api_v1_update_config(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    body: Result<Json<UpdateConfigWrite>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(UpdateConfigWrite(patch)) = match body {
+        Ok(body) => body,
+        Err(rejection) => return body_rejection(rejection),
+    };
+    match state.api.set_update_config(&patch).await {
+        Ok(document) => {
+            state.audit.record(UPDATE_CONFIG_EVENT, "written", &source);
+            api_response(StatusCode::OK, UpdateConfig(document))
         }
         Err(err) => update_bus_error(&err),
     }
