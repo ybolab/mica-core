@@ -26,7 +26,6 @@ pub use audit::{
 pub use authorized_key::{
     MAX_KEYS, decode_base64, encode_base64_nopad, parse_authorized_key, validate_authorized_keys,
 };
-pub use error::SettingsError;
 pub use documents::{
     CONFIG_DIR_MODE, CONFIG_DOCUMENTS, CONTAINER_DOCUMENT, CONTAINER_SCHEMA_VERSION,
     ContainerDocument, DEFAULT_CONFIG_DIR, DOCUMENT_MODE, MQTT_DOCUMENT, MQTT_SCHEMA_VERSION,
@@ -35,16 +34,17 @@ pub use documents::{
     StateAccessSettings, StateDocument, SystemDocument, TIME_DOCUMENT, TIME_SCHEMA_VERSION,
     TimeDocument, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, WifiDocument,
 };
+pub use error::SettingsError;
 pub use model::{
     AccessSettings, ApMode, ApiToken, AuthorizedKey, BridgeConfig, ClaimChannel, ClaimSettings,
     ConsoleSettings, ContainerSettings, DEVICE_ID_LEN, DeviceCredentialSettings, IfaceKind,
     IfaceSettings, MAX_NTP_SERVERS, MAX_PASSPHRASE_LEN, MIN_ADMIN_PASSWORD_LEN, MIN_PASSPHRASE_LEN,
     MqttAuthSettings, MqttListenSettings, MqttSettings, NtpSettings, ProvisioningDocumentSettings,
     ProvisioningImport, ProvisioningSettings, ProvisioningState, RAW_PMK_LEN, ResetSettings,
-    ResetTier, Settings, SshSettings, StaticConfig, TimeSettings, VlanConfig,
-    WebAdminSettings, WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings,
-    WireguardConfig, WireguardPeer, is_wpa_quotable, validate_device_id, validate_ntp_servers,
-    validate_timezone_name, validate_wifi_psk,
+    ResetTier, Settings, SshSettings, StaticConfig, TimeSettings, VlanConfig, WebAdminSettings,
+    WifiApSettings, WifiClientSettings, WifiNetwork, WifiSettings, WireguardConfig, WireguardPeer,
+    is_wpa_quotable, validate_device_id, validate_ntp_servers, validate_timezone_name,
+    validate_wifi_psk,
 };
 pub use path::{json_path_get, path_segments, quote_path_segment};
 pub use recovery::{

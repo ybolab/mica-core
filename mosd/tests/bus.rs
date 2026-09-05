@@ -219,10 +219,15 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let hostname = proxy.get_settings("hostname").await?;
     assert_eq!(hostname, "\"unit-test-host\"");
 
-    let persisted = std::fs::read_to_string(&settings_path)?;
+    // `hostname` is carried by `/mos/config/system.json` since PLAN-070 §5.2,
+    // not by the STATE document. Same claim as before -- the write reached the
+    // medium, not only the in-memory tree -- read at the address that now
+    // holds it.
+    let system_document = config_dir.join("system.json");
+    let persisted = std::fs::read_to_string(&system_document)?;
     assert!(
         persisted.contains("unit-test-host"),
-        "settings.toml should contain the new hostname, got:\n{persisted}"
+        "system.json should contain the new hostname, got:\n{persisted}"
     );
 
     let state = proxy.get_state("").await?;
@@ -384,13 +389,26 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     );
 
     // A password is never a setting: the tree is untouched and nothing about it
-    // reached the persisted file.
+    // reached ANY persisted document.
+    //
+    // Every document and not just the STATE one, which is a widening the
+    // storage split forced and which the split had better not have made easier
+    // to get wrong: a value that leaked into `system.json` or `wifi.json`
+    // would have passed the old single-file assertion untouched.
     assert_eq!(proxy.get_settings("hostname").await?, "\"unit-test-host\"");
-    let persisted = std::fs::read_to_string(&settings_path)?;
-    assert!(
-        !persisted.contains("correct horse"),
-        "the password reached settings.toml:\n{persisted}"
-    );
+    let mut documents = vec![settings_path.clone()];
+    for entry in std::fs::read_dir(&config_dir)? {
+        documents.push(entry?.path());
+    }
+    assert!(documents.len() > 1, "no configuration document was written");
+    for document in documents {
+        let persisted = std::fs::read_to_string(&document)?;
+        assert!(
+            !persisted.contains("correct horse"),
+            "the password reached {}:\n{persisted}",
+            document.display()
+        );
+    }
 
     // Distinct failures travel under distinct error names, so a caller can
     // separate a missing path from a bad value without parsing message prose.

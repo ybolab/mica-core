@@ -102,7 +102,10 @@ fn load_missing_file_returns_defaults_without_creating_it() {
     assert_eq!(store.load().unwrap(), Settings::default());
     assert!(!dir.path().join("settings.toml").exists());
     assert!(
-        fs::read_dir(dir.path().join("config")).unwrap().next().is_none(),
+        fs::read_dir(dir.path().join("config"))
+            .unwrap()
+            .next()
+            .is_none(),
         "an absent document is a default, and reading one writes nothing"
     );
 }
@@ -774,7 +777,11 @@ fn a_quoted_segment_round_trips_a_dotted_interface_key() {
     store.save(&settings).unwrap();
     let doc = config_document(&dir, "network.json");
     assert_eq!(
-        doc["network"].as_object().unwrap().keys().collect::<Vec<_>>(),
+        doc["network"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
         vec!["eth0.100"],
         "persistence spells the key the way the path does: {doc}"
     );
@@ -954,7 +961,10 @@ password_hash = "$argon2id$fake"
 
     let (settings, reports) = store.load_with_report().unwrap();
 
-    assert!(reports.is_empty(), "a document at this version is not a rollback");
+    assert!(
+        reports.is_empty(),
+        "a document at this version is not a rollback"
+    );
     assert!(settings.access.api_tokens.is_empty());
     assert_eq!(
         settings.access.web_admin.unwrap().password_hash,
