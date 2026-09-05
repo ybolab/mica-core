@@ -42,6 +42,7 @@
 
 mod apply_queue;
 mod bus;
+mod confirmed_boot;
 mod diagnostics;
 mod fswrite;
 mod identity;
@@ -473,6 +474,16 @@ async fn serve() -> anyhow::Result<()> {
             update_policy::PolicyStore::at(policy_path).with_baked(meta.manifest.update.clone()),
             update_suppress::SuppressionStore::at(suppression_path),
         );
+        // PLAN-071 §7's confirmed-boot record, on STATE and derived from the
+        // same directory for §9.1's reason once more: it is what the device
+        // OBSERVES about itself, and an operator document able to rewrite the
+        // order in which this device booted its two systems would be an order
+        // nobody observed.
+        let confirmed_boots_path = state_dir_for(&settings_path)
+            .join("update")
+            .join(confirmed_boot::DEFAULT_FILE_NAME);
+        service = service
+            .with_confirmed_boots(confirmed_boot::ConfirmedBootStore::at(confirmed_boots_path));
     }
     if let Some(registry) = &registry {
         service = service.with_service_registry(Arc::clone(registry));
