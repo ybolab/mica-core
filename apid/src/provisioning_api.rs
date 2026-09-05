@@ -11,8 +11,8 @@
 //! anything is listening, and that is deliberate — a document is the channel
 //! for a device with NO network, so an HTTP route that applied one would be a
 //! second, differently-trusted write path for the same thing. There is
-//! likewise no route that returns the document, re-applies it, or clears the
-//! record.
+//! likewise no route that returns the secret-bearing import document,
+//! re-applies it, or clears the record.
 //!
 //! **It returns no value the document carried.** The document's own fields are
 //! applied into the subtrees that own them; what this serves is the applied
@@ -21,12 +21,18 @@
 //! [`crate::redact`] on the way out, so a secret-named field that ever
 //! appeared under `provisioning` would be substituted rather than served —
 //! `docs/design/api.md` §2.2's rule, applied to a third root for the reason it
-//! is applied to the second.
+//! is applied to the second. The separate baked manifest is public build
+//! configuration and is returned whole with digests of its allowlisted files.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use anyhow::{Context, Result, ensure};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::redact;
 use crate::routes::{
@@ -59,13 +65,76 @@ pub(crate) struct ProvisioningStatus {
     /// asked here because it is what decides whether a document offered on a
     /// medium would be applied at all: a claimed device refuses one.
     unclaimed: bool,
+    /// The public configuration baked into the verity root, as read.
+    baked: Value,
+    /// SHA-256 by relative path under `/usr/share/mos/meta/`.
+    baked_digests: BTreeMap<String, String>,
+}
+
+/// Read only the allowlisted public files. Never traverse a link or expose an
+/// unexpected file merely because it appeared beside the public manifest.
+fn baked_configuration() -> Result<(Value, BTreeMap<String, String>)> {
+    let root = Path::new("/usr/share/mos/meta");
+    let mut files = BTreeMap::new();
+    read_baked_files(root, root, &mut files)?;
+    let manifest = files
+        .get("updates/manifest.json")
+        .context("baked manifest is missing")?;
+    let document: Value = serde_json::from_slice(manifest).context("parse baked manifest")?;
+    ensure!(
+        document["schema"] == "mos/meta/v1",
+        "unsupported baked manifest schema"
+    );
+    let digests = files
+        .into_iter()
+        .map(|(path, bytes)| (path, format!("{:x}", Sha256::digest(bytes))))
+        .collect();
+    Ok((document, digests))
+}
+
+fn read_baked_files(root: &Path, at: &Path, files: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+    ensure!(
+        std::fs::symlink_metadata(at)?.is_dir(),
+        "baked metadata directory is not a directory"
+    );
+    let entries = std::fs::read_dir(at).context("read baked metadata directory")?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)?
+            .to_str()
+            .context("non-UTF-8 baked path")?
+            .to_string();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            ensure!(
+                relative == "updates",
+                "unexpected baked directory {relative}"
+            );
+            read_baked_files(root, &path, files)?;
+        } else {
+            ensure!(
+                kind.is_file(),
+                "baked path {relative} is not a regular file"
+            );
+            ensure!(
+                matches!(relative.as_str(), "updates/manifest.json" | "GENERATED"),
+                "unexpected baked file {relative}"
+            );
+            let bytes = std::fs::read(&path).context("read baked public file")?;
+            ensure!(!bytes.is_empty(), "baked file {relative} is empty");
+            files.insert(relative, bytes);
+        }
+    }
+    Ok(())
 }
 
 /// Read what a provisioning document did to this device.
 ///
-/// Two settings reads and no other source: the record mosd wrote when it last
-/// met a document, and whether an administrator credential exists. Nothing is
-/// observed from a medium at request time — the media are staged and read
+/// Two settings reads plus the public baked configuration: the record mosd
+/// wrote when it last met a document, and whether an administrator credential
+/// exists. Nothing is observed from a medium at request time — the media are staged and read
 /// before anything is listening, so a request cannot make a device look at a
 /// stick.
 #[utoipa::path(
@@ -74,7 +143,7 @@ pub(crate) struct ProvisioningStatus {
     context_path = API,
     tag = "resources",
     responses(
-        (status = 200, description = "The applied document's version and canonical digest (`null` when none was ever applied), the last import attempt with its source, outcome, rejection reason and clock reading, and whether the device is still unclaimed. No value the document carried is returned.", body = ProvisioningStatus),
+        (status = 200, description = "Import history and claim state, plus the public baked manifest and SHA-256 digests by baked file path. The secret-bearing import document is never returned.", body = ProvisioningStatus),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to answer (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
@@ -99,9 +168,29 @@ pub(crate) async fn api_v1_provisioning_status(
         Err(err) => return bus_api_error(&err, Some(ACCESS_PATH)),
     };
     let document = provisioning.get("document");
+    let (baked, baked_digests) = match baked_configuration() {
+        Ok(value) => value,
+        Err(err) => {
+            return api_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::mosd("baked_configuration_unavailable", format!("{err:#}")),
+            );
+        }
+    };
+    // RFCT-313 integration seam (F9 operator/effective half is still owed):
+    // expose mosd_settings::configuration::provisioning_status() ->
+    // Result<Value, ConfigError>, backed by the SAME resolver used by runtime.
+    // It must return {operator, effective}, each with update.source/channel/
+    // policy and fleet.url/enabled, preserving explicit null URL overrides.
+    // Absent operator fields stay absent, distinguishable from explicit null.
+    // Invalid layer-2 input must return Err; this route will return a named
+    // configuration error, never substitute baked values for effective ones.
+    // Pass operator values through redact::redact before serving them.
     api_response(
         StatusCode::OK,
         ProvisioningStatus {
+            baked,
+            baked_digests,
             document_version: document
                 .and_then(|record| record.get("appliedVersion"))
                 .and_then(Value::as_u64),

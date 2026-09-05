@@ -972,8 +972,6 @@ fn check_args(source: &crate::update_policy::SourcePolicy) -> Vec<String> {
         "check".to_string(),
         "--repo".to_string(),
         source.repo_dir.clone(),
-        "--root".to_string(),
-        source.root_path.clone(),
         "--state".to_string(),
         source.state_path.clone(),
         "--channel".to_string(),

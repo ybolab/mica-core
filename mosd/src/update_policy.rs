@@ -69,9 +69,6 @@ pub struct SourcePolicy {
     /// Local metadata mirror directory (`rauc-update --repo`).
     #[serde(default = "default_repo_dir")]
     pub repo_dir: String,
-    /// Pinned trusted root (`rauc-update --root`).
-    #[serde(default = "default_root_path")]
-    pub root_path: String,
     /// Persistent rollback state (`rauc-update --state`).
     #[serde(default = "default_state_path")]
     pub state_path: String,
@@ -87,9 +84,6 @@ fn default_channel() -> String {
 }
 fn default_repo_dir() -> String {
     "/var/lib/mos/update/tuf-mirror".to_string()
-}
-fn default_root_path() -> String {
-    "/usr/share/mos/uptane/root.json".to_string()
 }
 fn default_state_path() -> String {
     "/var/lib/mos/update/uptane-state.json".to_string()
@@ -107,7 +101,6 @@ impl Default for SourcePolicy {
             url: None,
             channel: default_channel(),
             repo_dir: default_repo_dir(),
-            root_path: default_root_path(),
             state_path: default_state_path(),
             max_bytes: default_max_bytes(),
         }
