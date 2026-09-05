@@ -104,8 +104,22 @@ pub(crate) struct ProvisioningStatus {
 
 /// Read only the allowlisted public files. Never traverse a link or expose an
 /// unexpected file merely because it appeared beside the public manifest.
-fn baked_configuration() -> Result<(Value, BTreeMap<String, String>)> {
-    let root = Path::new("/usr/share/mos/meta");
+///
+/// Addressed by the manifest, and the tree derived from it, so this walk and
+/// the resolver that parses the manifest cannot be looking at two different
+/// trees. The derivation is checked rather than assumed: a manifest with no
+/// grandparent directory is an error here, not a panic, because the path can
+/// come from a caller.
+fn baked_configuration(manifest_path: &Path) -> Result<(Value, BTreeMap<String, String>)> {
+    let root = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .with_context(|| {
+            format!(
+                "{} has no baked metadata tree above it",
+                manifest_path.display()
+            )
+        })?;
     let mut files = BTreeMap::new();
     read_baked_files(root, root, &mut files)?;
     let manifest = files
@@ -199,7 +213,12 @@ pub(crate) async fn api_v1_provisioning_status(
         Err(err) => return bus_api_error(&err, Some(ACCESS_PATH)),
     };
     let document = provisioning.get("document");
-    let (baked, baked_digests) = match baked_configuration() {
+    // ONE path for both halves of layer 1. `meta_manifest` names the file the
+    // resolver parses and the tree the digests cover is derived from it, so a
+    // response cannot report one device's baked manifest beside another's
+    // digests.
+    let manifest_path = state.meta_manifest.as_path();
+    let (baked, baked_digests) = match baked_configuration(manifest_path) {
         Ok(value) => value,
         Err(err) => {
             return api_response(
@@ -214,12 +233,21 @@ pub(crate) async fn api_v1_provisioning_status(
     // route and the update path answering differently about the same device is
     // the failure the arrangement exists to prevent.
     //
+    // `provisioning_status_at` and not `provisioning_status`: the no-argument
+    // form reads the production manifest, which would be a SECOND reading of
+    // layer 1 beside the digests above. The operator document keeps its
+    // production path — nothing here overrides it, and a missing one is the
+    // absent case rather than an error.
+    //
     // A layer-2 read, parse, anchor-key or validation failure is an error
     // HERE TOO. The route refusing and the update path refusing are one fact
     // reaching two surfaces, and a baked value served in the `effective` slot
     // would read as correct on every device that has overridden nothing —
     // which is all of them today, so nothing would catch it.
-    let mut resolved = match configuration::provisioning_status() {
+    let mut resolved = match configuration::provisioning_status_at(
+        manifest_path,
+        Path::new(configuration::DEFAULT_UPDATES_PATH),
+    ) {
         Ok(value) => value,
         Err(err) => {
             return api_response(

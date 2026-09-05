@@ -74,6 +74,23 @@ pub struct AppState {
     /// Notification-fed apply-task mirror. It serves only while its
     /// `TaskChanged` subscription is live.
     task_registry: Arc<TaskRegistry>,
+    /// The baked public metadata, addressed by its MANIFEST rather than by
+    /// its directory: `/usr/share/mos/meta/updates/manifest.json` on a
+    /// device, a temporary tree in tests.
+    ///
+    /// One path and not two, because
+    /// `provisioning_api::api_v1_provisioning_status` reads layer 1 twice —
+    /// once to digest the baked tree, once through
+    /// `mosd_settings::configuration` to resolve the effective policy — and
+    /// a device that answered those from two different trees in one response
+    /// would be reporting a configuration no device has. The directory walked
+    /// for digests is derived from this file, so they cannot diverge.
+    ///
+    /// The default is [`mosd_settings::configuration::DEFAULT_MANIFEST_PATH`]
+    /// itself rather than a copy of its text: the tree already carries that
+    /// literal once, and a second spelling of it here would agree with the
+    /// first until somebody moved the file.
+    pub(crate) meta_manifest: Arc<std::path::PathBuf>,
     /// The diagnostic snapshot store (PLAN-052): `/mos/diagnostics` on a
     /// device, a temporary directory in tests. A path and no syscall until
     /// the first publish.
@@ -110,6 +127,9 @@ impl AppState {
             claim: Arc::new(tokio::sync::Mutex::new(())),
             access_cache: Arc::new(AccessCache::new()),
             task_registry: Arc::new(TaskRegistry::new()),
+            meta_manifest: Arc::new(std::path::PathBuf::from(
+                mosd_settings::configuration::DEFAULT_MANIFEST_PATH,
+            )),
             diagnostics: Arc::new(SnapshotStore::at_default()),
             collecting: Arc::new(tokio::sync::Mutex::new(())),
             // A path and no syscall, like the bundle and snapshot stores: the
@@ -217,6 +237,17 @@ impl AppState {
     #[cfg(test)]
     pub fn with_diagnostics_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.diagnostics = Arc::new(SnapshotStore::new(root));
+        self
+    }
+
+    /// Point the baked metadata at another tree, for tests.
+    ///
+    /// Test-only for the bundle root's reason: the shipped location is fixed
+    /// and nothing configures it. It takes the manifest and derives the tree,
+    /// which is also the shape `MOSD_META_MANIFEST_PATH` gives the mosd side.
+    #[cfg(test)]
+    pub fn with_meta_manifest(mut self, manifest: impl Into<std::path::PathBuf>) -> Self {
+        self.meta_manifest = Arc::new(manifest.into());
         self
     }
 

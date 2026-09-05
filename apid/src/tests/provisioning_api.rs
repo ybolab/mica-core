@@ -10,6 +10,49 @@ use super::*;
 
 const STATUS_PATH: &str = "/api/v1/provisioning/status";
 
+/// The baked manifest, in the shape `mosd_settings::configuration` accepts.
+///
+/// Every field of that struct is required — it carries no serde defaults — so
+/// a shortened fixture would not parse, the reader would fall back to the code
+/// defaults, and the test would pass without anything having been read. This
+/// is `meta.example/updates/manifest.json`.
+const BAKED_MANIFEST: &str = r#"{
+  "schema": "mos/meta/v1",
+  "product": { "vendor": "example", "model": "mos-appliance" },
+  "update": {
+    "source": null,
+    "channel": "stable",
+    "policy": "check",
+    "checkIntervalMinutes": 1440
+  },
+  "trust": { "signingKeys": [], "signingKeyIds": [] },
+  "http": { "credentialHosts": [] },
+  "fleet": { "enabled": false, "url": null }
+}
+"#;
+
+/// A device with the baked tree every device has, which is what this route
+/// reads on every request. A build host has no `/usr/share/mos/meta`, so
+/// without this the four reading tests below never reach the handler at all.
+///
+/// The tree is the production shape: the manifest and nothing beside it.
+/// `meta/GENERATED` is conditional on a device — staged only for
+/// development-grade material — so one file is what a shipped image carries.
+///
+/// The `TempDir` comes back with the router because dropping it deletes the
+/// tree the next request would read.
+fn provisioning_app(tree: serde_json::Value) -> (Router, TempDir) {
+    let dir = TempDir::new().expect("temp baked metadata");
+    let updates = dir.path().join("updates");
+    std::fs::create_dir(&updates).expect("meta/updates");
+    std::fs::write(updates.join("manifest.json"), BAKED_MANIFEST).expect("baked manifest");
+    let fake = Arc::new(FakeSettings::new(tree));
+    let router = app(
+        AppState::new(fake, SIGNING_KEY).with_meta_manifest(updates.join("manifest.json")),
+    );
+    (router, dir)
+}
+
 /// A device that applied a document from the boot medium, and was claimed by
 /// it. The digest is the one mosd would have recorded; the secrets the
 /// document carried live where they belong and are not in this subtree.
@@ -47,7 +90,7 @@ fn unclaimed_tree() -> serde_json::Value {
 #[tokio::test]
 async fn the_status_reports_the_applied_document_and_requires_a_credential() {
     let (tree, token) = with_token(applied_tree());
-    let (router, _fake) = test_app(tree);
+    let (router, _meta) = provisioning_app(tree);
 
     let anonymous = get(&router, STATUS_PATH, None).await;
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
@@ -74,7 +117,7 @@ async fn the_status_reports_the_applied_document_and_requires_a_credential() {
 #[tokio::test]
 async fn a_device_no_document_reached_reports_nulls_and_unclaimed() {
     let (tree, token) = with_token(unclaimed_tree());
-    let (router, _fake) = test_app(tree);
+    let (router, _meta) = provisioning_app(tree);
 
     let status = body_json(bearer(&router, "GET", STATUS_PATH, &token).await).await;
     assert_eq!(status["documentVersion"], serde_json::Value::Null);
@@ -99,7 +142,7 @@ async fn a_refused_document_is_reported_with_its_key_path_and_no_value() {
         },
     });
     let (tree, token) = with_token(tree);
-    let (router, _fake) = test_app(tree);
+    let (router, _meta) = provisioning_app(tree);
 
     let status = body_json(bearer(&router, "GET", STATUS_PATH, &token).await).await;
     // A refusal applied nothing, so there is no applied version or digest to
@@ -165,7 +208,7 @@ async fn the_status_serves_no_secret_from_either_subtree_it_reads() {
         .expect("a hash")
         .to_string();
     let (tree, token) = with_token(tree);
-    let (router, _fake) = test_app(tree);
+    let (router, _meta) = provisioning_app(tree);
 
     let body = body_string(bearer(&router, "GET", STATUS_PATH, &token).await).await;
     assert!(
@@ -214,6 +257,10 @@ fn the_openapi_document_covers_the_provisioning_status_route() {
         "documentDigest",
         "lastImport",
         "unclaimed",
+        "baked",
+        "bakedDigests",
+        "operator",
+        "effective",
     ] {
         assert!(
             schema[member].is_object(),
@@ -222,7 +269,7 @@ fn the_openapi_document_covers_the_provisioning_status_route() {
     }
     assert_eq!(
         schema.as_object().expect("a property map").len(),
-        4,
-        "the status must carry exactly the four documented members: {schema:?}"
+        8,
+        "the status must carry exactly the eight documented members: {schema:?}"
     );
 }
