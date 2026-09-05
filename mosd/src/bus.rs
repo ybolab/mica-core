@@ -26,7 +26,7 @@ use crate::scan::Registry;
 use crate::storage_status::{self, PressureTracker, StorageStatusSource, UnavailableStorageStatus};
 use crate::system_info::{self, SystemInfoSource, UnavailableSystemInfo};
 use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
-use crate::time_status::{TimeStatusSource, UnavailableTimeStatus, status_json};
+use crate::time_status::{self, ClockTrust, TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 use crate::update_auto::{AutoRoutes, UpdateFacts};
 use crate::update_lifecycle::{
@@ -34,6 +34,7 @@ use crate::update_lifecycle::{
     UpdateLifecycle,
 };
 use crate::update_policy::{LoadedPolicy, PolicyStore};
+use crate::update_suppress::{Suppression, SuppressionStore};
 
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mos.mosd";
@@ -223,14 +224,22 @@ impl MosdService {
     /// defaults touch nothing on the host, and only `main.rs` knows the
     /// daemon runs on a device with a client binary and a policy file.
     #[must_use]
-    pub fn with_update(mut self, client: Arc<dyn UpdateClient>, policy: PolicyStore) -> Self {
-        self.update = Arc::new(UpdateLifecycle::new(
-            client,
-            policy,
-            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
-            Arc::clone(&self.installing),
-            self.update.workspace_root().to_path_buf(),
-        ));
+    pub fn with_update(
+        mut self,
+        client: Arc<dyn UpdateClient>,
+        policy: PolicyStore,
+        suppression: SuppressionStore,
+    ) -> Self {
+        self.update = Arc::new(
+            UpdateLifecycle::new(
+                client,
+                policy,
+                Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+                Arc::clone(&self.installing),
+                self.update.workspace_root().to_path_buf(),
+            )
+            .with_suppression(suppression),
+        );
         self
     }
 
@@ -240,13 +249,16 @@ impl MosdService {
     /// contract.
     #[must_use]
     pub fn with_update_workspace(mut self, root: PathBuf) -> Self {
-        self.update = Arc::new(UpdateLifecycle::new(
-            self.update.client(),
-            self.update.policy(),
-            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
-            Arc::clone(&self.installing),
-            root,
-        ));
+        self.update = Arc::new(
+            UpdateLifecycle::new(
+                self.update.client(),
+                self.update.policy(),
+                Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+                Arc::clone(&self.installing),
+                root,
+            )
+            .with_suppression(self.update.suppression()),
+        );
         self
     }
 
@@ -702,6 +714,26 @@ impl MosdService {
         Ok((slot_name, message))
     }
 
+    /// The clock-trust evidence PLAN-071 §7's automatic-install predicate
+    /// reads: `docs/design/time.md` §5's classification, and §3's saved
+    /// floor.
+    ///
+    /// Both limbs are that document's, deliberately, rather than a notion of
+    /// trusted time invented for updates — the same evidence RFCT-311's S4
+    /// puts beside a failed install, asked here as a precondition instead of
+    /// as a diagnosis. A daemon with no observer answers `None` for the
+    /// first limb, which is unread evidence and not a claim, exactly as
+    /// `unknown` is on the status surface.
+    pub async fn clock_trust(&self) -> ClockTrust {
+        let status = self
+            .time_status
+            .observe()
+            .await
+            .ok()
+            .map(|evidence| time_status::classify(&evidence));
+        time_status::observed_clock_trust(status)
+    }
+
     /// Validate and atomically persist `value` without waiting for a
     /// reconcile. The D-Bus method enqueues the apply after this returns.
     ///
@@ -964,7 +996,12 @@ fn to_bus_error(err: SettingsError) -> SettingsFault {
         SettingsError::Validation { .. } => {
             SettingsFault::Fdo(fdo::Error::InvalidArgs(err.to_string()))
         }
-        SettingsError::Io(_) => SettingsFault::Fdo(fdo::Error::IOError(err.to_string())),
+        // The configuration medium being gone is an IO condition and not a
+        // malformed request: the caller asked for something reasonable and the
+        // device cannot reach the store. The message already names the mount.
+        SettingsError::Io(_) | SettingsError::Unavailable { .. } => {
+            SettingsFault::Fdo(fdo::Error::IOError(err.to_string()))
+        }
         SettingsError::Parse(_) | SettingsError::Migration(_) => {
             SettingsFault::Fdo(fdo::Error::Failed(err.to_string()))
         }
@@ -1394,6 +1431,32 @@ impl MosdService {
         Ok(record.to_string())
     }
 
+    /// Clear PLAN-071 §6's suppression on `version`; answers the record that
+    /// was removed, as JSON.
+    ///
+    /// Exported as `ClearUpdateSuppression`. A version is suppressed when
+    /// the slot it was installed into exhausted its boot attempts and the
+    /// device fell back, and the automatic path then refuses to select it
+    /// again — a *manual* install is never refused, so this method lifts a
+    /// restriction on the machine and not on the operator.
+    ///
+    /// Explicit by construction: the version is named, and there is no
+    /// member that empties the store. `InvalidArgs` when the version is not
+    /// suppressed, so a typo cannot read as a successful clearing. Audited
+    /// on both sides — mosd logs who cleared what, apid records the event.
+    async fn clear_update_suppression(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        version: &str,
+    ) -> fdo::Result<String> {
+        let record = self
+            .update
+            .clear_suppression(sender_of(&header), version)
+            .await
+            .map_err(refusal_to_fdo)?;
+        Ok(record.to_string())
+    }
+
     /// Set a TRANSIENT root password, then re-apply the SSH subtree.
     ///
     /// Exported as `SetTransientRootPassword`. The password lives until the
@@ -1609,6 +1672,22 @@ impl AutoRoutes for BusRoutes {
             .await
             .map_err(|err| err.to_string())
     }
+
+    async fn suppression(&self, version: &str) -> Result<Option<Suppression>, String> {
+        self.lifecycle.suppression_for(version)
+    }
+
+    async fn clock(&self) -> ClockTrust {
+        self.service.get().await.clock_trust().await
+    }
+
+    async fn defer(&self, reason: &str, detail: &str) {
+        self.lifecycle.defer(reason, detail).await;
+    }
+
+    async fn resume(&self, only: Option<&str>) {
+        self.lifecycle.resume(only).await;
+    }
 }
 
 #[cfg(test)]
@@ -1682,12 +1761,24 @@ mod tests {
     /// A mock's shared call log ([`MockPower::calls`] / [`MockRauc::calls`]).
     type CallLog = Arc<Mutex<Vec<String>>>;
 
+    /// A store over a throwaway tree: the STATE document and the
+    /// `/mos/config/` namespace beside it.
+    ///
+    /// The namespace is created, because an absent one is the DATA medium
+    /// being gone and the store refuses that rather than defaulting
+    /// (PLAN-070 §5.2.6).
+    fn store_in(dir: &tempfile::TempDir) -> mosd_settings::Store {
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).expect("create the config namespace");
+        mosd_settings::Store::new(dir.path().join("settings.toml"), config)
+    }
+
     /// Service backed by a throwaway settings file, a throwaway shadow file,
     /// a recording power mock and the given RAUC mock; the power log and the
     /// RAUC call log are returned alongside.
     fn service_with_rauc(rauc: MockRauc) -> (MosdService, CallLog, CallLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = mosd_settings::Store::new(dir.path().join("settings.toml"));
+        let store = store_in(&dir);
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1748,7 +1839,7 @@ mod tests {
             }) as Box<dyn crate::reconciler::Reconciler>
         };
         let service = MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             settings,
             vec![
                 reconciler("sshd", "access.ssh"),
@@ -1853,7 +1944,7 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let service = Arc::new(MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             mosd_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
                 name: "hostname",
@@ -1898,7 +1989,7 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let service = Arc::new(MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             mosd_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
                 name: "sshd",
@@ -2530,6 +2621,7 @@ mod tests {
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path),
+            crate::update_suppress::SuppressionStore::none(),
         );
         let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
 
@@ -2662,7 +2754,7 @@ mod tests {
             },
         );
         let service = MosdService::new(
-            mosd_settings::Store::new(dir.path().join("settings.toml")),
+            store_in(&dir),
             settings,
             Vec::new(),
             Box::new(MockPower {

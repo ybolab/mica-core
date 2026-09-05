@@ -805,7 +805,7 @@
           "discovery"
         ],
         "summary": "Report what the caller is talking to.",
-        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — the shape of the settings tree on disk, which\nmoves independently of the API version. Authenticated.",
+        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mos/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `mosd_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
         "operationId": "api_v1_meta",
         "responses": {
           "200": {
@@ -4120,6 +4120,118 @@
         }
       }
     },
+    "/api/v1/update/clear-suppression": {
+      "post": {
+        "tags": [
+          "update"
+        ],
+        "summary": "Permit automatic installs of a version this device rolled back.",
+        "description": "A version is suppressed when the slot it was installed into exhausted its\nboot attempts and the bootloader fell back; the automatic path then\nrefuses to select it again, which is what stops `auto` from installing the\nsame bad bundle once per maintenance window forever. A **manual** install\nof that version is never refused, so this route lifts a restriction on the\nmachine and not on the operator.\n\nThe version is named explicitly and there is deliberately no route that\nempties the store: an operator who has diagnosed one bad release has not\nthereby diagnosed the others. Audited on both sides — this route records\nthe event, and mosd logs who cleared what.",
+        "operationId": "api_v1_update_clear_suppression",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClearSuppressionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The suppression that was cleared: `version`, `slot`, `at`, `bootStatus`, `detail`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClearedSuppression"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON or not this shape (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "That version is not suppressed (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to clear it, e.g. the store could not be written (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/update/fetch": {
       "post": {
         "tags": [
@@ -5313,6 +5425,23 @@
             "description": "Which channel minted the administrator credential: `setup` or\n`provisioning-document`. Absent while the device is unclaimed."
           }
         }
+      },
+      "ClearSuppressionRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/update/clear-suppression` request body.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The suppressed version to permit again, exactly as\n`lifecycle.suppressed[].version` spells it."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClearedSuppression": {
+        "description": "The suppression that was cleared, as mosd recorded it."
       },
       "CredentialRecovered": {
         "type": "object",

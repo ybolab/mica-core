@@ -954,7 +954,12 @@ mod tests {
     }
 
     fn store_in(dir: &Path) -> Store {
-        Store::new(settings_path(dir))
+        // The `/mos/config/` namespace has to exist: an absent document is a
+        // default, an absent namespace is the DATA medium being gone, and the
+        // store refuses that rather than defaulting (PLAN-070 §5.2.6).
+        let config = dir.join("config");
+        fs::create_dir_all(&config).expect("create the config namespace");
+        Store::new(settings_path(dir), config)
     }
 
     /// Write `body` as the document of `source`, under a fresh staging root.
@@ -1673,7 +1678,9 @@ timezone = "Europe/Berlin"
         // a permission check.
         let blocker = dir.path().join("blocked");
         fs::write(&blocker, b"not a directory").expect("write blocker");
-        let store = Store::new(blocker.join("settings.toml"));
+        let config = dir.path().join("config");
+        fs::create_dir_all(&config).expect("create the config namespace");
+        let store = Store::new(blocker.join("settings.toml"), config);
         let root = stage(dir.path(), Source::Boot, time_only_document());
         let mut settings = Settings::default();
 
@@ -1771,17 +1778,18 @@ timezone = "Europe/Berlin"
         );
     }
 
-    // The document version is the DOCUMENT's, not the settings schema's. They
-    // move independently and this pins that they are not the same number by
-    // accident.
+    // The document version is the DOCUMENT's, and it is pinned here so a bump
+    // is a decision rather than a side effect.
+    //
+    // This used to assert it was DIFFERENT from the settings schema version,
+    // so a reader could not mistake one for the other. That assertion is gone
+    // with its subject: PLAN-070 §5.2.3 replaced the one tree-wide version
+    // with one per document, each starting at v1, so there is no single number
+    // left to differ from -- and every one of them now IS 1. The confusion the
+    // old assertion guarded against has to be prevented by the names instead.
     #[test]
-    fn the_document_version_is_not_the_settings_schema_version() {
+    fn the_document_version_is_pinned() {
         assert_eq!(DOCUMENT_VERSION, 1);
-        assert_ne!(
-            u64::from(DOCUMENT_VERSION),
-            u64::from(mosd_settings::SCHEMA_VERSION),
-            "if these ever coincide, a reader will assume one is the other"
-        );
     }
 
     // The two source names are the wire values the status route serves and the

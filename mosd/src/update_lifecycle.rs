@@ -44,6 +44,7 @@ use crate::rauc::SlotStatus;
 use crate::update_policy::{
     self, EffectivePolicy, GateVerdict, LoadedPolicy, PolicyStore, Selection, Workspace,
 };
+use crate::update_suppress::{LoadedSuppressions, Suppression, SuppressionStore};
 
 /// Where the device-side update client lives unless `MOSD_RAUC_UPDATE_BIN`
 /// says otherwise. Shipping the binary there is the image side's half of the
@@ -503,9 +504,7 @@ pub fn derive_boot_phase(
     primary: Option<&str>,
     boot_health: Option<&str>,
 ) -> Option<(BootPhase, String)> {
-    if let Some(fallen) = slots.iter().find(|slot| {
-        slot.state.as_deref() != Some("booted") && slot.boot_status.as_deref() == Some("bad")
-    }) {
+    if let Some(fallen) = rolled_back_slot(slots) {
         return Some((
             BootPhase::RolledBack,
             format!(
@@ -535,6 +534,45 @@ pub fn derive_boot_phase(
     }
 }
 
+/// The slot a fallback left behind: one we are NOT running whose boot
+/// attempts are exhausted.
+///
+/// One function because two callers ask the same question and must not be
+/// able to disagree: [`derive_boot_phase`] renders it as `rolled-back`, and
+/// [`UpdateLifecycle::refresh`] suppresses the version it carries. A second
+/// spelling here would be a device that reports a rollback it did not
+/// suppress, or suppresses one it did not report.
+pub fn rolled_back_slot(slots: &[SlotStatus]) -> Option<&SlotStatus> {
+    slots.iter().find(|slot| {
+        slot.state.as_deref() != Some("booted") && slot.boot_status.as_deref() == Some("bad")
+    })
+}
+
+/// Why the last automatic pass did not proceed (PLAN-071 §2, U5).
+///
+/// A deferral is a fact about the AUTOMATIC path, kept beside the lifecycle
+/// state rather than replacing it: the device is still `ready` or
+/// `reboot-required`, and what this adds is that something wanted to act and
+/// did not. `since`/`count` are what make a permanently blocking application
+/// distinguishable from a stuck update — PLAN-071 §2's whole point — because
+/// "four automatic attempts were refused, the first one an hour ago" is the
+/// sentence an operator opening the page after a week needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Deferral {
+    /// The vocabulary PLAN-071 §2 names: `outside-window`,
+    /// `reboot-gate-closed`, `clock-untrusted`, `version-suppressed`, plus
+    /// the driver's own guards.
+    reason: String,
+    /// The refusing rule in words, verbatim from whoever refused.
+    detail: String,
+    /// When this reason first applied without interruption.
+    since: DateTime<Utc>,
+    /// The most recent attempt it applied to.
+    at: DateTime<Utc>,
+    /// How many attempts in a row it has applied to.
+    count: u64,
+}
+
 /// An active administrative override of the reboot gate.
 #[derive(Debug, Clone)]
 struct OverrideRecord {
@@ -561,6 +599,8 @@ struct Machine {
     last_check: Option<String>,
     boot_phase: Option<(BootPhase, String)>,
     override_record: Option<OverrideRecord>,
+    /// Why the last automatic attempt did not proceed; `None` once one did.
+    deferred: Option<Deferral>,
 }
 
 /// The lifecycle service: one per daemon, shared with the auto-check task.
@@ -574,6 +614,9 @@ pub struct UpdateLifecycle {
     /// The `/mos/updates` workspace root; `verified/` below it is the only
     /// place a recorded or installed bundle may be.
     workspace_root: PathBuf,
+    /// PLAN-071 §6's suppressed versions, on STATE. Consulted by the
+    /// automatic path only; written here, where a rollback is observed.
+    suppression: SuppressionStore,
     machine: Mutex<Machine>,
 }
 
@@ -591,8 +634,27 @@ impl UpdateLifecycle {
             host,
             installing,
             workspace_root,
+            suppression: SuppressionStore::none(),
             machine: Mutex::new(Machine::default()),
         }
+    }
+
+    /// Attach the STATE-backed suppression store.
+    ///
+    /// A builder step rather than a sixth constructor argument for
+    /// [`crate::bus::MosdService::with_update`]'s reason: the default
+    /// touches no file, so a dry-run daemon or a test cannot write a refusal
+    /// into the host's STATE partition, and only `main.rs` knows where that
+    /// partition is.
+    #[must_use]
+    pub fn with_suppression(mut self, suppression: SuppressionStore) -> Self {
+        self.suppression = suppression;
+        self
+    }
+
+    /// The suppression store, for a rebuild around a new workspace.
+    pub fn suppression(&self) -> SuppressionStore {
+        self.suppression.clone()
     }
 
     /// The client this lifecycle runs, for a rebuild around a new workspace.
@@ -951,6 +1013,181 @@ impl UpdateLifecycle {
             .and_then(Value::as_str);
         let phase = derive_boot_phase(slots, primary, boot_health);
         self.machine.lock().await.boot_phase = phase;
+        self.suppress_rolled_back(slots);
+        self.record_snapshot().await;
+    }
+
+    /// PLAN-071 §6: write down the version whose slot rolled back.
+    ///
+    /// Here, and not in the automatic driver, for two reasons. The evidence
+    /// is here — this is the one place that holds a fresh slot list beside
+    /// the phase derived from it — and a fallback must be recorded whether
+    /// or not the device is in `auto`: an operator who turns `auto` on after
+    /// a failed manual install should not be handed the loop as a welcome.
+    ///
+    /// Idempotent by [`SuppressionStore::record`]: this runs on every
+    /// `GetUpdateState` for as long as the failed slot is visible, and only
+    /// the first one writes, so the recorded instant is when the rollback
+    /// was first SEEN rather than when it was last polled.
+    ///
+    /// A slot RAUC names no `bundle_version` for cannot be suppressed —
+    /// there is no version to refuse — and that is logged rather than
+    /// guessed at. It is the one hole in this mechanism and it is the
+    /// installer's to close: a slot written by something that recorded no
+    /// version is a slot nothing downstream can talk about.
+    fn suppress_rolled_back(&self, slots: &[SlotStatus]) {
+        let Some(fallen) = rolled_back_slot(slots) else {
+            return;
+        };
+        let Some(version) = fallen.bundle_version.clone() else {
+            tracing::warn!(
+                slot = %fallen.name,
+                "a rolled-back slot carries no bundle version; it cannot be suppressed"
+            );
+            return;
+        };
+        let booted = crate::rauc::booted_slot(slots)
+            .map_or_else(|| "the running slot".to_string(), |slot| slot.name.clone());
+        let entry = Suppression {
+            version: version.clone(),
+            slot: fallen.name.clone(),
+            at: now_rfc3339(),
+            boot_status: fallen.boot_status.clone(),
+            detail: format!(
+                "version {version} was installed into slot {}, which exhausted its boot \
+                 attempts; the system fell back to {booted}. Automatic installs of this \
+                 version are refused until an operator clears the suppression; a manual \
+                 install is still permitted",
+                fallen.name
+            ),
+        };
+        match self.suppression.record(&entry) {
+            Ok(true) => tracing::warn!(
+                version = %entry.version,
+                slot = %entry.slot,
+                "version suppressed after a rollback; automatic installs of it are refused"
+            ),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                version = %entry.version,
+                error,
+                "the version suppression could not be recorded"
+            ),
+        }
+    }
+
+    /// The suppression on `version`, or the store's own error.
+    ///
+    /// The error is answered rather than swallowed because the automatic
+    /// path defers on it: a store that does not parse must not read as
+    /// "nothing is suppressed", which is the reading that restarts the loop.
+    ///
+    /// # Errors
+    ///
+    /// The store exists and could not be read or parsed.
+    pub fn suppression_for(&self, version: &str) -> Result<Option<Suppression>, String> {
+        let loaded = self.suppression.load();
+        match loaded.error {
+            Some(error) => Err(error),
+            None => Ok(loaded.get(version).cloned()),
+        }
+    }
+
+    /// Clear the suppression on `version` on behalf of `sender`; answers the
+    /// record that was removed.
+    ///
+    /// PLAN-071 §6's *"an operator clears the suppression explicitly, and the
+    /// clearing is audited"*. Explicit means naming the version: there is
+    /// deliberately no member that empties the store, because the operator
+    /// who has diagnosed one bad release has not thereby diagnosed the
+    /// others, and a device that forgot every refusal at once would install
+    /// the whole set again on the next window.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Invalid`] when the version is not suppressed — a typo must
+    /// not read as a successful clearing — and [`Refusal::Unavailable`] when
+    /// the store could not be read or written.
+    pub async fn clear_suppression(&self, sender: &str, version: &str) -> Result<Value, Refusal> {
+        let cleared = self
+            .suppression
+            .clear(version)
+            .map_err(Refusal::Unavailable)?;
+        let Some(record) = cleared else {
+            return Err(Refusal::Invalid(format!(
+                "version `{version}` is not suppressed"
+            )));
+        };
+        // The one log line that must exist for the audit trail: who lifted
+        // the refusal, and on which version. apid records its own audit event
+        // beside it, the same pair `SetRebootOverride` is audited by.
+        tracing::warn!(
+            sender,
+            version,
+            slot = %record.slot,
+            since = %record.at,
+            "update version suppression cleared; automatic installs of it are permitted again"
+        );
+        let rendered = record.to_json();
+        self.record_snapshot_with(Some(format!(
+            "suppression on version {version} cleared by {sender}"
+        )))
+        .await;
+        Ok(rendered)
+    }
+
+    /// Record why an automatic attempt did not proceed (U5).
+    ///
+    /// The same reason arriving again extends the existing fact rather than
+    /// replacing it: `since` stays where it was and `count` rises, so the
+    /// state answers "how long" and not only "why". A DIFFERENT reason
+    /// starts a new fact, because the clock it would otherwise inherit
+    /// belongs to a different refusal.
+    pub async fn defer(&self, reason: &str, detail: &str) {
+        let now = Utc::now();
+        let mut machine = self.machine.lock().await;
+        match &mut machine.deferred {
+            Some(existing) if existing.reason == reason => {
+                existing.detail = detail.to_string();
+                existing.at = now;
+                existing.count = existing.count.saturating_add(1);
+            }
+            slot => {
+                *slot = Some(Deferral {
+                    reason: reason.to_string(),
+                    detail: detail.to_string(),
+                    since: now,
+                    at: now,
+                    count: 1,
+                });
+            }
+        }
+        drop(machine);
+        self.record_snapshot().await;
+    }
+
+    /// Forget the last deferral: an automatic attempt proceeded.
+    ///
+    /// `only` clears just that reason, and exists because most successes
+    /// supersede one specific refusal rather than every refusal: a check
+    /// that finds a newer release ends `no-newer-release` and says nothing
+    /// about whether the maintenance window is open. `None` clears whatever
+    /// is there, for the two steps that ran the whole pass to its end.
+    ///
+    /// A no-op when nothing matches, so the common tick neither takes the
+    /// lock twice nor re-records an unchanged entry.
+    pub async fn resume(&self, only: Option<&str>) {
+        {
+            let mut machine = self.machine.lock().await;
+            let matches = machine
+                .deferred
+                .as_ref()
+                .is_some_and(|deferred| only.is_none_or(|reason| deferred.reason == reason));
+            if !matches {
+                return;
+            }
+            machine.deferred = None;
+        }
         self.record_snapshot().await;
     }
 
@@ -1045,6 +1282,7 @@ impl UpdateLifecycle {
     /// Build the full `update.lifecycle` entry and hand it to the host.
     async fn record_snapshot_with(&self, last_refusal: Option<String>) {
         let loaded = self.policy.load();
+        let suppressions = self.suppression.load();
         let health = self.host.health().await;
         let installing = self.installing.load(Ordering::Acquire);
         let mut machine = self.machine.lock().await;
@@ -1058,6 +1296,7 @@ impl UpdateLifecycle {
         let entry = render_entry(
             &machine,
             &loaded,
+            &suppressions,
             &verdict,
             installing,
             self.client.unavailable(),
@@ -1126,6 +1365,7 @@ fn check_args(selection: &Selection, workspace: &Workspace) -> Vec<String> {
 fn render_entry(
     machine: &Machine,
     loaded: &LoadedPolicy,
+    suppressions: &LoadedSuppressions,
     gate: &GateVerdict,
     installing: bool,
     client_unavailable: Option<String>,
@@ -1174,6 +1414,26 @@ fn render_entry(
     }
     if let Some(last_check) = &machine.last_check {
         entry.insert("last_check".into(), json!(last_check));
+    }
+    // PLAN-071 §2: deferral must be VISIBLE, not silent. A permanently
+    // blocking application permanently defers the reboot, which is correct
+    // and is also indistinguishable from a stuck update unless the device
+    // says so. `since`/`waitedSeconds`/`count` are the "how long" half of
+    // that sentence; the state beside it (`ready`, `reboot-required`) is
+    // still what the device IS, because a deferral is a fact about the
+    // automatic path and not a state of the machine.
+    if let Some(deferred) = &machine.deferred {
+        entry.insert(
+            "deferred".into(),
+            json!({
+                "reason": deferred.reason,
+                "detail": deferred.detail,
+                "since": deferred.since.to_rfc3339_opts(SecondsFormat::Secs, true),
+                "at": deferred.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                "waitedSeconds": (Utc::now() - deferred.since).num_seconds().max(0),
+                "attempts": deferred.count,
+            }),
+        );
     }
     entry.insert(
         "client".into(),
@@ -1254,6 +1514,25 @@ fn render_entry(
     );
     if let Some(error) = &loaded.error {
         entry.insert("policy_error".into(), json!(error));
+    }
+    // PLAN-071 §6's store, served beside the policy that reads it. A device
+    // that refuses a version has to be able to say WHICH and WHY without a
+    // second read route: "this device refuses 1.5.0" with no reason is the
+    // support case with nothing in it that §6 names. The error is rendered
+    // too, because an unreadable store is a state the automatic path defers
+    // in and an empty list would otherwise report it as "nothing refused".
+    entry.insert(
+        "suppressed".into(),
+        Value::Array(
+            suppressions
+                .records
+                .iter()
+                .map(Suppression::to_json)
+                .collect(),
+        ),
+    );
+    if let Some(error) = &suppressions.error {
+        entry.insert("suppressed_error".into(), json!(error));
     }
     let mut gate_entry = gate.to_json();
     if let (Some(record), Some(map)) = (&machine.override_record, gate_entry.as_object_mut()) {

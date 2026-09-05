@@ -244,6 +244,10 @@ impl SettingsApi for InterruptOnce {
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<serde_json::Value> {
         self.inner.set_reboot_override(seconds).await
     }
+
+    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<serde_json::Value> {
+        self.inner.clear_update_suppression(version).await
+    }
 }
 
 /// The interrupted path, then the retry: nothing half-lands, and the retry

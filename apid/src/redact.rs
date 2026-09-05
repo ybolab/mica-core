@@ -37,6 +37,20 @@ pub const REDACTED: &str = "<redacted>";
 /// token -- and it arrived already covered, because `GetSettings("access")`
 /// returns the subtree verbatim and the mint pane would otherwise have shipped
 /// a digest to every authenticated reader before anyone thought to look here.
+///
+/// **The rule that makes that luck into a rule** (PLAN-070 section 5.2.4.2).
+/// This list is a denylist of field names and it is fail-open by design, so
+/// now that `/mos/config/` holds secrets on purpose:
+///
+/// > A `/mos/config/` document spells a secret-bearing key with a name already
+/// > on this list, or the same change that adds the key adds the name.
+///
+/// Stated because the alternative is a subsystem author who picks
+/// `sharedSecret`, ships it, and finds out from a support case. The moved
+/// schema satisfies it today with nothing added: the only secret-bearing keys
+/// in the namespace are `wifi.ap.psk` and `wifi.client.networks[].psk`, both
+/// spelled `psk`. `mqtt.auth` carries no credential at all -- the broker reads
+/// its accounts from a STATE file, the rule stated at that field.
 const SECRET_FIELDS: [&str; 5] = ["psk", "passwordHash", "password_hash", "hash", "privateKey"];
 
 /// Whether a field named `name` is redacted.

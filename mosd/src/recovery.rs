@@ -314,7 +314,9 @@ RECOVERY_BOOT_MENU_FACTORY_TIER=full-factory
             if let Some(text) = declaration {
                 std::fs::write(root.join("recovery-actions.conf"), text).unwrap();
             }
-            let store = Store::new(root.join("settings.toml").to_str().unwrap());
+            let config = root.join("config");
+            std::fs::create_dir_all(&config).unwrap();
+            let store = Store::new(root.join("settings.toml"), config);
             let mut settings = Settings::default();
             settings.provisioning.state = ProvisioningState::Complete;
             store.save(&settings).unwrap();
