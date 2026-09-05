@@ -123,9 +123,15 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
 
     let dir = tempfile::tempdir()?;
     let settings_path = dir.path().join("settings.toml");
+    // The `/mos/config/` namespace the daemon reads its configuration from.
+    // It has to exist before mosd starts: an absent namespace is the DATA
+    // medium being gone, and mosd refuses to start on defaults rather than
+    // render a configuration nobody chose (PLAN-070 §5.2.6).
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir)?;
     let mut seeded = mosd_settings::Settings::default();
     seeded.provisioning.device_id = Some(DEVICE_ID.to_string());
-    mosd_settings::Store::new(&settings_path).save(&seeded)?;
+    mosd_settings::Store::new(&settings_path, &config_dir).save(&seeded)?;
     // The daemon must never be pointed at the host's /etc/shadow, so the
     // transient-password method gets a throwaway file of its own.
     let shadow_path = dir.path().join("shadow");
@@ -144,6 +150,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
             .env("MOSD_BUS", "session")
             .env("MOSD_DRY_RUN", "1")
             .env("MOSD_SETTINGS_PATH", &settings_path)
+            .env("MOSD_CONFIG_DIR", &config_dir)
             .env("MOSD_SHADOW_PATH", &shadow_path)
             .env("RAUC_UPDATE_ROOT", &update_root)
             .spawn()?,
@@ -166,7 +173,9 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     .await?;
     let defaults: serde_json::Value = serde_json::from_str(&defaults)?;
     assert_eq!(defaults["hostname"], "mos");
-    assert_eq!(defaults["schema_version"], mosd_settings::SCHEMA_VERSION);
+    // No tree-wide `schema_version` any more: PLAN-070 §5.2.3 put the version
+    // on each document, so the addressed tree carries none at all.
+    assert!(defaults.get("schema_version").is_none());
 
     let mut changed = proxy.receive_settings_changed().await?;
     let mut task_changed = proxy.receive_task_changed().await?;
@@ -383,11 +392,17 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
         "the password reached settings.toml:\n{persisted}"
     );
 
-    // Three distinct failures travel under three distinct error names, so a
-    // caller can separate a missing path, a read-only path and a bad value
-    // without parsing message prose. The names are spelled out here rather
-    // than imported: they are the bus contract, and a test that borrowed the
-    // constant from the code under test would follow it wherever it moved.
+    // Distinct failures travel under distinct error names, so a caller can
+    // separate a missing path from a bad value without parsing message prose.
+    // The names are spelled out here rather than imported: they are the bus
+    // contract, and a test that borrowed the constant from the code under test
+    // would follow it wherever it moved.
+    //
+    // **The read-only leg is gone with its only producer.** It was
+    // `set_settings("schema_version", ...)`, and PLAN-070 §5.2.3 removed
+    // `schema_version` from the tree; `com.mos.mosd1.Error.ReadOnly` is still
+    // the declared name for a path that exists and refuses writes, and nothing
+    // in the schema is one today, so no call can raise it here.
     let err = proxy
         .get_settings("no.such.path")
         .await
@@ -396,8 +411,8 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let err = proxy
         .set_settings("schema_version", "2")
         .await
-        .expect_err("a read-only dot-path must refuse the write");
-    assert_eq!(error_name(&err), "com.mos.mosd1.Error.ReadOnly");
+        .expect_err("a path the typed tree has no field for must be an error");
+    assert_eq!(error_name(&err), "org.freedesktop.DBus.Error.InvalidArgs");
     let err = proxy
         .set_settings("hostname", "42")
         .await

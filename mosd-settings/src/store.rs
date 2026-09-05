@@ -1,61 +1,122 @@
-//! Atomic TOML persistence for the settings tree.
+//! Persistence for the settings tree: the `/mos/config/` documents on DATA
+//! and the remainder on STATE.
+//!
+//! One store, several documents (PLAN-070 §5.2). [`crate::documents`] holds
+//! the storage shape and the reasons for it; this module is the reader and the
+//! writer, and it is the only place that converts between the documents and
+//! the one addressed [`Settings`] tree.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::error::SettingsError;
-use crate::migration::migrate;
-use crate::model::{SCHEMA_VERSION, Settings};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
-/// What the tolerant newer-schema load did, for the caller to log loudly.
+use crate::documents::{
+    CONTAINER_DOCUMENT, CONTAINER_SCHEMA_VERSION, DEFAULT_CONFIG_DIR, DOCUMENT_MODE, DocumentSet,
+    MQTT_DOCUMENT, MQTT_SCHEMA_VERSION, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, SSH_DOCUMENT,
+    SSH_SCHEMA_VERSION, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION, StateDocument,
+    TIME_DOCUMENT, TIME_SCHEMA_VERSION, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION,
+};
+use crate::error::SettingsError;
+use crate::model::Settings;
+
+/// Default on-disk location of the STATE document.
+pub const DEFAULT_PATH: &str = "/var/lib/mos/settings.toml";
+
+/// The name the STATE document is reported under.
+const STATE_DOCUMENT: &str = "settings.toml";
+
+/// What the tolerant newer-schema load did to ONE document, for the caller to
+/// log loudly.
 ///
-/// Produced only when the on-disk `schema_version` was greater than
-/// [`SCHEMA_VERSION`] — i.e. on the A/B rollback path. See
+/// Produced only when that document's on-disk `schema_version` was greater
+/// than the version this build writes — i.e. on the A/B rollback path. See
 /// [`Store::load_with_report`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollbackReport {
+    /// The document this report is about, by file name.
+    pub document: String,
     /// The newer schema version the document carried.
     pub from: u32,
     /// Keys stripped to make the document parse, in the order they were
-    /// dropped. Recursive: a same-named key elsewhere in the tree is dropped
-    /// by the same pass.
+    /// dropped. Recursive: a same-named key elsewhere in the document is
+    /// dropped by the same pass.
     pub dropped_keys: Vec<String>,
     /// True when stripping was not enough — the newer schema reshaped an
-    /// existing key — and the load fell back to [`Settings::default`],
-    /// abandoning every stored setting including the admin credential.
+    /// existing key — and the load fell back to this document's schema
+    /// default, abandoning everything it stored.
     pub defaulted: bool,
+}
+
+/// The two on-disk formats: JSON for `/mos/config/`, TOML for the STATE
+/// remainder.
+///
+/// `/mos/config/` is JSON because these are machine-written documents and JSON
+/// is what a machine writes without a round-trip formatting problem (§5.2.7).
+/// The STATE document is not in that namespace and keeps the format it already
+/// had.
+#[derive(Debug, Clone, Copy)]
+enum Format {
+    Toml,
+    Json,
+}
+
+impl Format {
+    /// Parse into the format-neutral tree the version check and the tolerant
+    /// load both work on.
+    fn parse(self, text: &str) -> Result<Value, String> {
+        match self {
+            Self::Toml => toml::from_str(text).map_err(|err: toml::de::Error| err.to_string()),
+            Self::Json => {
+                serde_json::from_str(text).map_err(|err: serde_json::Error| err.to_string())
+            }
+        }
+    }
+
+    fn render<T: Serialize>(self, value: &T) -> Result<String, String> {
+        match self {
+            Self::Toml => toml::to_string(value).map_err(|err| err.to_string()),
+            Self::Json => serde_json::to_string_pretty(value)
+                .map(|mut text| {
+                    text.push('\n');
+                    text
+                })
+                .map_err(|err| err.to_string()),
+        }
+    }
 }
 
 /// The field name out of a serde `deny_unknown_fields` rejection, if that is
 /// what `message` is.
 ///
-/// Serde spells it `` unknown field `name`, expected ... `` and toml carries
-/// the message through; the toml workspace pin (`=0.9`-line) keeps the
-/// spelling stable, and the tolerant-load test fails loudly if it drifts.
+/// Serde spells it `` unknown field `name`, expected ... `` and both toml and
+/// serde_json carry the message through; the toml workspace pin (`=0.9`-line)
+/// keeps the spelling stable.
 fn unknown_field_name(message: &str) -> Option<String> {
     let rest = message.split("unknown field `").nth(1)?;
     let (name, _) = rest.split_once('`')?;
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Remove every key named `key` anywhere in `table`, recursively (arrays of
-/// tables included). Returns whether anything was removed.
-fn strip_key(table: &mut toml::Table, key: &str) -> bool {
-    let mut removed = table.remove(key).is_some();
-    for (_, value) in table.iter_mut() {
-        removed |= strip_key_in_value(value, key);
-    }
-    removed
-}
-
-fn strip_key_in_value(value: &mut toml::Value, key: &str) -> bool {
+/// Remove every key named `key` anywhere in `value`, recursively (arrays
+/// included). Returns whether anything was removed.
+fn strip_key(value: &mut Value, key: &str) -> bool {
     match value {
-        toml::Value::Table(inner) => strip_key(inner, key),
-        toml::Value::Array(items) => {
+        Value::Object(map) => {
+            let mut removed = map.remove(key).is_some();
+            for (_, child) in map.iter_mut() {
+                removed |= strip_key(child, key);
+            }
+            removed
+        }
+        Value::Array(items) => {
             let mut removed = false;
             for item in items {
-                removed |= strip_key_in_value(item, key);
+                removed |= strip_key(item, key);
             }
             removed
         }
@@ -63,28 +124,250 @@ fn strip_key_in_value(value: &mut toml::Value, key: &str) -> bool {
     }
 }
 
-/// Default on-disk location of the settings file.
-pub const DEFAULT_PATH: &str = "/var/lib/mos/settings.toml";
+/// The `schema_version` a parsed document declares.
+///
+/// A document with no version, or one whose version is not an integer, does
+/// not parse — and a document that does not parse is refused rather than
+/// treated as absent (§5.2.7).
+fn declared_version(doc: &Value, document: &str) -> Result<u32, SettingsError> {
+    let Some(object) = doc.as_object() else {
+        return Err(SettingsError::Parse(format!(
+            "{document} is not a document: the top level is not a table"
+        )));
+    };
+    match object.get("schema_version") {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .and_then(|version| u32::try_from(version).ok())
+            .ok_or_else(|| {
+                SettingsError::Parse(format!("{document}: schema_version {number} out of range"))
+            }),
+        Some(other) => Err(SettingsError::Parse(format!(
+            "{document}: schema_version must be an integer, got {other}"
+        ))),
+        None => Err(SettingsError::Parse(format!(
+            "{document}: no schema_version"
+        ))),
+    }
+}
 
-/// TOML-backed settings store with atomic writes and load-time migrations.
+/// The tolerant path for a document newer than this build writes.
+///
+/// **Infallible by design.** This is the A/B rollback path: the other slot ran
+/// a newer mosd, wrote its documents, and this slot was rolled back to.
+/// Refusing such a document makes mosd exit, and under `Restart=on-failure`
+/// the rolled-back-to slot is then a crash loop — which also fails that slot's
+/// health gate, so a rollback whose whole point is reaching a working slot
+/// produces a device with no confirmable slot at all. Down-migrations cannot
+/// help by construction: this binary cannot carry the migration a future
+/// schema will need.
+///
+/// What "tolerantly" means: keys this schema does not know are dropped, one at
+/// a time and recursively, until the document parses. The next [`Store::save`]
+/// persists the stripped document at this schema version. If stripping is not
+/// enough — a future schema **reshaped** an existing key — the last resort is
+/// this document's schema default, reported rather than returned as an error.
+/// Schema authors owe the mitigation: prefer additive bumps; a reshaping bump
+/// forfeits that document's settings on rollback and must say so.
+///
+/// **The blast radius is one document**, which is part of what the
+/// per-document version buys: a reshaped `wifi.json` costs the Wi-Fi settings
+/// and leaves the network, the ssh policy and the management credential alone.
+fn load_newer<T: DeserializeOwned + Default>(
+    mut doc: Value,
+    from: u32,
+    version: u32,
+    document: &str,
+) -> (T, RollbackReport) {
+    // The version stamp itself is the first "key this schema does not
+    // recognise the value of": rewrite it to ours so the parse below is over a
+    // document claiming the schema it is being read as.
+    if let Some(object) = doc.as_object_mut() {
+        object.insert("schema_version".to_string(), Value::from(version));
+    }
+    let mut dropped = Vec::new();
+    // Bounded: each pass must strip at least one key or the loop ends. The
+    // bound itself is defensive; a document has finitely many keys.
+    for _ in 0..64 {
+        match serde_json::from_value::<T>(doc.clone()) {
+            Ok(parsed) => {
+                return (
+                    parsed,
+                    RollbackReport {
+                        document: document.to_string(),
+                        from,
+                        dropped_keys: dropped,
+                        defaulted: false,
+                    },
+                );
+            }
+            Err(err) => {
+                let Some(key) = unknown_field_name(&err.to_string()) else {
+                    break; // reshaped, not additive: fall through
+                };
+                if !strip_key(&mut doc, &key) {
+                    break; // named key not found: cannot make progress
+                }
+                dropped.push(key);
+            }
+        }
+    }
+    (
+        T::default(),
+        RollbackReport {
+            document: document.to_string(),
+            from,
+            dropped_keys: dropped,
+            defaulted: true,
+        },
+    )
+}
+
+/// Read one document, or its schema default when the file is absent.
+///
+/// **Absence is a default; a parse error is not** (§5.2.7). A document that
+/// exists and does not parse refuses the load rather than silently reverting
+/// to a schema default, because treating a parse error as absence configures a
+/// device the way nobody chose.
+fn read_document<T: DeserializeOwned + Default>(
+    path: &Path,
+    document: &str,
+    format: Format,
+    version: u32,
+    reports: &mut Vec<RollbackReport>,
+) -> Result<T, SettingsError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(err) => return Err(err.into()),
+    };
+    let doc = format
+        .parse(&text)
+        .map_err(|message| SettingsError::Parse(format!("{document}: {message}")))?;
+    let from = declared_version(&doc, document)?;
+    if from > version {
+        let (parsed, report) = load_newer(doc, from, version, document);
+        reports.push(report);
+        return Ok(parsed);
+    }
+    if from < version {
+        // Reachable only once a document has bumped past v1 and this build is
+        // older than the file it found. There is no migration registry to walk
+        // — the `V0→V12` chain was deleted with the document it migrated — so
+        // the honest answer is a refusal that names the document.
+        return Err(SettingsError::Migration(format!(
+            "{document} is at schema version {from} and this build reads version {version}; \
+             no migration is registered"
+        )));
+    }
+    serde_json::from_value(doc).map_err(|err| SettingsError::Parse(format!("{document}: {err}")))
+}
+
+/// Write one document atomically at [`DOCUMENT_MODE`], and only if its bytes
+/// changed.
+///
+/// **The mode is set before the rename**, the discipline
+/// `mosd::fswrite::write_config` already carries: a document is never
+/// reachable under its final name at a laxer mode, including when it replaces
+/// one that was laxer.
+///
+/// **Unchanged documents are not rewritten.** That is what makes a write's
+/// blast radius one document: setting `mqtt.enabled` leaves the other six
+/// byte-identical, with their inodes untouched.
+fn write_document<T: Serialize>(
+    path: &Path,
+    document: &str,
+    format: Format,
+    value: &T,
+) -> Result<(), SettingsError> {
+    let text = format
+        .render(value)
+        .map_err(|message| SettingsError::Parse(format!("{document}: {message}")))?;
+    if fs::read_to_string(path).is_ok_and(|current| current == text) {
+        return Ok(());
+    }
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(text.as_bytes())?;
+    temp.flush()?;
+    temp.as_file()
+        .set_permissions(fs::Permissions::from_mode(DOCUMENT_MODE))?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// The settings store: the `/mos/config/` namespace plus the STATE document.
 #[derive(Debug, Clone)]
 pub struct Store {
+    /// The STATE document, holding what the device mints or observes.
     path: PathBuf,
+    /// The `/mos/config/` namespace, holding what an integrator sets.
+    config_dir: PathBuf,
 }
 
 impl Store {
-    /// Store backed by the file at `path`.
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+    /// Store backed by the STATE document at `path` and the configuration
+    /// namespace at `config_dir`.
+    pub fn new(path: impl Into<PathBuf>, config_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            config_dir: config_dir.into(),
+        }
     }
 
-    /// Store backed by [`DEFAULT_PATH`].
+    /// Store backed by [`DEFAULT_PATH`] and [`DEFAULT_CONFIG_DIR`].
     #[must_use]
     pub fn default_path() -> Self {
-        Self::new(DEFAULT_PATH)
+        Self::new(DEFAULT_PATH, DEFAULT_CONFIG_DIR)
     }
 
-    /// Load settings from disk, discarding the rollback report.
+    /// The configuration namespace this store reads and writes.
+    #[must_use]
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// Refuse rather than fall back to defaults when the DATA medium carrying
+    /// `/mos/config/` is not there (§5.2.6).
+    ///
+    /// **This is the fail-closed rule applied to the medium instead of to the
+    /// bytes.** A device whose DATA pool does not mount has no configuration,
+    /// and a device that cannot read its configuration must not render a
+    /// different one: it would come up on schema defaults — DHCP on every
+    /// interface, sshd off — and be unreachable by anyone relying on the
+    /// static address they configured, while looking fine. The recovery route
+    /// is `docs/design/recovery.md`'s: the serial console and the recovery
+    /// tiers, not a silently degraded network.
+    ///
+    /// mosd's unit carries `RequiresMountsFor=/mos` so this is ordinarily
+    /// unreachable; the check is here because the unit is not the only way
+    /// mosd starts, and because the refusal has to name the mount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError::Unavailable`], naming the directory and the
+    /// mount it belongs to.
+    pub fn ensure_config_medium(&self) -> Result<(), SettingsError> {
+        if self.config_dir.is_dir() {
+            return Ok(());
+        }
+        let mount = self
+            .config_dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(self.config_dir.as_path());
+        Err(SettingsError::Unavailable {
+            directory: self.config_dir.display().to_string(),
+            mount: mount.display().to_string(),
+        })
+    }
+
+    /// Load settings from disk, discarding the rollback reports.
     ///
     /// See [`Store::load_with_report`] for the full contract; this wrapper
     /// exists so callers that cannot log (tests, one-shot tools) keep the
@@ -97,260 +380,104 @@ impl Store {
         self.load_with_report().map(|(settings, _)| settings)
     }
 
-    /// Load settings from disk.
+    /// Load every document and compose the one addressed tree.
     ///
-    /// A missing file yields [`Settings::default`] without creating the file.
-    /// An existing document at or below [`SCHEMA_VERSION`] is migrated up
-    /// before deserialization (a missing `schema_version` key means version
-    /// 0); this path never yields a report.
-    ///
-    /// **A document from a NEWER schema loads tolerantly instead of failing**
-    /// (`docs/design/api.md` §10.3 item 5; `docs/design/mosd.md` §5.2). This
-    /// is the A/B rollback path: the other slot ran a newer mosd, wrote its
-    /// schema to STATE, and this slot was rolled back to. Refusing such a
-    /// document makes mosd propagate the error and exit, and under
-    /// `Restart=on-failure` the rolled-back-to slot is then a crash loop —
-    /// which also fails that slot's health gate, so a rollback whose whole
-    /// point is reaching a working slot produces a device with no confirmable
-    /// slot at all. The down-migrations cannot help here by construction: this
-    /// binary cannot carry the migration a future schema will need.
-    ///
-    /// What "tolerantly" means is exactly what `mosd.md` §5.2 already defines
-    /// a rollback to cost: **keys this schema does not know are dropped, and
-    /// the device falls back to this version's behaviour.** Mechanically,
-    /// unknown keys named by serde's `deny_unknown_fields` rejections are
-    /// stripped one at a time (recursively — a same-named key at another
-    /// position is dropped too, accepted and recorded below) until the
-    /// document parses. The next [`Store::save`] persists the stripped
-    /// document at this schema version, which is the documented
-    /// "rolling forward again restores the defaults" behaviour.
-    ///
-    /// If the newer document still cannot be parsed after stripping — a
-    /// future schema **reshaped** an existing key rather than adding one —
-    /// the last resort is [`Settings::default`], reported, not an error.
-    /// Written acceptance of what that costs: every setting including the
-    /// admin password hash is abandoned and the device re-enters setup mode
-    /// on its LAN. That is a real loss, accepted deliberately, because the
-    /// alternative is the crash loop above: an unmanageable device on BOTH
-    /// slots versus a manageable device that must be set up again. Schema
-    /// authors owe the mitigation: **prefer additive bumps; a reshaping bump
-    /// forfeits settings on rollback and must say so in its migration.**
+    /// A missing document yields its schema default without creating the file;
+    /// a missing `/mos/config/` **directory** does not, because that is the
+    /// medium being gone rather than a document never having been written
+    /// ([`Store::ensure_config_medium`]).
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError::Io`] on read failures, [`SettingsError::Parse`]
-    /// on invalid TOML (including a malformed `schema_version`), and
-    /// [`SettingsError::Migration`] when an upward walk fails. A document
-    /// newer than [`SCHEMA_VERSION`] never errors.
-    pub fn load_with_report(&self) -> Result<(Settings, Option<RollbackReport>), SettingsError> {
-        let text = match fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok((Settings::default(), None));
-            }
-            Err(err) => return Err(err.into()),
+    /// Returns [`SettingsError::Unavailable`] when the configuration medium is
+    /// not mounted, [`SettingsError::Io`] on read failures,
+    /// [`SettingsError::Parse`] on a document that does not parse, and
+    /// [`SettingsError::Migration`] for a document older than this build
+    /// reads. A document NEWER than this build writes never errors — see
+    /// [`load_newer`].
+    pub fn load_with_report(&self) -> Result<(Settings, Vec<RollbackReport>), SettingsError> {
+        self.ensure_config_medium()?;
+        let mut reports = Vec::new();
+        let documents = DocumentSet {
+            system: self.read_config(SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION, &mut reports)?,
+            network: self.read_config(NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, &mut reports)?,
+            wifi: self.read_config(WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, &mut reports)?,
+            ssh: self.read_config(SSH_DOCUMENT, SSH_SCHEMA_VERSION, &mut reports)?,
+            mqtt: self.read_config(MQTT_DOCUMENT, MQTT_SCHEMA_VERSION, &mut reports)?,
+            time: self.read_config(TIME_DOCUMENT, TIME_SCHEMA_VERSION, &mut reports)?,
+            container: self.read_config(
+                CONTAINER_DOCUMENT,
+                CONTAINER_SCHEMA_VERSION,
+                &mut reports,
+            )?,
+            state: read_document::<StateDocument>(
+                &self.path,
+                STATE_DOCUMENT,
+                Format::Toml,
+                STATE_SCHEMA_VERSION,
+                &mut reports,
+            )?,
         };
-        let mut doc: toml::Table = text
-            .parse()
-            .map_err(|err: toml::de::Error| SettingsError::Parse(err.to_string()))?;
-        let from = match doc.get("schema_version") {
-            None => 0,
-            Some(toml::Value::Integer(version)) => u32::try_from(*version).map_err(|_| {
-                SettingsError::Parse(format!("schema_version {version} out of range"))
-            })?,
-            Some(other) => {
-                return Err(SettingsError::Parse(format!(
-                    "schema_version must be an integer, got {other}"
-                )));
-            }
-        };
-        if from > SCHEMA_VERSION {
-            return Ok(Self::load_newer(doc, from));
-        }
-        migrate(&mut doc, from, SCHEMA_VERSION)?;
-        let migrated =
-            toml::to_string(&doc).map_err(|err| SettingsError::Parse(err.to_string()))?;
-        let settings =
-            toml::from_str(&migrated).map_err(|err| SettingsError::Parse(err.to_string()))?;
-        Ok((settings, None))
+        Ok((documents.compose(), reports))
     }
 
-    /// The tolerant path for a document newer than [`SCHEMA_VERSION`].
-    ///
-    /// Infallible by design — see [`Store::load_with_report`] for why the
-    /// rollback path must not be able to fail the load.
-    fn load_newer(mut doc: toml::Table, from: u32) -> (Settings, Option<RollbackReport>) {
-        // The version stamp itself is the first "key this schema does not
-        // recognise the value of": rewrite it to ours so the parse below is
-        // over a document claiming the schema it is being read as.
-        doc.insert(
-            "schema_version".to_string(),
-            toml::Value::Integer(i64::from(SCHEMA_VERSION)),
-        );
-        let mut dropped = Vec::new();
-        // Bounded: each pass must strip at least one key or the loop ends.
-        // The bound itself is defensive; a document has finitely many keys.
-        for _ in 0..64 {
-            let text = match toml::to_string(&doc) {
-                Ok(text) => text,
-                Err(_) => break,
-            };
-            match toml::from_str::<Settings>(&text) {
-                Ok(settings) => {
-                    return (
-                        settings,
-                        Some(RollbackReport {
-                            from,
-                            dropped_keys: dropped,
-                            defaulted: false,
-                        }),
-                    );
-                }
-                Err(err) => {
-                    let Some(key) = unknown_field_name(&err.to_string()) else {
-                        break; // reshaped, not additive: fall through
-                    };
-                    if !strip_key(&mut doc, &key) {
-                        break; // named key not found: cannot make progress
-                    }
-                    dropped.push(key);
-                }
-            }
-        }
-        (
-            Settings::default(),
-            Some(RollbackReport {
-                from,
-                dropped_keys: dropped,
-                defaulted: true,
-            }),
+    fn read_config<T: DeserializeOwned + Default>(
+        &self,
+        document: &str,
+        version: u32,
+        reports: &mut Vec<RollbackReport>,
+    ) -> Result<T, SettingsError> {
+        read_document(
+            &self.config_dir.join(document),
+            document,
+            Format::Json,
+            version,
+            reports,
         )
     }
 
-    /// Persist `settings` atomically: write to a temp file in the target
-    /// directory, fsync it, rename it over the target, then fsync the
-    /// directory.
+    /// Split `settings` into its documents and persist each atomically.
+    ///
+    /// **The STATE document is written last.** There is no transaction across
+    /// the renames — which is the reason the schema version is per document
+    /// and not per namespace — and the one ordering that matters is the staged
+    /// reset intent's: it lives in the STATE document, so a power loss between
+    /// the configuration documents and it leaves the intent staged and the
+    /// next boot replays an idempotent tier, never a tier that looks finished.
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError::Io`] on filesystem failures and
+    /// Returns [`SettingsError::Unavailable`] when the configuration medium is
+    /// not mounted, [`SettingsError::Io`] on filesystem failures and
     /// [`SettingsError::Parse`] when serialization fails.
     pub fn save(&self, settings: &Settings) -> Result<(), SettingsError> {
+        self.ensure_config_medium()?;
+        let documents = DocumentSet::of(settings);
+        self.write_config(SYSTEM_DOCUMENT, &documents.system)?;
+        self.write_config(NETWORK_DOCUMENT, &documents.network)?;
+        self.write_config(WIFI_DOCUMENT, &documents.wifi)?;
+        self.write_config(SSH_DOCUMENT, &documents.ssh)?;
+        self.write_config(MQTT_DOCUMENT, &documents.mqtt)?;
+        self.write_config(TIME_DOCUMENT, &documents.time)?;
+        self.write_config(CONTAINER_DOCUMENT, &documents.container)?;
+        // The STATE directory is created if it is missing: unlike
+        // `/mos/config/`, its absence is not a medium failing closed —
+        // `provisioning::ensure_provisioned` already treats an unwritable
+        // STATE as a hard failure with a message of its own.
         let parent = match self.path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
         fs::create_dir_all(parent)?;
-        let text =
-            toml::to_string(settings).map_err(|err| SettingsError::Parse(err.to_string()))?;
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-        temp.write_all(text.as_bytes())?;
-        temp.flush()?;
-        temp.as_file().sync_all()?;
-        temp.persist(&self.path).map_err(|err| err.error)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A v6 `network` entry, exactly as the rolled-back-to binary declares it:
-    /// `dhcp`, an optional `static` block, and `deny_unknown_fields`. It is
-    /// spelled out here rather than imported because the type it mirrors no
-    /// longer exists in this crate — v7 is what [`Settings`] now is — and the
-    /// question this test asks is what the *old* struct would accept.
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct V6Iface {
-        dhcp: bool,
-        #[serde(rename = "static", default)]
-        static_: Option<toml::Table>,
+        write_document(&self.path, STATE_DOCUMENT, Format::Toml, &documents.state)
     }
 
-    /// The A/B rollback shape: a v7 tree of all three new kinds, read by a v6
-    /// binary that has no migration for it.
-    ///
-    /// [`Store::load_newer`] strips the keys serde names, by name, everywhere,
-    /// until the document parses. Against v6's `IfaceSettings` those names are
-    /// `kind`, `vlan`, `bridge` and `wireguard`, and this asserts the fixed
-    /// point of stripping them: every entry survives as a *physical stub* — a
-    /// body v6 deserializes — rather than the whole document failing to load.
-    /// The stub's rendered `.network` matches no device (its `.netdev` lived in
-    /// `/run` and is gone at reboot), so the device falls back to the image
-    /// default on its physical NICs: degraded to the pre-v7 feature set, and
-    /// still reachable, which is the whole point of the tolerant path.
-    #[test]
-    fn a_v7_tree_strips_down_to_v6_physical_stubs() {
-        let mut doc: toml::Table = r#"
-schema_version = 7
-hostname = "rolled-back"
-
-[network.eth0]
-dhcp = true
-
-[network."eth0.100"]
-kind = "vlan"
-dhcp = false
-
-[network."eth0.100".static]
-address = "192.168.100.2/24"
-
-[network."eth0.100".vlan]
-parent = "eth0"
-id = 100
-
-[network.br0]
-kind = "bridge"
-dhcp = true
-
-[network.br0.bridge]
-ports = ["eth1", "eth2"]
-
-[network.wg0]
-kind = "wireguard"
-dhcp = false
-
-[network.wg0.wireguard]
-listenPort = 51820
-
-[[network.wg0.wireguard.peers]]
-publicKey = "AI9C8xytM2fi+RUcnV5RvMnSq4ZQffgDZ37h0vc0AU8="
-allowedIps = ["10.8.0.0/24"]
-"#
-        .parse()
-        .unwrap();
-
-        for key in ["kind", "vlan", "bridge", "wireguard"] {
-            assert!(strip_key(&mut doc, key), "{key} was not there to strip");
-        }
-
-        let network = doc["network"].as_table().unwrap();
-        assert_eq!(
-            network.keys().collect::<Vec<_>>(),
-            vec!["br0", "eth0", "eth0.100", "wg0"],
-            "no entry is dropped by the strip: v6 keeps them all, as stubs"
-        );
-        for (name, entry) in network {
-            let stub: V6Iface = entry
-                .clone()
-                .try_into()
-                .unwrap_or_else(|err| panic!("{name} is not a body v6 could deserialize: {err}"));
-            // What v6 can still act on survives; the peer's public key, the
-            // VLAN id and the bridge port list are gone with their blocks.
-            assert_eq!(stub.dhcp, name == "eth0" || name == "br0");
-            assert_eq!(stub.static_.is_some(), name == "eth0.100");
-        }
-        let text = toml::to_string(&doc).unwrap();
-        for gone in ["publicKey", "listenPort", "ports", "parent"] {
-            assert!(!text.contains(gone), "{gone} survived the strip: {text}");
-        }
-
-        // A second pass has nothing left to take.
-        for key in ["kind", "vlan", "bridge", "wireguard"] {
-            assert!(!strip_key(&mut doc, key));
-        }
+    fn write_config<T: Serialize>(&self, document: &str, value: &T) -> Result<(), SettingsError> {
+        write_document(
+            &self.config_dir.join(document),
+            document,
+            Format::Json,
+            value,
+        )
     }
 }
