@@ -1,5 +1,6 @@
-//! Update policy: maintenance windows, metered/offline mode, auto-check
-//! cadence and the safe-to-reboot gate.
+//! Update policy: what the device does on its own (`off`/`check`/`auto`),
+//! maintenance windows, metered/offline mode, the check cadence, what
+//! happens after an automatic install, and the safe-to-reboot gate.
 //!
 //! The policy lives in its own TOML file beside the settings store
 //! (`update-policy.toml` in the STATE directory) rather than in the settings
@@ -31,24 +32,116 @@ use serde_json::Value;
 /// short enough that a forgotten override does not stand disarmed for a week.
 pub const OVERRIDE_CEILING_SECONDS: u64 = 3600;
 
+/// What the device does on its own, and the one key that says it.
+///
+/// One enum rather than three booleans (`autoCheck`, `autoFetch`,
+/// `autoInstall`): three booleans admit combinations with no meaning —
+/// install without fetch — and the one combination worth having,
+/// fetch-but-not-install, is [`RebootPolicy::Manual`] under [`Self::Auto`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateMode {
+    /// The device initiates nothing and no timer arms. Manual check, fetch
+    /// and install stay available behind their existing gates, and so does
+    /// the offline import: `off` is not "updates disabled", it is "the
+    /// device starts nothing".
+    Off,
+    /// Metadata checks on `checkIntervalMinutes` and nothing else — never
+    /// fetches, never installs. The default, so what a shipped device does
+    /// is what it did before this enum existed.
+    #[default]
+    Check,
+    /// Checks, then fetches, then installs inside a maintenance window, then
+    /// reboots or does not per [`RebootPolicy`]. The driver and every gate
+    /// it meets are [`crate::update_auto`].
+    Auto,
+}
+
+impl UpdateMode {
+    /// The document's spelling, for the recorded state and for a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Check => "check",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// What the automatic path does once a bundle is installed and the new slot
+/// waits for its first boot.
+///
+/// Separate from [`UpdateMode`] because "install automatically" and "reboot
+/// automatically" are not the same promise: an appliance running a machine
+/// may well want the new slot written and staged while the reboot is
+/// reserved for a human.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RebootPolicy {
+    /// Stop at `reboot-required` and wait for an operator. The default,
+    /// because it is what makes `auto` safe to recommend to someone who has
+    /// not read the design.
+    #[default]
+    Manual,
+    /// Reboot inside the same maintenance window, honouring the
+    /// safe-to-reboot gate exactly as `Reboot` does — and never arming its
+    /// override.
+    Window,
+}
+
+impl RebootPolicy {
+    /// The document's spelling, for the recorded state and for a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Window => "window",
+        }
+    }
+}
+
 /// The policy document. Every field has a default, so an absent file — the
 /// state of every device until an operator writes one — is a complete policy.
 ///
 /// `deny_unknown_fields` for the reason the settings tree carries it: a
 /// mistyped key must fail loudly, not silently configure nothing.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UpdatePolicy {
+    /// What the device does on its own. The document's key is `policy`; the
+    /// field is `mode` so that reading it is not `policy.policy`.
+    #[serde(default, rename = "policy")]
+    pub mode: UpdateMode,
+    /// Minutes between automatic metadata checks; `0` disables them. One
+    /// cadence for both `check` and `auto` — [`UpdateMode`] decides what
+    /// happens after a check, not how often one runs.
+    #[serde(default = "default_check_interval")]
+    pub check_interval_minutes: u64,
+    /// What the automatic path does after an install. Read only under
+    /// [`UpdateMode::Auto`], which is the only mode that installs.
+    #[serde(default)]
+    pub reboot_policy: RebootPolicy,
     #[serde(default)]
     pub source: SourcePolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
     #[serde(default)]
-    pub auto_check: AutoCheckPolicy,
-    #[serde(default)]
     pub maintenance: MaintenancePolicy,
     #[serde(default)]
     pub reboot_gate: RebootGatePolicy,
+}
+
+impl Default for UpdatePolicy {
+    fn default() -> Self {
+        Self {
+            mode: UpdateMode::default(),
+            check_interval_minutes: default_check_interval(),
+            reboot_policy: RebootPolicy::default(),
+            source: SourcePolicy::default(),
+            network: NetworkPolicy::default(),
+            maintenance: MaintenancePolicy::default(),
+            reboot_gate: RebootGatePolicy::default(),
+        }
+    }
 }
 
 /// Where updates come from and how much of the `/mos/updates` workspace
@@ -142,27 +235,10 @@ pub struct NetworkPolicy {
     pub metered_allows_fetch: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct AutoCheckPolicy {
-    /// Minutes between automatic metadata checks; `0` disables them.
-    /// Checks only — nothing is ever fetched or installed automatically.
-    #[serde(default = "default_check_interval")]
-    pub interval_minutes: u64,
-}
-
 fn default_check_interval() -> u64 {
     // Daily. A check is a bounded metadata read, safe on the default online
     // mode; metered/offline modes refuse it wholesale regardless of cadence.
     1440
-}
-
-impl Default for AutoCheckPolicy {
-    fn default() -> Self {
-        Self {
-            interval_minutes: default_check_interval(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -313,8 +389,14 @@ impl PolicyStore {
     }
 }
 
-/// Validate what serde cannot: window times parse and days are day names.
-fn validate(policy: &UpdatePolicy) -> Result<(), String> {
+/// Validate what serde cannot: window times parse, days are day names, and
+/// `auto` names a window to install in.
+///
+/// Public because there is one rule set and it has two callers: this
+/// module's reader, which fails closed on a document that reached the disk,
+/// and the write route that must refuse the same document at the API with
+/// the same sentence. Two spellings of one rule is how they drift.
+pub fn validate(policy: &UpdatePolicy) -> Result<(), String> {
     for window in &policy.maintenance.windows {
         minutes_of_day(&window.start)
             .ok_or_else(|| format!("maintenance window start `{}` is not HH:MM", window.start))?;
@@ -325,6 +407,19 @@ fn validate(policy: &UpdatePolicy) -> Result<(), String> {
                 format!("maintenance window day `{day}` is not mon/tue/wed/thu/fri/sat/sun")
             })?;
         }
+    }
+    // Zero windows means "any time", which is right for a manual install — a
+    // device with no operator-set window must still be updatable by a human
+    // who is standing there — and wrong for an automatic one, where it would
+    // mean "install the moment a bundle lands". Requiring the window is what
+    // makes "automatic installation inside a time window" literally true,
+    // and it forces the operator to name the hour rather than inherit one.
+    if policy.mode == UpdateMode::Auto && policy.maintenance.windows.is_empty() {
+        return Err(
+            "policy `auto` requires at least one maintenance window: zero windows means \
+             `any time`, which for an automatic install means `the moment a bundle lands`"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -552,7 +647,7 @@ mod tests {
         let loaded = store.load();
         assert!(loaded.error.is_none());
         assert_eq!(loaded.policy.network.mode, NetworkMode::Online);
-        assert_eq!(loaded.policy.auto_check.interval_minutes, 1440);
+        assert_eq!(loaded.policy.check_interval_minutes, 1440);
         assert!(loaded.policy.maintenance.windows.is_empty());
     }
 

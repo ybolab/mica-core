@@ -50,6 +50,7 @@ mod system_info;
 mod telemetry;
 mod time_status;
 mod transient;
+mod update_auto;
 mod update_lifecycle;
 mod update_policy;
 mod wgkeys;
@@ -360,13 +361,14 @@ async fn serve() -> anyhow::Result<()> {
             ))),
             update_policy::PolicyStore::at(policy_path),
         );
-        // The auto-check cadence: policy-driven, checks only, never running
-        // under dry-run (whose lifecycle has no client to call anyway).
-        tokio::spawn(update_lifecycle::auto_check_loop(service.update_handle()));
     }
     if let Some(registry) = &registry {
         service = service.with_service_registry(Arc::clone(registry));
     }
+    // Taken before the service moves onto the bus: the automatic driver
+    // shares the lifecycle with the manual check and fetch routes, so both
+    // read one policy and record into one state entry.
+    let update_handle = service.update_handle();
     service.apply_all().await;
     let builder = match bus_kind.as_str() {
         "system" => zbus::connection::Builder::system()?,
@@ -390,6 +392,23 @@ async fn serve() -> anyhow::Result<()> {
             .await
             .context("look up served MosdService")?;
         tokio::spawn(scan::run(connection.clone(), registry, service_ref));
+    }
+    // The automatic update driver: the check cadence under `policy = check`,
+    // and under `auto` the whole check/fetch/re-check/install pass with its
+    // reboot. Started here rather than beside the lifecycle because the
+    // install and reboot routes it calls live on the service the object
+    // server now owns — the same reason the scan is started here. Never
+    // under dry-run, whose lifecycle has no client to call anyway.
+    if !dry_run {
+        let service_ref = connection
+            .object_server()
+            .interface::<_, bus::MosdService>(bus::OBJECT_PATH)
+            .await
+            .context("look up served MosdService")?;
+        tokio::spawn(update_auto::run(Arc::new(bus::BusRoutes::new(
+            update_handle,
+            service_ref,
+        ))));
     }
     connection
         .request_name(bus::BUS_NAME)
