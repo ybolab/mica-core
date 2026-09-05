@@ -46,7 +46,9 @@ const PW_SENTINEL: &str = "PW-SENTINEL-recovery-previous";
 /// established: an assertion is an action at the DEVICE, so no request and no
 /// fixture tree can produce one.
 struct FakePresence {
-    established: bool,
+    /// Cleared by [`Presence::spend`], as the shipped reader's marker is
+    /// unlinked: an assertion this seam has spent establishes nothing further.
+    established: std::sync::atomic::AtomicBool,
     /// Everything [`Presence::publish`] was given, in order. The one place a
     /// minted credential is allowed to appear.
     published: std::sync::Mutex<Vec<String>>,
@@ -57,7 +59,7 @@ struct FakePresence {
 impl FakePresence {
     fn present() -> Arc<Self> {
         Arc::new(Self {
-            established: true,
+            established: std::sync::atomic::AtomicBool::new(true),
             published: std::sync::Mutex::new(Vec::new()),
             publish_fails: false,
         })
@@ -65,7 +67,7 @@ impl FakePresence {
 
     fn absent() -> Arc<Self> {
         Arc::new(Self {
-            established: false,
+            established: std::sync::atomic::AtomicBool::new(false),
             published: std::sync::Mutex::new(Vec::new()),
             publish_fails: false,
         })
@@ -73,7 +75,7 @@ impl FakePresence {
 
     fn present_but_unwritable() -> Arc<Self> {
         Arc::new(Self {
-            established: true,
+            established: std::sync::atomic::AtomicBool::new(true),
             published: std::sync::Mutex::new(Vec::new()),
             publish_fails: true,
         })
@@ -94,7 +96,7 @@ impl FakePresence {
 
 impl Presence for FakePresence {
     fn assert(&self) -> Result<Assertion, NoPresence> {
-        if self.established {
+        if self.established.load(std::sync::atomic::Ordering::SeqCst) {
             Ok(Assertion::for_test(FIXTURE_MECHANISM))
         } else {
             Err(NoPresence::Absent)
@@ -106,6 +108,12 @@ impl Presence for FakePresence {
             return Err(anyhow::anyhow!("the console could not be written"));
         }
         self.published.lock().unwrap().push(secret.to_string());
+        Ok(())
+    }
+
+    fn spend(&self) -> anyhow::Result<()> {
+        self.established
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }

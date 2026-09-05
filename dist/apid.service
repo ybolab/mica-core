@@ -38,11 +38,27 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
+# /run/mos, so that a credential recovery can SPEND the presence assertion it
+# used (docs/design/recovery.md §4.2 and §5.4). apid still never creates one —
+# mosd writes /run/mos/presence from a board-declared physical action and apid
+# only reads it — but unlinking a file needs write on its DIRECTORY, and
+# ProtectSystem=strict below makes /run read-only. Declared as a
+# RuntimeDirectory rather than added to ReadWritePaths= because ReadWritePaths=
+# binds at unit start and /run/mos does not exist on an ordinary boot: the
+# directory would be missing exactly when the assertion is not, and the spend
+# would fail with EROFS on the one path it exists for.
+RuntimeDirectory=mos
+# NOT removed when apid stops. /run/mos is mosd's directory — the presence
+# marker, the rendered mqtt broker config, the timezone — and a unit that
+# deleted it on every restart would take mosd's runtime state with it.
+RuntimeDirectoryPreserve=yes
+
 # The filesystem, read-only independently of dm-verity. apid writes exactly
-# two trees: its StateDirectory (TLS material, the session signing key, the
-# login-backoff counters, the audit ring) and the /mos/ui bundle store.
-# StateDirectory=mos/apid above already exempts /var/lib/mos/apid from
-# strict, so the list is /mos/ui alone.
+# three trees: its StateDirectory (TLS material, the session signing key, the
+# login-backoff counters, the audit ring), the /mos/ui bundle store, and
+# /run/mos, where its only write is the removal of a spent presence assertion.
+# StateDirectory=mos/apid and RuntimeDirectory=mos above already exempt
+# /var/lib/mos/apid and /run/mos from strict, so the list is /mos/ui alone.
 ProtectSystem=strict
 ReadWritePaths=/mos/ui
 

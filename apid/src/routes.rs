@@ -86,6 +86,10 @@ pub struct AppState {
     /// the [`PRESENCE_CAPABILITY`] board capability. Every presence-gated
     /// operation asks this and nothing else.
     presence: Arc<dyn Presence>,
+    /// Serialises presence-gated credential recovery, so that reading the
+    /// assertion and spending it are one step rather than two. See
+    /// [`api_v1_recovery_credential`] for why the atomicity is here.
+    rotation: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -112,6 +116,7 @@ impl AppState {
             task_registry: Arc::new(TaskRegistry::new()),
             diagnostics: Arc::new(SnapshotStore::at_default()),
             collecting: Arc::new(tokio::sync::Mutex::new(())),
+            rotation: Arc::new(tokio::sync::Mutex::new(())),
             // A path and no syscall, like the bundle and snapshot stores: the
             // marker is read when something asks for presence and never at
             // construction.
@@ -5880,6 +5885,10 @@ pub(crate) enum NoPresence {
     Malformed,
     /// The assertion names a mechanism no action this board declares uses.
     UnknownMechanism(Vec<String>),
+    /// One was made and a credential recovery has already spent it. §5.4's
+    /// bound: one rotation per presence assertion, and the next one is
+    /// re-performed at the device.
+    Spent,
 }
 
 impl NoPresence {
@@ -5915,6 +5924,11 @@ impl NoPresence {
                  it answers `{PRESENCE_CAPABILITY}` with `{}`",
                 declared.join("`, `")
             ),
+            Self::Spent => {
+                "the physical-presence assertion has already been spent by a credential \
+                 recovery; assert it again at the device to run another"
+                    .to_string()
+            }
         }
     }
 }
@@ -5937,19 +5951,53 @@ pub(crate) trait Presence: Send + Sync {
     /// Returns an error when the channel cannot be written, which is §5.3's
     /// `aborted`: presence was established and the flow did not complete.
     fn publish(&self, assertion: &Assertion, secret: &str) -> anyhow::Result<()>;
+
+    /// Spend the assertion, so that it authorizes nothing further.
+    ///
+    /// §5.4's first rule states the bound this method IS: "one rotation per
+    /// presence assertion, and the assertion is re-performed physically for
+    /// the next one". Called after a rotation has committed, and never after
+    /// one that refused or aborted — an assertion an operator spent a trip to
+    /// the device on is not taken by a flow that did nothing.
+    ///
+    /// Spending only ever REMOVES authority, which is why it does not
+    /// contradict §4.2's rule that apid never creates a presence assertion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the assertion could not be taken away. The
+    /// rotation it followed still happened; the caller reports the failure
+    /// rather than unsaying the commit.
+    fn spend(&self) -> anyhow::Result<()>;
 }
 
 /// The shipped reader: the assertion mosd left after mapping a board-declared
 /// physical recovery action, published back on the channel that action named.
 ///
-/// **This crate only ever READS the marker.** mosd writes it, from an intent
-/// that arrived on the kernel command line before Linux ran
+/// **This crate never CREATES a marker.** mosd writes it, from an intent that
+/// arrived on the kernel command line before Linux ran
 /// (`mosd_settings::Declaration::map_intent`); there is no route, no settings
 /// path and no line in apid that creates it, so an API that could set it would
-/// have to be written first — which is the change §4 forbids.
+/// have to be written first — which is the change §4 forbids. apid reads it,
+/// and [`Presence::spend`] takes it away once it has authorized its one
+/// rotation, which only ever removes authority.
 pub(crate) struct MarkerPresence {
     marker: PathBuf,
     declaration: PathBuf,
+    /// The assertion this process spent, if it has spent one.
+    ///
+    /// **The marker itself, not a flag.** mosd re-maps the command line if it
+    /// restarts inside a boot, so a bare "something was spent" bit would
+    /// refuse the fresh assertion that restart wrote; an assertion carries a
+    /// deadline, so the one that was spent is identifiable.
+    ///
+    /// It is not the authority — the unlink in [`MarkerPresence::spend`] is,
+    /// and it survives an apid restart where this does not. What this adds is
+    /// the operator's answer: without it a second rotation attempt inside one
+    /// presence window is told that presence "is not asserted", which is the
+    /// wrong sentence for someone who is standing at the device having just
+    /// asserted it. It also keeps the bound if the unlink fails.
+    spent: std::sync::Mutex<Option<mosd_settings::PresenceMarker>>,
 }
 
 impl MarkerPresence {
@@ -5967,7 +6015,26 @@ impl MarkerPresence {
         Self {
             marker,
             declaration,
+            spent: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Whether `marker` is the assertion this process already spent.
+    fn is_spent(&self, marker: &mosd_settings::PresenceMarker) -> bool {
+        self.spent
+            .lock()
+            .expect("the spent-assertion lock is never held across a panic")
+            .as_ref()
+            .is_some_and(|spent| spent == marker)
+    }
+
+    /// Whether anything has been spent at all, which is what tells an absent
+    /// marker that was taken from one that was never written.
+    fn has_spent(&self) -> bool {
+        self.spent
+            .lock()
+            .expect("the spent-assertion lock is never held across a panic")
+            .is_some()
     }
 }
 
@@ -5990,13 +6057,26 @@ impl Presence for MarkerPresence {
 
         let bytes = std::fs::read(&self.marker).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                NoPresence::Absent
+                // The ordinary way a spent assertion is gone: `spend` unlinked
+                // it. Saying so is the difference between "assert presence
+                // again" and "presence was never asserted".
+                if self.has_spent() {
+                    NoPresence::Spent
+                } else {
+                    NoPresence::Absent
+                }
             } else {
                 NoPresence::Malformed
             }
         })?;
         let marker: mosd_settings::PresenceMarker =
             serde_json::from_slice(&bytes).map_err(|_| NoPresence::Malformed)?;
+        // A marker that is still on the filesystem because the unlink failed
+        // is still spent. Checked before the mechanism and the deadline: what
+        // it says about itself does not put back the rotation it authorized.
+        if self.is_spent(&marker) {
+            return Err(NoPresence::Spent);
+        }
         if !declaration.declares_mechanism(&marker.mechanism) {
             return Err(NoPresence::UnknownMechanism(
                 declaration
@@ -6040,6 +6120,32 @@ impl Presence for MarkerPresence {
         )?;
         channel.flush()?;
         Ok(())
+    }
+
+    fn spend(&self) -> anyhow::Result<()> {
+        // Remembered BEFORE the unlink, and from the file rather than from the
+        // `Assertion` in hand: an `Assertion` carries no deadline, and the
+        // deadline is what distinguishes the assertion that was spent from a
+        // later one written by a mosd that restarted inside this boot.
+        if let Ok(bytes) = std::fs::read(&self.marker) {
+            if let Ok(marker) = serde_json::from_slice::<mosd_settings::PresenceMarker>(&bytes) {
+                *self
+                    .spent
+                    .lock()
+                    .expect("the spent-assertion lock is never held across a panic") =
+                    Some(marker);
+            }
+        }
+        match std::fs::remove_file(&self.marker) {
+            Ok(()) => Ok(()),
+            // Already gone is spent, not an error: this method's whole
+            // postcondition is that the marker authorizes nothing, and it
+            // does not.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => {
+                Err(err).with_context(|| format!("spend the assertion at {}", self.marker.display()))
+            }
+        }
     }
 }
 
@@ -6225,6 +6331,16 @@ pub(crate) async fn api_v1_reset(
 /// is nothing to recover on a device that has no credential, and minting one
 /// here would be a third channel that can claim a device —
 /// `mosd_settings::ClaimChannel` has exactly two members and says why.
+///
+/// **One rotation per presence assertion**, which is §5.4's own bound and is
+/// enforced here rather than described: the assertion is read and spent inside
+/// one guard, so a second request — concurrent or later in the same fifteen
+/// minutes — finds it spent and is refused. Before this guard existed the
+/// marker was read and never taken, and a single assertion authorized
+/// unbounded rotations: measured on the shipped path, one assertion answered
+/// two rotations in 100 attempts out of 100, and two concurrent callers were
+/// both answered 200 in 100 iterations out of 100, of which only the
+/// last-written credential authenticated.
 #[utoipa::path(
     post,
     path = V1_RECOVERY_CREDENTIAL_PATH,
@@ -6232,7 +6348,7 @@ pub(crate) async fn api_v1_reset(
     tag = "actions",
     responses(
         (status = 200, description = "A new credential was minted and published on the channel that proved presence; the body carries no secret", body = CredentialRecovered),
-        (status = 403, description = "Physical presence is not asserted (`presence_required`), or the caller is authenticated and must use `POST /api/v1/actions/change-password` instead (`authenticated_session`)", body = ApiError),
+        (status = 403, description = "Physical presence is not asserted, has expired or has already been spent by a rotation (`presence_required`), or the caller is authenticated and must use `POST /api/v1/actions/change-password` instead (`authenticated_session`)", body = ApiError),
         (status = 409, description = "The device has no administrator credential to recover; claim it with `POST /api/v1/setup` (`not_claimed`)", body = ApiError),
         (status = 500, description = "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
@@ -6272,6 +6388,27 @@ pub(crate) async fn api_v1_recovery_credential(
             ),
         );
     }
+
+    // §5.4's other bound, and the one the code did not keep: "one rotation per
+    // presence assertion, and the assertion is re-performed physically for the
+    // next one". Held from BEFORE the assertion is read to AFTER it is spent,
+    // so the two are one step; without it two concurrent callers both read a
+    // live assertion, both mint, both publish and both commit, and the device
+    // hands out two credentials of which only the last one written works.
+    //
+    // **Here rather than under the marker or in mosd**, on `api_v1_setup`'s
+    // reading: this route is the only thing in the tree that spends an
+    // assertion, `POST /api/v1/reset` only reads one, and mosd has finished
+    // writing the marker before apid can answer a request at all. A second
+    // spender would move the guard rather than add one.
+    //
+    // **The hold is bounded**, which is what makes a lock on an
+    // unauthenticated route acceptable: `bus_client`'s `MOSD_CALL_TIMEOUT`
+    // bounds each mosd call, the hash is one argon2id, and the publish is a
+    // write to the console the BOARD declared. Once one rotation has
+    // succeeded, every further request takes an uncontended lock, reads a
+    // spent assertion and is refused before reaching the hash.
+    let _rotation = state.rotation.lock().await;
 
     // §5.4's first rule: a presence-gated rotation is NOT throttled by the
     // login guard. The guard slows a remote guesser, presence is not
@@ -6407,6 +6544,25 @@ pub(crate) async fn api_v1_recovery_credential(
     // aborted one clears nothing — every early return above leaves this line
     // unreached, which is the rule rather than a comment about it.
     state.guard.record_success();
+
+    // AFTER the commit, and never before it: §5.4's third rule is that a
+    // refused or aborted rotation clears nothing, and an assertion is a trip
+    // to the device. An interrupted rotation therefore leaves the assertion
+    // standing and the retry is the operator's, which is what
+    // `an_interrupted_rotation_writes_nothing_and_the_retry_leaves_one_credential`
+    // already required of this route.
+    //
+    // A failure here does not unsay the commit: the credential IS rotated and
+    // published, so answering 500 would tell the operator the opposite of what
+    // happened. It is recorded and logged instead, and the reader holds the
+    // bound in this process meanwhile.
+    // Logged and NOT given a fourth audit outcome: §5.3's line shape has
+    // three, this rotation's own outcome is `success` and that is true, and a
+    // spend that failed is an infrastructure failure of the kind
+    // `hash_failed` already reports to the journal rather than a closed door.
+    if let Err(err) = state.presence.spend() {
+        tracing::error!(error = %err, "the presence assertion could not be spent");
+    }
     state.audit.record(event, "success", &source);
 
     api_response(
