@@ -19,6 +19,7 @@ use zbus::message::Header;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 
 use crate::apply_queue::{ApplyJob, ApplyQueue, TaskRecord};
+use crate::confirmed_boot::ConfirmedBootStore;
 use crate::diagnostics::{FailureEvidenceSource, UnavailableFailureEvidence};
 use crate::network_state::{NetworkState, UnavailableNetworkState};
 use crate::power::PowerControl;
@@ -83,6 +84,14 @@ pub struct MosdService {
     /// task holds its own handle. Defaults to [`rauc::DryRunRauc`]; production
     /// swaps in the real client via [`Self::with_rauc`].
     rauc: Arc<dyn RaucClient>,
+    /// mosd's own confirmed-boot record (PLAN-071 §7): the observation that
+    /// this daemon ran from a slot, and the order it observed the two
+    /// installs in. Written on every update-state refresh — once per install,
+    /// not once per poll — and read by the rollback guard, which orders the
+    /// two installs by it in preference to the clock they were installed
+    /// under. Defaults to [`ConfirmedBootStore::none`], which observes
+    /// nothing: only `main.rs` knows there is a STATE partition to write to.
+    confirmed_boots: ConfirmedBootStore,
     /// True while a bundle install is in flight. `InstallUpdate` refuses a
     /// second install rather than queueing it: RAUC itself answers
     /// `AlreadyInstalling` to a concurrent request, and refusing here keeps
@@ -204,6 +213,7 @@ impl MosdService {
             reconcilers: Arc::new(reconcilers),
             power,
             rauc: Arc::new(rauc::DryRunRauc),
+            confirmed_boots: ConfirmedBootStore::none(),
             installing,
             shadow_path,
             inner,
@@ -243,6 +253,15 @@ impl MosdService {
             )
             .with_suppression(suppression),
         );
+        self
+    }
+
+    /// Attach the confirmed-boot record on STATE, for
+    /// [`Self::with_update`]'s reason: the default writes nothing at all, and
+    /// only `main.rs` knows the daemon has a STATE partition under it.
+    #[must_use]
+    pub fn with_confirmed_boots(mut self, boots: ConfirmedBootStore) -> Self {
+        self.confirmed_boots = boots;
         self
     }
 
@@ -586,6 +605,7 @@ impl MosdService {
         let inner = Arc::clone(&self.inner);
         let installing = Arc::clone(&self.installing);
         let time_status = Arc::clone(&self.time_status);
+        let confirmed_boots = self.confirmed_boots.clone();
         let sender = sender.to_string();
         tokio::spawn(async move {
             let result = rauc_client.install_bundle(&bundle).await;
@@ -639,11 +659,18 @@ impl MosdService {
             // the recorded slots show what the install just changed. Best
             // effort: the install outcome above is recorded either way.
             let refreshed = rauc::query(rauc_client.as_ref()).await.ok();
+            // The observation is about the slot this daemon is RUNNING from,
+            // which an install does not change; recording it here keeps the
+            // guard in this refresh reading the same record as the one in
+            // `refresh_update_state`.
+            let boots = refreshed.as_ref().map_or_else(Default::default, |query| {
+                confirmed_boots.observe(&query.slots)
+            });
             let mut inner = inner.write().await;
             let entry = rauc::update_entry(&mut inner.state);
             entry.insert("install".into(), outcome);
             if let Some(refreshed) = &refreshed {
-                refreshed.merge_into(entry);
+                refreshed.merge_into(entry, &boots);
             }
             drop(inner);
             // Release the flag only after the outcome is recorded: a caller
@@ -673,9 +700,14 @@ impl MosdService {
         self.update
             .refresh(&query.slots, query.primary.as_deref())
             .await;
+        // mosd's own confirmed-boot fact, written before the guard below
+        // reads it: the slot this daemon is running from carries a system
+        // that booted, and the order those observations fall in is what the
+        // rollback guard orders the two installs by (PLAN-071 §7).
+        let boots = self.confirmed_boots.observe(&query.slots);
         let mut inner = self.inner.write().await;
         let entry = rauc::update_entry(&mut inner.state);
-        query.merge_into(entry);
+        query.merge_into(entry, &boots);
         let rendered = Value::Object(entry.clone()).to_string();
         drop(inner);
         Ok(rendered)
@@ -1775,6 +1807,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{Inner, MosdService, paths_overlap, record_policy_action, run_apply_worker};
+    use crate::confirmed_boot::ConfirmedBootStore;
     use crate::power::MockPower;
     use crate::rauc::{MockRauc, SlotStatus};
     use crate::update_lifecycle::Refusal;
@@ -2138,6 +2171,34 @@ mod tests {
             slot("rootfs.0", "booted", booted_status),
             slot("rootfs.1", "inactive", other_status),
         ]
+    }
+
+    /// The two install instants the rollback guard orders slots by when
+    /// nothing better is available — the clock each slot was written under.
+    const INSTALLED_OLDER: &str = "2026-08-01T10:00:00Z";
+    const INSTALLED_NEWER: &str = "2026-08-30T10:00:00Z";
+
+    /// [`ab_slots`] with install identities, so the rollback guard has two
+    /// installs to order rather than two never-written slots.
+    fn ab_slots_installed(booted_stamp: &str, other_stamp: &str) -> Vec<SlotStatus> {
+        let stamps = [booted_stamp, other_stamp];
+        ab_slots("good", "good")
+            .into_iter()
+            .zip(stamps)
+            .map(|(slot, stamp)| SlotStatus {
+                bundle_version: Some("2026.08".to_string()),
+                installed_timestamp: Some(stamp.to_string()),
+                ..slot
+            })
+            .collect()
+    }
+
+    /// The confirmed-boot record's path under a test service's state
+    /// directory, and the record `main.rs` would have put there.
+    fn confirmed_boots_at(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path()
+            .join("update")
+            .join(crate::confirmed_boot::DEFAULT_FILE_NAME)
     }
 
     /// Poll `update.install.status` until it reads `want` or ~2s elapse.
@@ -2903,6 +2964,82 @@ mod tests {
         let recorded = service.get_state("update").await.expect("state");
         let recorded: serde_json::Value = serde_json::from_str(&recorded).expect("json");
         assert_eq!(recorded, rendered);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_records_mosd_s_own_boot_and_leaves_the_clock_deciding() {
+        // The first refresh on a device that has never held this record: the
+        // boot it is having is written down, and with only one install
+        // observed the verdict is the one the install timestamps give — the
+        // behaviour every device had before the record existed.
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+            slots: ab_slots_installed(INSTALLED_NEWER, INSTALLED_OLDER),
+            primary: Some("rootfs.0".to_string()),
+            ..MockRauc::default()
+        });
+        let path = confirmed_boots_at(&dir);
+        let service = service.with_confirmed_boots(ConfirmedBootStore::at(path.clone()));
+        let rendered = service.refresh_update_state().await.expect("query");
+        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(rendered["rollback"]["permitted"], true);
+        assert_eq!(rendered["rollback"]["target"], "rootfs.1");
+
+        let held: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(
+            held["boots"].as_array().map(Vec::len),
+            Some(1),
+            "the observation is about the slot mosd is running from, and only that one"
+        );
+        assert_eq!(held["boots"][0]["slot"], "rootfs.0");
+        assert_eq!(held["boots"][0]["sequence"], 1);
+        assert_eq!(held["boots"][0]["installedTimestamp"], INSTALLED_NEWER);
+    }
+
+    #[tokio::test]
+    async fn the_recorded_rollback_verdict_follows_mosd_s_own_boot_order() {
+        // PLAN-071 §7's dependency, through the surface that serves it. The
+        // install clock says the alternate is the NEWER install, so on the
+        // timestamps alone this device refuses to roll back. mosd observed
+        // the alternate running before the system it is running now, and the
+        // verdict recorded in the state document follows what it observed.
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+            slots: ab_slots_installed(INSTALLED_OLDER, INSTALLED_NEWER),
+            primary: Some("rootfs.0".to_string()),
+            ..MockRauc::default()
+        });
+        let path = confirmed_boots_at(&dir);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "boots": [{
+                    "slot": "rootfs.1",
+                    "bundleVersion": "2026.08",
+                    "installedTimestamp": INSTALLED_NEWER,
+                    "sequence": 1,
+                    "firstSeenAt": "2026-09-01T10:00:00Z",
+                }],
+            })
+            .to_string(),
+        )
+        .expect("seed the confirmed-boot record");
+        let service = service.with_confirmed_boots(ConfirmedBootStore::at(path.clone()));
+
+        let rendered = service.refresh_update_state().await.expect("query");
+        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        assert_eq!(
+            rendered["rollback"]["permitted"], true,
+            "the clock alone would answer alternate_is_newer here"
+        );
+        assert_eq!(rendered["rollback"]["reason"], serde_json::Value::Null);
+        assert_eq!(rendered["rollback"]["target"], "rootfs.1");
+
+        // The same refresh recorded its own boot, after the seeded one.
+        let held: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+        assert_eq!(held["boots"][1]["slot"], "rootfs.0");
+        assert_eq!(held["boots"][1]["sequence"], 2);
     }
 
     #[tokio::test]
