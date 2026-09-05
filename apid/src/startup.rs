@@ -413,6 +413,44 @@ mod tests {
 
     // Log capture.
 
+    /// A subscriber that is interested in everything and does nothing with it,
+    /// registered once for the life of the test binary.
+    ///
+    /// `tracing` caches each callsite's `Interest` the first time that
+    /// callsite is reached, computing it from the dispatchers registered at
+    /// that instant, and a cached `never` is never reconsidered. With only
+    /// scoped subscribers in the process there are instants with none: a
+    /// thread that reaches a callsite while holding no dispatcher of its own
+    /// gets `Interest::never()` cached for it, and every later event at that
+    /// callsite is dropped before any subscriber sees it -- including a
+    /// [`capture`] in flight on another thread, which then reads an empty log
+    /// about code that logged correctly. Keeping one always-interested
+    /// dispatcher registered for good makes `never` unreachable. It changes
+    /// nothing about where events go: `with_default` still routes them to the
+    /// capturing subscriber on the capturing thread, and they reach this one
+    /// only on threads that are not capturing, which drop them.
+    struct Interested;
+
+    impl tracing::Subscriber for Interested {
+        fn register_callsite(
+            &self,
+            _: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::always()
+        }
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
     #[derive(Clone, Default)]
     struct Capture(Arc<Mutex<Vec<u8>>>);
 
@@ -435,6 +473,13 @@ mod tests {
 
     /// Run `f` with every `tracing` event going into a string.
     fn capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        // Before the scoped subscriber and before `f`, so that no callsite
+        // reached from here on can be cached as uninteresting.
+        static FLOOR: std::sync::Once = std::sync::Once::new();
+        FLOOR.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(Interested);
+        });
+
         let sink = Capture::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(sink.clone())
