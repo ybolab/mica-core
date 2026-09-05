@@ -77,6 +77,45 @@ pub const CONFIG_DOCUMENTS: [&str; 7] = [
     CONTAINER_DOCUMENT,
 ];
 
+/// The addressed-tree subtrees each `/mos/config/` document carries.
+///
+/// The §5.2.2 mapping in the form a caller can compute with, rather than as
+/// prose a reader has to re-derive. Two callers need it and both are the
+/// pour's (§5.2.7, F6g):
+///
+/// - a document that did not parse refuses **exactly** the subsystems these
+///   dot-paths name, and no others — which is what makes "refuses its
+///   subsystem" different from "refuses to start";
+/// - a write whose dot-path reaches one of them is the authenticated repair
+///   of that document, so it is the one document a refusal does not preserve.
+///
+/// Same names and same order as [`CONFIG_DOCUMENTS`], asserted by
+/// `every_config_document_declares_its_subtrees`. `system.json` carries two
+/// paths because it carries two unrelated keys; every other document is one
+/// subtree, which is what "one flat document per reconciler" buys.
+pub const DOCUMENT_SUBTREES: [(&str, &[&str]); 7] = [
+    (SYSTEM_DOCUMENT, &["hostname", "access.console"]),
+    (NETWORK_DOCUMENT, &["network"]),
+    (WIFI_DOCUMENT, &["wifi"]),
+    (SSH_DOCUMENT, &["access.ssh"]),
+    (MQTT_DOCUMENT, &["mqtt"]),
+    (TIME_DOCUMENT, &["time"]),
+    (CONTAINER_DOCUMENT, &["container"]),
+];
+
+/// The subtrees `document` carries, or `&[]` for a name that is not a
+/// `/mos/config/` document of this schema.
+///
+/// Empty rather than a panic: the STATE remainder is read through the same
+/// loader and is legitimately not in the table.
+#[must_use]
+pub fn document_subtrees(document: &str) -> &'static [&'static str] {
+    DOCUMENT_SUBTREES
+        .iter()
+        .find(|(name, _)| *name == document)
+        .map_or(&[], |(_, subtrees)| *subtrees)
+}
+
 /// `hostname` and `access.console`; the hostname reconciler.
 pub const SYSTEM_DOCUMENT: &str = "system.json";
 /// The `network` subtree; the network reconciler.
@@ -377,3 +416,32 @@ document_default!(MqttDocument, mqtt);
 document_default!(TimeDocument, time);
 document_default!(ContainerDocument, container);
 document_default!(StateDocument, state);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The namespace's index and the subtree table are the same list read two
+    /// ways. A document added to one and forgotten in the other would leave
+    /// the pour's refusal path with a document it cannot name a subsystem for
+    /// — which fails open, because a refusal that names no subtree refuses
+    /// nothing.
+    #[test]
+    fn every_config_document_declares_its_subtrees() {
+        let declared: Vec<&str> = DOCUMENT_SUBTREES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(declared, CONFIG_DOCUMENTS.to_vec());
+        for (name, subtrees) in DOCUMENT_SUBTREES {
+            assert!(!subtrees.is_empty(), "{name} declares no subtree");
+            assert_eq!(document_subtrees(name), subtrees);
+        }
+    }
+
+    /// The STATE remainder is read through the same loader and is not in the
+    /// namespace, so the lookup has to answer for it without pretending it is
+    /// a `/mos/config/` document.
+    #[test]
+    fn a_name_outside_the_namespace_declares_no_subtree() {
+        assert!(document_subtrees("settings.toml").is_empty());
+        assert!(document_subtrees("updates.json").is_empty());
+    }
+}

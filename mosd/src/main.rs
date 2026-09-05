@@ -180,9 +180,53 @@ async fn serve() -> anyhow::Result<()> {
     // that names the mount in the journal, and the error carries that name.
     // The recovery route is `docs/design/recovery.md`'s — the serial console
     // and the reset tiers — not a silently degraded network.
-    let (mut settings, rollback) = store
-        .load_with_report()
+    //
+    // `load_with_refusals` and not `load_with_report`, which is the other half
+    // of the same rule (PLAN-070 §5.2.7, F6g — **the pour**). The medium is a
+    // start refusal because a device that cannot reach its configuration must
+    // not render a different one; a single DOCUMENT that does not parse is
+    // not, because these files are hand-written by an integrator onto a device
+    // that is not running, and a typo in `wifi.json` that stopped the daemon
+    // would take the network reconciler down with it and put the device off
+    // the air for a mistake in an unrelated subsystem. What that document
+    // gates is refused; its neighbours run.
+    let mosd_settings::LoadedStore {
+        mut settings,
+        rollback,
+        refusals,
+    } = store
+        .load_with_refusals()
         .with_context(|| format!("load settings from {settings_path} and {config_dir}"))?;
+    // Loud, and at ERROR: a poured document that did not load is a device
+    // running with a capability deliberately switched off, and the operator
+    // who poured it has no other way to find out which file it was. The
+    // message names the file, which is what the F6g gate requires of it.
+    for refusal in &refusals {
+        // `detail` is the parser's own sentence and it is logged HERE and
+        // nowhere else: it quotes what it choked on, so a poured document's
+        // site key can be in it, and the journal is on the device while
+        // `configuration.refused` is served over the API.
+        tracing::error!(
+            document = refusal.document,
+            subtrees = ?refusal.subtrees,
+            detail = refusal.detail,
+            "{}",
+            refusal.message
+        );
+    }
+    // **Narrowed here and once**, before anything on the boot path can save.
+    // `provisioning::ensure_provisioned` writes the store on the very boot that
+    // finds a pour — it mints the device identity — and `save` writes every
+    // document out of an addressed tree in which a refused subtree sits at its
+    // schema default. Without this the first boot after a bad pour would
+    // overwrite the integrator's file with the default nobody chose, and the
+    // second boot would come up clean on it (`Store::preserving`).
+    let store = store.preserving(
+        &refusals
+            .iter()
+            .map(|refusal| refusal.document.as_str())
+            .collect::<Vec<_>>(),
+    );
     // The A/B rollback path: a document was written by a NEWER schema and was
     // loaded tolerantly instead of crash-looping the daemon
     // (docs/design/api.md §10.3 item 5). Loud on purpose — this is the one
@@ -437,6 +481,10 @@ async fn serve() -> anyhow::Result<()> {
     // shares the lifecycle with the manual check and fetch routes, so both
     // read one policy and record into one state entry.
     let update_handle = service.update_handle();
+    // BEFORE the first reconcile, which is the point: a refused document must
+    // not be applied from its schema default even once, so the refusals have
+    // to be in place before `apply_all` visits the reconcilers they gate.
+    service.set_config_refusals(refusals).await;
     service.apply_all().await;
     let builder = match bus_kind.as_str() {
         "system" => zbus::connection::Builder::system()?,
