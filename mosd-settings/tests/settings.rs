@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use mosd_settings::{
-    ApMode, ApiToken, AuthorizedKey, BridgeConfig, CONFIG_DOCUMENTS, ClaimChannel, ClaimSettings,
-    DEFAULT_CONFIG_DIR, DEFAULT_PATH, DOCUMENT_MODE, IfaceKind, IfaceSettings, MQTT_DOCUMENT,
-    NETWORK_SCHEMA_VERSION, ProvisioningState, ResetSettings, ResetTier, STATE_SCHEMA_VERSION,
-    Settings, SettingsError, StaticConfig, Store, VlanConfig, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION,
-    WebAdminSettings, WifiNetwork, WireguardConfig, WireguardPeer, configuration,
-    encode_base64_nopad, json_path_get, parse_authorized_key, validate_api_tokens,
-    validate_authorized_keys,
+    ApMode, ApiToken, AuthorizedKey, BridgeConfig, CONFIG_DOCUMENTS, CONTAINER_DOCUMENT,
+    ClaimChannel, ClaimSettings, DEFAULT_CONFIG_DIR, DEFAULT_PATH, DOCUMENT_MODE, IfaceKind,
+    IfaceSettings, MQTT_DOCUMENT, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, ProvisioningState,
+    ResetSettings, ResetTier, SSH_DOCUMENT, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, Settings,
+    SettingsError, StaticConfig, Store, TIME_DOCUMENT, VlanConfig, WIFI_DOCUMENT,
+    WIFI_SCHEMA_VERSION, WebAdminSettings, WifiNetwork, WireguardConfig, WireguardPeer,
+    configuration, document_subtrees, encode_base64_nopad, json_path_get, parse_authorized_key,
+    validate_api_tokens, validate_authorized_keys,
 };
 
 /// A store over a temporary tree.
@@ -1814,4 +1815,545 @@ fn the_update_document_lives_inside_the_configuration_namespace() {
         "{} is not inside {DEFAULT_CONFIG_DIR}",
         configuration::DEFAULT_UPDATES_PATH
     );
+}
+
+// --- F6g: the pour (PLAN-070 §5.2.7) ---------------------------------------
+
+/// A hand-written, valid document per reconciler, with the value that proves
+/// it reached the addressed tree.
+///
+/// **Hand-written and not `Store::save` output**, because that is the whole
+/// subject: the pour is §5.2.7's one exception to machine-written-never-
+/// hand-edited, and a fixture round-tripped through the writer would assert
+/// that mosd can read what mosd wrote, which was never in doubt. Every text
+/// below is what an integrator types with a partition mounted on a laptop —
+/// minimal, with only the keys they care about, so `serde`'s per-field
+/// defaults are exercised at the same time.
+fn poured_namespace() -> Vec<Poured> {
+    let poured = |document, text: String, adopted: fn(&Settings) -> bool| Poured {
+        document,
+        text,
+        adopted,
+    };
+    vec![
+        poured(
+            SYSTEM_DOCUMENT,
+            r#"{"schema_version": 1, "hostname": "poured-edge-1"}"#.to_string(),
+            |settings| settings.hostname == "poured-edge-1",
+        ),
+        poured(
+            NETWORK_DOCUMENT,
+            r#"{"schema_version": 1, "network": {"eth0": {"dhcp": false}}}"#.to_string(),
+            |settings| settings.network.get("eth0").is_some_and(|eth| !eth.dhcp),
+        ),
+        poured(
+            WIFI_DOCUMENT,
+            format!(
+                r#"{{"schema_version": 1, "wifi": {{"ap": {{"mode": "always", "ssid": "poured-ap", "psk": "{POURED_PSK}"}}}}}}"#
+            ),
+            |settings| settings.wifi.ap.ssid.as_deref() == Some("poured-ap"),
+        ),
+        poured(
+            SSH_DOCUMENT,
+            r#"{"schema_version": 1, "ssh": {"enabled": true, "port": 2222}}"#.to_string(),
+            |settings| settings.access.ssh.port == 2222,
+        ),
+        poured(
+            MQTT_DOCUMENT,
+            r#"{"schema_version": 1, "mqtt": {"enabled": true}}"#.to_string(),
+            |settings| settings.mqtt.enabled,
+        ),
+        poured(
+            TIME_DOCUMENT,
+            r#"{"schema_version": 1, "time": {"timezone": "Europe/Berlin"}}"#.to_string(),
+            |settings| settings.time.timezone == "Europe/Berlin",
+        ),
+        poured(
+            CONTAINER_DOCUMENT,
+            r#"{"schema_version": 1, "container": {"enabled": true}}"#.to_string(),
+            |settings| settings.container.enabled,
+        ),
+    ]
+}
+
+/// One hand-written document, and the reading that proves it was adopted.
+struct Poured {
+    document: &'static str,
+    text: String,
+    adopted: fn(&Settings) -> bool,
+}
+
+/// The site key an integrator pours into `wifi.json`.
+///
+/// A value with no other reason to appear anywhere, so a test that greps a
+/// served record for it is asserting about this key and not about a word that
+/// happens to be common.
+const POURED_PSK: &str = "poured-site-key-9d4ec7b0";
+
+/// Pour the whole namespace by hand and assert every document is adopted.
+///
+/// **Clause 1 of the F6g gate**: a hand-written document that parses and
+/// validates is adopted. Seven documents at once rather than one, because the
+/// pour is a namespace operation — an integrator writes the configuration, not
+/// a file — and because a per-document test would not catch a loader that read
+/// the first document and stopped.
+#[test]
+fn a_hand_written_namespace_is_adopted_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    for entry in poured_namespace() {
+        write_config(&dir, entry.document, &entry.text);
+    }
+
+    let loaded = store.load_with_refusals().unwrap();
+
+    assert!(
+        loaded.refusals.is_empty(),
+        "a valid pour refuses nothing: {:?}",
+        loaded.refusals
+    );
+    assert!(loaded.rollback.is_empty());
+    for entry in poured_namespace() {
+        assert!(
+            (entry.adopted)(&loaded.settings),
+            "{} parsed and validated and was not adopted",
+            entry.document
+        );
+    }
+    // Not written back on the way through: the pour is a read, and a loader
+    // that normalised what it found would have rewritten the integrator's file
+    // before anybody could look at it.
+    assert_eq!(
+        fs::read_to_string(dir.path().join("config").join(SYSTEM_DOCUMENT)).unwrap(),
+        r#"{"schema_version": 1, "hostname": "poured-edge-1"}"#
+    );
+}
+
+/// **Clause 2, both directions, for every document in the namespace.**
+///
+/// The refused document refuses — one refusal, naming that file and no other —
+/// and its six neighbours are adopted from the same pour. Driven per document
+/// rather than argued once, because the claim "a poured typo costs exactly what
+/// that document configures" is a claim about each of the seven and the loader
+/// is the only thing that makes it true of all of them.
+///
+/// The negative half is the one that would rot silently: a loader that refused
+/// the whole namespace on one bad file would still pass an assertion that only
+/// checked the refusal.
+#[test]
+fn one_unparseable_document_refuses_itself_and_nothing_else() {
+    for broken in poured_namespace().iter().map(|entry| entry.document) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_at(&dir);
+        for entry in poured_namespace() {
+            if entry.document == broken {
+                write_config(
+                    &dir,
+                    entry.document,
+                    r#"{"schema_version": 1, "typo": true}"#,
+                );
+            } else {
+                write_config(&dir, entry.document, &entry.text);
+            }
+        }
+
+        let loaded = store.load_with_refusals().unwrap();
+
+        let names: Vec<&str> = loaded
+            .refusals
+            .iter()
+            .map(|refusal| refusal.document.as_str())
+            .collect();
+        assert_eq!(names, vec![broken], "exactly one document is refused");
+
+        let refusal = &loaded.refusals[0];
+        // Names the file, which the gate requires in as many words: the person
+        // who poured it has no other way to learn which one it was.
+        assert!(
+            refusal
+                .message
+                .contains(&refusal.path.display().to_string()),
+            "the refusal must name the file: {}",
+            refusal.message
+        );
+        assert!(refusal.path.ends_with(broken), "{:?}", refusal.path);
+        assert!(
+            refusal.detail.contains("unknown field `typo`"),
+            "{}",
+            refusal.detail
+        );
+        assert_eq!(refusal.subtrees, document_subtrees(broken));
+        assert!(!refusal.subtrees.is_empty());
+
+        // The other six are adopted, from the same load.
+        for entry in poured_namespace() {
+            if entry.document == broken {
+                continue;
+            }
+            assert!(
+                (entry.adopted)(&loaded.settings),
+                "{broken} was refused and took {} down with it",
+                entry.document
+            );
+        }
+    }
+}
+
+/// **A refusal is not a schema default with a log line.**
+///
+/// The refused subtree does sit at its schema default in the addressed tree —
+/// the tree is total and the dot-path API has no shape for a hole — so the
+/// thing that has to be asserted is that the two states are still
+/// distinguishable to every caller: a refused `wifi.json` and an absent one
+/// produce the same subtree and a different `refusals`. A loader that returned
+/// no refusal would make "the operator poured nothing" and "the operator poured
+/// something this build cannot read" the same fact, which is exactly what
+/// §5.2.7's *a parse error is not absence* forbids.
+#[test]
+fn a_refused_document_is_distinguishable_from_an_absent_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(&dir, WIFI_DOCUMENT, "{ not json");
+
+    let refused = store.load_with_refusals().unwrap();
+    assert_eq!(refused.refusals.len(), 1);
+    assert_eq!(refused.settings.wifi, Settings::default().wifi);
+
+    fs::remove_file(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap();
+    let absent = store.load_with_refusals().unwrap();
+    assert!(absent.refusals.is_empty());
+
+    assert_eq!(refused.settings, absent.settings);
+}
+
+/// Every way a `/mos/config/` document can fail reaches the same refusal.
+///
+/// The four the hard-failing loader already covers, plus the two the move
+/// introduced — a version older than this build reads, and a document the
+/// process cannot read at all. Named as a set because "fail closed for every
+/// document" is a claim about the failure modes as much as about the files:
+/// a loader that refused a parse error and let an unreadable file through
+/// would fail open on the one an integrator produces with a bad `chmod`.
+#[test]
+fn every_way_a_document_fails_is_a_refusal_and_not_a_default() {
+    for text in [
+        "{ this is not json",
+        r#"{"mqtt": {"enabled": true}}"#,
+        r#"{"schema_version": "1", "mqtt": {}}"#,
+        "[]",
+        r#"{"schema_version": 0, "mqtt": {}}"#,
+        r#"{"schema_version": 1, "mqtt": {"enabld": true}}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_at(&dir);
+        write_config(&dir, MQTT_DOCUMENT, text);
+
+        let loaded = store.load_with_refusals().unwrap();
+        assert_eq!(
+            loaded.refusals.len(),
+            1,
+            "{text}: expected one refusal, got {:?}",
+            loaded.refusals
+        );
+        assert_eq!(loaded.refusals[0].document, MQTT_DOCUMENT);
+        assert!(
+            loaded.refusals[0]
+                .message
+                .contains(&loaded.refusals[0].path.display().to_string()),
+            "{text}: {}",
+            loaded.refusals[0].message
+        );
+        assert!(!loaded.settings.mqtt.enabled, "{text}: adopted anyway");
+    }
+
+    // A document the process cannot read. Skipped when the tests run as root,
+    // which ignores the mode -- and that is stated rather than silently
+    // passing, because a check that cannot fail is not a check.
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    let path = dir.path().join("config").join(MQTT_DOCUMENT);
+    write_config(&dir, MQTT_DOCUMENT, r#"{"schema_version": 1, "mqtt": {}}"#);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_to_string(&path).is_ok() {
+        eprintln!("running as root: the unreadable-document leg asserts nothing here");
+    } else {
+        let loaded = store.load_with_refusals().unwrap();
+        assert_eq!(loaded.refusals.len(), 1);
+        assert_eq!(loaded.refusals[0].document, MQTT_DOCUMENT);
+    }
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// **The two rules the pour does NOT relax.**
+///
+/// F6f's start refusal and the STATE document's are different rules and stay
+/// hard failures, which is the distinction the F6g gate turns on: "refuses its
+/// subsystem" is not "refuses to start", and it is also not "nothing refuses to
+/// start any more". A device that cannot reach its configuration must not
+/// render a different one; a STATE document that does not parse carries the
+/// device identity and the administrator credential, and degrading it would let
+/// first-boot provisioning mint fresh ones over the top.
+#[test]
+fn the_medium_and_the_state_document_still_refuse_the_whole_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent = Store::new(dir.path().join("settings.toml"), dir.path().join("config"));
+    assert!(matches!(
+        absent.load_with_refusals().unwrap_err(),
+        SettingsError::Unavailable { .. }
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    fs::write(dir.path().join("settings.toml"), "this is not toml = [").unwrap();
+    assert!(matches!(
+        store.load_with_refusals().unwrap_err(),
+        SettingsError::Parse(_)
+    ));
+}
+
+/// **A later save must not overwrite a refused document with the default it
+/// was refused in favour of.**
+///
+/// The refusal's own consequence, and the one that would arrive a save later
+/// than anybody was looking. The refused subtree is at its schema default in
+/// the addressed tree; `save` writes every document out of that tree; so an
+/// operator setting the hostname — or first-boot provisioning minting a device
+/// identity, on the very boot that found the pour — would replace the
+/// integrator's `wifi.json` with defaults, and the boot after that would come
+/// up clean on a configuration nobody chose. Both directions: the preserved
+/// document is byte identical, and the rest of the namespace was still written.
+#[test]
+fn a_save_leaves_a_preserved_document_exactly_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    let broken = r#"{"schema_version": 1, "wifi": {"ap": {"mode": "alwys"}}}"#;
+    write_config(&dir, WIFI_DOCUMENT, broken);
+
+    let loaded = store.load_with_refusals().unwrap();
+    assert_eq!(loaded.refusals.len(), 1);
+    let guarded = store.preserving(&[WIFI_DOCUMENT]);
+
+    let mut settings = loaded.settings;
+    settings.hostname = "edge-1".to_string();
+    guarded.save(&settings).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap(),
+        broken,
+        "the refused document must not be rewritten from a schema default"
+    );
+    assert_eq!(
+        config_document(&dir, SYSTEM_DOCUMENT)["hostname"],
+        json!("edge-1"),
+        "the write the operator asked for must still land"
+    );
+
+    // And the repair: the same write through a store that does NOT preserve it
+    // is the authenticated edit §5.2.7 sanctions, and it replaces the bytes.
+    settings.wifi.ap.ssid = Some("repaired".to_string());
+    store.save(&settings).unwrap();
+    assert_eq!(
+        config_document(&dir, WIFI_DOCUMENT)["wifi"]["ap"]["ssid"],
+        json!("repaired")
+    );
+    assert!(store.load_with_refusals().unwrap().refusals.is_empty());
+}
+
+/// A preserved name whose file is gone is written.
+///
+/// Tier 1 empties `/mos/config/` and then saves the re-seeded tree
+/// (`reset.rs`). If preservation were by name alone, the refused document would
+/// be the one occupant a factory reset failed to restore — and the namespace
+/// would come back one document short of what the reset is defined to produce.
+#[test]
+fn a_preserved_document_that_no_longer_exists_is_written_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir).preserving(&[WIFI_DOCUMENT]);
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        r#"{"schema_version": 1, "typo": true}"#,
+    );
+
+    store.save(&Settings::default()).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap(),
+        r#"{"schema_version": 1, "typo": true}"#
+    );
+
+    fs::remove_file(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap();
+    store.save(&Settings::default()).unwrap();
+    assert_eq!(
+        config_document(&dir, WIFI_DOCUMENT)["schema_version"],
+        json!(WIFI_SCHEMA_VERSION)
+    );
+}
+
+/// A plain store preserves nothing, asserted rather than assumed: every
+/// existing caller goes through it and the pour must not have changed what they
+/// do.
+#[test]
+fn a_store_preserves_nothing_unless_it_was_narrowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        r#"{"schema_version": 1, "typo": true}"#,
+    );
+
+    let settings = Settings {
+        hostname: "edge-1".to_string(),
+        ..Settings::default()
+    };
+    store.save(&settings).unwrap();
+
+    assert_eq!(
+        config_document(&dir, WIFI_DOCUMENT)["schema_version"],
+        json!(WIFI_SCHEMA_VERSION)
+    );
+    assert!(store.load_with_refusals().unwrap().refusals.is_empty());
+}
+
+/// **Every occupant of `/mos/config/` fails closed, and every refusal names its
+/// file.**
+///
+/// The namespace has two readers and they are in different modules: `Store`
+/// reads the seven settings documents, and `configuration::load_updates` reads
+/// `updates.json`, which is an occupant of this directory rather than a member
+/// of the settings tree. F6g's rule is the namespace's and not one reader's, so
+/// it is asserted over the namespace — the alternative is a slice that hardens
+/// the reader it was thinking about and leaves the other one to be found later,
+/// which is exactly the shape §5.2.7 warns about.
+///
+/// The clause each side has to satisfy is the same in both: given bytes that do
+/// not become configuration, refuse, name the file, and produce nothing a
+/// caller could mistake for a value the operator chose.
+#[test]
+fn every_occupant_of_the_namespace_fails_closed_and_names_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    for document in CONFIG_DOCUMENTS {
+        write_config(&dir, document, "{ not a document");
+    }
+    let loaded = store.load_with_refusals().unwrap();
+    let mut refused: Vec<&str> = loaded
+        .refusals
+        .iter()
+        .map(|refusal| refusal.document.as_str())
+        .collect();
+    refused.sort_unstable();
+    let mut expected: Vec<&str> = CONFIG_DOCUMENTS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(refused, expected, "every document refuses on its own terms");
+    for refusal in &loaded.refusals {
+        assert!(
+            refusal
+                .message
+                .contains(&refusal.path.display().to_string()),
+            "{}",
+            refusal.message
+        );
+    }
+    // Nothing was adopted, and nothing was invented either: the tree is the
+    // schema default, which is the only total value there is — and the refusal
+    // list beside it is what stops that from being read as configuration.
+    assert_eq!(loaded.settings, Settings::default());
+
+    // The eighth occupant, through the other reader. Its refusal is an `Err`
+    // rather than an entry, because the update policy is not part of the
+    // addressed tree; what it shares is that it names the file and that it
+    // never resolves to a value (RFCT-313's `LoadedPolicy` carries the error
+    // beside a policy with no selection at all).
+    let updates = dir.path().join("config").join("updates.json");
+    fs::write(&updates, "{ not a document").unwrap();
+    let err = configuration::load_updates(&updates).unwrap_err();
+    assert!(
+        err.to_string().contains(&updates.display().to_string()),
+        "the update document's refusal must name the file too: {err}"
+    );
+}
+
+/// **A served refusal names the file and quotes nothing the document carried.**
+///
+/// The F6g gate's third clause reaches the *failing* case too, and this is the
+/// leg that is easy to miss. A parser's sentence echoes what it choked on —
+/// serde prints `invalid type: string "…", expected u8` with the value in it —
+/// so a poured `wifi.json` whose site key landed in a numeric field would
+/// publish that key through its own refusal: into `configuration.refused`,
+/// which `GET /api/v1/state/` serves, past a redactor that keys on field names
+/// and has no reason to look at one called `message`.
+///
+/// The split is the answer and this is what pins it: `message` is served and
+/// says the file and the class, `detail` is the parser's words and goes to the
+/// journal. The second assertion is the one that keeps the first honest — if
+/// `detail` did not carry the key either, the fixture would not be reproducing
+/// the hazard.
+#[test]
+fn a_refusal_names_the_file_and_quotes_nothing_the_document_carried() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    write_config(
+        &dir,
+        WIFI_DOCUMENT,
+        &format!(r#"{{"schema_version": 1, "wifi": {{"ap": {{"channel": "{POURED_PSK}"}}}}}}"#),
+    );
+
+    let loaded = store.load_with_refusals().unwrap();
+    assert_eq!(loaded.refusals.len(), 1);
+    let refusal = &loaded.refusals[0];
+
+    assert!(
+        refusal
+            .message
+            .contains(&refusal.path.display().to_string()),
+        "{}",
+        refusal.message
+    );
+    assert!(
+        refusal.message.contains("did not parse"),
+        "{}",
+        refusal.message
+    );
+    assert!(
+        !refusal.message.contains(POURED_PSK),
+        "the served refusal quoted the document: {}",
+        refusal.message
+    );
+    assert!(
+        refusal.detail.contains(POURED_PSK),
+        "the fixture must actually reproduce the hazard, or the assertion above \
+         asserts nothing: {}",
+        refusal.detail
+    );
+}
+
+/// The three classes a served refusal may say, each from its own trigger.
+///
+/// Chosen by this build rather than supplied by the parser, so the set is
+/// closed: a reader can act on all three — fix the bytes, fix the version, fix
+/// the permissions — and none of them can carry a byte of the document.
+#[test]
+fn a_served_refusal_says_which_of_three_things_went_wrong() {
+    for (text, class) in [
+        (
+            r#"{"schema_version": 1, "mqtt": {"typo": true}}"#,
+            "did not parse",
+        ),
+        (
+            r#"{"schema_version": 0, "mqtt": {}}"#,
+            "is at a schema version this build has no migration for",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_at(&dir);
+        write_config(&dir, MQTT_DOCUMENT, text);
+        let loaded = store.load_with_refusals().unwrap();
+        assert_eq!(loaded.refusals.len(), 1, "{text}");
+        assert!(
+            loaded.refusals[0].message.contains(class),
+            "{text}: {}",
+            loaded.refusals[0].message
+        );
+    }
 }

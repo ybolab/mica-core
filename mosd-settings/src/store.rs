@@ -20,6 +20,7 @@ use crate::documents::{
     MQTT_DOCUMENT, MQTT_SCHEMA_VERSION, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, SSH_DOCUMENT,
     SSH_SCHEMA_VERSION, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION,
     StateDocument, TIME_DOCUMENT, TIME_SCHEMA_VERSION, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION,
+    document_subtrees,
 };
 use crate::error::SettingsError;
 use crate::model::Settings;
@@ -50,6 +51,81 @@ pub struct RollbackReport {
     /// existing key — and the load fell back to this document's schema
     /// default, abandoning everything it stored.
     pub defaulted: bool,
+}
+
+/// One `/mos/config/` document that exists and did **not** become
+/// configuration (PLAN-070 §5.2.7, F6g).
+///
+/// **This is "refuses its subsystem", and it is not "refuses to start".** The
+/// two are different rules and the tree carries both: an absent `/mos/config/`
+/// **namespace** is the DATA medium being gone and refuses the daemon
+/// ([`Store::ensure_config_medium`], §5.2.6), while a single document that does
+/// not parse refuses exactly the capabilities *it* gates and leaves its
+/// neighbours alone. The pour is why the second one has to exist: an integrator
+/// hand-writes these files onto a device that is not running, and a typo in
+/// `wifi.json` that took the network reconciler down with it would put the
+/// device off the air for a mistake in an unrelated subsystem.
+///
+/// **The subtree is refused, never defaulted.** [`Store::load_with_refusals`]
+/// still returns a total [`Settings`] — the dot-path API has no shape for a
+/// hole — so the refused document's subtree sits at its schema default in the
+/// addressed tree. What makes that not a silent revert is that the refusal
+/// travels with it: the caller skips the reconcilers [`Self::subtrees`] names,
+/// so the default is never *applied*, and [`Store::save_preserving`] leaves the
+/// document on disk untouched, so the operator's bytes are not overwritten by
+/// the default either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentRefusal {
+    /// The document this refusal is about, by file name.
+    pub document: String,
+    /// The file, in full. Carried as well as [`Self::message`] because a
+    /// caller records the refusal per document and needs the identity, not
+    /// only the sentence.
+    pub path: PathBuf,
+    /// The refusal an operator reads, and the **only form that may be
+    /// served**. Names the file — which the F6g gate requires, because the
+    /// whole point of a poured document failing is that the person who poured
+    /// it can tell which one — and says what class of failure it was, and
+    /// nothing else.
+    ///
+    /// It quotes none of the document, and that is the F6g gate's third clause
+    /// applied to the failing case as well as the adopted one. A parser's
+    /// sentence echoes what it choked on: `invalid type: string "…", expected
+    /// u8` prints the value, so a poured `wifi.json` whose site key landed in
+    /// the wrong field would publish that key through a refusal — into
+    /// `configuration.refused`, which `GET /api/v1/state/` serves, past a
+    /// redactor that keys on field names and has no reason to look at one
+    /// called `message`.
+    pub message: String,
+    /// The parser's own sentence. **Journal only.**
+    ///
+    /// This is the half that can quote the document, and the split is what
+    /// makes serving the safe half the default: a caller reaching for
+    /// `message` gets the one that may leave the device, and a caller that
+    /// wants the parser's words has to name a field whose documentation says
+    /// where they may go.
+    pub detail: String,
+    /// The addressed-tree subtrees this document carries
+    /// ([`crate::documents::DOCUMENT_SUBTREES`]) — the exact set of
+    /// capabilities the refusal covers.
+    pub subtrees: &'static [&'static str],
+}
+
+/// A load of the whole store: the addressed tree, what the tolerant
+/// newer-schema path did, and which documents were refused.
+///
+/// Three outcomes rather than two because they are three different facts and
+/// collapsing any pair loses the one that matters. A rollback report is a
+/// document that WAS adopted, with keys dropped; a refusal is a document that
+/// was not adopted at all.
+#[derive(Debug, Clone)]
+pub struct LoadedStore {
+    /// The one addressed tree, total as always.
+    pub settings: Settings,
+    /// What the A/B rollback path did, per document.
+    pub rollback: Vec<RollbackReport>,
+    /// The `/mos/config/` documents that exist and did not load.
+    pub refusals: Vec<DocumentRefusal>,
 }
 
 /// The two on-disk formats: JSON for `/mos/config/`, TOML for the STATE
@@ -223,6 +299,21 @@ fn load_newer<T: DeserializeOwned + Default>(
     )
 }
 
+/// How a document failed, in words this build chose rather than words the
+/// document supplied.
+///
+/// Three classes, because three are what a reader can act on — fix the bytes,
+/// fix the version, fix the permissions — and because a fourth would have to
+/// come from the parser, which is the half that must not be served
+/// ([`DocumentRefusal::message`]).
+fn refusal_class(err: &SettingsError) -> &'static str {
+    match err {
+        SettingsError::Migration(_) => "is at a schema version this build has no migration for",
+        SettingsError::Io(_) => "could not be read",
+        _ => "did not parse as this build's schema",
+    }
+}
+
 /// Read one document, or its schema default when the file is absent.
 ///
 /// **Absence is a default; a parse error is not** (§5.2.7). A document that
@@ -323,6 +414,9 @@ pub struct Store {
     path: PathBuf,
     /// The `/mos/config/` namespace, holding what an integrator sets.
     config_dir: PathBuf,
+    /// `/mos/config/` documents this store will not overwrite while they are
+    /// still on disk ([`Store::preserving`]).
+    preserve: Vec<String>,
 }
 
 impl Store {
@@ -332,6 +426,40 @@ impl Store {
         Self {
             path: path.into(),
             config_dir: config_dir.into(),
+            preserve: Vec::new(),
+        }
+    }
+
+    /// The same store, refusing to overwrite `documents` while they are still
+    /// on disk (PLAN-070 §5.2.7, F6g — **the pour**).
+    ///
+    /// **This exists because a refused document is one `save` away from being
+    /// lost.** A refused subtree sits at its schema default in the addressed
+    /// tree, because the tree is total; `save` writes every document out of
+    /// that tree; so any later write — a hostname change, or first-boot
+    /// provisioning minting a device identity, which happens on the very boot
+    /// that finds the pour — would replace the integrator's file with the
+    /// default it never chose. That is the silent revert §5.2.7 forbids,
+    /// arriving one save after the load rather than during it.
+    ///
+    /// **On the store rather than as an argument to `save`**, because `save`
+    /// has five callers on the boot path (`provisioning`, `reset`, `recovery`,
+    /// the provisioning document and the bus) and a rule that has to be
+    /// remembered at five call sites is a rule with four places to forget it.
+    /// `main.rs` narrows the store once, immediately after the load, and every
+    /// later holder inherits it.
+    ///
+    /// **"While they are still on disk" is the whole condition.** A tier-1
+    /// reset empties `/mos/config/` and then saves; the refused file is gone by
+    /// then, and writing the fresh default there is exactly what the reset
+    /// asked for. Preserving a name whose file no longer exists would leave the
+    /// namespace one document short of what a reset is supposed to produce.
+    #[must_use]
+    pub fn preserving(&self, documents: &[&str]) -> Self {
+        Self {
+            path: self.path.clone(),
+            config_dir: self.config_dir.clone(),
+            preserve: documents.iter().map(|name| (*name).to_string()).collect(),
         }
     }
 
@@ -411,20 +539,108 @@ impl Store {
     /// reads. A document NEWER than this build writes never errors — see
     /// [`load_newer`].
     pub fn load_with_report(&self) -> Result<(Settings, Vec<RollbackReport>), SettingsError> {
+        let loaded = self.read_store(None)?;
+        Ok((loaded.settings, loaded.rollback))
+    }
+
+    /// Load every document, refusing per document instead of per daemon
+    /// (PLAN-070 §5.2.7, F6g — **the pour**).
+    ///
+    /// This is [`Store::load_with_report`] with one rule changed, and it is the
+    /// rule the pour exists for. An integrator hand-writes these documents onto
+    /// a device that is not running; the next boot validates what it finds
+    /// exactly as it validates mosd's own output, and a document that does not
+    /// survive that is a [`DocumentRefusal`] rather than an aborted load. Under
+    /// `load_with_report` a single mistyped `wifi.json` stops the daemon, which
+    /// takes the network reconciler down with it and puts the device off the
+    /// air for a mistake in an unrelated subsystem.
+    ///
+    /// **What is NOT downgraded**, because they are different rules:
+    ///
+    /// - an absent `/mos/config/` **namespace** is still a hard refusal
+    ///   ([`Store::ensure_config_medium`], §5.2.6 / F6f): a device that cannot
+    ///   reach its configuration must not render a different one;
+    /// - the **STATE** document is still a hard refusal. It is not in this
+    ///   namespace and cannot be poured, and it carries the device identity and
+    ///   the administrator credential — degrading it to a per-document refusal
+    ///   would let `provisioning::ensure_provisioned` mint a fresh identity and
+    ///   credential over a store whose real ones merely failed to parse, which
+    ///   is a worse outcome than not starting.
+    ///
+    /// **Nothing falls back.** The refused document's subtree is at its schema
+    /// default in the returned tree because the tree is total, and every
+    /// consumer of that default is closed off by the refusal travelling beside
+    /// it: see [`DocumentRefusal`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::load_with_report`], less the per-document failures this
+    /// collects instead: [`SettingsError::Unavailable`] for the medium, and
+    /// [`SettingsError::Io`] / [`SettingsError::Parse`] /
+    /// [`SettingsError::Migration`] for the STATE document alone.
+    pub fn load_with_refusals(&self) -> Result<LoadedStore, SettingsError> {
+        let mut refusals = Vec::new();
+        self.read_store(Some(&mut refusals))
+    }
+
+    /// The one loader both entry points run.
+    ///
+    /// `refusals` is what distinguishes them and nothing else does: `Some`
+    /// collects a `/mos/config/` document's failure and carries on with that
+    /// document's schema default, `None` propagates it and abandons the load.
+    /// One implementation because two would drift, and the direction they would
+    /// drift in is the lenient one.
+    fn read_store(
+        &self,
+        mut refusals: Option<&mut Vec<DocumentRefusal>>,
+    ) -> Result<LoadedStore, SettingsError> {
         self.ensure_config_medium()?;
         let mut reports = Vec::new();
         let documents = DocumentSet {
-            system: self.read_config(SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION, &mut reports)?,
-            network: self.read_config(NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, &mut reports)?,
-            wifi: self.read_config(WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, &mut reports)?,
-            ssh: self.read_config(SSH_DOCUMENT, SSH_SCHEMA_VERSION, &mut reports)?,
-            mqtt: self.read_config(MQTT_DOCUMENT, MQTT_SCHEMA_VERSION, &mut reports)?,
-            time: self.read_config(TIME_DOCUMENT, TIME_SCHEMA_VERSION, &mut reports)?,
+            system: self.read_config(
+                SYSTEM_DOCUMENT,
+                SYSTEM_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
+            network: self.read_config(
+                NETWORK_DOCUMENT,
+                NETWORK_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
+            wifi: self.read_config(
+                WIFI_DOCUMENT,
+                WIFI_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
+            ssh: self.read_config(
+                SSH_DOCUMENT,
+                SSH_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
+            mqtt: self.read_config(
+                MQTT_DOCUMENT,
+                MQTT_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
+            time: self.read_config(
+                TIME_DOCUMENT,
+                TIME_SCHEMA_VERSION,
+                &mut reports,
+                refusals.as_deref_mut(),
+            )?,
             container: self.read_config(
                 CONTAINER_DOCUMENT,
                 CONTAINER_SCHEMA_VERSION,
                 &mut reports,
+                refusals.as_deref_mut(),
             )?,
+            // The STATE remainder, and NOT through the refusal path: see
+            // [`Store::load_with_refusals`] for why it keeps the hard failure.
             state: read_document::<StateDocument>(
                 &self.path,
                 STATE_DOCUMENT,
@@ -433,7 +649,11 @@ impl Store {
                 &mut reports,
             )?,
         };
-        Ok((documents.compose(), reports))
+        Ok(LoadedStore {
+            settings: documents.compose(),
+            rollback: reports,
+            refusals: refusals.map(std::mem::take).unwrap_or_default(),
+        })
     }
 
     fn read_config<T: DeserializeOwned + Default>(
@@ -441,14 +661,29 @@ impl Store {
         document: &str,
         version: u32,
         reports: &mut Vec<RollbackReport>,
+        refusals: Option<&mut Vec<DocumentRefusal>>,
     ) -> Result<T, SettingsError> {
-        read_document(
-            &self.config_dir.join(document),
-            document,
-            Format::Json,
-            version,
-            reports,
-        )
+        let path = self.config_dir.join(document);
+        let read = read_document(&path, document, Format::Json, version, reports);
+        match (read, refusals) {
+            (Ok(value), _) => Ok(value),
+            (Err(err), None) => Err(err),
+            (Err(err), Some(refusals)) => {
+                refusals.push(DocumentRefusal {
+                    document: document.to_string(),
+                    message: format!(
+                        "{} {}, so every capability it configures is refused rather than \
+                         rendered from a schema default",
+                        path.display(),
+                        refusal_class(&err)
+                    ),
+                    detail: err.to_string(),
+                    path,
+                    subtrees: document_subtrees(document),
+                });
+                Ok(T::default())
+            }
+        }
     }
 
     /// Split `settings` into its documents and persist each atomically.
@@ -488,11 +723,14 @@ impl Store {
     }
 
     fn write_config<T: Serialize>(&self, document: &str, value: &T) -> Result<(), SettingsError> {
-        write_document(
-            &self.config_dir.join(document),
-            document,
-            Format::Json,
-            value,
-        )
+        let path = self.config_dir.join(document);
+        // [`Store::preserving`]: a refused document keeps its bytes, and only
+        // while it still has any. A name whose file is gone -- a tier-1 reset
+        // emptied the namespace -- is written, because that is what the reset
+        // asked for.
+        if self.preserve.iter().any(|name| name == document) && path.exists() {
+            return Ok(());
+        }
+        write_document(&path, document, Format::Json, value)
     }
 }

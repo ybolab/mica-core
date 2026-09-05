@@ -38,11 +38,12 @@ pub use authorized_key::{
 };
 pub use documents::{
     CONFIG_DIR_MODE, CONFIG_DOCUMENTS, CONTAINER_DOCUMENT, CONTAINER_SCHEMA_VERSION,
-    ContainerDocument, DEFAULT_CONFIG_DIR, DOCUMENT_MODE, MQTT_DOCUMENT, MQTT_SCHEMA_VERSION,
-    MqttDocument, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, NetworkDocument, SSH_DOCUMENT,
-    SSH_SCHEMA_VERSION, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION, SshDocument,
-    StateAccessSettings, StateDocument, SystemDocument, TIME_DOCUMENT, TIME_SCHEMA_VERSION,
-    TimeDocument, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, WifiDocument,
+    ContainerDocument, DEFAULT_CONFIG_DIR, DOCUMENT_MODE, DOCUMENT_SUBTREES, MQTT_DOCUMENT,
+    MQTT_SCHEMA_VERSION, MqttDocument, NETWORK_DOCUMENT, NETWORK_SCHEMA_VERSION, NetworkDocument,
+    SSH_DOCUMENT, SSH_SCHEMA_VERSION, STATE_SCHEMA_VERSION, SYSTEM_DOCUMENT, SYSTEM_SCHEMA_VERSION,
+    SshDocument, StateAccessSettings, StateDocument, SystemDocument, TIME_DOCUMENT,
+    TIME_SCHEMA_VERSION, TimeDocument, WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, WifiDocument,
+    document_subtrees,
 };
 pub use error::SettingsError;
 pub use model::{
@@ -65,4 +66,4 @@ pub use recovery::{
     credential_recovery_event, declaration_path, intent_from_cmdline, presence_marker_path,
     recovery_action_event, refusal_outcome, reset_event,
 };
-pub use store::{DEFAULT_PATH, RollbackReport, Store};
+pub use store::{DEFAULT_PATH, DocumentRefusal, LoadedStore, RollbackReport, Store};

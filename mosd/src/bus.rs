@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mosd_settings::{
-    ACTOR_POLICY, REQUESTED, Settings, SettingsError, Store, append_audit_line, audit_line,
-    audit_ring_dir, json_path_get,
+    ACTOR_POLICY, DocumentRefusal, REQUESTED, Settings, SettingsError, Store, append_audit_line,
+    audit_line, audit_ring_dir, json_path_get,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
@@ -146,6 +146,21 @@ pub struct MosdService {
     /// dry-run daemon can neither spawn the update client nor read a host
     /// policy file; production attaches both via [`Self::with_update`].
     update: Arc<UpdateLifecycle>,
+    /// The `/mos/config/` documents this boot found and refused (PLAN-070
+    /// §5.2.7, F6g — **the pour**).
+    ///
+    /// Empty on every device whose documents parse, which is every device that
+    /// was configured through the API. It fills when an integrator pours a
+    /// document by hand and gets it wrong, and what it buys is that the mistake
+    /// costs exactly the subsystems that document configures:
+    /// [`reconcile_subtree`] skips their reconcilers and records the refusal
+    /// where the applied state would go, rather than applying a schema default
+    /// nobody chose.
+    ///
+    /// Mutable because a refusal ends: an authenticated write that reaches the
+    /// refused subtree rewrites the document, which is §5.2.7's sanctioned
+    /// repair, and [`Self::persist_setting`] clears it there.
+    refusals: Arc<RwLock<Vec<DocumentRefusal>>>,
 }
 
 /// The lifecycle's window onto this service: it records under
@@ -229,6 +244,54 @@ impl MosdService {
             failure_evidence: Arc::new(UnavailableFailureEvidence),
             storage_pressure: Arc::new(PressureTracker::default()),
             update,
+            refusals: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Record the `/mos/config/` documents this boot refused, and publish them
+    /// into the live-state tree (PLAN-070 §5.2.7, F6g).
+    ///
+    /// An `async` setter rather than a `with_*` builder step, unlike every
+    /// other attachment on this type, because it does two things and the second
+    /// one needs the tree: the refusals have to be readable by a reconcile, and
+    /// they have to be legible to an operator who is looking at the device
+    /// wondering why its Wi-Fi is not up. `main.rs` calls it before
+    /// [`Self::apply_all`], which is what makes the first reconcile of the boot
+    /// already see them.
+    pub async fn set_config_refusals(&self, refusals: Vec<DocumentRefusal>) {
+        *self.refusals.write().await = refusals;
+        self.publish_refusals().await;
+    }
+
+    /// Mirror the current refusals into `configuration.refused` in the
+    /// live-state tree.
+    ///
+    /// A list at a fixed place, and not only the per-reconciler entries
+    /// [`reconcile_subtree`] writes, because the two answer different
+    /// questions: the per-reconciler entry says why *this* subsystem is not
+    /// running, and this says what the boot found — including a document with
+    /// no reconciler behind it, which the other form cannot report at all.
+    async fn publish_refusals(&self) {
+        let refused: Vec<Value> = self
+            .refusals
+            .read()
+            .await
+            .iter()
+            .map(|refusal| {
+                serde_json::json!({
+                    "document": refusal.document,
+                    "path": refusal.path.display().to_string(),
+                    "message": refusal.message,
+                    "subtrees": refusal.subtrees,
+                })
+            })
+            .collect();
+        let mut inner = self.inner.write().await;
+        if let Some(root) = inner.state.as_object_mut() {
+            root.insert(
+                "configuration".to_string(),
+                serde_json::json!({ "refused": refused }),
+            );
         }
     }
 
@@ -777,11 +840,45 @@ impl MosdService {
     /// Whatever [`Settings::set`](mosd_settings::Settings::set) or
     /// [`Store::save`] rejected the write with.
     async fn persist_setting(&self, path: &str, value: Value) -> Result<(), SettingsError> {
-        let mut inner = self.inner.write().await;
-        let mut candidate = inner.settings.clone();
-        candidate.set(path, value)?;
-        self.store.save(&candidate)?;
-        inner.settings = candidate;
+        // **A refused document keeps its bytes unless this write is the one
+        // that repairs it** (PLAN-070 §5.2.7, F6g). A refused subtree sits at
+        // its schema default in the addressed tree, and `save` writes every
+        // document out of that tree — so without this, an operator setting the
+        // hostname would replace a poured `wifi.json` with the default nobody
+        // chose, which is the silent revert the fail-closed rule forbids,
+        // arriving one write later than the load.
+        //
+        // The document this write DOES reach is deliberately not preserved:
+        // §5.2.7 says a human edits these documents through an authenticated
+        // API, so that write is the repair and has to land.
+        let preserve: Vec<String> = self
+            .refusals
+            .read()
+            .await
+            .iter()
+            .filter(|refusal| !refusal_covers(refusal, path))
+            .map(|refusal| refusal.document.clone())
+            .collect();
+        {
+            let mut inner = self.inner.write().await;
+            let mut candidate = inner.settings.clone();
+            candidate.set(path, value)?;
+            let preserve: Vec<&str> = preserve.iter().map(String::as_str).collect();
+            self.store.preserving(&preserve).save(&candidate)?;
+            inner.settings = candidate;
+        }
+        // The write landed, so the document it reached now holds what this
+        // build writes and parses as this build reads: its refusal is over, and
+        // the reconcilers it was gating run again on the apply that follows.
+        let repaired = {
+            let mut refusals = self.refusals.write().await;
+            let before = refusals.len();
+            refusals.retain(|refusal| !refusal_covers(refusal, path));
+            before != refusals.len()
+        };
+        if repaired {
+            self.publish_refusals().await;
+        }
         Ok(())
     }
 
@@ -802,7 +899,7 @@ impl MosdService {
     /// lock and each live-state result is recorded under a short write lock;
     /// no data lock is held while a reconciler waits on another process.
     async fn apply_subtree(&self, path: &str) -> Vec<String> {
-        reconcile_subtree(&self.reconcilers, &self.inner, path).await
+        reconcile_subtree(&self.reconcilers, &self.inner, &self.refusals, path).await
     }
 
     /// Run every reconciler against the current settings, recording each
@@ -842,6 +939,7 @@ impl MosdService {
             Arc::clone(&self.inner),
             Arc::clone(&self.apply_lock),
             Arc::clone(&self.reconcilers),
+            Arc::clone(&self.refusals),
         ));
     }
 
@@ -870,20 +968,66 @@ impl MosdService {
 async fn reconcile_subtree(
     reconcilers: &[Box<dyn Reconciler>],
     inner: &RwLock<Inner>,
+    refusals: &RwLock<Vec<DocumentRefusal>>,
     path: &str,
 ) -> Vec<String> {
     let settings = inner.read().await.settings.clone();
+    let refused = refusals.read().await.clone();
     let mut failures = Vec::new();
     for reconciler in reconcilers {
-        if paths_overlap(path, reconciler.subtree()) {
-            let result = reconciler.apply(&settings).await;
+        if !paths_overlap(path, reconciler.subtree()) {
+            continue;
+        }
+        // **"Refuses its subsystem" is enforced here** (PLAN-070 §5.2.7,
+        // F6g). The reconciler whose settings come out of a document that did
+        // not load is skipped rather than run against that document's schema
+        // default, and the refusal takes the place of the applied state so the
+        // live-state tree says why. Its neighbours are untouched: the loop
+        // moves on, so a poured typo in one document costs exactly what that
+        // document configures.
+        if let Some(refusal) = refused
+            .iter()
+            .find(|refusal| refusal_covers(refusal, reconciler.subtree()))
+        {
+            tracing::warn!(
+                reconciler = reconciler.name(),
+                document = refusal.document,
+                "reconciler skipped: the document that configures it did not load"
+            );
             let mut inner = inner.write().await;
-            if let Some(failure) = record(&mut inner.state, reconciler.name(), result) {
-                failures.push(failure);
+            if let Some(map) = inner.state.as_object_mut() {
+                map.insert(
+                    reconciler.name().to_string(),
+                    serde_json::json!({ "refused": refusal.message }),
+                );
             }
+            continue;
+        }
+        let result = reconciler.apply(&settings).await;
+        let mut inner = inner.write().await;
+        if let Some(failure) = record(&mut inner.state, reconciler.name(), result) {
+            failures.push(failure);
         }
     }
     failures
+}
+
+/// Whether `refusal` covers the dot-path `path`.
+///
+/// Two callers ask it: the reconcile loop, where `path` is a reconciler's
+/// declared subtree and the answer is "this subsystem is refused"; and
+/// [`MosdService::persist_setting`], where `path` is the write and the answer
+/// is "this write repairs that document". One relation, because they are one
+/// question about the same table — which capabilities that document gates.
+///
+/// [`paths_overlap`] in both directions, the same relation the reconcile loop
+/// already scopes with: `wifi.json` carries `wifi`, so it gates `wifi.client`
+/// and a write to `wifi.ap.ssid` reaches it.
+fn refusal_covers(refusal: &DocumentRefusal, path: &str) -> bool {
+    refusal
+        .subtrees
+        .iter()
+        .any(|subtree| paths_overlap(path, subtree))
 }
 
 async fn run_apply_worker(
@@ -891,6 +1035,7 @@ async fn run_apply_worker(
     inner: Arc<RwLock<Inner>>,
     apply_lock: Arc<Mutex<()>>,
     reconcilers: Arc<Vec<Box<dyn Reconciler>>>,
+    refusals: Arc<RwLock<Vec<DocumentRefusal>>>,
 ) {
     loop {
         let ApplyJob { id, dot_path } = queue.next().await;
@@ -902,7 +1047,7 @@ async fn run_apply_worker(
 
         let failures = {
             let _apply = apply_lock.lock().await;
-            reconcile_subtree(&reconcilers, &inner, &dot_path).await
+            reconcile_subtree(&reconcilers, &inner, &refusals, &dot_path).await
         };
         let (outcome, message) = if failures.is_empty() {
             ("succeeded", None)
@@ -1806,7 +1951,9 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::{Inner, MosdService, paths_overlap, record_policy_action, run_apply_worker};
+    use super::{
+        DocumentRefusal, Inner, MosdService, paths_overlap, record_policy_action, run_apply_worker,
+    };
     use crate::confirmed_boot::ConfirmedBootStore;
     use crate::power::MockPower;
     use crate::rauc::{MockRauc, SlotStatus};
@@ -2028,6 +2175,7 @@ mod tests {
             Arc::clone(&inner),
             Arc::new(tokio::sync::Mutex::new(())),
             reconcilers,
+            Arc::new(tokio::sync::RwLock::new(Vec::new())),
         ));
         queue.wake();
 
@@ -3514,6 +3662,233 @@ mod tests {
     impl crate::diagnostics::UnitLister for NoUnits {
         async fn failed_units(&self) -> anyhow::Result<Vec<crate::diagnostics::FailedUnit>> {
             Ok(Vec::new())
+        }
+    }
+
+    // --- F6g: the pour (PLAN-070 §5.2.7) -----------------------------------
+
+    /// A service with one recording reconciler per document-backed subtree,
+    /// over a store whose `/mos/config/` namespace is on disk and writable.
+    ///
+    /// The wifi pair is spelled out because it is the case that makes the
+    /// refusal a *document* rule rather than a reconciler one: `wifi.json`
+    /// carries `wifi` and backs two reconcilers, one of which declares
+    /// `wifi.client`, so a refusal that matched reconciler subtrees by equality
+    /// would leave the client half running on a schema default.
+    /// Hand-write one `/mos/config/` document, creating the namespace the way
+    /// `mos-data-layout` does before an integrator ever sees the partition.
+    fn pour(dir: &tempfile::TempDir, document: &str, text: &str) -> std::path::PathBuf {
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).expect("create the config namespace");
+        let path = config.join(document);
+        std::fs::write(&path, text).expect("pour the document");
+        path
+    }
+
+    async fn service_over(dir: &tempfile::TempDir) -> (MosdService, CallLog, Vec<DocumentRefusal>) {
+        let shadow_path = dir.path().join("shadow");
+        std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let reconciler = |name, subtree| {
+            Box::new(RecordingReconciler {
+                name,
+                subtree,
+                calls: Arc::clone(&calls),
+            }) as Box<dyn crate::reconciler::Reconciler>
+        };
+        let store = store_in(dir);
+        // `load_with_refusals` and not `load`, which is the daemon's own choice
+        // at `main.rs` and the whole subject here: `load` refuses the load, and
+        // a test harness that used it could not reach a device that came up at
+        // all with a broken document on it.
+        let loaded = store
+            .load_with_refusals()
+            .expect("load the poured namespace");
+        let refusals = loaded.refusals.clone();
+        let service = MosdService::new(
+            store,
+            loaded.settings,
+            vec![
+                reconciler("hostname", "hostname"),
+                reconciler("network", "network"),
+                reconciler("wifiAp", "wifi"),
+                reconciler("wifiClient", "wifi.client"),
+                reconciler("sshd", "access.ssh"),
+            ],
+            Box::new(MockPower {
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            shadow_path,
+            serde_json::json!({}),
+        );
+        service.set_config_refusals(loaded.refusals).await;
+        (service, calls, refusals)
+    }
+
+    /// **Clause 2 of the F6g gate, both directions, at the reconcile loop.**
+    ///
+    /// A poured `wifi.json` that does not parse refuses the two reconcilers it
+    /// backs — recorded where the applied state would go, naming the file — and
+    /// the three it does not back run exactly as they would have. The negative
+    /// half is the one the whole slice exists for: before this, a mistyped
+    /// `wifi.json` stopped mosd, which took the network reconciler with it and
+    /// put the device off the air for a mistake in an unrelated subsystem.
+    #[tokio::test]
+    async fn a_refused_document_skips_its_reconcilers_and_leaves_the_others_running() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        pour(
+            &dir,
+            mosd_settings::WIFI_DOCUMENT,
+            r#"{"schema_version": 1, "wifi": {"ap": {"mode": "alwys"}}}"#,
+        );
+        let (service, calls, refusals) = service_over(&dir).await;
+        assert_eq!(refusals.len(), 1);
+        let refusal = refusals[0].clone();
+        service.apply_all().await;
+
+        let mut ran = calls.lock().expect("call log").clone();
+        ran.sort();
+        assert_eq!(
+            ran,
+            vec![
+                "hostname".to_string(),
+                "network".to_string(),
+                "sshd".to_string()
+            ],
+            "a refused wifi.json must cost the wifi reconcilers and nothing else"
+        );
+
+        let (_, state) = service.trees().await;
+        for name in ["wifiAp", "wifiClient"] {
+            let message = state[name]["refused"].as_str().unwrap_or_default();
+            assert!(
+                message.contains(&refusal.path.display().to_string()),
+                "{name} must record a refusal naming the file, got {:?}",
+                state[name]
+            );
+            assert!(
+                state[name].get("applied").is_none(),
+                "{name} must not report an applied state"
+            );
+        }
+        assert_eq!(state["network"]["applied"], serde_json::json!(true));
+        // The list form, for an operator who does not know which reconciler to
+        // look under.
+        assert_eq!(
+            state["configuration"]["refused"][0]["document"],
+            serde_json::json!(mosd_settings::WIFI_DOCUMENT)
+        );
+    }
+
+    /// **The write half.** An unrelated write must not overwrite the refused
+    /// document, and a write that reaches it must repair it.
+    ///
+    /// Both halves in one test because they are one rule with a sign: `save`
+    /// writes every document out of an addressed tree in which the refused
+    /// subtree sits at its schema default, so preserving nothing loses the
+    /// integrator's file on the next hostname change — and preserving
+    /// everything leaves the serial console as the only way out of a typo,
+    /// against §5.2.7's *a human edits it through an authenticated API*.
+    #[tokio::test]
+    async fn an_unrelated_write_preserves_a_refused_document_and_a_reaching_one_repairs_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let poured = r#"{"schema_version": 1, "wifi": {"ap": {"mode": "alwys"}}}"#;
+        let document = pour(&dir, mosd_settings::WIFI_DOCUMENT, poured);
+        let (service, calls, refusals) = service_over(&dir).await;
+        assert_eq!(refusals.len(), 1);
+
+        service
+            .write_setting("hostname", serde_json::json!("edge-1"))
+            .await
+            .expect("write the hostname");
+        assert_eq!(
+            std::fs::read_to_string(&document).expect("read back"),
+            poured,
+            "an unrelated write must leave the refused document byte identical"
+        );
+        let (_, state) = service.trees().await;
+        assert_eq!(
+            state["configuration"]["refused"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default(),
+            1,
+            "the refusal stands until the document is repaired"
+        );
+
+        calls.lock().expect("call log").clear();
+        service
+            .write_setting("wifi.ap.ssid", serde_json::json!("repaired"))
+            .await
+            .expect("repair the document");
+
+        let repaired: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&document).expect("read back"))
+                .expect("the repaired document parses");
+        assert_eq!(
+            repaired["wifi"]["ap"]["ssid"],
+            serde_json::json!("repaired")
+        );
+        let (_, state) = service.trees().await;
+        assert!(
+            state["configuration"]["refused"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "the repair clears the refusal: {:?}",
+            state["configuration"]
+        );
+        // The write's own scope is `wifi.ap.ssid`, which the existing dot-path
+        // scoping narrows to the AP reconciler; what matters is that it ran at
+        // all, because a standing refusal would have skipped it.
+        assert_eq!(*calls.lock().expect("call log"), vec!["wifiAp".to_string()]);
+        // And the full reconcile that follows reaches both halves of the
+        // document, which is the refusal being over rather than merely narrowed.
+        calls.lock().expect("call log").clear();
+        service.apply_all().await;
+        let mut ran = calls.lock().expect("call log").clone();
+        ran.sort();
+        assert_eq!(
+            ran,
+            vec![
+                "hostname".to_string(),
+                "network".to_string(),
+                "sshd".to_string(),
+                "wifiAp".to_string(),
+                "wifiClient".to_string()
+            ],
+            "after the repair every reconciler runs again"
+        );
+    }
+
+    /// Every shipped reconciler is backed by exactly one `/mos/config/`
+    /// document.
+    ///
+    /// The refusal is computed from [`mosd_settings::DOCUMENT_SUBTREES`], so a
+    /// reconciler no document claims can never be refused — it would keep
+    /// running on a schema default while the document that configures it was
+    /// unreadable, which is the failure open this slice exists to close. Two
+    /// documents claiming one reconciler is the other direction of the same
+    /// hole: whichever refusal is found first decides, and the second is
+    /// silently ignored.
+    #[test]
+    fn every_reconciler_is_backed_by_exactly_one_config_document() {
+        for reconciler in crate::reconciler::all() {
+            let backing: Vec<&str> = mosd_settings::DOCUMENT_SUBTREES
+                .iter()
+                .filter(|(_, subtrees)| {
+                    subtrees
+                        .iter()
+                        .any(|subtree| paths_overlap(subtree, reconciler.subtree()))
+                })
+                .map(|(document, _)| *document)
+                .collect();
+            assert_eq!(
+                backing.len(),
+                1,
+                "{} ({}) is backed by {backing:?}",
+                reconciler.name(),
+                reconciler.subtree()
+            );
         }
     }
 }
