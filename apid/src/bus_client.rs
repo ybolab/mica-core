@@ -84,6 +84,7 @@ trait Mosd {
     fn install_update(&self, bundle_path: &str) -> zbus::Result<()>;
     fn mark_update(&self, state: &str, slot: &str) -> zbus::Result<(String, String)>;
     fn set_reboot_override(&self, seconds: u32) -> zbus::Result<String>;
+    fn clear_update_suppression(&self, version: &str) -> zbus::Result<String>;
     /// Emitted by mosd after every successful settings write, with the
     /// changed dot-path and its new JSON-encoded value. The subscriber
     /// ([`watch_settings_changed`]) feeds the auth gate's access cache: the
@@ -430,6 +431,17 @@ impl SettingsApi for BusSettings {
         let proxy = self.proxy().await?;
         let json = self
             .call("SetRebootOverride", proxy.set_reboot_override(seconds))
+            .await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
+        let proxy = self.proxy().await?;
+        let json = self
+            .call(
+                "ClearUpdateSuppression",
+                proxy.clear_update_suppression(version),
+            )
             .await?;
         Ok(serde_json::from_str(&json)?)
     }

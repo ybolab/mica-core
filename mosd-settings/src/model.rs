@@ -1,4 +1,16 @@
-//! Typed settings tree (schema v12) and its dot-path accessors.
+//! The typed settings tree and its dot-path accessors.
+//!
+//! **This is the addressing shape, not the storage shape.** One tree, one
+//! dot-path namespace, one set of validation rules -- and underneath it,
+//! several documents: what an integrator sets in `/mos/config/` on DATA and
+//! what the device mints or observes on STATE (PLAN-070 §5.2, and
+//! [`crate::documents`] for the split). The move changed storage; addressing
+//! is unchanged, which is what made it affordable.
+//!
+//! **There is no tree-wide `schema_version` any more.** Each document carries
+//! its own, because a namespace-wide version could not be bumped without
+//! rewriting every document across renames that have no transaction between
+//! them (§5.2.3).
 
 use std::collections::BTreeMap;
 
@@ -7,15 +19,10 @@ use serde_json::Value;
 use crate::error::SettingsError;
 use crate::path::{json_path_get, json_path_set, split_path};
 
-/// Current settings schema version written by this crate.
-pub const SCHEMA_VERSION: u32 = 12;
-
-/// Persistent mosd settings tree (schema v12).
+/// Persistent mosd settings tree, as every reader addresses it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// Schema version of this tree; read-only through [`Settings::set`].
-    pub schema_version: u32,
     /// System hostname.
     pub hostname: String,
     /// Per-interface network configuration, keyed by interface name.
@@ -52,7 +59,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
             hostname: "mos".to_string(),
             network: BTreeMap::new(),
             access: AccessSettings::default(),
@@ -1177,19 +1183,25 @@ impl Settings {
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError::ReadOnly`] for writes that would change
-    /// `schema_version`, [`SettingsError::NotFound`] for malformed paths, and
+    /// Returns [`SettingsError::NotFound`] for malformed paths, and
     /// [`SettingsError::Validation`] when the value does not fit the tree or
     /// the write introduces a `network` key that is not an interface name.
+    ///
+    /// **Validation stays whole-tree**, over the composed candidate, even
+    /// though storage is now per document. §5.2.5 prices the other direction
+    /// -- per-document validation -- as costing nothing today, because the
+    /// cross-subtree couplings that exist are resolved in reconcilers at
+    /// render time rather than in validation; keeping the whole-tree check is
+    /// the stronger of the two and costs nothing either. What it must not be
+    /// read as licensing is a rule that spans two documents: §5.2.3 forbids a
+    /// migration that moves a key between them, so a cross-document rule would
+    /// have no way to be repaired later.
     pub fn set(&mut self, path: &str, value: Value) -> Result<(), SettingsError> {
         let mut root = self.to_json()?;
         if path.is_empty() || path == "." {
             root = value;
         } else {
             let segments = split_path(path)?;
-            if segments[0] == "schema_version" {
-                return Err(SettingsError::ReadOnly(path.to_string()));
-            }
             json_path_set(&mut root, &segments, value)?;
         }
         let candidate: Self =
@@ -1197,9 +1209,6 @@ impl Settings {
                 path: path.to_string(),
                 message: err.to_string(),
             })?;
-        if candidate.schema_version != self.schema_version {
-            return Err(SettingsError::ReadOnly("schema_version".to_string()));
-        }
         // Key-charset validation is a property of the write, not of the tree:
         // a document that already loads keeps loading, so an entry this write
         // does not touch is left alone even if a hand edit spelled it badly.
@@ -1242,7 +1251,6 @@ mod tests {
         let text = toml::to_string(&settings).unwrap();
         let parsed: Settings = toml::from_str(&text).unwrap();
         assert_eq!(parsed, settings);
-        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
         assert_eq!(parsed.hostname, "mos");
         assert!(parsed.network.is_empty());
         assert!(parsed.access.web_admin.is_none());

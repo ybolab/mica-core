@@ -80,6 +80,7 @@ const USER_DIR: &str = "srv";
 /// every boot.
 const SYSTEM_SKELETON: &[&str] = &[
     "ui",
+    "config",
     "containers",
     "home",
     "root",
@@ -89,6 +90,28 @@ const SYSTEM_SKELETON: &[&str] = &[
     "updates/verified",
     "updates/staging",
 ];
+
+/// The system configuration namespace, relative to `/mos` (PLAN-070 §4.1).
+///
+/// **Tier 1 clears this directory, and that is §5.2.1's boundary read from the
+/// other end.** Tier 1 returns what an integrator set; the set an integrator
+/// sets is what lives here; so the two statements are one statement. A subtree
+/// named `config` surviving the configuration reset would be a contradiction a
+/// reader trips over, and the device would still be following a channel the
+/// previous operator chose.
+///
+/// **Clearing the DIRECTORY, not the modelled tree, is what keeps the shipped
+/// safety property.** [`reseeded_settings`] builds from `Settings::default()`
+/// and names the survivors, so a subtree added to the schema later is
+/// re-seeded without an edit there — the direction that fails safe. Under
+/// PLAN-070 that property moves onto this line: a document added to
+/// `/mos/config/` by any subsystem is cleared by default because the tier
+/// empties the directory rather than enumerating what is in it, and a document
+/// mosd does not model at all — `updates.json`, `fleet.json`, anything a later
+/// slice adds — is covered by the same sweep. **Written down here because the
+/// mechanism changed and the reason could have been lost with the function
+/// that used to carry it.**
+const CONFIG_DIR: &str = "config";
 
 /// The `/mos` subtrees the application layer owns, which tier 2 clears.
 ///
@@ -164,10 +187,14 @@ pub enum Outcome {
 /// leaves a device that is fully reset. There is no ordering in which a
 /// partly-applied tier looks finished.
 ///
-/// **The save is ONE `Store::save`.** The re-seeded tree, and the absence of
-/// the record that asked for it, commit together by
-/// `Store::save`'s temp-write-and-rename, exactly as
-/// `docs/design/provisioning.md` §4.1.3 argues for the claim.
+/// **The save is ONE `Store::save`**, and after PLAN-070 §5.2 that is one call
+/// over several documents rather than one rename. The ordering inside it is
+/// the one that matters here: `Store::save` writes the `/mos/config/`
+/// documents first and the STATE document — which carries this record — last,
+/// so a power loss between them leaves the intent staged and the next boot
+/// replays the same idempotent tier. There is still no ordering in which a
+/// partly-applied tier looks finished, which is what
+/// `docs/design/provisioning.md` §4.1.3 argues for.
 ///
 /// Tiers 1 and 3 hand the seeded values back to first-boot provisioning by
 /// putting `provisioning.state` back to `Pending`: `provisioning::ensure_provisioned`
@@ -197,10 +224,21 @@ pub fn apply_pending(store: &Store, settings: &mut Settings, roots: &Roots) -> R
     );
 
     match intent.tier {
-        ResetTier::Configuration => {}
+        ResetTier::Configuration => {
+            // The only DATA store tier 1 opens, and it opens the whole of it.
+            // §4.1: what was expensive at a file granularity -- teaching this
+            // module to reach one document inside a transactional workspace --
+            // is ordinary at a directory granularity, and it is the same
+            // operation tier 2 already performs on `apps/` and `containers/`.
+            let config = roots.system().join(CONFIG_DIR);
+            clear_contents(&config).with_context(|| format!("clear {}", config.display()))?;
+        }
         ResetTier::ApplicationData => clear_application_state(roots)?,
         ResetTier::FullFactory => {
             clear_application_state(roots)?;
+            // `config` is in SYSTEM_SKELETON, so the re-seed empties it with
+            // every other declared directory: tier 3 needs no clause of its
+            // own for the namespace.
             reseed_tree(&roots.system(), SYSTEM_SKELETON)
                 .with_context(|| format!("re-seed {}", roots.system().display()))?;
         }
@@ -232,6 +270,14 @@ pub fn apply_pending(store: &Store, settings: &mut Settings, roots: &Roots) -> R
 /// by tier 1 without an edit here; what survives has to be named, which is the
 /// direction that fails safe — a new credential-bearing subtree is cleared by
 /// default rather than silently kept.
+///
+/// **After PLAN-070 §5.2 the survivor list is exactly what STATE holds**, and
+/// that is not a coincidence: everything this function used to clear moved to
+/// `/mos/config/`, where [`CONFIG_DIR`] clears it by emptying the directory.
+/// The two halves of tier 1 are now the directory sweep above and this
+/// function, and neither is redundant — the sweep reaches documents mosd does
+/// not model, and this reaches the settings the tier hands back to first-boot
+/// provisioning.
 fn reseeded_settings(before: &Settings, tier: ResetTier) -> Settings {
     let mut after = Settings {
         // The identity record, PRESERVED by both tiers (§2.1 footnote
@@ -455,8 +501,11 @@ mod tests {
         );
     }
 
-    fn store_at(dir: &TempDir) -> Store {
-        Store::new(dir.path().join("settings.toml"))
+    fn store_at(dir: &TempDir, roots: &Roots) -> Store {
+        Store::new(
+            dir.path().join("settings.toml"),
+            roots.system().join(CONFIG_DIR),
+        )
     }
 
     fn stage(settings: &mut Settings, tier: ResetTier) {
@@ -474,7 +523,7 @@ mod tests {
     #[test]
     fn a_boot_with_no_intent_staged_changes_nothing() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         let before = settings.clone();
 
@@ -494,7 +543,7 @@ mod tests {
     #[test]
     fn tier_one_reseeds_the_settings_and_keeps_the_management_credential() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         stage(&mut settings, ResetTier::Configuration);
 
@@ -544,7 +593,7 @@ mod tests {
     #[test]
     fn tier_two_clears_the_application_layer_and_keeps_the_platform() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         let before_settings = Settings {
             reset: None,
@@ -595,7 +644,7 @@ mod tests {
     #[test]
     fn tier_three_returns_the_device_to_first_boot_and_keeps_its_identity() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         stage(&mut settings, ResetTier::FullFactory);
 
@@ -661,7 +710,7 @@ mod tests {
     #[test]
     fn an_interrupted_tier_replays_to_the_same_device() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
 
         // The interruption, modelled where it is observable: the tier's
         // filesystem work ran, the save did not, so the record is untouched on
@@ -683,7 +732,7 @@ mod tests {
 
         // And it is the device the uninterrupted path produces.
         let (other_dir, other_roots) = populated_roots();
-        let other_store = store_at(&other_dir);
+        let other_store = store_at(&other_dir, &other_roots);
         let mut uninterrupted = fielded_settings();
         stage(&mut uninterrupted, ResetTier::FullFactory);
         apply_pending(&other_store, &mut uninterrupted, &other_roots).unwrap();
@@ -696,7 +745,7 @@ mod tests {
     #[test]
     fn a_tier_applied_over_its_own_output_is_a_no_op() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         stage(&mut settings, ResetTier::ApplicationData);
         apply_pending(&store, &mut settings, &roots).unwrap();
@@ -714,7 +763,7 @@ mod tests {
     #[test]
     fn a_symlink_in_a_cleared_tree_is_unlinked_rather_than_followed() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let outside = dir.path().join("outside");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("meta"), "not this tier's").unwrap();
@@ -742,7 +791,7 @@ mod tests {
     #[test]
     fn a_tier_that_cannot_finish_leaves_the_intent_staged() {
         let (dir, roots) = populated_roots();
-        let store = store_at(&dir);
+        let store = store_at(&dir, &roots);
         let mut settings = fielded_settings();
         stage(&mut settings, ResetTier::ApplicationData);
         let before = settings.clone();

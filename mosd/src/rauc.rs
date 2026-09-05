@@ -305,9 +305,44 @@ impl RollbackEligibility {
         self.permitted().then_some(("bad", "booted"))
     }
 
+    /// What the refusal means to an operator who has just watched an update
+    /// fail, or `None` where the stable reason is the whole story.
+    ///
+    /// PLAN-071 §6 owes this string, and the paragraph that owes it says why:
+    /// *"an operator reading 'rollback refused' immediately after an update
+    /// failure will otherwise conclude something is broken"*. Both reasons
+    /// covered here are reachable in the automatic flow and they are two
+    /// different moments of it — before the reboot, and after the fallback —
+    /// so one sentence for both would be wrong in one of them.
+    ///
+    /// The remaining reasons are deliberately absent rather than given a
+    /// filler sentence: `no_alternate_slot`, `alternate_is_booted_slot` and
+    /// `alternate_never_installed` describe a device that has never taken an
+    /// update, and `install_order_unknown` and `booted_not_confirmed` say
+    /// exactly what they mean. A member that is present only where it adds
+    /// something is one a reader can trust.
+    pub fn explanation(&self) -> Option<&'static str> {
+        match self.reason? {
+            ROLLBACK_ALTERNATE_IS_NEWER => Some(concat!(
+                "the other slot holds a system installed MORE RECENTLY than the running one, ",
+                "so switching to it would apply an update rather than undo one. Right after an ",
+                "install this is the ordinary state: the new system is written and waiting for ",
+                "its first boot, and rebooting is what runs it",
+            )),
+            ROLLBACK_ALTERNATE_MARKED_BAD => Some(concat!(
+                "the other slot's boot attempts are exhausted, so the bootloader has already ",
+                "condemned it. If an update just failed, YOU ARE ALREADY ON THE PREVIOUS ",
+                "SYSTEM: the bootloader fell back here on its own, the failed system is the ",
+                "other slot, and there is nothing older to go back to",
+            )),
+            _ => None,
+        }
+    }
+
     /// The `rollback` object recorded under live-state `update`: `target`,
-    /// `permitted` and a stable `reason`, with `null` for the two that are
-    /// absent rather than a missing key — every consumer reads all three.
+    /// `permitted`, a stable `reason` and, where it helps, the sentence that
+    /// says what the reason means — `null` for each absent one rather than a
+    /// missing key, because every consumer reads all four.
     pub fn to_json(&self) -> Value {
         json!({
             "target": self.target.as_ref().map_or(Value::Null, |name| Value::String(name.clone())),
@@ -316,6 +351,9 @@ impl RollbackEligibility {
             // then take cannot disagree about whether a rollback is offered.
             "permitted": self.mark().is_some(),
             "reason": self.reason.map_or(Value::Null, |reason| Value::String(reason.to_string())),
+            "explanation": self
+                .explanation()
+                .map_or(Value::Null, |text| Value::String(text.to_string())),
         })
     }
 

@@ -1357,13 +1357,15 @@ const VERSIONS_BODY: &str = r#"{"versions":["v1"],"current":"v1"}"#;
 
 // The exact document §2.1's discovery table gives for `/api/v1/meta`.
 //
-// Built from `mosd_settings::SCHEMA_VERSION` rather than from a literal,
+// Built from `mosd_settings::STATE_SCHEMA_VERSION` rather than from a literal,
 // which is the whole point of the field: a schema bump moves this expectation
 // and the handler together, and a hand-copied number in either is what fails.
+// The STATE document's version and not the tree's, because after PLAN-070
+// §5.2.3 the tree has none -- each document carries its own.
 fn meta_body() -> String {
     format!(
         r#"{{"api":"v1","settingsSchemaVersion":{},"daemon":"apid"}}"#,
-        mosd_settings::SCHEMA_VERSION
+        mosd_settings::STATE_SCHEMA_VERSION
     )
 }
 
@@ -2778,6 +2780,10 @@ impl SettingsApi for FailingSettings {
     }
 
     async fn set_reboot_override(&self, _seconds: u32) -> anyhow::Result<serde_json::Value> {
+        Err(self.error())
+    }
+
+    async fn clear_update_suppression(&self, _version: &str) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
 }
@@ -4328,7 +4334,6 @@ async fn every_dot_path_outside_the_allowlist_is_refused_with_409() {
     let (router, fake) = test_app(tree);
 
     for path in [
-        "schema_version",
         "network",
         "network.eth0",
         "network.eth0.dhcp",
@@ -4372,32 +4377,19 @@ async fn every_dot_path_outside_the_allowlist_is_refused_with_409() {
     );
 }
 
-// Two refusals carry a message the general one cannot, and both are asserted
-// because both are the reason the path is refused rather than decoration.
+// The named refusal carries a message the general one cannot, and it is
+// asserted because it is the reason the path is refused rather than
+// decoration.
+//
+// **There used to be two.** The other was `schema_version`, refused with "it
+// is read-only in the settings tree itself"; PLAN-070 §5.2.3 put the version
+// on each document instead of on the tree, so that path names nothing and
+// takes the 404 every other absent root takes. Asserted as a 404 in
+// `an_absent_root_is_404_and_a_malformed_path_is_422` below.
 #[tokio::test]
-async fn the_two_named_refusals_say_why_rather_than_only_that() {
+async fn the_named_refusal_says_why_rather_than_only_that() {
     let (tree, token) = with_token(writable_tree("hunter2secret"));
     let (router, _) = test_app(tree);
-
-    // `schema_version` is read-only in the tree itself, not merely here: no
-    // later milestone widens this route to cover it.
-    let response = bearer_json(
-        &router,
-        "PUT",
-        "/api/v1/settings/schema_version",
-        &token,
-        "9",
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let message = envelope(response).await["message"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        message.contains("read-only in the settings tree itself"),
-        "{message}"
-    );
 
     // `network` names the typed route that owns it, because a raw write here
     // creates an entry of the default kind rather than refusing an interface
@@ -4434,7 +4426,16 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
     let (tree, token) = with_token(writable_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
 
-    for path in ["hostnam", "netwrok.eth0", "acess.ssh.enabled", "sshd"] {
+    for path in [
+        "hostnam",
+        "netwrok.eth0",
+        "acess.ssh.enabled",
+        "sshd",
+        // Was a named 409 until PLAN-070 §5.2.3 took the tree-wide version
+        // away; it is now a root the typed schema has no field for, which is
+        // exactly what this test is about.
+        "schema_version",
+    ] {
         let response = bearer_json(
             &router,
             "PUT",
@@ -4507,7 +4508,6 @@ fn the_settings_schema_has_the_nine_roots_the_write_route_knows() {
             "mqtt",
             "network",
             "provisioning",
-            "schema_version",
             "time",
             "wifi",
         ]

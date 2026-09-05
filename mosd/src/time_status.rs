@@ -393,6 +393,112 @@ impl TimeStatusSource for SystemdTimesync {
     }
 }
 
+/// Where the trusted-clock floor is persisted: timesyncd's saved clock file,
+/// whose MTIME is the value (`docs/design/time.md` §3.2).
+///
+/// `/var/lib/systemd/timesync` is a bind mount whose source is
+/// `/mnt/state/timesync`, so this path survives a reboot and an A/B update.
+pub const SAVED_CLOCK_PATH: &str = "/var/lib/systemd/timesync/clock";
+
+/// Where the kernel reports how long this boot has been running.
+const UPTIME_PATH: &str = "/proc/uptime";
+
+/// The two signals PLAN-071 §7's predicate reads, gathered once.
+///
+/// Deliberately the two `docs/design/time.md` §3 already defines rather than
+/// a third notion of trusted time: the classified synchronization state
+/// (§5's `synchronized`, which is the kernel's own bound on the clock error)
+/// and whether the saved floor has moved forward during this boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClockTrust {
+    /// The classified state, or `None` when this daemon has no observer at
+    /// all (dry-run) — which is not evidence of anything and is treated as
+    /// unread, exactly as [`SyncStatus::Unknown`] is.
+    pub status: Option<SyncStatus>,
+    /// The saved floor's mtime is later than the instant this boot started:
+    /// timesyncd is running and writing the floor forward.
+    pub floor_advanced: bool,
+}
+
+impl ClockTrust {
+    /// Whether the device believes its clock, in PLAN-071 §7's exact terms:
+    /// *timesyncd reporting `synchronized`, or a floor that has advanced
+    /// since boot.*
+    #[must_use]
+    pub fn believed(&self) -> bool {
+        self.status == Some(SyncStatus::Synchronized) || self.floor_advanced
+    }
+
+    /// Why the clock may not be believed, or `None` when it may.
+    ///
+    /// The sentence names BOTH limbs as they were observed, because the
+    /// operator reading a `clock-untrusted` deferral has to know which one
+    /// to go and fix — a device with no network and a live floor is a
+    /// different problem from one whose STATE bind never arrived.
+    #[must_use]
+    pub fn untrusted_reason(&self) -> Option<String> {
+        if self.believed() {
+            return None;
+        }
+        Some(format!(
+            "the clock is not one this device believes: time synchronization reports `{}` \
+             and the saved floor at {SAVED_CLOCK_PATH} has not advanced since boot. \
+             A maintenance window is UTC wall-clock, so an automatic install is deferred \
+             until one of the two holds; checks and fetches are unaffected",
+            self.status.map_or("unknown", SyncStatus::as_str),
+        ))
+    }
+}
+
+/// Whether the saved floor has moved forward during this boot.
+///
+/// **What this asserts, and what it does not.** timesyncd touches the saved
+/// clock file every `SaveIntervalSec` and advances a clock that is behind it
+/// at startup, so an mtime later than the boot instant says the floor
+/// MECHANISM is alive: STATE is bound, timesyncd is running, and the device's
+/// notion of now is being persisted forward. It does NOT assert the absolute
+/// value is right — nothing offline can. That is what PLAN-071 §7 asks for
+/// (`offline-degraded` *with no advance* is the deferral case), and the
+/// stronger claim is [`SyncStatus::Synchronized`]'s, which is the other limb.
+///
+/// `false` on an unreadable file or an unreadable uptime: an unread signal is
+/// not an advance, and the closed side here is deferring the install.
+#[must_use]
+pub fn saved_floor_advanced(clock_path: &std::path::Path, uptime_path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(clock_path) else {
+        return false;
+    };
+    let Ok(saved) = metadata.modified() else {
+        return false;
+    };
+    let Some(uptime) = read_uptime(uptime_path) else {
+        return false;
+    };
+    let Some(boot) = std::time::SystemTime::now().checked_sub(uptime) else {
+        return false;
+    };
+    saved > boot
+}
+
+/// This boot's age, from the first field of `/proc/uptime`.
+fn read_uptime(path: &std::path::Path) -> Option<std::time::Duration> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let seconds: f64 = contents.split_whitespace().next()?.parse().ok()?;
+    (seconds.is_finite() && seconds >= 0.0).then(|| std::time::Duration::from_secs_f64(seconds))
+}
+
+/// The production reading of both limbs, from the host's own files.
+#[must_use]
+pub fn observed_clock_trust(status: Option<SyncStatus>) -> ClockTrust {
+    ClockTrust {
+        status,
+        floor_advanced: saved_floor_advanced(
+            std::path::Path::new(SAVED_CLOCK_PATH),
+            std::path::Path::new(UPTIME_PATH),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -283,7 +283,12 @@ mod tests {
     }
 
     fn store_in(dir: &Path) -> Store {
-        Store::new(settings_path(dir))
+        // The `/mos/config/` namespace has to exist: an absent document is a
+        // default, an absent namespace is the DATA medium being gone, and the
+        // store refuses that rather than defaulting (PLAN-070 §5.2.6).
+        let config = dir.join("config");
+        fs::create_dir_all(&config).expect("create the config namespace");
+        Store::new(settings_path(dir), config)
     }
 
     /// Every file under `<state_dir>/secrets`, by name, as raw bytes.
@@ -615,7 +620,9 @@ mod tests {
         // error on the path, not a permission check.
         let blocker = dir.path().join("blocked");
         fs::write(&blocker, b"not a directory").expect("write blocker");
-        let store = Store::new(blocker.join("settings.toml"));
+        let config = dir.path().join("config");
+        fs::create_dir_all(&config).expect("create the config namespace");
+        let store = Store::new(blocker.join("settings.toml"), config);
 
         let mut settings = Settings::default();
         let err = ensure_provisioned(&store, dir.path(), &profile, &mut settings)

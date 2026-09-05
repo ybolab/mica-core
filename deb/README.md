@@ -164,11 +164,18 @@ by name.
 
 ## `mosd` depends on `mos-system`
 
-`mosd.service` declares `RequiresMountsFor=/var/lib/mos`, and that path is the
-STATE bind-mount target: `var-lib-mos.mount` and the `/var/lib/mos` mountpoint
-directory are two halves of one mechanism, so one package owns both. That
-package is `mos-system` (`rootfs/packages-src/system`), and `mosd` names it
-in `Depends` rather than shipping the directory itself.
+`mosd.service` declares `RequiresMountsFor=/var/lib/mos /mos`, and both paths
+are bind-mount targets: `var-lib-mos.mount` and the `/var/lib/mos` mountpoint
+directory are two halves of one mechanism, as are `mos.mount` and `/mos`, so
+one package owns all four. That package is `mos-system`
+(`rootfs/packages-src/system`), and `mosd` names it in `Depends` rather than
+shipping the directories itself.
+
+`/mos` joined that line with PLAN-070 §5.2: system configuration lives in
+`/mos/config` on DATA, so a mosd that started before the mount would come up on
+schema defaults. The ordering also puts mosd after `mos-data-layout.service`,
+which runs `Before=mos.mount` and is what creates `/mos/config` at its declared
+`0700`.
 
 The dependency is UNVERSIONED -- `mos-system` is not built from this
 workspace's commit and pins nothing to it -- and it is declared once. `mos-apid`

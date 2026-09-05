@@ -118,6 +118,9 @@ pub trait SettingsApi: Send + Sync {
     /// Arm the bounded safe-to-reboot override for `seconds`; answers the
     /// recorded override.
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
+    /// Clear the automatic-update suppression on `version`; answers the
+    /// record that was removed.
+    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value>;
 }
 
 /// A rendezvous armed over [`FakeSettings::hold_access_reads`]: the first
@@ -628,6 +631,17 @@ impl SettingsApi for FakeSettings {
         Ok(serde_json::json!({
             "until": "2026-09-02T00:10:00Z",
             "requestedBy": ":1.9",
+        }))
+    }
+
+    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
+        self.update_call(&format!("clear-suppression {version}"))?;
+        Ok(serde_json::json!({
+            "version": version,
+            "slot": "rootfs.1",
+            "at": "2026-09-02T00:00:00Z",
+            "bootStatus": "bad",
+            "detail": format!("version {version} was installed into slot rootfs.1"),
         }))
     }
 }

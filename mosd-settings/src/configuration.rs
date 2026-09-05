@@ -442,6 +442,14 @@ pub fn load_manifest(path: &Path) -> LoadedManifest {
 /// Where the operator document lives (PLAN-070 §5.1): the update subsystem's
 /// occupant of the `/mos/config/` namespace, on the DATA pool that also backs
 /// the `/mos/updates` workspace, so one readiness probe gates both.
+///
+/// **The directory half of this literal is [`crate::DEFAULT_CONFIG_DIR`]**,
+/// which is the namespace's one declaration and is what `mos-data-layout`
+/// creates at `0700` and what the settings store reads and writes. It is
+/// spelled out here rather than composed because a `const &str` cannot be
+/// concatenated from another `const` without a macro crate, so the two agree
+/// by inspection and not by construction — relocate the namespace and this
+/// line has to move with it.
 pub const DEFAULT_UPDATES_PATH: &str = "/mos/config/updates.json";
 
 /// The operator document's schema tag (PLAN-071 §1). Optional — a key the
