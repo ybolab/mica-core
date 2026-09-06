@@ -174,7 +174,12 @@ function SourcePanel({ layers, error, write }: { layers?: ProvisioningLayers; er
       >
         <div className="content-grid">
           <Field label={t('system.update.automatic.urlLabel')} hint={t('system.update.automatic.urlHint')}>
-            <Input value={currentUrl} onChange={(event) => setUrl(event.target.value)} placeholder={baked?.source ?? 'https://updates.example/repo'} />
+            {/* No invented fallback address. When the image bakes no source the
+                device HAS no server (PLAN-070 section 4.1), so an example URL here
+                would suggest a default that does not exist -- and it would put an
+                update-shaped URL literal in the apid binary, which the image
+                contract's no-compiled-in-endpoint check refuses by design. */}
+            <Input value={currentUrl} onChange={(event) => setUrl(event.target.value)} placeholder={baked?.source ?? undefined} />
           </Field>
           <Field label={t('system.update.automatic.channelLabel')} hint={t('system.update.automatic.channelHint')}>
             <Input value={currentChannel} onChange={(event) => setChannel(event.target.value)} placeholder={baked?.channel ?? 'stable'} />

@@ -3973,7 +3973,7 @@
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
-            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`), `install`, `last_mark`",
+            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`, `explanation` — the sentence a refusal carries only where it adds something the reason code does not already say, and `null` otherwise), `install`, `last_mark`",
             "content": {
               "application/json": {
                 "schema": {
