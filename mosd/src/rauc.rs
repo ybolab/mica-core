@@ -39,6 +39,7 @@ use serde_json::{Value, json};
 use zbus::export::futures_core::Stream;
 
 use crate::confirmed_boot::ConfirmedBoots;
+use crate::update_codes;
 
 /// Well-known bus name RAUC owns.
 pub const RAUC_SERVICE: &str = "de.pengutronix.rauc";
@@ -158,6 +159,19 @@ impl UpdateQuery {
     pub fn merge_into(&self, entry: &mut serde_json::Map<String, Value>, boots: &ConfirmedBoots) {
         entry.insert("operation".into(), Value::String(self.operation.clone()));
         entry.insert("last_error".into(), Value::String(self.last_error.clone()));
+        // PLAN-076 B4: RAUC's sentence stays, and the class it belongs to is
+        // stated beside it. Omitted rather than sent as `unknown` when there
+        // is no error at all — `last_error` is the empty string in that case,
+        // and a code for a failure that did not happen is noise a consumer
+        // would have to learn to ignore.
+        if self.last_error.is_empty() {
+            entry.remove("last_error_code");
+        } else {
+            entry.insert(
+                "last_error_code".into(),
+                Value::String(update_codes::rauc_error_code(&self.last_error).to_string()),
+            );
+        }
         entry.insert(
             "progress".into(),
             json!({
@@ -1536,6 +1550,54 @@ mod tests {
         update_entry(&mut state).insert("last_error".into(), json!(""));
         assert_eq!(state["update"]["install"]["status"], "running");
         assert_eq!(state["update"]["last_error"], "");
+    }
+
+    /// PLAN-076 B4 on the query merge: RAUC's `LastError` is classified into
+    /// the published set beside the sentence, and the member is absent when
+    /// there is no failure at all.
+    ///
+    /// The measured class and an unmeasured one are both driven, because a
+    /// mapping that forwarded its input would pass the first and fail only
+    /// the second — which is the half of the gate that matters.
+    #[test]
+    fn the_query_merge_codes_raucs_last_error_and_omits_the_code_when_there_is_none() {
+        let query = |last_error: &str| UpdateQuery {
+            operation: "idle".to_string(),
+            last_error: last_error.to_string(),
+            progress: (0, String::new(), 0),
+            slots: Vec::new(),
+            primary: None,
+        };
+        let boots = ConfirmedBoots::default();
+
+        let mut entry = serde_json::Map::new();
+        query("signature verification failed: Verify error: certificate has expired")
+            .merge_into(&mut entry, &boots);
+        assert_eq!(entry["last_error_code"], "signature-invalid");
+
+        // An unmeasured RAUC failure: `unknown`, and NOT the sentence. The
+        // sentence is still there, one member to the left.
+        let mut entry = serde_json::Map::new();
+        query("Failed updating slot rootfs.1: I/O error").merge_into(&mut entry, &boots);
+        assert_eq!(entry["last_error_code"], "unknown");
+        assert_eq!(
+            entry["last_error"],
+            "Failed updating slot rootfs.1: I/O error"
+        );
+
+        // No failure, no code: a device that has not failed must not be made
+        // to look like one whose failure could not be classified.
+        let mut entry = serde_json::Map::new();
+        query("").merge_into(&mut entry, &boots);
+        assert!(!entry.contains_key("last_error_code"), "{entry:?}");
+
+        // And a later clean query CLEARS a code an earlier failure left, which
+        // is what the removal in `merge_into` is for: the entry is merged into,
+        // not replaced.
+        let mut entry = serde_json::Map::new();
+        query("signature verification failed").merge_into(&mut entry, &boots);
+        query("").merge_into(&mut entry, &boots);
+        assert!(!entry.contains_key("last_error_code"), "{entry:?}");
     }
 
     /// PLAN-078 §S4, first half: the clock and the state land BESIDE the

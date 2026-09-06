@@ -38,6 +38,8 @@ use serde_json::Value;
 
 use mosd_settings::configuration::{self, BakedUpdate};
 
+use crate::update_codes::{self, CodedReason};
+
 // Re-exported so the lifecycle, the automatic driver and `main.rs` name one
 // module for the policy, not two: the types are the library's, the semantics
 // below are this module's.
@@ -150,27 +152,40 @@ impl PolicyStore {
 /// The refusal for a document that did not load. Reached only alongside
 /// [`LoadedPolicy::error`], and written once so no caller has to decide what
 /// an unknown selection means.
-fn unknown_selection_refusal() -> String {
-    "the update policy document did not load, so this device's channel and \
-     source are unknown"
-        .to_string()
+fn unknown_selection_refusal() -> CodedReason {
+    CodedReason::new(
+        update_codes::POLICY_NOT_LOADED,
+        "the update policy document did not load, so this device's channel and \
+         source are unknown",
+    )
 }
 
 /// Why `check` is refused right now, or `None` when it may run.
-pub fn check_refusal(loaded: &LoadedPolicy) -> Option<String> {
+///
+/// The code travels with the sentence (PLAN-076 B4): this predicate is the one
+/// place that knows WHICH rule refused, so it is the one place that can name
+/// the rule without reading its own sentence back.
+pub fn check_refusal(loaded: &LoadedPolicy) -> Option<CodedReason> {
     if let Some(error) = &loaded.error {
-        return Some(format!("update policy file is invalid ({error})"));
+        return Some(CodedReason::new(
+            update_codes::REFUSED_POLICY_INVALID,
+            format!("update policy file is invalid ({error})"),
+        ));
     }
     let Some(selection) = &loaded.policy.selection else {
         return Some(unknown_selection_refusal());
     };
     match loaded.policy.network.mode {
-        NetworkMode::Offline => {
-            Some("network mode is offline: updates arrive by import only".to_string())
-        }
+        NetworkMode::Offline => Some(CodedReason::new(
+            update_codes::REFUSED_NETWORK_OFFLINE,
+            "network mode is offline: updates arrive by import only",
+        )),
         NetworkMode::Online | NetworkMode::Metered => {
             if selection.url.is_none() {
-                Some("no update source configured (source.url is unset)".to_string())
+                Some(CodedReason::new(
+                    update_codes::NO_SOURCE_CONFIGURED,
+                    "no update source configured (source.url is unset)",
+                ))
             } else {
                 None
             }
@@ -179,18 +194,18 @@ pub fn check_refusal(loaded: &LoadedPolicy) -> Option<String> {
 }
 
 /// Why `fetch` is refused right now, or `None` when it may run.
-pub fn fetch_refusal(loaded: &LoadedPolicy) -> Option<String> {
-    if let Some(reason) = check_refusal(loaded) {
-        return Some(reason);
+pub fn fetch_refusal(loaded: &LoadedPolicy) -> Option<CodedReason> {
+    if let Some(refusal) = check_refusal(loaded) {
+        return Some(refusal);
     }
     if loaded.policy.network.mode == NetworkMode::Metered
         && !loaded.policy.network.metered_allows_fetch
     {
-        return Some(
+        return Some(CodedReason::new(
+            update_codes::REFUSED_NETWORK_METERED,
             "network mode is metered: bundle downloads are refused \
-             (set network.meteredAllowsFetch to allow them)"
-                .to_string(),
-        );
+             (set network.meteredAllowsFetch to allow them)",
+        ));
     }
     None
 }
@@ -215,6 +230,15 @@ pub fn install_refusal(loaded: &LoadedPolicy, now: DateTime<Utc>) -> Option<Stri
 pub struct GateVerdict {
     pub safe: bool,
     pub reasons: Vec<String>,
+    /// PLAN-076 B4's health-path vocabulary: one code per entry of `reasons`,
+    /// in the same order, so a fleet groups blocks by class while an operator
+    /// reads the sentence that names the component.
+    ///
+    /// Closed by construction rather than by a mapping with a fallback: this
+    /// verdict has exactly two producers, both in [`evaluate_gate`], and
+    /// neither takes a code from outside. There is no `unknown` here because
+    /// there is no foreign text to classify.
+    pub codes: Vec<&'static str>,
     /// True when an active administrative override is what made an otherwise
     /// blocked gate safe. Never true for the install block, which no override
     /// lifts.
@@ -226,6 +250,7 @@ impl GateVerdict {
         serde_json::json!({
             "safe": self.safe,
             "reasons": self.reasons,
+            "codes": self.codes,
             "overridden": self.overridden,
         })
     }
@@ -249,9 +274,11 @@ pub fn evaluate_gate(
     override_active: bool,
 ) -> GateVerdict {
     let mut reasons = Vec::new();
+    let mut codes = Vec::new();
     if installing {
         reasons
             .push("an update install is writing the other slot; wait for it to finish".to_string());
+        codes.push(update_codes::GATE_INSTALL_IN_FLIGHT);
     }
     let mut health_blocks = Vec::new();
     if let Some(entries) = health.as_object() {
@@ -265,11 +292,18 @@ pub fn evaluate_gate(
     }
     let overridden = override_active && !health_blocks.is_empty() && reasons.is_empty();
     if !override_active {
+        // The two vectors are extended together, so `reasons[i]` and
+        // `codes[i]` are the same block: a consumer may zip them.
+        codes.extend(std::iter::repeat_n(
+            update_codes::GATE_HEALTH_BLOCKING,
+            health_blocks.len(),
+        ));
         reasons.extend(health_blocks);
     }
     GateVerdict {
         safe: reasons.is_empty(),
         reasons,
+        codes,
         overridden,
     }
 }
@@ -365,7 +399,9 @@ mod tests {
             .expect("a bad file must carry its error");
         assert!(error.contains("parse"), "error was: {error}");
         // Every restricted action refuses, and the refusal names the file.
-        assert!(check_refusal(&loaded).expect("refused").contains("invalid"));
+        let refusal = check_refusal(&loaded).expect("refused");
+        assert!(refusal.text.contains("invalid"));
+        assert_eq!(refusal.code, update_codes::REFUSED_POLICY_INVALID);
         assert!(fetch_refusal(&loaded).is_some());
         assert!(install_refusal(&loaded, Utc::now()).is_some());
         // And the selection is unknown rather than the baked default: this is
@@ -413,8 +449,13 @@ mod tests {
         let mut policy = with_url("http://mirror/tuf");
         policy.network.mode = NetworkMode::Offline;
         let loaded = loaded(policy);
-        assert!(check_refusal(&loaded).expect("refused").contains("offline"));
-        assert!(fetch_refusal(&loaded).expect("refused").contains("offline"));
+        for refusal in [
+            check_refusal(&loaded).expect("refused"),
+            fetch_refusal(&loaded).expect("refused"),
+        ] {
+            assert!(refusal.text.contains("offline"));
+            assert_eq!(refusal.code, update_codes::REFUSED_NETWORK_OFFLINE);
+        }
     }
 
     #[test]
@@ -422,23 +463,37 @@ mod tests {
         let mut policy = with_url("http://mirror/tuf");
         policy.network.mode = NetworkMode::Metered;
         assert_eq!(check_refusal(&loaded(policy.clone())), None);
-        assert!(
-            fetch_refusal(&loaded(policy.clone()))
-                .expect("refused")
-                .contains("metered")
-        );
+        let metered = fetch_refusal(&loaded(policy.clone())).expect("refused");
+        assert!(metered.text.contains("metered"));
+        assert_eq!(metered.code, update_codes::REFUSED_NETWORK_METERED);
         policy.network.metered_allows_fetch = true;
         assert_eq!(fetch_refusal(&loaded(policy)), None);
+    }
+
+    // `policy-not-loaded`'s refusal branch, driven directly at the predicate.
+    //
+    // NEITHER of its two production sites is reachable: `check_refusal` tests
+    // `loaded.error` first, so a document that failed to load answers
+    // `policy-invalid` before it gets here, and `selection_of` is reached only
+    // after the same predicate admitted the operation. The branch is kept
+    // because "the document did not load" must never resolve to the baked
+    // channel (PLAN-070 §5.1), and the code is asserted here so that a caller
+    // who does reach it gets a published word rather than an invented one.
+    #[test]
+    fn a_selection_that_is_absent_without_an_error_is_still_a_published_code() {
+        let mut policy = effective();
+        policy.selection = None;
+        let refusal = check_refusal(&loaded(policy)).expect("refused");
+        assert_eq!(refusal.code, update_codes::POLICY_NOT_LOADED);
+        assert!(refusal.text.contains("did not load"));
     }
 
     #[test]
     fn no_configured_source_refuses_check_with_its_own_reason() {
         let loaded = loaded(effective());
-        assert!(
-            check_refusal(&loaded)
-                .expect("refused")
-                .contains("source.url")
-        );
+        let refusal = check_refusal(&loaded).expect("refused");
+        assert!(refusal.text.contains("source.url"));
+        assert_eq!(refusal.code, update_codes::NO_SOURCE_CONFIGURED);
     }
 
     #[test]
@@ -513,6 +568,7 @@ mod tests {
             GateVerdict {
                 safe: true,
                 reasons: vec![],
+                codes: vec![],
                 overridden: false
             }
         );
@@ -524,6 +580,7 @@ mod tests {
         assert!(!verdict.safe);
         assert!(!verdict.overridden);
         assert!(verdict.reasons[0].contains("install"));
+        assert_eq!(verdict.codes, vec![update_codes::GATE_INSTALL_IN_FLIGHT]);
     }
 
     #[test]
@@ -537,9 +594,27 @@ mod tests {
         assert!(!closed.safe);
         assert_eq!(closed.reasons.len(), 1, "degraded must not block");
         assert!(closed.reasons[0].contains("batch-writer"));
+        // PLAN-076 B4's health path: the class is a fixed word and the
+        // component that reported it stays in the sentence beside it, one code
+        // per reason and in the same order.
+        assert_eq!(closed.codes, vec![update_codes::GATE_HEALTH_BLOCKING]);
+        // Both blocks at once, so "same index" is a property and not a
+        // coincidence of a one-element vector.
+        let both = evaluate_gate(&policy, &health, true, false);
+        assert_eq!(both.reasons.len(), 2);
+        assert_eq!(
+            both.codes,
+            vec![
+                update_codes::GATE_INSTALL_IN_FLIGHT,
+                update_codes::GATE_HEALTH_BLOCKING
+            ]
+        );
+        assert!(both.reasons[0].contains("install"));
+        assert!(both.reasons[1].contains("batch-writer"));
         let lifted = evaluate_gate(&policy, &health, false, true);
         assert!(lifted.safe);
         assert!(lifted.overridden);
+        assert!(lifted.codes.is_empty(), "a lifted gate names no block");
     }
 
     #[test]

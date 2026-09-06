@@ -57,6 +57,7 @@ use chrono::Utc;
 use mosd_settings::{UPDATE_CHECK_EVENT, UPDATE_FETCH_EVENT, UPDATE_INSTALL_EVENT};
 
 use crate::time_status::ClockTrust;
+use crate::update_codes;
 use crate::update_lifecycle::{Available, Refusal, Settled};
 use crate::update_policy::{self, LoadedPolicy, RebootPolicy, UpdateMode};
 use crate::update_suppress::Suppression;
@@ -281,14 +282,20 @@ impl AutoDriver {
                              running system"
                         .to_string(),
                 };
-                self.defer("no-newer-release", &detail).await;
+                self.defer(update_codes::DEFER_NO_NEWER_RELEASE, &detail)
+                    .await;
             }
             // It found one: that supersedes the fact above and nothing else.
             // A window that was shut a minute ago is still shut.
-            Ok(_) => self.routes.resume(Some("no-newer-release")).await,
+            Ok(_) => {
+                self.routes
+                    .resume(Some(update_codes::DEFER_NO_NEWER_RELEASE))
+                    .await
+            }
             Err(refusal) => {
                 tracing::debug!(reason = refusal.message(), "automatic check skipped");
-                self.defer("check-refused", refusal.message()).await;
+                self.defer(update_codes::DEFER_CHECK_REFUSED, refusal.message())
+                    .await;
             }
         }
     }
@@ -317,11 +324,13 @@ impl AutoDriver {
             // suppression instead of whatever happens to be staged.
             match self.routes.suppression(&candidate.version).await {
                 Ok(Some(record)) => {
-                    self.defer("version-suppressed", &record.detail).await;
+                    self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
+                        .await;
                     return;
                 }
                 Err(error) => {
-                    self.defer("suppression-unreadable", &error).await;
+                    self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
+                        .await;
                     return;
                 }
                 Ok(None) => {}
@@ -331,7 +340,8 @@ impl AutoDriver {
                 self.routes.audit(UPDATE_FETCH_EVENT).await;
                 if let Err(refusal) = self.routes.fetch(SENDER).await {
                     tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
-                    self.defer("fetch-refused", refusal.message()).await;
+                    self.defer(update_codes::DEFER_FETCH_REFUSED, refusal.message())
+                        .await;
                     return;
                 }
             }
@@ -355,23 +365,28 @@ impl AutoDriver {
         // deliberately unaffected — neither is time-keyed, and refusing them
         // would make a clockless device stop even discovering updates.
         if let Some(reason) = self.routes.clock().await.untrusted_reason() {
-            self.defer("clock-untrusted", &reason).await;
+            self.defer(update_codes::DEFER_CLOCK_UNTRUSTED, &reason)
+                .await;
             return;
         }
         // The same refusal `InstallUpdate` answers an operator with: the
         // maintenance window, which `auto` requires the document to name.
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason).await;
+            self.defer(update_codes::DEFER_OUTSIDE_WINDOW, &reason)
+                .await;
             return;
         }
         let Some(facts) = self.routes.facts().await else {
-            self.defer("slot-status-unknown", "RAUC did not answer the slot query")
-                .await;
+            self.defer(
+                update_codes::DEFER_SLOT_STATUS_UNKNOWN,
+                "RAUC did not answer the slot query",
+            )
+            .await;
             return;
         };
         if facts.reboot_pending {
             self.defer(
-                "reboot-pending",
+                update_codes::DEFER_REBOOT_PENDING,
                 "a slot is already installed and waiting for its first boot",
             )
             .await;
@@ -386,15 +401,18 @@ impl AutoDriver {
             Ok(Settled::Done(candidate)) => Some(candidate),
             Ok(Settled::NoneCompatible) => None,
             Ok(Settled::Unready(unready)) => {
-                self.defer("workspace-unready", &unready.reason()).await;
+                self.defer(update_codes::DEFER_WORKSPACE_UNREADY, &unready.reason())
+                    .await;
                 return;
             }
-            Ok(Settled::Failed(reason)) => {
-                self.defer("recheck-failed", &reason).await;
+            Ok(Settled::Failed(failed)) => {
+                self.defer(update_codes::DEFER_RECHECK_FAILED, &failed.text)
+                    .await;
                 return;
             }
             Err(refusal) => {
-                self.defer("recheck-refused", refusal.message()).await;
+                self.defer(update_codes::DEFER_RECHECK_REFUSED, refusal.message())
+                    .await;
                 return;
             }
         };
@@ -409,7 +427,7 @@ impl AutoDriver {
             // fetches what was named.
             Some(candidate) => {
                 self.defer(
-                    "superseded",
+                    update_codes::DEFER_SUPERSEDED,
                     &format!("the check now names {}", candidate.name),
                 )
                 .await;
@@ -434,14 +452,16 @@ impl AutoDriver {
         // operator reading the record has been told and is choosing.
         match self.routes.suppression(&version).await {
             Ok(Some(record)) => {
-                self.defer("version-suppressed", &record.detail).await;
+                self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
+                    .await;
                 return;
             }
             // A store that exists and cannot be read is not an empty store.
             // Reading it as one is precisely how the loop restarts, so the
             // closed side here is refusing the install.
             Err(error) => {
-                self.defer("suppression-unreadable", &error).await;
+                self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
+                    .await;
                 return;
             }
             Ok(None) => {}
@@ -455,7 +475,10 @@ impl AutoDriver {
                 // before now is stale.
                 self.routes.resume(None).await;
             }
-            Err(refusal) => self.defer("install-refused", &refusal).await,
+            Err(refusal) => {
+                self.defer(update_codes::DEFER_INSTALL_REFUSED, &refusal)
+                    .await
+            }
         }
     }
 
@@ -493,7 +516,8 @@ impl AutoDriver {
             return;
         }
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason).await;
+            self.defer(update_codes::DEFER_OUTSIDE_WINDOW, &reason)
+                .await;
             return;
         }
         if let Err(refusal) = self.routes.reboot(SENDER).await {
@@ -501,7 +525,8 @@ impl AutoDriver {
             // reporting a blocking health status. Automation defers and the
             // next window re-attempts. It does not arm the override — there
             // is no method on `AutoRoutes` to arm it with.
-            self.defer("reboot-gate-closed", &refusal).await;
+            self.defer(update_codes::DEFER_REBOOT_GATE_CLOSED, &refusal)
+                .await;
             return;
         }
         // The machine is going down; the stage it leaves behind is moot, and

@@ -153,7 +153,11 @@ describe('the automatic update policy', () => {
       ['version-suppressed', /already rolled back that version/],
       ['clock-untrusted', /does not trust its clock/],
       ['reboot-gate-closed', /must not be interrupted/],
-      ['something-new', /something-new/],
+      // The fallback the daemon can actually produce: it clamps every
+      // reason to the published set and reports anything else as `unknown`
+      // (PLAN-076 B4), so a made-up word here would be testing a case no
+      // device sends.
+      ['unknown', /no name for/],
     ]
     for (const [reason, copy] of expected) {
       stubFetch({

@@ -42,6 +42,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::rauc::SlotStatus;
+use crate::update_codes::{self, CodedReason};
 use crate::update_policy::{
     self, EffectivePolicy, GateVerdict, LoadedPolicy, PolicyStore, Selection, Workspace,
 };
@@ -246,7 +247,7 @@ pub enum CheckOutcome {
 /// Parse `rauc-update check` output by its printed contract:
 /// `selected <name> version <v> channel <c> (<n> bytes)` on success, exit 2
 /// for "nothing compatible", anything else is the stderr reason.
-pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, String> {
+pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, CodedReason> {
     match output.code {
         Some(0) => {
             let selected = output
@@ -255,9 +256,12 @@ pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, String> {
                 .rev()
                 .find(|line| line.starts_with("selected "));
             let Some(line) = selected else {
-                return Err(format!(
-                    "check exited 0 without a `selected` line; stdout: {}",
-                    output.stdout.trim()
+                return Err(CodedReason::new(
+                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+                    format!(
+                        "check exited 0 without a `selected` line; stdout: {}",
+                        output.stdout.trim()
+                    ),
                 ));
             };
             let mut words = line.split_whitespace();
@@ -265,7 +269,10 @@ pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, String> {
             let version = words.nth(1).unwrap_or_default().to_string();
             let channel = words.nth(1).unwrap_or_default().to_string();
             if name.is_empty() || version.is_empty() || channel.is_empty() {
-                return Err(format!("unparseable selection line: `{line}`"));
+                return Err(CodedReason::new(
+                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+                    format!("unparseable selection line: `{line}`"),
+                ));
             }
             Ok(CheckOutcome::Selected(Available {
                 name,
@@ -295,8 +302,9 @@ pub enum Settled<T> {
     NoneCompatible,
     /// The `/mos/updates` workspace refused it before anything was acquired.
     Unready(Unready),
-    /// It failed, with the same reason recorded beside the `failed` state.
-    Failed(String),
+    /// It failed, with the same code and reason recorded beside the `failed`
+    /// state.
+    Failed(CodedReason),
 }
 
 /// The workspace is not ready, as `rauc-update` named it: `status` is
@@ -307,7 +315,10 @@ pub enum Settled<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unready {
     pub status: String,
-    pub kind: String,
+    /// PLAN-076 B4: one of [`crate::update_codes`]'s five workspace codes, or
+    /// `unknown` — never the word the client printed. `&'static str` is what
+    /// makes that structural: this field cannot hold a client's string.
+    pub kind: &'static str,
     pub detail: String,
 }
 
@@ -320,6 +331,14 @@ impl Unready {
 
 /// Parse one `<status> <kind>: <detail>` line, with or without the binary's
 /// `rauc-update: ` stderr prefix. `None` for any other line.
+///
+/// The kind is CLAMPED to [`crate::update_codes::workspace_code`] rather than
+/// forwarded (PLAN-076 B4). A word this daemon does not know still names a
+/// workspace that refused the acquisition — the status is what refuses it —
+/// so returning `None` here would turn a correct `update-unavailable` into a
+/// wrong `failed`. Reporting the word itself would put an unbounded string on
+/// the wire, which is the defect. So the state survives, the word does not,
+/// and the word is logged.
 pub fn parse_unready(line: &str) -> Option<Unready> {
     let line = line.trim();
     let line = line.strip_prefix("rauc-update: ").unwrap_or(line);
@@ -331,9 +350,18 @@ pub fn parse_unready(line: &str) -> Option<Unready> {
     if kind.is_empty() || kind.contains(' ') {
         return None;
     }
+    let code = update_codes::workspace_code(kind);
+    if code == update_codes::UNKNOWN {
+        tracing::warn!(
+            kind,
+            status,
+            "update client named a workspace verdict this daemon has no code for; \
+             reported as `unknown`"
+        );
+    }
     Some(Unready {
         status: status.to_string(),
-        kind: kind.to_string(),
+        kind: code,
         detail: detail.trim().to_string(),
     })
 }
@@ -360,7 +388,7 @@ pub enum ProbeOutcome {
 
 /// Parse `rauc-update probe` output by its printed contract: `ready k=v ...`
 /// on exit 0, `<status> <kind>: <detail>` on exit 3.
-pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, String> {
+pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, CodedReason> {
     match output.code {
         Some(0) => {
             let Some(line) = output
@@ -369,9 +397,12 @@ pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, String> {
                 .rev()
                 .find(|line| line.starts_with("ready "))
             else {
-                return Err(format!(
-                    "probe exited 0 without a `ready` line; stdout: {}",
-                    output.stdout.trim()
+                return Err(CodedReason::new(
+                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+                    format!(
+                        "probe exited 0 without a `ready` line; stdout: {}",
+                        output.stdout.trim()
+                    ),
                 ));
             };
             let mut report = serde_json::Map::new();
@@ -388,11 +419,14 @@ pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, String> {
         Some(EXIT_UNREADY) => unready_in(output)
             .map(ProbeOutcome::Unready)
             .ok_or_else(|| {
-                format!(
-                    "probe exited {EXIT_UNREADY} without naming the unready state; stdout: {} \
-                     stderr: {}",
-                    output.stdout.trim(),
-                    output.stderr.trim()
+                CodedReason::new(
+                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+                    format!(
+                        "probe exited {EXIT_UNREADY} without naming the unready state; \
+                         stdout: {} stderr: {}",
+                        output.stdout.trim(),
+                        output.stderr.trim()
+                    ),
                 )
             }),
         code => Err(exit_reason("probe", code, &output.stderr)),
@@ -415,7 +449,10 @@ pub enum FetchOutcome {
 /// ever record as `ready`, and only when it is a bundle directly inside
 /// `verified_dir` (a `.part`, or a path anywhere else, is a client bug, not
 /// something to install).
-pub fn parse_fetch(output: &ClientOutput, verified_dir: &Path) -> Result<FetchOutcome, String> {
+pub fn parse_fetch(
+    output: &ClientOutput,
+    verified_dir: &Path,
+) -> Result<FetchOutcome, CodedReason> {
     match output.code {
         Some(0) => match output.stdout.lines().last() {
             Some(line)
@@ -425,19 +462,26 @@ pub fn parse_fetch(output: &ClientOutput, verified_dir: &Path) -> Result<FetchOu
             {
                 Ok(FetchOutcome::Staged(line.to_string()))
             }
-            other => Err(format!(
-                "fetch exited 0 with {other:?} as its last line, which is not a bundle inside \
-                 {}; only a verified path is recorded as ready",
-                verified_dir.display()
+            other => Err(CodedReason::new(
+                update_codes::UNVERIFIED_BUNDLE_PATH,
+                format!(
+                    "fetch exited 0 with {other:?} as its last line, which is not a bundle \
+                     inside {}; only a verified path is recorded as ready",
+                    verified_dir.display()
+                ),
             )),
         },
         Some(2) => Ok(FetchOutcome::NoneCompatible),
         Some(EXIT_UNREADY) => unready_in(output)
             .map(FetchOutcome::Unready)
             .ok_or_else(|| {
-                format!(
-                    "fetch exited {EXIT_UNREADY} without naming the unready state; stderr: {}",
-                    output.stderr.trim()
+                CodedReason::new(
+                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+                    format!(
+                        "fetch exited {EXIT_UNREADY} without naming the unready state; \
+                         stderr: {}",
+                        output.stderr.trim()
+                    ),
                 )
             }),
         code => Err(exit_reason("fetch", code, &output.stderr)),
@@ -448,16 +492,34 @@ pub fn parse_fetch(output: &ClientOutput, verified_dir: &Path) -> Result<FetchOu
 /// it (a state), or it failed (a reason).
 enum Failure {
     Unready(Unready),
-    Error(String),
+    Error(CodedReason),
 }
 
-fn exit_reason(verb: &str, code: Option<i32>, stderr: &str) -> String {
+/// A client invocation that ended badly, coded at the site.
+///
+/// The two codes are not the same fault and a fleet must be able to tell them
+/// apart: an exit status is the client having run and judged something, while
+/// a signal is the bound in this module (or the OOM killer) having stopped it
+/// before it judged anything.
+fn exit_reason(verb: &str, code: Option<i32>, stderr: &str) -> CodedReason {
     let reason = stderr.lines().last().unwrap_or("").trim();
     match code {
-        Some(code) if !reason.is_empty() => format!("{verb} failed (exit {code}): {reason}"),
-        Some(code) => format!("{verb} failed with exit {code}"),
-        None if !reason.is_empty() => format!("{verb} was killed by a signal: {reason}"),
-        None => format!("{verb} was killed by a signal"),
+        Some(code) if !reason.is_empty() => CodedReason::new(
+            update_codes::CLIENT_EXIT_FAILURE,
+            format!("{verb} failed (exit {code}): {reason}"),
+        ),
+        Some(code) => CodedReason::new(
+            update_codes::CLIENT_EXIT_FAILURE,
+            format!("{verb} failed with exit {code}"),
+        ),
+        None if !reason.is_empty() => CodedReason::new(
+            update_codes::CLIENT_SPAWN_FAILED,
+            format!("{verb} was killed by a signal: {reason}"),
+        ),
+        None => CodedReason::new(
+            update_codes::CLIENT_SPAWN_FAILED,
+            format!("{verb} was killed by a signal"),
+        ),
     }
 }
 
@@ -562,8 +624,10 @@ pub fn rolled_back_slot(slots: &[SlotStatus]) -> Option<&SlotStatus> {
 struct Deferral {
     /// The vocabulary PLAN-071 §2 names: `outside-window`,
     /// `reboot-gate-closed`, `clock-untrusted`, `version-suppressed`, plus
-    /// the driver's own guards.
-    reason: String,
+    /// the driver's own guards — resolved through
+    /// [`crate::update_codes::deferral_code`], so this field holds a code and
+    /// can hold nothing else.
+    reason: &'static str,
     /// The refusing rule in words, verbatim from whoever refused.
     detail: String,
     /// When this reason first applied without interruption.
@@ -587,8 +651,9 @@ struct Machine {
     /// `Some("checking")` / `Some("downloading")` while a client subprocess
     /// runs; the busy guard and the reported state in one field.
     operation: Option<&'static str>,
-    /// Why the last operation failed; cleared when the next one starts.
-    failed: Option<String>,
+    /// Why the last operation failed, with its code; cleared when the next
+    /// one starts.
+    failed: Option<CodedReason>,
     /// The workspace's refusal, when the last probe did not pass; cleared
     /// when the next operation starts and stays clear when its probe passes.
     unready: Option<Unready>,
@@ -740,12 +805,16 @@ impl UpdateLifecycle {
     /// decision and the subprocess cannot read two different files.
     async fn admit_check(&self, sender: &str) -> Result<EffectivePolicy, Refusal> {
         let loaded = self.policy.load();
-        if let Some(reason) = update_policy::check_refusal(&loaded) {
-            self.record_refusal("check", &reason).await;
-            return Err(Refusal::Policy(reason));
+        if let Some(refusal) = update_policy::check_refusal(&loaded) {
+            self.record_refusal("check", &refusal).await;
+            return Err(Refusal::Policy(refusal.text));
         }
         if let Some(reason) = self.client.unavailable() {
-            self.record_refusal("check", &reason).await;
+            self.record_refusal(
+                "check",
+                &CodedReason::new(update_codes::REFUSED_CLIENT_UNAVAILABLE, reason.clone()),
+            )
+            .await;
             return Err(Refusal::Unavailable(reason));
         }
         self.begin("checking").await?;
@@ -779,11 +848,15 @@ impl UpdateLifecycle {
                 machine.unready = Some(unready.clone());
                 Settled::Unready(unready)
             }
-            Err(Failure::Error(reason)) => {
-                tracing::warn!(reason, "update check failed");
+            Err(Failure::Error(failed)) => {
+                tracing::warn!(
+                    code = failed.code,
+                    reason = failed.text,
+                    "update check failed"
+                );
                 machine.last_check = Some(now_rfc3339());
-                machine.failed = Some(reason.clone());
-                Settled::Failed(reason)
+                machine.failed = Some(failed.clone());
+                Settled::Failed(failed)
             }
         };
         drop(machine);
@@ -816,12 +889,16 @@ impl UpdateLifecycle {
     /// refusal, plus metered), the client, the busy slot.
     async fn admit_fetch(&self, sender: &str) -> Result<EffectivePolicy, Refusal> {
         let loaded = self.policy.load();
-        if let Some(reason) = update_policy::fetch_refusal(&loaded) {
-            self.record_refusal("fetch", &reason).await;
-            return Err(Refusal::Policy(reason));
+        if let Some(refusal) = update_policy::fetch_refusal(&loaded) {
+            self.record_refusal("fetch", &refusal).await;
+            return Err(Refusal::Policy(refusal.text));
         }
         if let Some(reason) = self.client.unavailable() {
-            self.record_refusal("fetch", &reason).await;
+            self.record_refusal(
+                "fetch",
+                &CodedReason::new(update_codes::REFUSED_CLIENT_UNAVAILABLE, reason.clone()),
+            )
+            .await;
             return Err(Refusal::Unavailable(reason));
         }
         self.begin("downloading").await?;
@@ -849,10 +926,14 @@ impl UpdateLifecycle {
                 machine.unready = Some(unready.clone());
                 Settled::Unready(unready)
             }
-            Err(Failure::Error(reason)) => {
-                tracing::warn!(reason, "update fetch failed");
-                machine.failed = Some(reason.clone());
-                Settled::Failed(reason)
+            Err(Failure::Error(failed)) => {
+                tracing::warn!(
+                    code = failed.code,
+                    reason = failed.text,
+                    "update fetch failed"
+                );
+                machine.failed = Some(failed.clone());
+                Settled::Failed(failed)
             }
         };
         drop(machine);
@@ -897,8 +978,11 @@ impl UpdateLifecycle {
             ),
         }
         self.machine.lock().await.bundle = None;
-        self.record_snapshot_with(Some(format!("staged bundle {bundle} discarded: {why}")))
-            .await;
+        self.record_snapshot_with(Some(CodedReason::new(
+            update_codes::NOTE_BUNDLE_DISCARDED,
+            format!("staged bundle {bundle} discarded: {why}"),
+        )))
+        .await;
     }
 
     /// Take the busy slot for `operation`, refusing when anything runs.
@@ -931,11 +1015,12 @@ impl UpdateLifecycle {
             "--max-bytes".to_string(),
             workspace.max_bytes.to_string(),
         ];
-        let output = self
-            .client
-            .run(&args, PROBE_TIMEOUT)
-            .await
-            .map_err(|err| Failure::Error(format!("probe: {err:#}")))?;
+        let output = self.client.run(&args, PROBE_TIMEOUT).await.map_err(|err| {
+            Failure::Error(CodedReason::new(
+                update_codes::CLIENT_SPAWN_FAILED,
+                format!("probe: {err:#}"),
+            ))
+        })?;
         match parse_probe(&output).map_err(Failure::Error)? {
             ProbeOutcome::Ready(report) => {
                 self.machine.lock().await.workspace = Some(report);
@@ -960,7 +1045,12 @@ impl UpdateLifecycle {
                 .client
                 .run(&sync_args, CHECK_TIMEOUT)
                 .await
-                .map_err(|err| Failure::Error(format!("sync: {err:#}")))?;
+                .map_err(|err| {
+                    Failure::Error(CodedReason::new(
+                        update_codes::CLIENT_SPAWN_FAILED,
+                        format!("sync: {err:#}"),
+                    ))
+                })?;
             if output.code != Some(0) {
                 return Err(Failure::Error(exit_reason(
                     "sync",
@@ -973,7 +1063,12 @@ impl UpdateLifecycle {
             .client
             .run(&check_args(selection, &policy.workspace), CHECK_TIMEOUT)
             .await
-            .map_err(|err| Failure::Error(format!("check: {err:#}")))?;
+            .map_err(|err| {
+                Failure::Error(CodedReason::new(
+                    update_codes::CLIENT_SPAWN_FAILED,
+                    format!("check: {err:#}"),
+                ))
+            })?;
         parse_check(&output).map_err(Failure::Error)
     }
 
@@ -983,7 +1078,10 @@ impl UpdateLifecycle {
         let Some(url) = &selection.url else {
             // Unreachable through `request_fetch` (the policy refusal caught
             // it), kept as an error rather than a panic all the same.
-            return Err(Failure::Error("no update source configured".to_string()));
+            return Err(Failure::Error(CodedReason::new(
+                update_codes::NO_SOURCE_CONFIGURED,
+                "no update source configured",
+            )));
         };
         // No `--reserve-dir`: the client's default is the workspace's
         // downloads/, and there is no other place a partial may go.
@@ -995,11 +1093,12 @@ impl UpdateLifecycle {
             "--max-bytes".to_string(),
             policy.workspace.max_bytes.to_string(),
         ]);
-        let output = self
-            .client
-            .run(&args, FETCH_TIMEOUT)
-            .await
-            .map_err(|err| Failure::Error(format!("fetch: {err:#}")))?;
+        let output = self.client.run(&args, FETCH_TIMEOUT).await.map_err(|err| {
+            Failure::Error(CodedReason::new(
+                update_codes::CLIENT_SPAWN_FAILED,
+                format!("fetch: {err:#}"),
+            ))
+        })?;
         parse_fetch(&output, &self.verified_dir()).map_err(Failure::Error)
     }
 
@@ -1130,8 +1229,9 @@ impl UpdateLifecycle {
             "update version suppression cleared; automatic installs of it are permitted again"
         );
         let rendered = record.to_json();
-        self.record_snapshot_with(Some(format!(
-            "suppression on version {version} cleared by {sender}"
+        self.record_snapshot_with(Some(CodedReason::new(
+            update_codes::NOTE_SUPPRESSION_CLEARED,
+            format!("suppression on version {version} cleared by {sender}"),
         )))
         .await;
         Ok(rendered)
@@ -1205,18 +1305,33 @@ impl UpdateLifecycle {
     /// state answers "how long" and not only "why". A DIFFERENT reason
     /// starts a new fact, because the clock it would otherwise inherit
     /// belongs to a different refusal.
+    ///
+    /// PLAN-076 B4: `reason` is resolved to a code HERE rather than trusted,
+    /// so the recorded set is closed at the writer and not merely by the
+    /// convention of every caller. A word outside the vocabulary is recorded
+    /// as `unknown` — the deferral is still visible, with its `detail` and its
+    /// clock intact, and only the name is lost, to the log line below.
     pub async fn defer(&self, reason: &str, detail: &str) {
+        let code = update_codes::deferral_code(reason);
+        if code == update_codes::UNKNOWN {
+            tracing::warn!(
+                reason,
+                detail,
+                "automatic pass deferred for a reason outside the published vocabulary; \
+                 recorded as `unknown`"
+            );
+        }
         let now = Utc::now();
         let mut machine = self.machine.lock().await;
         match &mut machine.deferred {
-            Some(existing) if existing.reason == reason => {
+            Some(existing) if existing.reason == code => {
                 existing.detail = detail.to_string();
                 existing.at = now;
                 existing.count = existing.count.saturating_add(1);
             }
             slot => {
                 *slot = Some(Deferral {
-                    reason: reason.to_string(),
+                    reason: code,
                     detail: detail.to_string(),
                     since: now,
                     at: now,
@@ -1331,10 +1446,22 @@ impl UpdateLifecycle {
 
     /// Record a refused action without disturbing the machine: the refusal is
     /// the newest fact an operator polling the state needs to see.
-    async fn record_refusal(&self, action: &str, reason: &str) {
-        tracing::warn!(action, reason, "update action refused by policy");
-        self.record_snapshot_with(Some(format!("{action} refused: {reason}")))
-            .await;
+    ///
+    /// The code travels with the sentence rather than being recovered from it
+    /// (PLAN-076 B4): every caller has one, because the predicate that
+    /// refused minted it.
+    async fn record_refusal(&self, action: &str, refusal: &CodedReason) {
+        tracing::warn!(
+            action,
+            code = refusal.code,
+            reason = refusal.text,
+            "update action refused by policy"
+        );
+        self.record_snapshot_with(Some(CodedReason::new(
+            refusal.code,
+            format!("{action} refused: {}", refusal.text),
+        )))
+        .await;
     }
 
     async fn record_snapshot(&self) {
@@ -1342,7 +1469,7 @@ impl UpdateLifecycle {
     }
 
     /// Build the full `update.lifecycle` entry and hand it to the host.
-    async fn record_snapshot_with(&self, last_refusal: Option<String>) {
+    async fn record_snapshot_with(&self, last_refusal: Option<CodedReason>) {
         let loaded = self.policy.load();
         let suppressions = self.suppression.load();
         let health = self.host.health().await;
@@ -1394,9 +1521,10 @@ fn now_rfc3339() -> String {
 /// channel (PLAN-070 §5.1).
 fn selection_of(policy: &EffectivePolicy) -> Result<&Selection, Failure> {
     policy.selection.as_ref().ok_or_else(|| {
-        Failure::Error(
-            "the update policy document did not load, so there is no channel to check".to_string(),
-        )
+        Failure::Error(CodedReason::new(
+            update_codes::POLICY_NOT_LOADED,
+            "the update policy document did not load, so there is no channel to check",
+        ))
     })
 }
 
@@ -1431,34 +1559,48 @@ fn render_entry(
     installing: bool,
     client_unavailable: Option<String>,
     policy_path: Option<&std::path::Path>,
-    last_refusal: Option<String>,
+    last_refusal: Option<CodedReason>,
     workspace_root: &Path,
 ) -> Value {
-    let (state, reason): (&str, Option<String>) = if installing {
-        ("installing", None)
+    // `code` is present exactly for the two states that report a FAILURE, and
+    // absent for the rest (PLAN-076 B4). `ready` and the boot-derived phases
+    // carry a `reason` too, but theirs describes a state that is already its
+    // own enumerated word — coding "a verified bundle is staged" would add a
+    // second spelling of `ready` and nothing else.
+    let (state, reason, code): (&str, Option<String>, Option<&'static str>) = if installing {
+        ("installing", None, None)
     } else if let Some(operation) = machine.operation {
-        (operation, None)
+        (operation, None, None)
     } else if let Some(unready) = &machine.unready {
-        ("update-unavailable", Some(unready.reason()))
+        (
+            "update-unavailable",
+            Some(unready.reason()),
+            Some(unready.kind),
+        )
     } else if let Some(failed) = &machine.failed {
-        ("failed", Some(failed.clone()))
+        ("failed", Some(failed.text.clone()), Some(failed.code))
     } else if machine.bundle.is_some() {
         (
             "ready",
             Some("a verified bundle is staged for install".to_string()),
+            None,
         )
     } else if let Some((phase, why)) = &machine.boot_phase {
-        (phase.name(), Some(why.clone()))
+        (phase.name(), Some(why.clone()), None)
     } else {
-        ("idle", None)
+        ("idle", None, None)
     };
     let mut entry = serde_json::Map::new();
     entry.insert("state".into(), json!(state));
     if let Some(reason) = reason {
         entry.insert("reason".into(), json!(reason));
     }
+    if let Some(code) = code {
+        entry.insert("code".into(), json!(code));
+    }
     if let Some(refusal) = last_refusal {
-        entry.insert("last_refusal".into(), json!(refusal));
+        entry.insert("last_refusal".into(), json!(refusal.text));
+        entry.insert("last_refusal_code".into(), json!(refusal.code));
     }
     if let Some(available) = &machine.available {
         entry.insert(
@@ -1625,6 +1767,15 @@ mod tests {
         }
     }
 
+    /// A client killed by a signal: no exit code at all.
+    fn output_signalled(stderr: &str) -> ClientOutput {
+        ClientOutput {
+            code: None,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        }
+    }
+
     fn slot(name: &str, state: &str, boot_status: Option<&str>) -> SlotStatus {
         SlotStatus {
             name: name.to_string(),
@@ -1656,10 +1807,35 @@ mod tests {
         );
         let failed = parse_check(&output(1, "", "rauc-update: state file corrupt\n"))
             .expect_err("exit 1 is a failure");
-        assert!(failed.contains("state file corrupt"), "got: {failed}");
+        assert!(
+            failed.text.contains("state file corrupt"),
+            "got: {failed:?}"
+        );
+        // PLAN-076 B4: an exit the client judged, and an exit 0 whose output
+        // it did not print, are two codes and not one. The stderr tail stays
+        // in `text`; it is never what a consumer reads as the class.
+        assert_eq!(failed.code, update_codes::CLIENT_EXIT_FAILURE);
         let unparseable =
             parse_check(&output(0, "something else\n", "")).expect_err("no selected line");
-        assert!(unparseable.contains("selected"), "got: {unparseable}");
+        assert!(
+            unparseable.text.contains("selected"),
+            "got: {unparseable:?}"
+        );
+        assert_eq!(unparseable.code, update_codes::CLIENT_OUTPUT_UNPARSEABLE);
+        assert_eq!(
+            parse_check(&output(0, "selected only-a-name\n", ""))
+                .expect_err("an incomplete selection line")
+                .code,
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE
+        );
+        // Killed by a signal is not the same failure as a judged exit: the
+        // client never got to judge anything.
+        assert_eq!(
+            parse_check(&output_signalled(""))
+                .expect_err("no exit code")
+                .code,
+            update_codes::CLIENT_SPAWN_FAILED
+        );
     }
 
     #[test]
@@ -1697,9 +1873,21 @@ mod tests {
         ] {
             let err =
                 parse_fetch(&output(0, &format!("{outside}\n"), ""), verified).expect_err(outside);
-            assert!(err.contains("verified"), "{outside}: {err}");
+            assert!(err.text.contains("verified"), "{outside}: {err:?}");
+            assert_eq!(err.code, update_codes::UNVERIFIED_BUNDLE_PATH, "{outside}");
         }
-        assert!(parse_fetch(&output(1, "", "budget exceeded\n"), verified).is_err());
+        assert_eq!(
+            parse_fetch(&output(1, "", "budget exceeded\n"), verified)
+                .expect_err("exit 1 is a failure")
+                .code,
+            update_codes::CLIENT_EXIT_FAILURE
+        );
+        assert_eq!(
+            parse_fetch(&output(3, "something else\n", ""), verified)
+                .expect_err("exit 3 without a verdict")
+                .code,
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE
+        );
         // Exit 3 carries the workspace's refusal, from stderr.
         assert_eq!(
             parse_fetch(
@@ -1712,7 +1900,7 @@ mod tests {
             ),
             Ok(FetchOutcome::Unready(Unready {
                 status: "degraded".to_string(),
-                kind: "exhausted".to_string(),
+                kind: "exhausted",
                 detail: "free space is 0 bytes".to_string(),
             }))
         );
@@ -1770,16 +1958,39 @@ mod tests {
             assert_eq!(unready.kind, kind);
             assert_eq!(unready.reason(), line);
         }
-        assert!(parse_probe(&output(0, "nothing useful\n", "")).is_err());
-        assert!(parse_probe(&output(3, "not a verdict\n", "")).is_err());
-        assert!(parse_probe(&output(1, "", "rauc-update: boom\n")).is_err());
+        assert_eq!(
+            parse_probe(&output(0, "nothing useful\n", ""))
+                .expect_err("no ready line")
+                .code,
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE
+        );
+        assert_eq!(
+            parse_probe(&output(3, "not a verdict\n", ""))
+                .expect_err("exit 3 without a verdict")
+                .code,
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE
+        );
+        assert_eq!(
+            parse_probe(&output(1, "", "rauc-update: boom\n"))
+                .expect_err("exit 1 is a failure")
+                .code,
+            update_codes::CLIENT_EXIT_FAILURE
+        );
         // The binary's stderr prefix is stripped; other words are not verdicts.
         assert_eq!(
             parse_unready("rauc-update: degraded read-only: ro").map(|u| u.kind),
-            Some("read-only".to_string())
+            Some("read-only")
         );
         assert_eq!(parse_unready("failed read-only: ro"), None);
         assert_eq!(parse_unready("degraded: no kind"), None);
+        // PLAN-076 B4's second half at the one seam where a foreign process
+        // chooses the word. The verdict still refuses the acquisition — the
+        // status is what does that — and the word the client invented does
+        // NOT reach the recorded kind.
+        let invented = parse_unready("degraded quota-exceeded: 0 left").expect("still a verdict");
+        assert_eq!(invented.status, "degraded");
+        assert_eq!(invented.kind, update_codes::UNKNOWN);
+        assert_eq!(invented.detail, "0 left");
     }
 
     #[test]
@@ -2066,6 +2277,11 @@ mod tests {
                     .contains("verified"),
                 "{printed}: {recorded}"
             );
+            assert_eq!(
+                recorded["code"],
+                update_codes::UNVERIFIED_BUNDLE_PATH,
+                "{printed}: {recorded}"
+            );
         }
     }
 
@@ -2107,6 +2323,9 @@ mod tests {
             assert_eq!(recorded["workspace"]["status"], status);
             assert_eq!(recorded["workspace"]["kind"], kind);
             assert_eq!(recorded["workspace"]["root"], "/mos/updates");
+            // The state's code is the workspace verdict, not a second word
+            // for it (PLAN-076 B4).
+            assert_eq!(recorded["code"], kind, "{recorded}");
             assert!(
                 recorded.get("last_check").is_none(),
                 "no check ran: {recorded}"
@@ -2129,6 +2348,10 @@ mod tests {
             assert_eq!(recorded["workspace"]["status"], "ready");
             assert_eq!(recorded["workspace"]["pool"], "/mnt/data");
             assert!(recorded["workspace"].get("kind").is_none(), "{recorded}");
+            assert!(
+                recorded.get("code").is_none(),
+                "an idle device names no failure: {recorded}"
+            );
             assert_eq!(calls.lock().expect("calls").len(), 4, "{kind}");
         }
     }
@@ -2229,6 +2452,107 @@ mod tests {
                 .contains("connection refused"),
             "got: {recorded}"
         );
+        // PLAN-076 B4: the sentence stays for the operator, and the class is
+        // beside it for everything that is not one.
+        assert_eq!(recorded["code"], update_codes::CLIENT_EXIT_FAILURE);
+    }
+
+    // The three remaining `failed` codes, each driven to the recorded
+    // document rather than asserted at the parser it is minted in.
+    //
+    // `client-spawn-failed` has two producers and only one of them is a
+    // parse: this is the other one, the invocation that never returned an
+    // exit status at all.
+    #[tokio::test]
+    async fn a_client_that_cannot_run_and_one_that_will_not_speak_are_two_codes() {
+        for (script, expected) in [
+            (
+                ("sync", Err("spawn rauc-update: No such file or directory".to_string())),
+                update_codes::CLIENT_SPAWN_FAILED,
+            ),
+            (
+                ("sync", Ok(output(0, "", ""))),
+                update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+            let mut steps = vec![ready_probe(), script];
+            if expected == update_codes::CLIENT_OUTPUT_UNPARSEABLE {
+                // A check that exits 0 and prints nothing it promised to.
+                steps.push(("check", Ok(output(0, "hello?\n", ""))));
+            }
+            let host = TestHost::new();
+            let (lifecycle, _) = lifecycle(MockClient::new(steps), policy, Arc::clone(&host));
+            lifecycle.request_check("test").await.expect("accepted");
+            let recorded = settled(&host).await;
+            assert_eq!(recorded["state"], "failed", "{expected}: {recorded}");
+            assert_eq!(recorded["code"], expected, "{recorded}");
+        }
+    }
+
+    // The two members of the `last_refusal` set that are not refusals, driven
+    // through the calls that write them. Both share the coded member with the
+    // refusals, so both need a code; neither would be reachable from a
+    // refusal test.
+    #[tokio::test]
+    async fn the_two_notes_that_share_the_refusal_member_carry_their_own_codes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+        let host = TestHost::new();
+        let store = SuppressionStore::at(dir.path().join("suppressed.json"));
+        store
+            .record(&Suppression {
+                version: "1.5.0".to_string(),
+                slot: "rootfs.1".to_string(),
+                at: "2026-09-06T00:00:00Z".to_string(),
+                boot_status: Some("bad".to_string()),
+                detail: "the slot exhausted its boot attempts".to_string(),
+            })
+            .expect("recorded");
+        // The staged bundle is put there by a real fetch, so `discard_bundle`
+        // below is discarding something the module itself recorded.
+        let client = MockClient::new(vec![
+            ready_probe(),
+            (
+                "fetch",
+                Ok(output(0, "/mos/updates/verified/x.raucb\n", "")),
+            ),
+        ]);
+        let lifecycle = Arc::new(
+            UpdateLifecycle::new(
+                Arc::new(client),
+                policy,
+                Arc::clone(&host) as Arc<dyn LifecycleHost>,
+                Arc::new(AtomicBool::new(false)),
+                PathBuf::from(DEFAULT_WORKSPACE_ROOT),
+            )
+            .with_suppression(store),
+        );
+        lifecycle.request_fetch("test").await.expect("accepted");
+        let recorded = settled(&host).await;
+        assert_eq!(recorded["state"], "ready", "{recorded}");
+
+        lifecycle
+            .clear_suppression(":1.7", "1.5.0")
+            .await
+            .expect("cleared");
+        assert_eq!(
+            host.last()["last_refusal_code"],
+            update_codes::NOTE_SUPPRESSION_CLEARED,
+            "{}",
+            host.last()
+        );
+
+        lifecycle
+            .discard_bundle("the current metadata no longer names it")
+            .await;
+        assert_eq!(
+            host.last()["last_refusal_code"],
+            update_codes::NOTE_BUNDLE_DISCARDED,
+            "{}",
+            host.last()
+        );
     }
 
     #[tokio::test]
@@ -2255,7 +2579,104 @@ mod tests {
                 .contains("offline"),
             "got: {recorded}"
         );
+        assert_eq!(
+            recorded["last_refusal_code"],
+            update_codes::REFUSED_NETWORK_OFFLINE,
+            "got: {recorded}"
+        );
         assert_eq!(recorded["policy"]["networkMode"], "offline");
+    }
+
+    // PLAN-076 B4, the deferral half. Every reason the automatic driver mints
+    // is driven through the recording path an operator polls, and a word from
+    // outside the vocabulary is driven through the same path to show what
+    // happens to it.
+    //
+    // THE SEAM, AND WHY IT IS HERE. `AutoDriver` keys its cadence on
+    // `std::time::Instant`, which `tokio::time::pause` does not move, so the
+    // driver cannot be ticked in a unit test today (RFCT-341 adds that seam).
+    // The recording site can be, and it is the site that matters for this
+    // gate: `defer` is what decides what reaches the document, so a driver
+    // test would prove which reason is chosen and this proves what the wire
+    // is allowed to carry. What is NOT proven here is the mapping from a
+    // failure to its reason inside the driver — see RFCT-339's notes.
+    #[tokio::test]
+    async fn every_deferral_reaches_the_document_as_a_code_and_nothing_else_does() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+        let host = TestHost::new();
+        let (lifecycle, _) = lifecycle(MockClient::new(vec![]), policy, Arc::clone(&host));
+
+        for reason in [
+            update_codes::DEFER_CHECK_REFUSED,
+            update_codes::DEFER_NO_NEWER_RELEASE,
+            update_codes::DEFER_VERSION_SUPPRESSED,
+            update_codes::DEFER_SUPPRESSION_UNREADABLE,
+            update_codes::DEFER_FETCH_REFUSED,
+            update_codes::DEFER_CLOCK_UNTRUSTED,
+            update_codes::DEFER_OUTSIDE_WINDOW,
+            update_codes::DEFER_SLOT_STATUS_UNKNOWN,
+            update_codes::DEFER_REBOOT_PENDING,
+            update_codes::DEFER_WORKSPACE_UNREADY,
+            update_codes::DEFER_RECHECK_FAILED,
+            update_codes::DEFER_RECHECK_REFUSED,
+            update_codes::DEFER_SUPERSEDED,
+            update_codes::DEFER_INSTALL_REFUSED,
+            update_codes::DEFER_REBOOT_GATE_CLOSED,
+        ] {
+            lifecycle.defer(reason, "the refusing rule, in words").await;
+            let recorded = host.last();
+            assert_eq!(recorded["deferred"]["reason"], reason, "{recorded}");
+            assert_eq!(
+                recorded["deferred"]["detail"], "the refusing rule, in words",
+                "{recorded}"
+            );
+            assert_eq!(recorded["deferred"]["attempts"], 1, "{reason}: {recorded}");
+            lifecycle.resume(None).await;
+        }
+
+        // A reason outside the vocabulary. The deferral is still recorded —
+        // an invisible refusal is the defect PLAN-071 §2 exists to stop — and
+        // its detail, clock and attempt count are untouched. What does not
+        // survive is the word: the document says `unknown`, and it does NOT
+        // say `no-newer-releases`.
+        lifecycle
+            .defer("no-newer-releases", "a plausible misspelling")
+            .await;
+        let recorded = host.last();
+        assert_eq!(recorded["deferred"]["reason"], update_codes::UNKNOWN);
+        assert_eq!(recorded["deferred"]["detail"], "a plausible misspelling");
+        assert_eq!(recorded["deferred"]["attempts"], 1);
+        assert!(
+            !recorded.to_string().contains("no-newer-releases"),
+            "the rejected word must not reach the document by any member: {recorded}"
+        );
+
+        // The clamp does not merge two different unknown reasons into one
+        // fact by accident of sharing a code: they DO share it, deliberately,
+        // which is the information the fallback gives up. `attempts` rising
+        // is what says so out loud rather than silently.
+        lifecycle
+            .defer("another-invention", "and another rule")
+            .await;
+        let recorded = host.last();
+        assert_eq!(recorded["deferred"]["reason"], update_codes::UNKNOWN);
+        assert_eq!(recorded["deferred"]["detail"], "and another rule");
+        assert_eq!(recorded["deferred"]["attempts"], 2);
+
+        // `resume` names a reason, so it clears by code too: an unmatched
+        // word clears nothing rather than clearing the wrong thing.
+        lifecycle.resume(Some("another-invention")).await;
+        assert_eq!(
+            host.last()["deferred"]["reason"],
+            update_codes::UNKNOWN,
+            "a word that is not the recorded code must not clear it"
+        );
+        lifecycle.resume(Some(update_codes::UNKNOWN)).await;
+        assert!(
+            host.last().get("deferred").is_none(),
+            "the recorded code clears it"
+        );
     }
 
     #[tokio::test]
@@ -2274,6 +2695,10 @@ mod tests {
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
         let refusal = lifecycle.request_fetch("test").await.expect_err("refused");
         assert!(refusal.message().contains("metered"));
+        assert_eq!(
+            host.last()["last_refusal_code"],
+            update_codes::REFUSED_NETWORK_METERED
+        );
         lifecycle
             .request_check("test")
             .await
@@ -2299,6 +2724,13 @@ mod tests {
                 .as_str()
                 .expect("reason")
                 .contains("not present"),
+        );
+        // `client.available: false` is itself the enumerated fact — a boolean
+        // needs no code — but the refusal it produced is on the coded member.
+        assert_eq!(
+            recorded["last_refusal_code"],
+            update_codes::REFUSED_CLIENT_UNAVAILABLE,
+            "got: {recorded}"
         );
     }
 
@@ -2499,7 +2931,7 @@ mod tests {
             parse_probe(&probed),
             Ok(ProbeOutcome::Unready(Unready {
                 status: "unavailable".to_string(),
-                kind: "mount-missing".to_string(),
+                kind: "mount-missing",
                 detail: "/mos is not a mount point".to_string(),
             }))
         );

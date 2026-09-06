@@ -767,7 +767,7 @@
         "operationId": "api_v1_health",
         "responses": {
           "200": {
-            "description": "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code",
+            "description": "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `mosd_unreachable`, `mosd_timeout` or `mosd_bad_answer` — beside the free-text `detail`; the code is the member to match on",
             "content": {
               "application/json": {
                 "schema": {
@@ -3973,7 +3973,7 @@
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
-            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`, `explanation` — the sentence a refusal carries only where it adds something the reason code does not already say, and `null` otherwise), `install`, `last_mark`",
+            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`, `explanation` — the sentence a refusal carries only where it adds something the reason code does not already say, and `null` otherwise), `install`, `last_mark`.\n\n**Every failure in this document carries an enumerated code beside its sentence, and the sentence is never the code.** Match on the code; the reason/detail/error beside it is for a human reading one device and may be reworded at any time. A failure this device has no code for is reported as `unknown` — never as its text — and its words go to the journal.\n\n- `lifecycle.code`, present exactly for the two failing states. For `failed`: `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-bundle-path`, `no-source-configured`, `policy-not-loaded`. For `update-unavailable` it is the workspace verdict, equal to `lifecycle.workspace.kind`: `mount-missing`, `not-data`, `read-only`, `exhausted`, `probe-failed`, or `unknown`.\n- `lifecycle.last_refusal_code`, beside `lifecycle.last_refusal`: `policy-invalid`, `policy-not-loaded`, `network-offline`, `no-source-configured`, `network-metered`, `client-unavailable`, and the two notes that share the member, `bundle-discarded` and `suppression-cleared`.\n- `lifecycle.deferred.reason` is itself a code — the fifteen the automatic path mints (`check-refused`, `no-newer-release`, `version-suppressed`, `suppression-unreadable`, `fetch-refused`, `clock-untrusted`, `outside-window`, `slot-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`) or `unknown`.\n- `lifecycle.reboot_gate.codes`, one per entry of `reboot_gate.reasons` and in the same order: `install-in-flight`, `health-blocking`. Which component reported the block is in the reason beside it, because a component name is not a closed set.\n- `last_error_code` and `install.error_code` classify RAUC's own words. One class is claimed — `signature-invalid` — and every other RAUC failure is `unknown`; the set grows when a failure is measured, not when one is imagined.\n- `rollback.reason` is already a code: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`.\n\nThree failure facts carry no code because the member IS the enumeration: `client.available: false`, `policy_error` present, `suppressed_error` present.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5297,6 +5297,13 @@
             "format": "int64",
             "description": "Whole seconds since boot, at the moment the probe answered.\n\nThe same value and spelling `GET /api/v1/state/uptime` serves.",
             "minimum": 0
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which class of failure the probe hit, from a fixed set:\n`mosd_unreachable` (the call could not be made or was refused),\n`mosd_timeout` (the bounded call expired), `mosd_bad_answer` (mosd\nreplied with something that is not the documented shape)."
           },
           "detail": {
             "type": [

@@ -904,6 +904,7 @@ export const en = {
           'slot-status-unknown': 'the device could not read its own slot state',
           superseded: 'the staged bundle is no longer the release the source names',
           'suppression-unreadable': 'the record of refused versions could not be read',
+          unknown: 'the device met a refusal it has no name for; the reason is in its logs',
           'version-suppressed': 'this device already rolled back that version and will not install it again on its own',
           'workspace-unready': 'the update workspace is not ready',
         },
