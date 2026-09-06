@@ -1788,35 +1788,85 @@ impl MosdService {
     async fn task_changed(emitter: &SignalEmitter<'_>, task_json: &str) -> zbus::Result<()>;
 }
 
+/// The four service routes the automatic driver reaches, and the ONE hop a
+/// test cannot build.
+///
+/// `main.rs` moves the [`MosdService`] into the object server and hands the
+/// driver an [`InterfaceRef`] to it, so the install and the reboot automation
+/// calls are the object server's own — the very instance `InstallUpdate` and
+/// `Reboot` land on, which is what makes "the automatic path meets the gates
+/// the manual path meets" true by construction rather than by review. An
+/// `InterfaceRef` needs a live connection, so that one indirection is also
+/// the only part of the wiring a unit test cannot stand up.
+///
+/// Naming those four calls here keeps the delegation a single piece of code:
+/// [`BusRoutes`]'s [`AutoRoutes`] implementation below is what production
+/// runs AND what `tests::the_automatic_and_manual_paths_meet_the_same_gate_set`
+/// drives, and all a test substitutes is the `self.get().await` hop. A second
+/// implementation written for the test would be a test of itself.
+#[async_trait::async_trait]
+pub trait ServedDaemon: Send + Sync {
+    /// `GetUpdateState`'s own document, read exactly as an operator polling
+    /// the API reads it.
+    async fn update_state(&self) -> fdo::Result<String>;
+
+    /// The `InstallUpdate` route, with every gate it answers an operator with.
+    async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()>;
+
+    /// The `Reboot` route, honouring the safe-to-reboot gate.
+    async fn reboot(&self, sender: &str) -> fdo::Result<()>;
+
+    /// PLAN-071 §7's clock-trust evidence.
+    async fn clock_trust(&self) -> ClockTrust;
+}
+
+#[async_trait::async_trait]
+impl ServedDaemon for InterfaceRef<MosdService> {
+    async fn update_state(&self) -> fdo::Result<String> {
+        self.get().await.refresh_update_state().await
+    }
+
+    async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()> {
+        self.get().await.request_install(sender, bundle).await
+    }
+
+    async fn reboot(&self, sender: &str) -> fdo::Result<()> {
+        self.get().await.request_reboot(sender).await
+    }
+
+    async fn clock_trust(&self) -> ClockTrust {
+        self.get().await.clock_trust().await
+    }
+}
+
 /// The automatic driver's window onto the daemon.
 ///
 /// Assembled here because its two halves live in different places: the check
 /// and the fetch are the lifecycle's, which the manual `CheckUpdate` and
-/// `FetchUpdate` routes also call, and the install and the reboot are this
+/// `FetchUpdate` routes also call, and the install and the reboot are the
 /// service's, which the object server owns once the connection is built —
 /// reached the way [`crate::scan`] reaches it, through the served interface.
 ///
 /// What is deliberately NOT here is `SetRebootOverride`. The automatic path
 /// holds this object and nothing else, so it cannot arm the reboot-gate
 /// override; see [`AutoRoutes`].
-pub struct BusRoutes {
+pub struct BusRoutes<S> {
     lifecycle: Arc<UpdateLifecycle>,
-    service: InterfaceRef<MosdService>,
+    service: S,
 }
 
-impl BusRoutes {
-    pub fn new(lifecycle: Arc<UpdateLifecycle>, service: InterfaceRef<MosdService>) -> Self {
+impl<S: ServedDaemon> BusRoutes<S> {
+    pub fn new(lifecycle: Arc<UpdateLifecycle>, service: S) -> Self {
         Self { lifecycle, service }
     }
 
-    /// `GetUpdateState`'s own document, read exactly as an operator polling
-    /// the API reads it.
+    /// `GetUpdateState`, parsed. A query that did not answer is `None`, which
+    /// the driver reads as "ask again next tick" and never as "nothing is
+    /// pending".
     async fn update_state(&self) -> Option<Value> {
         let rendered = self
             .service
-            .get()
-            .await
-            .refresh_update_state()
+            .update_state()
             .await
             .map_err(|err| {
                 tracing::debug!(error = %err, "automatic driver could not read the update state");
@@ -1827,7 +1877,7 @@ impl BusRoutes {
 }
 
 #[async_trait::async_trait]
-impl AutoRoutes for BusRoutes {
+impl<S: ServedDaemon + 'static> AutoRoutes for BusRoutes<S> {
     fn policy(&self) -> LoadedPolicy {
         self.lifecycle.policy().load()
     }
@@ -1868,18 +1918,14 @@ impl AutoRoutes for BusRoutes {
 
     async fn install(&self, sender: &str, bundle: &str) -> Result<(), String> {
         self.service
-            .get()
-            .await
-            .request_install(sender, bundle)
+            .install(sender, bundle)
             .await
             .map_err(|err| err.to_string())
     }
 
     async fn reboot(&self, sender: &str) -> Result<(), String> {
         self.service
-            .get()
-            .await
-            .request_reboot(sender)
+            .reboot(sender)
             .await
             .map_err(|err| err.to_string())
     }
@@ -1889,7 +1935,7 @@ impl AutoRoutes for BusRoutes {
     }
 
     async fn clock(&self) -> ClockTrust {
-        self.service.get().await.clock_trust().await
+        self.service.clock_trust().await
     }
 
     async fn audit(&self, event: &str) {
@@ -1952,7 +1998,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        DocumentRefusal, Inner, MosdService, paths_overlap, record_policy_action, run_apply_worker,
+        BusRoutes, DocumentRefusal, Inner, MosdService, ServedDaemon, fdo, paths_overlap,
+        record_policy_action, run_apply_worker,
     };
     use crate::confirmed_boot::ConfirmedBootStore;
     use crate::power::MockPower;
@@ -3890,5 +3937,602 @@ mod tests {
                 reconciler.subtree()
             );
         }
+    }
+
+    // ---- PLAN-071 U2 and U3 -------------------------------------------
+    //
+    // What is under test here is the wiring, not a model of it: the real
+    // `UpdateLifecycle` the manual `CheckUpdate`/`FetchUpdate` routes call,
+    // the real `MosdService` the manual `InstallUpdate`/`Reboot` routes land
+    // on, and the real `BusRoutes` — the production `AutoRoutes`
+    // implementation — over both. The only substitution is
+    // [`ServedDaemon`]'s `self.get().await` hop, which needs a live bus
+    // connection and is one line per route.
+
+    /// The served-object hop, and nothing else. See [`ServedDaemon`].
+    struct TestServed(Arc<MosdService>);
+
+    #[async_trait::async_trait]
+    impl ServedDaemon for TestServed {
+        async fn update_state(&self) -> fdo::Result<String> {
+            self.0.refresh_update_state().await
+        }
+
+        async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()> {
+            self.0.request_install(sender, bundle).await
+        }
+
+        async fn reboot(&self, sender: &str) -> fdo::Result<()> {
+            self.0.request_reboot(sender).await
+        }
+
+        async fn clock_trust(&self) -> crate::time_status::ClockTrust {
+            self.0.clock_trust().await
+        }
+    }
+
+    /// An update client scripted by subcommand, answering in `rauc-update`'s
+    /// printed contract.
+    ///
+    /// By subcommand rather than in a fixed order because the driver decides
+    /// how many checks a pass makes — a cadence check and a pre-install
+    /// re-check are both checks — and a script that fixed the count would be
+    /// asserting the shape of the pass rather than letting the pass have one.
+    /// The output is the contract's, so the lifecycle's real `parse_probe`,
+    /// `parse_check` and `parse_fetch` run.
+    struct ScriptedClient {
+        staged: String,
+        selected: String,
+        calls: CallLog,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::update_lifecycle::UpdateClient for ScriptedClient {
+        fn unavailable(&self) -> Option<String> {
+            None
+        }
+
+        async fn run(
+            &self,
+            args: &[String],
+            _timeout: Duration,
+        ) -> anyhow::Result<crate::update_lifecycle::ClientOutput> {
+            let verb = args.first().cloned().unwrap_or_default();
+            self.calls.lock().expect("client calls").push(verb.clone());
+            let stdout = match verb.as_str() {
+                "probe" => "ready root=/mos/updates pool=/mnt/data source=/dev/data fs_root=/mos \
+                            fstype=ext4 free=1000000000 used=0 budget=500000000\n"
+                    .to_string(),
+                "sync" => "synced root v1\n".to_string(),
+                "check" => format!(
+                    "selected {} version 1.5.0 channel stable (12 bytes)\n",
+                    self.selected
+                ),
+                "fetch" => format!(
+                    "selected {} version 1.5.0 channel stable (12 bytes)\n{}\n",
+                    self.selected, self.staged
+                ),
+                other => anyhow::bail!("the lifecycle ran an unscripted subcommand: {other}"),
+            };
+            Ok(crate::update_lifecycle::ClientOutput {
+                code: Some(0),
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    /// One device, wired the way `main.rs` wires it.
+    struct Device {
+        dir: tempfile::TempDir,
+        service: Arc<MosdService>,
+        lifecycle: Arc<crate::update_lifecycle::UpdateLifecycle>,
+        routes: Arc<BusRoutes<TestServed>>,
+        power: CallLog,
+        rauc: CallLog,
+        bundle: String,
+    }
+
+    const STAGED_BUNDLE: &str = "mos-1.5.0.raucb";
+
+    impl Device {
+        /// A device carrying `document`, a believed clock and the RAUC mock
+        /// given.
+        fn with_rauc(document: &str, rauc: MockRauc) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let shadow_path = dir.path().join("shadow");
+            std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
+            let policy_path = dir.path().join("updates.json");
+            std::fs::write(&policy_path, document).expect("seed the policy document");
+            let bundle = verified_bundle(&dir, STAGED_BUNDLE);
+            let power = Arc::new(Mutex::new(Vec::new()));
+            let rauc_calls = Arc::clone(&rauc.calls);
+            let service = MosdService::new(
+                store_in(&dir),
+                mosd_settings::Settings::default(),
+                Vec::new(),
+                Box::new(MockPower {
+                    calls: Arc::clone(&power),
+                }),
+                shadow_path,
+                serde_json::json!({}),
+            )
+            .with_rauc(Arc::new(rauc))
+            .with_update_workspace(dir.path().join("updates"))
+            .with_update(
+                Arc::new(ScriptedClient {
+                    staged: bundle.clone(),
+                    selected: STAGED_BUNDLE.to_string(),
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }),
+                crate::update_policy::PolicyStore::at(policy_path),
+                crate::update_suppress::SuppressionStore::at(
+                    dir.path().join("suppressed-versions.json"),
+                ),
+            )
+            // PLAN-071 §7's predicate is asserted on its own in
+            // `update_auto`; here it must simply hold, or every install
+            // below would defer on the clock before reaching its gate.
+            .with_time_status(Arc::new(FixedTimesync(synchronized_evidence())));
+            let service = Arc::new(service);
+            let lifecycle = service.update_handle();
+            let routes = Arc::new(BusRoutes::new(
+                Arc::clone(&lifecycle),
+                TestServed(Arc::clone(&service)),
+            ));
+            Self {
+                dir,
+                service,
+                lifecycle,
+                routes,
+                power,
+                rauc: rauc_calls,
+                bundle,
+            }
+        }
+
+        fn new(document: &str) -> Self {
+            Self::with_rauc(document, MockRauc::default())
+        }
+
+        fn rewrite(&self, document: &str) {
+            std::fs::write(self.dir.path().join("updates.json"), document)
+                .expect("rewrite the policy document");
+        }
+
+        /// A driver over this device's real routes, with a cadence a test
+        /// moves by hand.
+        fn driver(
+            &self,
+        ) -> (
+            crate::update_auto::AutoDriver,
+            Arc<crate::update_auto::TestCadence>,
+        ) {
+            let cadence = crate::update_auto::TestCadence::new();
+            let routes: Arc<dyn crate::update_auto::AutoRoutes> = self.routes.clone();
+            let clock: Arc<dyn crate::update_auto::Cadence> = cadence.clone();
+            (crate::update_auto::AutoDriver::new(routes, clock), cadence)
+        }
+
+        async fn update_entry(&self, path: &str) -> Value {
+            let raw = self.service.get_state(path).await.unwrap_or_default();
+            serde_json::from_str(&raw).unwrap_or(Value::Null)
+        }
+
+        /// The deferral the automatic path last recorded, as an operator
+        /// reads it back out of `update.lifecycle`.
+        async fn deferral(&self) -> Value {
+            self.update_entry("update.lifecycle.deferred").await
+        }
+
+        async fn reboot_gate(&self) -> Value {
+            self.update_entry("update.lifecycle.reboot_gate").await
+        }
+
+        /// Wait out a check the manual route spawned, so the next assertion
+        /// is not answered by the busy guard instead of the gate it means to
+        /// ask about.
+        async fn settled(&self) {
+            for _ in 0..200 {
+                let state = self.update_entry("update.lifecycle.state").await;
+                if state != Value::String("checking".to_string())
+                    && state != Value::String("downloading".to_string())
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("the lifecycle never settled");
+        }
+    }
+
+    /// Timesync evidence a healthy networked device settles into, so
+    /// `clock_trust` believes the clock by §7's first limb.
+    fn synchronized_evidence() -> crate::time_status::TimesyncEvidence {
+        crate::time_status::TimesyncEvidence {
+            service_reachable: true,
+            ntp_synchronized: Some(true),
+            server_name: Some("time.example".to_string()),
+            server_address: Some("192.0.2.10".to_string()),
+            sample: Some(crate::time_status::NtpSample {
+                leap: 0,
+                stratum: 2,
+                spike: false,
+                offset_seconds: 0.001,
+                packet_count: 8,
+            }),
+        }
+    }
+
+    /// An `auto` document with a maintenance window `hours` from now, open
+    /// when `open`. Two hours either side, so the verdict does not depend on
+    /// the minute the suite runs in.
+    fn auto_document(open: bool, reboot_policy: &str) -> String {
+        let face =
+            |offset: chrono::Duration| (chrono::Utc::now() + offset).format("%H:%M").to_string();
+        let (start, end) = if open {
+            (
+                face(-chrono::Duration::hours(2)),
+                face(chrono::Duration::hours(2)),
+            )
+        } else {
+            (
+                face(chrono::Duration::hours(2)),
+                face(chrono::Duration::hours(4)),
+            )
+        };
+        format!(
+            r#"{{"policy": "auto", "checkIntervalMinutes": 60,
+                 "rebootPolicy": "{reboot_policy}",
+                 "source": {{"url": "http://mirror/tuf", "channel": "stable"}},
+                 "maintenance": {{"windows": [{{"start": "{start}", "end": "{end}"}}]}}}}"#
+        )
+    }
+
+    /// PLAN-071 U2: **a test asserting the automatic and manual paths meet
+    /// the same gate set.**
+    ///
+    /// The property that makes `auto` safe, and the one a unit test of either
+    /// path alone cannot see. For each gate that can be closed, the operator's
+    /// route and the automatic route are driven against the same daemon and
+    /// must be refused by the same rule *in the same words* — the words being
+    /// the point, because a second window check or a second readiness probe
+    /// written for automation would answer with different ones, and an
+    /// automatic path that skipped the gate would answer with none.
+    ///
+    /// Both sides here are production code: `request_check`/`request_fetch`
+    /// and `request_install`/`request_reboot` are what the D-Bus methods call,
+    /// and `BusRoutes` is what `main.rs` hands the driver.
+    #[tokio::test]
+    async fn the_automatic_and_manual_paths_meet_the_same_gate_set() {
+        use crate::update_auto::{AutoRoutes, SENDER};
+
+        // The check, refused by network mode. Both routes call `admit_check`.
+        let device = Device::new(
+            r#"{"policy": "auto", "network": {"mode": "offline"},
+                "maintenance": {"windows": [{"start": "00:00", "end": "23:59"}]}}"#,
+        );
+        let manual = device
+            .lifecycle
+            .request_check(":1.7")
+            .await
+            .expect_err("offline refuses an operator's check");
+        let automatic = device
+            .routes
+            .check(SENDER)
+            .await
+            .expect_err("and refuses the automatic one");
+        assert_eq!(manual.message(), automatic.message());
+        assert!(manual.message().contains("offline"), "{}", manual.message());
+
+        // The check, refused because the document does not load. There is no
+        // selection to read a channel out of, so neither path may guess one.
+        let device = Device::new("{not json");
+        let manual = device
+            .lifecycle
+            .request_check(":1.7")
+            .await
+            .expect_err("an unreadable document refuses an operator's check");
+        let automatic = device
+            .routes
+            .check(SENDER)
+            .await
+            .expect_err("and the automatic one");
+        assert_eq!(manual.message(), automatic.message());
+        assert!(manual.message().contains("invalid"), "{}", manual.message());
+
+        // The fetch, refused by metered mode. `fetch_refusal` is a superset of
+        // `check_refusal`, and both routes call `admit_fetch`.
+        let device = Device::new(
+            r#"{"policy": "auto", "source": {"url": "http://mirror/tuf"},
+                "network": {"mode": "metered", "meteredAllowsFetch": false},
+                "maintenance": {"windows": [{"start": "00:00", "end": "23:59"}]}}"#,
+        );
+        let manual = device
+            .lifecycle
+            .request_fetch(":1.7")
+            .await
+            .expect_err("metered refuses an operator's download");
+        let automatic = device
+            .routes
+            .fetch(SENDER)
+            .await
+            .expect_err("and the automatic one");
+        assert_eq!(manual.message(), automatic.message());
+        assert!(manual.message().contains("metered"), "{}", manual.message());
+        // The same document admits the CHECK on both routes: metered gates
+        // downloads, not discovery, and a gate set copied wholesale from the
+        // fetch would be stricter than the one designed.
+        device.routes.check(SENDER).await.expect("admitted");
+        device
+            .lifecycle
+            .request_check(":1.7")
+            .await
+            .expect("admitted");
+        device.settled().await;
+
+        // The install, refused by the maintenance window.
+        let device = Device::new(&auto_document(false, "manual"));
+        let manual = device
+            .service
+            .request_install(":1.7", &device.bundle)
+            .await
+            .expect_err("a shut window refuses an operator's install");
+        let automatic = device
+            .routes
+            .install(SENDER, &device.bundle)
+            .await
+            .expect_err("and the automatic one");
+        assert!(
+            manual.to_string().ends_with(&automatic),
+            "manual: {manual}, automatic: {automatic}"
+        );
+        assert!(automatic.contains("outside every configured maintenance window"));
+
+        // The install, refused because the bundle is not a verified one. The
+        // automatic path reaches this route with a staged path, so the rule
+        // that only `verified/` is installable binds it too.
+        let stray = device.dir.path().join("stray.raucb");
+        std::fs::write(&stray, b"not staged").expect("seed a stray bundle");
+        let stray = stray.to_str().expect("utf-8");
+        let device = Device::new(&auto_document(true, "manual"));
+        let manual = device
+            .service
+            .request_install(":1.7", stray)
+            .await
+            .expect_err("a path outside verified/ refuses an operator's install");
+        let automatic = device
+            .routes
+            .install(SENDER, stray)
+            .await
+            .expect_err("and the automatic one");
+        assert!(
+            manual.to_string().ends_with(&automatic),
+            "manual: {manual}, automatic: {automatic}"
+        );
+
+        // The reboot, refused by the safe-to-reboot gate.
+        let device = Device::new(&auto_document(true, "window"));
+        device
+            .service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+        let manual = device
+            .service
+            .request_reboot(":1.7")
+            .await
+            .expect_err("a blocking report refuses an operator's reboot");
+        let automatic = device
+            .routes
+            .reboot(SENDER)
+            .await
+            .expect_err("and the automatic one");
+        assert!(
+            manual.to_string().ends_with(&automatic),
+            "manual: {manual}, automatic: {automatic}"
+        );
+        assert!(automatic.contains("exporter"), "{automatic}");
+        assert!(
+            device.power.lock().expect("power").is_empty(),
+            "neither refused reboot may reach the power control"
+        );
+
+        // The reboot, refused by an install in flight — the block no override
+        // lifts. Reached by an install this driver started, which is the only
+        // way the automatic path can be holding one.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let device = Device::with_rauc(
+            &auto_document(true, "window"),
+            MockRauc {
+                install_gate: Some(Arc::clone(&gate)),
+                ..MockRauc::default()
+            },
+        );
+        device
+            .routes
+            .install(SENDER, &device.bundle)
+            .await
+            .expect("the window is open");
+        wait_for_install_status(&device.service, "running").await;
+        let manual = device
+            .service
+            .request_reboot(":1.7")
+            .await
+            .expect_err("an install in flight refuses an operator's reboot");
+        let automatic = device
+            .routes
+            .reboot(SENDER)
+            .await
+            .expect_err("and the automatic one");
+        assert!(
+            manual.to_string().ends_with(&automatic),
+            "manual: {manual}, automatic: {automatic}"
+        );
+        assert!(automatic.contains("install"), "{automatic}");
+        gate.notify_one();
+        wait_for_install_status(&device.service, "done").await;
+
+        // Where the two sets deliberately differ, and the only place they do:
+        // §6's suppression and §5's re-check bind the AUTOMATIC path alone,
+        // because the operator reading the record has been told and is
+        // choosing. A gate set test that did not pin this would be satisfied
+        // by a device that refused the human too.
+        let device = Device::new(&auto_document(true, "manual"));
+        device
+            .lifecycle
+            .suppression()
+            .record(&crate::update_suppress::Suppression {
+                version: "1.5.0".to_string(),
+                slot: "rootfs.1".to_string(),
+                at: "2026-09-05T02:11:00Z".to_string(),
+                boot_status: Some("bad".to_string()),
+                detail: "installed into rootfs.1, which rolled back".to_string(),
+            })
+            .expect("record the rollback");
+        let (mut driver, cadence) = device.driver();
+        cadence.advance_past_the_check_interval();
+        driver.tick().await;
+        assert_eq!(
+            device.deferral().await["reason"],
+            "version-suppressed",
+            "the automatic path refuses a version this device rolled back"
+        );
+        assert!(
+            device.rauc.lock().expect("rauc").is_empty(),
+            "and installs nothing"
+        );
+        device
+            .service
+            .request_install(":1.7", &device.bundle)
+            .await
+            .expect("a manual install of a suppressed version stays available");
+    }
+
+    /// PLAN-071 U2, end to end: an automatic pass driven against a closed
+    /// gate records **the gate's own words** and reaches nothing behind it.
+    ///
+    /// The pairs above assert that both routes answer the same refusal; this
+    /// asserts that the driver actually meets those routes — a driver that
+    /// installed through some other path would leave the same policy document
+    /// and a very different RAUC call log.
+    #[tokio::test]
+    async fn an_automatic_pass_records_the_gates_own_refusal_and_reaches_nothing_behind_it() {
+        use crate::update_auto::SENDER;
+
+        let device = Device::new(&auto_document(false, "window"));
+        let (mut driver, cadence) = device.driver();
+
+        // Check and fetch run — neither is gated by the window — and the
+        // install is refused by it.
+        cadence.advance_past_the_check_interval();
+        driver.tick().await;
+
+        let manual = device
+            .service
+            .request_install(SENDER, &device.bundle)
+            .await
+            .expect_err("the window is shut for an operator too");
+        let deferred = device.deferral().await;
+        assert_eq!(deferred["reason"], "outside-window");
+        assert!(
+            manual.to_string().ends_with(
+                deferred["detail"]
+                    .as_str()
+                    .expect("a deferral carries the refusing rule")
+            ),
+            "manual: {manual}, deferred: {deferred}"
+        );
+        assert!(
+            device.rauc.lock().expect("rauc").is_empty(),
+            "a refused install must not reach the installer: {:?}",
+            device.rauc.lock().expect("rauc")
+        );
+        // The fetch DID run: the window gates installs and only installs.
+        assert_eq!(
+            device.update_entry("update.lifecycle.bundle").await,
+            Value::String(device.bundle.clone())
+        );
+
+        // The operator opens the window; the same driver installs and reboots
+        // through the same routes.
+        device.rewrite(&auto_document(true, "window"));
+        driver.tick().await;
+        wait_for_install_status(&device.service, "done").await;
+        driver.tick().await;
+        assert_eq!(
+            *device.power.lock().expect("power"),
+            vec!["reboot".to_string()],
+            "an open window and an open gate is the only combination that reboots"
+        );
+    }
+
+    /// PLAN-071 U3: **an automatic path against a closed gate arms no
+    /// override.**
+    ///
+    /// The invariant is structural — `SetRebootOverride` is not on
+    /// [`crate::update_auto::AutoRoutes`], so the driver holds no capability
+    /// to reach it — and this is what keeps the trait from growing one. The
+    /// assertion is made against the real gate, where an armed override is a
+    /// member of the recorded `update.reboot_gate`, and the last paragraph
+    /// arms one by hand so that "no override" is a fact this test can tell
+    /// apart from a state that renders nothing either way.
+    #[tokio::test]
+    async fn the_automatic_path_against_a_closed_gate_arms_no_override() {
+        let device = Device::new(&auto_document(true, "window"));
+        let (mut driver, cadence) = device.driver();
+
+        // A pass that installs, so a reboot is owed and the gate is what
+        // stands between the driver and it.
+        cadence.advance_past_the_check_interval();
+        driver.tick().await;
+        wait_for_install_status(&device.service, "done").await;
+        device
+            .service
+            .report_health("exporter", "blocking", "mid-transaction")
+            .await
+            .expect("report");
+
+        for _ in 0..3 {
+            driver.tick().await;
+        }
+
+        let deferred = device.deferral().await;
+        assert_eq!(deferred["reason"], "reboot-gate-closed");
+        assert_eq!(
+            deferred["attempts"], 3,
+            "four automatic attempts were refused, and by what: {deferred}"
+        );
+        assert!(
+            device.power.lock().expect("power").is_empty(),
+            "a closed gate is not a gate automation walks through"
+        );
+        let gate = device.reboot_gate().await;
+        assert_eq!(gate["safe"], false);
+        assert_eq!(gate["overridden"], false);
+        assert!(
+            gate["override"].is_null(),
+            "the automatic path armed the override: {gate}"
+        );
+
+        // The override is a human's judgement, and it is visible in exactly
+        // this member when a human makes it — so the assertion above is a
+        // measurement and not an empty tree.
+        device
+            .lifecycle
+            .set_reboot_override(":1.7", 120)
+            .await
+            .expect("an operator may arm it");
+        let gate = device.reboot_gate().await;
+        assert!(
+            gate["override"]["until"].is_string(),
+            "an armed override is visible here: {gate}"
+        );
+        driver.tick().await;
+        assert_eq!(
+            *device.power.lock().expect("power"),
+            vec!["reboot".to_string()],
+            "and the reboot the driver deferred goes through on the operator's judgement"
+        );
     }
 }

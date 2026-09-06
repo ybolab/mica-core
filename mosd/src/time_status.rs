@@ -814,4 +814,98 @@ mod tests {
         assert_eq!(format_server_address(2, &[1, 2]), None);
         assert_eq!(format_server_address(99, &[0; 4]), None);
     }
+
+    /// PLAN-071 §7's second limb, and the case it exists for: a device with
+    /// no STATE bind.
+    ///
+    /// The saved floor is the ONLY evidence an offline device has that its
+    /// notion of now is being carried forward, so "no file at all" must read
+    /// as no advance rather than as an advance nobody could disprove. The
+    /// three answers are the three states an appliance is actually found in:
+    /// STATE absent, STATE bound but timesyncd not yet writing, and the
+    /// mechanism alive.
+    #[test]
+    fn the_saved_floor_advances_only_when_the_file_moved_after_this_boot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clock = dir.path().join("clock");
+        // An hour into this boot, which is what /proc/uptime's first field
+        // carries; the boot instant the comparison uses is derived from it,
+        // so moving the uptime is how a test moves the boot rather than the
+        // file.
+        let an_hour_in = dir.path().join("uptime-3600");
+        std::fs::write(&an_hour_in, "3600.00 7200.00\n").expect("seed uptime");
+        // A machine that booted just now: a floor file already on the disk
+        // was last written before this boot, not during it.
+        let just_booted = dir.path().join("uptime-0");
+        std::fs::write(&just_booted, "0.00 0.00\n").expect("seed uptime");
+
+        assert!(
+            !saved_floor_advanced(&clock, &an_hour_in),
+            "a device with no STATE bind has no floor file, and an absent \
+             signal is not an advance"
+        );
+
+        std::fs::write(&clock, b"").expect("seed the floor");
+        assert!(
+            !saved_floor_advanced(&clock, &just_booted),
+            "STATE is bound but nothing has written the floor since boot"
+        );
+        assert!(
+            saved_floor_advanced(&clock, &an_hour_in),
+            "the floor moved during this boot: the mechanism is alive"
+        );
+
+        // An unreadable uptime is an unread signal, and the closed side here
+        // is deferring the install.
+        assert!(!saved_floor_advanced(&clock, &dir.path().join("absent")));
+    }
+
+    /// The predicate the automatic install is gated on, and the sentence an
+    /// operator is given when it refuses.
+    #[test]
+    fn the_clock_is_believed_on_either_limb_and_the_refusal_names_both() {
+        let degraded = ClockTrust {
+            status: Some(SyncStatus::OfflineDegraded),
+            floor_advanced: false,
+        };
+        assert!(!degraded.believed());
+        let reason = degraded
+            .untrusted_reason()
+            .expect("an unbelieved clock says why");
+        assert!(reason.contains("offline-degraded"), "{reason}");
+        assert!(reason.contains(SAVED_CLOCK_PATH), "{reason}");
+        assert!(
+            reason.contains("checks and fetches are unaffected"),
+            "the refusal must not read as a device that stopped discovering \
+             updates: {reason}"
+        );
+
+        for believed in [
+            ClockTrust {
+                status: Some(SyncStatus::Synchronized),
+                floor_advanced: false,
+            },
+            ClockTrust {
+                status: Some(SyncStatus::OfflineDegraded),
+                floor_advanced: true,
+            },
+        ] {
+            assert!(believed.believed(), "{believed:?}");
+            assert_eq!(believed.untrusted_reason(), None);
+        }
+
+        // Unread evidence is not a claim: a daemon with no observer at all
+        // and no floor does not get to call its clock believable.
+        let unread = ClockTrust {
+            status: None,
+            floor_advanced: false,
+        };
+        assert!(!unread.believed());
+        assert!(
+            unread
+                .untrusted_reason()
+                .expect("says why")
+                .contains("`unknown`")
+        );
+    }
 }

@@ -2519,4 +2519,72 @@ mod tests {
                 .contains("not present")
         );
     }
+
+    /// PLAN-071 §2's `since`/`attempts`: what makes "a permanently blocking
+    /// application" and "a stuck update" stop looking the same from outside.
+    ///
+    /// The attempt counter is the load-bearing half and is asserted exactly.
+    /// `since` is rendered to the second, so a same-second repeat cannot
+    /// distinguish "kept" from "reset" on its own — what pins it is that a
+    /// CHANGED reason starts a new fact, which the counter reports.
+    #[tokio::test]
+    async fn a_repeated_deferral_counts_its_attempts_and_a_changed_reason_starts_over() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+        let host = TestHost::new();
+        let (lifecycle, _) = lifecycle(MockClient::new(vec![]), policy, Arc::clone(&host));
+
+        lifecycle
+            .defer("reboot-gate-closed", "exporter reports blocking")
+            .await;
+        let first = host.last();
+        assert_eq!(first["deferred"]["reason"], "reboot-gate-closed");
+        assert_eq!(first["deferred"]["attempts"], 1);
+        assert_eq!(first["deferred"]["since"], first["deferred"]["at"]);
+
+        lifecycle
+            .defer("reboot-gate-closed", "exporter still reports blocking")
+            .await;
+        let again = host.last();
+        assert_eq!(
+            again["deferred"]["attempts"], 2,
+            "the same reason again extends the fact rather than replacing it"
+        );
+        assert_eq!(again["deferred"]["since"], first["deferred"]["since"]);
+        assert_eq!(
+            again["deferred"]["detail"], "exporter still reports blocking",
+            "the newest wording of the refusing rule is the one an operator reads"
+        );
+        assert!(again["deferred"]["waitedSeconds"].is_number());
+
+        // A different reason is a different refusal, and inheriting the first
+        // one's clock would report a wait that never happened.
+        lifecycle
+            .defer(
+                "outside-window",
+                "outside every configured maintenance window",
+            )
+            .await;
+        let changed = host.last();
+        assert_eq!(changed["deferred"]["reason"], "outside-window");
+        assert_eq!(changed["deferred"]["attempts"], 1);
+
+        // `resume(Some(..))` clears one reason and only that one: a check that
+        // finds a newer release ends `no-newer-release` and says nothing about
+        // whether the maintenance window is open.
+        lifecycle.resume(Some("no-newer-release")).await;
+        assert_eq!(host.last()["deferred"]["reason"], "outside-window");
+        lifecycle.resume(Some("outside-window")).await;
+        assert!(host.last()["deferred"].is_null());
+
+        // `resume(None)` is for the two steps that ran a whole pass to its end.
+        lifecycle
+            .defer(
+                "clock-untrusted",
+                "the clock is not one this device believes",
+            )
+            .await;
+        lifecycle.resume(None).await;
+        assert!(host.last()["deferred"].is_null());
+    }
 }

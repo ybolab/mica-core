@@ -242,3 +242,170 @@ impl SuppressionStore {
             .map_err(|err| format!("write {}: {err:#}", path.display()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(version: &str, detail: &str) -> Suppression {
+        Suppression {
+            version: version.to_string(),
+            slot: "rootfs.1".to_string(),
+            at: "2026-09-05T02:11:00Z".to_string(),
+            boot_status: Some("bad".to_string()),
+            detail: detail.to_string(),
+        }
+    }
+
+    fn store_in(dir: &tempfile::TempDir) -> SuppressionStore {
+        SuppressionStore::at(dir.path().join("update").join(DEFAULT_FILE_NAME))
+    }
+
+    /// A store whose file does not exist yet is empty AND unrefused: a device
+    /// that has never rolled anything back must keep installing.
+    #[test]
+    fn a_missing_file_is_an_empty_store_and_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loaded = store_in(&dir).load();
+        assert!(loaded.records.is_empty());
+        assert_eq!(loaded.error, None);
+        assert_eq!(loaded.get("1.5.0"), None);
+    }
+
+    /// The branch whose failure silently restores the reboot loop, which is
+    /// why it is the first one written: a store that exists and does not
+    /// parse must not read as "nothing is suppressed".
+    #[test]
+    fn a_store_that_does_not_parse_is_an_error_and_never_an_empty_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&dir);
+        let path = dir.path().join("update").join(DEFAULT_FILE_NAME);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, "{not json").expect("seed a broken store");
+
+        let loaded = store.load();
+        assert!(loaded.records.is_empty());
+        let error = loaded
+            .error
+            .expect("an unparseable store carries its error");
+        assert!(error.starts_with("parse "), "got: {error}");
+        assert!(error.contains(DEFAULT_FILE_NAME), "got: {error}");
+
+        // And the closed side on the write path: truncating an unreadable
+        // file is how the record it holds would be lost.
+        let refused = store
+            .record(&record("1.5.0", "rolled back"))
+            .expect_err("a broken store refuses the write");
+        assert!(refused.starts_with("parse "), "got: {refused}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file survives"),
+            "{not json",
+            "a refused write must not have replaced the store"
+        );
+    }
+
+    /// Idempotent in the direction that keeps the FIRST evidence: the caller
+    /// is the state refresh, which runs on every `GetUpdateState` while a
+    /// rolled-back slot is visible, so a second record must not walk the
+    /// timestamp forward and lose the moment the failure happened.
+    #[test]
+    fn recording_twice_keeps_the_first_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&dir);
+
+        assert!(
+            store
+                .record(&record("1.5.0", "the first observation"))
+                .expect("record"),
+            "the first record of a version is a new one"
+        );
+        assert!(
+            !store
+                .record(&record("1.5.0", "a later poll of the same rollback"))
+                .expect("record again"),
+            "the same version again is not a new record"
+        );
+
+        let loaded = store.load();
+        assert_eq!(loaded.records.len(), 1);
+        assert_eq!(
+            loaded.get("1.5.0").expect("the record").detail,
+            "the first observation"
+        );
+        assert_eq!(loaded.error, None);
+    }
+
+    /// Clearing names one version. A typo is not a successful clearing —
+    /// the caller answers the operator with the difference — and clearing one
+    /// version says nothing about the others, because the operator who has
+    /// diagnosed one bad release has not thereby diagnosed the rest.
+    #[test]
+    fn clearing_answers_the_record_and_a_typo_clears_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&dir);
+        store
+            .record(&record("1.5.0", "rolled back"))
+            .expect("record 1.5.0");
+        store
+            .record(&record("1.6.0", "rolled back too"))
+            .expect("record 1.6.0");
+
+        assert_eq!(
+            store.clear("1.5.1").expect("a typo is not a failure"),
+            None,
+            "a version that was not suppressed cannot have been cleared"
+        );
+        assert_eq!(store.load().records.len(), 2);
+
+        let cleared = store
+            .clear("1.5.0")
+            .expect("clear")
+            .expect("1.5.0 was suppressed");
+        assert_eq!(cleared.version, "1.5.0");
+        assert_eq!(cleared.slot, "rootfs.1");
+        let remaining = store.load();
+        assert_eq!(remaining.records.len(), 1);
+        assert!(remaining.get("1.5.0").is_none());
+        assert!(remaining.get("1.6.0").is_some());
+    }
+
+    /// The dry-run shape: no file at all. Nothing is ever suppressed and
+    /// nothing is ever written — including into the host's real STATE
+    /// directory, which is what a daemon with no path must not reach.
+    #[test]
+    fn a_store_with_no_file_suppresses_nothing_and_writes_nothing() {
+        let store = SuppressionStore::none();
+        let loaded = store.load();
+        assert!(loaded.records.is_empty());
+        assert_eq!(loaded.error, None);
+        assert!(
+            !store
+                .record(&record("1.5.0", "rolled back"))
+                .expect("record")
+        );
+        assert_eq!(store.clear("1.5.0").expect("clear"), None);
+        assert!(store.load().records.is_empty());
+    }
+
+    /// The evidence, not just the version: PLAN-071 §6's *"this device
+    /// refuses 1.5.0"* with no reason is a support case with nothing in it.
+    /// The record survives a round trip through the file, and the served
+    /// shape carries every field an operator reads.
+    #[test]
+    fn the_record_carries_its_evidence_through_the_file_and_the_wire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&dir);
+        let entry = record("1.5.0", "installed into rootfs.1, which rolled back");
+        store.record(&entry).expect("record");
+
+        let reloaded = store.load();
+        assert_eq!(reloaded.get("1.5.0"), Some(&entry));
+
+        let json = entry.to_json();
+        assert_eq!(json["version"], "1.5.0");
+        assert_eq!(json["slot"], "rootfs.1");
+        assert_eq!(json["at"], "2026-09-05T02:11:00Z");
+        assert_eq!(json["bootStatus"], "bad");
+        assert_eq!(json["detail"], "installed into rootfs.1, which rolled back");
+    }
+}
