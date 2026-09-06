@@ -55,6 +55,7 @@ const SMOKE_TIMEOUT_MS = 180_000;
  * as success -- the same rule the harness applies to its own totals.
  */
 const REQUIRED = [
+  ["keystore-real-readable", "the systemd-network user can read the key mosd generated for the managed WireGuard fixture"],
   ["state-mounted", "the STATE partition is mounted, so the key-store paths below are real"],
   ["modprobe-8021q", "the running kernel resolves the 8021q module"],
   ["modprobe-bridge", "the running kernel resolves the bridge module"],
@@ -72,22 +73,6 @@ const REQUIRED = [
     "secrets-unreadable",
     "the same user CANNOT read <state>/secrets/, which is why the key store is a sibling " +
       "of it and not a directory under it",
-  ],
-] as const;
-
-/**
- * Conclusions that are real when present and honestly absent otherwise.
- *
- * `keystore-real-readable` is about a key MOSD generated, which exists only
- * once a WireGuard interface has been configured and reconciled. On the first
- * boot of a fresh disk there is none, and the guest says SKIP rather than
- * inventing one. Requiring it would make this phase depend on 05b's timing and
- * report "not created yet" as EACCES.
- */
-const OPTIONAL = [
-  [
-    "keystore-real-readable",
-    "the systemd-network user can read the key mosd itself generated",
   ],
 ] as const;
 
@@ -147,7 +132,7 @@ const phase: Phase = {
     const marker = bootMarker();
 
     if (!log.available) {
-      report.skip(
+      report.fail(
         "the M7 kernel-networking smoke",
         log.unavailableReason ??
           "the console log is unavailable, and this phase has no other channel into the guest",
@@ -196,19 +181,6 @@ const phase: Phase = {
         continue;
       }
       if (line.status === "PASS") {
-        report.pass(`${what} -- ${line.detail}`);
-      } else if (line.status === "SKIP") {
-        report.skip(what, line.detail);
-      } else {
-        report.fail(what, `the guest reported: ${line.detail}`);
-      }
-    }
-
-    for (const [id, what] of OPTIONAL) {
-      const line = found.get(id);
-      if (line === undefined || line.status === "SKIP") {
-        report.skip(what, line?.detail ?? `the guest wrote no "${id}" conclusion this boot`);
-      } else if (line.status === "PASS") {
         report.pass(`${what} -- ${line.detail}`);
       } else {
         report.fail(what, `the guest reported: ${line.detail}`);

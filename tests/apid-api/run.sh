@@ -79,13 +79,10 @@ PROGRESS_INTERVAL="${MOS_APID_PROGRESS_INTERVAL:-15}"
 RUN_SECONDS="${MOS_QEMU_RUN_SECONDS:-2400}"
 QEMU_TIMEOUT="${MOS_QEMU_TIMEOUT:-2700}"
 
-# The registry, named here because the runner reports an unlisted phase as
-# SKIPPED and prints a PARTIAL note rather than failing -- so a phase added to
-# src/main.ts and forgotten here would be silently not run while the RESULT line
-# stayed green. Every phase is non-destructive to the BOOT: 08 stages a reset
-# intent, which mosd would carry out on a next boot this suite never takes, and
-# nothing here reboots the guest. One boot is therefore still sufficient.
-PHASES="${MOS_APID_PHASES:-01-spa-boundary,02-session,03-api-management,04-network-observation,05c-kernel-net,06-onboarding-claim,07-update-rollback,08-reset-recovery}"
+# An empty selection runs the entire registry in src/main.ts. Keep no second
+# phase list here: adding a phase must include it in the default QEMU run.
+# Explicit MOS_APID_PHASES remains available for focused debugging.
+PHASES="${MOS_APID_PHASES:-}"
 # The bun image is pinned by digest, not by tag. `oven/bun:1` is a
 # major-version tag upstream repoints onto every 1.x release, and this harness
 # is what decides whether apid's API is judged conformant, so the default is the

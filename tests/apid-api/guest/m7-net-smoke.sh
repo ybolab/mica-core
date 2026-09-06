@@ -13,12 +13,19 @@
 # journald at `Storage=volatile` and there is no login and no route in. The
 # suite reads these lines back out of the captured serial log.
 #
-# It creates nothing that outlives it. The three links are torn down in the
-# order they were made, and the key fixture is removed, because a device left
-# behind would be indistinguishable from one mosd rendered and would be swept
-# by the next reconcile.
+# Kernel-only links and the permission probe file are removed. The managed
+# WireGuard fixture remains on the disposable QEMU disk until harness teardown.
 
 set -u
+
+# The kernel-command-line service starts early. Dispatch the checks after mosd
+# acquires its bus name so the real key test can exercise a managed tunnel.
+if [ "${M7_AFTER_MOSD:-0}" != 1 ]; then
+    exec systemd-run --no-block --unit=mos-e2e-net-smoke \
+        --property=After=mosd.service --property=Requires=mosd.service \
+        --property=StandardOutput=journal+console --property=StandardError=journal+console \
+        --setenv=M7_AFTER_MOSD=1 /bin/bash "$0"
+fi
 
 STATE_DIR=/var/lib/mos
 KEY_DIR="${STATE_DIR}/networkd-secrets"
@@ -174,17 +181,19 @@ else
     fi
     rm -f "${FIXTURE}"
 
-    real=0
-    for key in "${KEY_DIR}"/wg-*.key; do
-        [ -e "${key}" ] || continue
-        real=$((real + 1))
-        if out=$(as_netuser cat "${key}" >/dev/null 2>&1); then
-            pass keystore-real-readable "${NET_USER} read the key mosd generated at ${key} (mode $(stat -c '%a %U:%G' "${key}" 2>/dev/null))"
-        else
-            fail keystore-real-readable "${NET_USER} could NOT read mosd's own key at ${key} (mode $(stat -c '%a %U:%G' "${key}" 2>/dev/null)): ${out}"
-        fi
-    done
-    [ "${real}" -eq 0 ] && say "keystore-real-readable SKIP no wg-*.key in ${KEY_DIR} on this boot"
+    # Ask mosd to generate the key through its real settings/reconcile path.
+    # This tunnel has no peers or default route and does not change the NIC.
+    managed_key="${KEY_DIR}/wg-wg-e2e0.key"
+    if ! busctl --timeout=15 call com.mos.mosd /com/mos/mosd com.mos.mosd1 \
+        SetSettings ss network.wg-e2e0 '{"kind":"wireguard","dhcp":false,"wireguard":{}}' >/dev/null; then
+        fail keystore-real-readable "mosd refused the managed WireGuard fixture"
+    elif ! wait_for 30 test -s "${managed_key}"; then
+        fail keystore-real-readable "mosd generated no key for wg-e2e0 within 30s"
+    elif as_netuser cat "${managed_key}" >/dev/null 2>&1; then
+        pass keystore-real-readable "${NET_USER} read the key mosd generated at ${managed_key} (mode $(stat -c '%a %U:%G' "${managed_key}" 2>/dev/null))"
+    else
+        fail keystore-real-readable "${NET_USER} could NOT read mosd's key at ${managed_key}"
+    fi
 
     # The negative, and it is not decoration. If `systemd-network` could read
     # `secrets/` then the amendment's whole premise -- that a key cannot live
@@ -215,7 +224,7 @@ else
     [ "${secrets_fixture}" -eq 1 ] && secrets_origin="a fixture at the mode identity.rs:44 pins, mosd not having provisioned yet on this boot"
 
     if [ ! -d "${SECRETS_DIR}" ]; then
-        say "secrets-unreadable SKIP ${SECRETS_DIR} does not exist and could not be created on this boot"
+        fail secrets-unreadable "${SECRETS_DIR} does not exist and could not be created on this boot"
     elif as_netuser cat "${SECRETS_DIR}/device-password" >/dev/null 2>&1; then
         fail secrets-unreadable "${NET_USER} CAN read ${SECRETS_DIR}/device-password (dir mode $(stat -c '%a %U:%G' "${SECRETS_DIR}" 2>/dev/null), ${secrets_origin}); the plaintext device password is readable by the network account"
     else
