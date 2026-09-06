@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Boot the x64 image with apid reachable from outside it, and run the API suite
+# Boot a UEFI board's image with apid reachable from outside it, and run the API suite
 # against the running daemon.
 #
 #   bash pkgs/mosd/tests/apid-api/run.sh
@@ -14,15 +14,32 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+# WHICH BOARD. Resolved once, here, and exported so that src/qemu.ts reads the
+# same value rather than defaulting independently -- two halves that each
+# picked a board could disagree, and the disagreement would present as "image
+# missing" for a board nobody asked about.
+#
+# x64 is the default because it is the board this harness has always booted and
+# the one with a KVM-capable host; virt-arm64 is the same suite on the
+# architecture the device runs. Any UEFI board works: nothing below knows a
+# board name.
+MOS_BOARD="${MOS_BOARD:-x64}"
+export MOS_BOARD
+BOARD_ENV="${REPO_ROOT}/boards/${MOS_BOARD}/board.env"
+if [ ! -f "${BOARD_ENV}" ]; then
+    echo "FAIL: MOS_BOARD is '${MOS_BOARD}' and ${BOARD_ENV} does not exist; a board IS its board.env" >&2
+    exit 1
+fi
+
 # The board layout is the board definition; the image's name is read from it
 # rather than repeated here, the same way src/qemu.ts reads it. `:?` on the
 # one key used turns a layout that stopped defining it into a sentence instead
 # of an empty path that fails four lines later as "image missing".
 # shellcheck source=/dev/null  # a data file of assignments, resolved at runtime
-. "${REPO_ROOT}/boards/x64/board.env"
+. "${BOARD_ENV}"
 
-OUT_DIR="${REPO_ROOT}/_out/x64"
-IMG="${OUT_DIR}/${IMAGE_LATEST_NAME:?boards/x64/board.env did not define IMAGE_LATEST_NAME}"
+OUT_DIR="${REPO_ROOT}/_out/${MOS_BOARD}"
+IMG="${OUT_DIR}/${IMAGE_LATEST_NAME:?${BOARD_ENV} did not define IMAGE_LATEST_NAME}"
 RUN_DIR="${OUT_DIR}/.qemu"
 ART_DIR="${OUT_DIR}/apid-api"
 
@@ -45,7 +62,7 @@ ART_DIR="${OUT_DIR}/apid-api"
 # assignment under `set -e`, as a bare exit 1 with no output. Refuse with a
 # sentence instead; the image check further down never gets a chance to.
 if ! RUN_DIR_REAL="$(readlink -f "${RUN_DIR}")"; then
-    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board x64" >&2
+    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build it: MOS_BOARD=${MOS_BOARD} bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board ${MOS_BOARD}" >&2
     exit 1
 fi
 OUT_REAL="$(readlink -f "${REPO_ROOT}/_out")"
@@ -318,7 +335,7 @@ finish() {
 note "repository ${REPO_ROOT}"
 
 if [ ! -e "${IMG}" ]; then
-    fail "image ${IMG##*/} is missing; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board x64"
+    fail "image ${IMG##*/} is missing; this harness builds nothing. Build it: MOS_BOARD=${MOS_BOARD} bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board ${MOS_BOARD}"
     finish
 fi
 pass "image present: ${IMG##*/} -> $(basename "$(readlink -f "${IMG}")")"
@@ -404,7 +421,7 @@ CONSOLE1="${ART_DIR}/console-boot1.log"
 # dangling link, because the symlink's target does not exist in that container.
 # Where _out is a real directory the second bind is the same directory twice
 # and costs nothing.
-ART_IN_CONTAINER="/w/_out/x64/apid-api"
+ART_IN_CONTAINER="/w/_out/${MOS_BOARD}/apid-api"
 
 # Where phase 05c's guest script lands inside the STATE partition. Named here,
 # beside the other paths, because both the dry-run summary and the seed step
@@ -504,7 +521,7 @@ pass "disk prepared at ${RUN_DIR}/disk.img"
 # The guest half of phase 05c, written into the disk copy's STATE partition.
 # AFTER --prepare-only, which is what makes the copy: seeding before it would
 # write into a disk the prepare then overwrites. The image itself is never
-# touched -- tools/qemu-seed-state.sh edits _out/x64/.qemu/disk.img.
+# touched -- tools/qemu-seed-state.sh edits _out/<board>/.qemu/disk.img.
 #
 # A failure here is fatal rather than a warning. Booting on without the script
 # would leave phase 05c reporting that the smoke never ran, which is true and
@@ -766,7 +783,7 @@ run_suite boot1 "${GUEST_IP}" "console-boot1.log" "${PHASES}"
 MERGED="${ART_DIR}/result.json"
 # The image identity goes in the envelope, because a result file that does not
 # say which artefact it covered is a result file that cannot be trusted a week
-# later. `x64-mos-latest.img` is a symlink and its target changes under it
+# later. `<board>-mos-latest.img` is a symlink and its target changes under it
 # every time somebody builds; the resolved name and the mtime are what pin a run
 # to a surface. When a route check fails, this identity says whether the image
 # moved under the source tree or the contract did.

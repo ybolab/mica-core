@@ -29,8 +29,10 @@ import { EmptyAssumesError, runPhases, type Phase, type PhaseContext } from "./r
 import {
   ESP_GRUB_CFG,
   NoLinuxLineError,
+  QEMU_ARCHES,
   applyKernelAppend,
   espOffsetBytes,
+  qemuArchFor,
   readBoardEnv,
   type AppendResult,
 } from "./qemu.ts";
@@ -971,6 +973,88 @@ try {
       `expected: applied=true -- the line carries "mos.debug=b", which "a*b" matches only as a pattern`,
       `actual:   applied=${star.applied}; the append was read as a pattern and skipped`,
     ].join("\n"),
+  );
+
+  // (5.6) The per-architecture machine/firmware/emulator table, added when this
+  // harness stopped being x64's. Pure, so it belongs in this phase: it is a
+  // lookup over a board's declared MOS_ARCH and nothing about it needs a
+  // container.
+  //
+  // WHAT WOULD GO WRONG WITHOUT IT. The three facts are not interchangeable and
+  // two of the three fail LATE and quietly if they are wrong: an aarch64 guest
+  // started under qemu-system-x86_64 refuses at once with a clear message, but
+  // OVMF handed to `-machine virt` is a pflash image of the wrong size and
+  // architecture, which presents as a machine that sits at no output at all --
+  // indistinguishable, on a headless TCG run, from a slow boot.
+  const amd = qemuArchFor("amd64", "x64");
+  const arm = qemuArchFor("arm64", "virt-arm64");
+  outer.check(
+    amd.binary === "qemu-system-x86_64" && amd.machine === "q35" &&
+      arm.binary === "qemu-system-aarch64" && arm.machine === "virt",
+    "each architecture resolves to its own emulator and machine model",
+    [
+      `expected: amd64 -> qemu-system-x86_64/q35, arm64 -> qemu-system-aarch64/virt`,
+      `actual:   amd64 -> ${amd.binary}/${amd.machine}, arm64 -> ${arm.binary}/${arm.machine}`,
+    ].join("\n"),
+  );
+  // The rows must not SHARE a firmware path. This is the check that would have
+  // caught a table filled in by copying the amd64 row: every field would look
+  // plausible and the arm64 guest would be handed OVMF.
+  outer.check(
+    amd.firmwareCode !== arm.firmwareCode && amd.firmwareVars !== arm.firmwareVars &&
+      arm.firmwareCode.includes("AAVMF") && amd.firmwareCode.includes("OVMF"),
+    "the two architectures name different firmware, and each names its own",
+    [
+      `expected: OVMF for amd64, AAVMF for arm64, and no field shared`,
+      `actual:   amd64 code=${amd.firmwareCode}, arm64 code=${arm.firmwareCode}`,
+    ].join("\n"),
+  );
+  // Same for the apt line: the arm64 row must actually install an aarch64
+  // emulator and its firmware, not inherit the x86 pair.
+  outer.check(
+    arm.packages.includes("qemu-system-arm") && arm.packages.includes("qemu-efi-aarch64") &&
+      !arm.packages.includes("ovmf"),
+    "the arm64 row installs the aarch64 emulator and AAVMF, and not ovmf",
+    [`expected: qemu-system-arm + qemu-efi-aarch64, without ovmf`, `actual:   ${arm.packages}`].join("\n"),
+  );
+  // An architecture with no row is REFUSED, naming the board and what is known.
+  // Without this an unknown arch reads as `undefined` and the run dies later on
+  // a property of it, in a message about JavaScript rather than about a board.
+  let unknownArch: unknown;
+  try {
+    qemuArchFor("riscv64", "someboard");
+  } catch (error) {
+    unknownArch = error;
+  }
+  outer.check(
+    unknownArch instanceof Error && unknownArch.message.includes("someboard") &&
+      unknownArch.message.includes("riscv64"),
+    "a board whose MOS_ARCH has no row is refused, naming the board and the architecture",
+    [
+      `expected: an Error naming 'someboard' and 'riscv64'`,
+      `actual:   ${unknownArch === undefined ? "it returned quietly, and the boot would have started with undefined fields" : String(unknownArch)}`,
+    ].join("\n"),
+  );
+  // ...and an UNSET arch is refused too, which is the likelier accident: a
+  // layout that never declared MOS_ARCH reads as undefined, not as a bad value.
+  let noArch: unknown;
+  try {
+    qemuArchFor(undefined, "someboard");
+  } catch (error) {
+    noArch = error;
+  }
+  outer.check(
+    noArch instanceof Error,
+    "a board that declares no MOS_ARCH at all is refused rather than defaulted",
+    `actual:   ${noArch === undefined ? "it returned quietly" : "refused"}`,
+  );
+  // The positive control for all four refusals above: the shipped rows resolve.
+  // Without it, a qemuArchFor that threw unconditionally would satisfy them.
+  outer.check(
+    Object.keys(QEMU_ARCHES).length >= 2 &&
+      Object.keys(QEMU_ARCHES).every((a) => qemuArchFor(a, "b").binary !== ""),
+    "POSITIVE CONTROL: every architecture in the shipped table resolves, so the refusals above are specific",
+    `actual:   the table has ${Object.keys(QEMU_ARCHES).length} row(s) and one of them does not resolve`,
   );
   outer.endPhase();
 } finally {

@@ -1,5 +1,5 @@
 /**
- * Boot the x64 disk image in QEMU, through firmware, from the disk.
+ * Boot a UEFI board's disk image in QEMU, through firmware, from the disk.
  *
  *   bun run src/qemu.ts --prepare-only
  *   MOS_QEMU_TIMEOUT=300 bun run src/qemu.ts --capture <file>
@@ -8,7 +8,8 @@
  * skip the disk entirely, and that would be a faster test of a smaller thing:
  * it bypasses the firmware, GRUB, grubenv and the A/B order, which on this
  * board are exactly the parts with no other test. The image here boots the way
- * an industrial PC boots it: OVMF finds the ESP, runs BOOTX64.EFI, GRUB reads
+ * a real machine boots it: the firmware finds the ESP, runs the removable-media
+ * EFI binary, GRUB reads
  * its own grub.cfg and grubenv, and the kernel comes off the same partition
  * RAUC updates. QEMU runs inside a container because this host has none, and
  * because pinning the machine model, the firmware build and the disk interface
@@ -43,10 +44,83 @@ const MIB = 1048576;
 /** Where GRUB's configuration sits on the ESP, in mtools' notation. */
 export const ESP_GRUB_CFG = "::/EFI/mos/grub.cfg";
 
+// --- which machine, which firmware, which emulator --------------------------
+
+/**
+ * The per-architecture facts of booting a mos UEFI board under QEMU.
+ *
+ * A TABLE, and only four fields, because that is the entire architecture
+ * dependence of this harness. Everything else it does -- the ESP offset, the
+ * grub.cfg rewrite, the graceful shutdown, the disk copy -- is board-generic
+ * already or is read from the board definition.
+ *
+ * SYSTEM EMULATION, NOT binfmt. `qemu-system-aarch64` is an ordinary amd64 ELF
+ * that emulates an aarch64 MACHINE: the host kernel never execs aarch64 code,
+ * so binfmt_misc is not consulted and the `mos-arm64` buildx builder is not
+ * involved. That is a different mechanism from `docker run --platform
+ * linux/arm64`, which is USER-MODE emulation and which this host cannot do at
+ * all. Both packages below are `Architecture: amd64` or `all` and install into
+ * the same pinned Debian base as the x86 pair.
+ *
+ * The machine model is the bare alias on both -- `q35`, `virt` -- rather than a
+ * versioned one. A versioned model would pin the machine to a QEMU release that
+ * the apt line above it does not pin, which reads stronger than it is.
+ */
+interface QemuArch {
+  /** The system emulator binary. */
+  readonly binary: string;
+  /** The `-machine` model. */
+  readonly machine: string;
+  /** The apt packages that provide the emulator and its firmware. */
+  readonly packages: string;
+  /** The pflash pair: UEFI code, and the writable variable store. */
+  readonly firmwareCode: string;
+  readonly firmwareVars: string;
+}
+
+export const QEMU_ARCHES: Readonly<Record<string, QemuArch>> = {
+  amd64: {
+    binary: "qemu-system-x86_64",
+    machine: "q35",
+    packages: "qemu-system-x86 ovmf",
+    firmwareCode: "/usr/share/OVMF/OVMF_CODE_4M.fd",
+    firmwareVars: "/usr/share/OVMF/OVMF_VARS_4M.fd",
+  },
+  arm64: {
+    binary: "qemu-system-aarch64",
+    machine: "virt",
+    // qemu-system-arm provides qemu-system-aarch64; qemu-efi-aarch64 is
+    // `Architecture: all` and provides AAVMF, Debian's EDK2 build for aarch64.
+    packages: "qemu-system-arm qemu-efi-aarch64",
+    // AAVMF_CODE.fd is a symlink to the no-secboot variant, and that is the one
+    // wanted: the secure-boot builds expect an enrolled key this project does
+    // not have, and docs/design/security-model.md section 4 already places
+    // firmware verification with the platform owner rather than with mos.
+    //
+    // These files are 64 MiB, where OVMF's 4M pair is 4 MiB. The size is the
+    // flash device's, not a preference: a pflash drive whose backing file is
+    // not the device size does not boot.
+    firmwareCode: "/usr/share/AAVMF/AAVMF_CODE.fd",
+    firmwareVars: "/usr/share/AAVMF/AAVMF_VARS.fd",
+  },
+};
+
+/** The arch row for a board, refusing a board whose architecture has none. */
+export function qemuArchFor(arch: string | undefined, board: string): QemuArch {
+  const spec = arch === undefined ? undefined : QEMU_ARCHES[arch];
+  if (spec === undefined) {
+    throw new Error(
+      `board '${board}' declares MOS_ARCH=${JSON.stringify(arch ?? "<unset>")}, which this harness ` +
+        `has no emulator, machine model or firmware for; known: ${Object.keys(QEMU_ARCHES).sort().join(", ")}`,
+    );
+  }
+  return spec;
+}
+
 // --- the board layout, and the offset the ESP starts at ---------------------
 
 /**
- * `boards/x64/board.env` as a map of its literal assignments.
+ * `boards/<board>/board.env` as a map of its literal assignments.
  *
  * Only literal assignments are read. That file also carries `$((...))`
  * arithmetic over the keys above it -- `ESP_OFFSET_BYTES=$((ESP_START_MIB *
@@ -103,7 +177,7 @@ export function espOffsetBytes(env: ReadonlyMap<string, string>): number {
 
 /**
  * The indentation is matched as WHITESPACE, not as four spaces.
- * `boards/x64/grub.cfg` indents both of its linux lines -- the A slot's and
+ * `boards/<board>/grub.cfg` indents both of its linux lines -- the A slot's and
  * the B slot's -- with EIGHT, and always has, so a four-space pattern matched
  * neither and the count came back 0 on every run.
  */
@@ -161,7 +235,20 @@ export function applyKernelAppend(text: string, append: string): AppendResult {
 
 const HERE = import.meta.dir;
 const REPO_ROOT = path.resolve(HERE, "../../../../..");
-const OUT_DIR = path.join(REPO_ROOT, "_out/x64");
+
+/**
+ * Which board is being booted.
+ *
+ * From `MOS_BOARD`, and it has a DEFAULT of x64 where the assembler
+ * deliberately has none. The two are different questions: the assembler is
+ * asked to produce an artefact and a wrong board there writes one board's
+ * layout under another's name, silently. This is asked to boot an artefact
+ * that already exists, names it in every message, and dies immediately if it
+ * is not there -- and it is invoked by run.sh, which resolves MOS_BOARD once
+ * and passes the same value to every step.
+ */
+const BOARD = process.env.MOS_BOARD ?? "x64";
+const OUT_DIR = path.join(REPO_ROOT, "_out", BOARD);
 const RUN_DIR = path.join(OUT_DIR, ".qemu");
 
 function note(message: string): void {
@@ -224,13 +311,13 @@ function resolveQemuImage(): string {
  * wrote is on the disk. It also means the shutdown path itself is exercised
  * rather than skipped.
  */
-const INNER_RUN_SH = `set -eu
+const innerRunSh = (a: QemuArch): string => `set -eu
 RUN_SECONDS="\${RUN_SECONDS:-}"
 # Empty unless MOS_QEMU_FORWARD asked for it; \`set -u\` would kill the run
 # otherwise, after the image had already been copied and grown.
 HOSTFWD="\${HOSTFWD:-}"
-cp /usr/share/OVMF/OVMF_CODE_4M.fd /run/code.fd
-cp /usr/share/OVMF/OVMF_VARS_4M.fd /run/vars.fd
+cp ${a.firmwareCode} /run/code.fd
+cp ${a.firmwareVars} /run/vars.fd
 
 if [ -n "\${RUN_SECONDS}" ]; then
     ( sleep "\${RUN_SECONDS}"
@@ -244,9 +331,9 @@ if [ -n "\${RUN_SECONDS}" ]; then
       printf 'quit\\n' | socat - UNIX-CONNECT:/run/mon.sock >/dev/null || true ) &
 fi
 
-exec qemu-system-x86_64 \\
+exec ${a.binary} \\
     -monitor unix:/run/mon.sock,server,nowait \\
-    -machine q35 \\
+    -machine ${a.machine} \\
     -cpu max \\
     -m "\${MEM}" \\
     -nographic \\
@@ -269,10 +356,10 @@ exec qemu-system-x86_64 \\
  * "/w/run.sh: No such file or directory", a message about the script rather
  * than about the mount that was missing.
  */
-const INSTALL_AND_RUN = `
+const installAndRun = (a: QemuArch): string => `
     apt-get update -qq >/dev/null 2>&1
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \\
-        qemu-system-x86 ovmf socat >/dev/null 2>&1
+        ${a.packages} socat >/dev/null 2>&1
     command -v socat >/dev/null || { echo "error: socat is not installed; the graceful-shutdown request could not be sent and the run would end in a SIGTERM that discards whatever the guest had not yet written" >&2; exit 1; }
     bash /w/run.sh`;
 
@@ -357,7 +444,13 @@ function applyAppendToDisk(qemuImage: string, offset: number, append: string): v
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const env = process.env;
-  const board = readBoardEnv(fs.readFileSync(path.join(REPO_ROOT, "boards/x64/board.env"), "utf8"));
+  const boardEnvPath = path.join(REPO_ROOT, "boards", BOARD, "board.env");
+  if (!fs.existsSync(boardEnvPath)) {
+    die(`error: ${boardEnvPath} does not exist, so MOS_BOARD=${BOARD} names no board in this tree`);
+  }
+  const board = readBoardEnv(fs.readFileSync(boardEnvPath, "utf8"));
+  // The machine, the emulator and the firmware, from the board's own arch.
+  const arch = qemuArchFor(board.get("MOS_ARCH"), BOARD);
   const qemuImage = resolveQemuImage();
   const img = env.MOS_QEMU_IMAGE ?? path.join(OUT_DIR, board.get("IMAGE_LATEST_NAME") ?? "");
   const timeout = Number(env.MOS_QEMU_TIMEOUT ?? "240");
@@ -367,13 +460,13 @@ async function main(): Promise<void> {
 
   if (!fs.existsSync(img)) {
     die(
-      `error: ${img} not found. Build it: MOS_BOARD=x64 bash rootfs/build.sh && ` +
-        `bash build/run.sh --mkimage-uefi --board x64`,
+      `error: ${img} not found. Build it: MOS_BOARD=${BOARD} bash rootfs/build.sh && ` +
+        `bash build/run.sh --mkimage-uefi --board ${BOARD}`,
     );
   }
 
   // The image is never bound into the QEMU container; a copy of it under
-  // _out/x64/.qemu is, and that copy is what QEMU writes to -- so a run cannot
+  // _out/<board>/.qemu is, and that copy is what QEMU writes to -- so a run cannot
   // mutate the artefact it is testing, and repeated runs start from the same
   // state rather than from whatever the last one left. It is copied under _out/
   // and not through a temporary directory because it is ~2 GiB and because a
@@ -430,7 +523,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  fs.writeFileSync(path.join(RUN_DIR, "run.sh"), INNER_RUN_SH);
+  fs.writeFileSync(path.join(RUN_DIR, "run.sh"), innerRunSh(arch));
 
   const runSeconds = env.MOS_QEMU_RUN_SECONDS ?? "";
   const dockerArgs = ["run", "--rm", "-v", `${RUN_DIR}:/w`, "-e", `MEM=${mem}`, "-e", `RUN_SECONDS=${runSeconds}`];
@@ -507,9 +600,12 @@ async function main(): Promise<void> {
     note("note: the guest ships no admin password until something completes /api/v1/setup, which is why the host publish is loopback-only");
   }
   dockerArgs.push("-e", `HOSTFWD=${hostfwd}`);
-  dockerArgs.push(qemuImage, "bash", "-c", INSTALL_AND_RUN);
+  dockerArgs.push(qemuImage, "bash", "-c", installAndRun(arch));
 
-  note(`note: booting ${path.basename(img)} through OVMF; no /dev/kvm on this host means TCG, which is slow but complete`);
+  note(
+    `note: booting ${path.basename(img)} on ${arch.binary} -machine ${arch.machine}; ` +
+      "no /dev/kvm on this host means TCG, which is slow but complete",
+  );
 
   // MOS_QEMU_TIMEOUT is when the container is given up on entirely. It is a
   // SIGTERM to the docker client, which is what `timeout docker run` was: the
