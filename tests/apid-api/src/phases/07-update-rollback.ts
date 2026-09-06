@@ -91,10 +91,17 @@ const phase: Phase = {
     // Three members and no fourth: `RollbackEligibility::permitted` is derived
     // from `reason`, so a body offering a fourth would be offering a second
     // place for the two to disagree.
+    // Four members since RFCT-321 added `explanation` -- the sentence a
+    // refusal carries only where it adds something the reason code does not
+    // already say, which is null for the reasons a factory guest produces.
+    // It is asserted here rather than left to the subset above because the
+    // route's own description in `openapi.json` names the members, and a
+    // document that names three while the daemon serves four is published API
+    // text that is wrong.
     report.check(
-      ["target", "permitted", "reason"].every((name) => Object.hasOwn(rollback, name)) &&
-        Object.keys(rollback).length === 3,
-      "the rollback verdict is `target`, `permitted` and `reason`, and nothing else",
+      ["target", "permitted", "reason", "explanation"].every((name) => Object.hasOwn(rollback, name)) &&
+        Object.keys(rollback).length === 4,
+      "the rollback verdict is `target`, `permitted`, `reason` and `explanation`, and nothing else",
       `actual rollback: ${JSON.stringify(rollback)}`,
     );
 

@@ -47,11 +47,14 @@ const phase: Phase = {
       200,
       "GET /api/v1/provisioning/status reports this device's import record",
     );
-    // Exact and not a subset: ProvisioningStatus has four members and the
-    // absence of a fifth is part of what is being asserted. `unclaimed` is
-    // false because phase 02 claimed the device -- the same fact
-    // `GET /api/v1/session` states, read here through the surface that decides
-    // whether a document offered on a medium would be applied at all.
+    // The import record's own members, by value. A SUBSET now, because
+    // PLAN-070 F9 extended this route with the baked/operator/effective
+    // reading -- but the absence of an unexpected member is still asserted,
+    // below, over the key set rather than over the whole object. Pinning the
+    // whole object would pin `bakedDigests`, whose values are content hashes
+    // that move with every build, and a phase that must be edited on every
+    // rebuild stops being read.
+    //
     // The member names are spelled in QUOTES so `spec-pins.sh` can read this
     // assertion's own copy of them out of the phase's bytes and compare it
     // against `components.schemas.ProvisioningStatus`. An unquoted key is
@@ -60,6 +63,49 @@ const phase: Phase = {
       provisioning,
       { "documentVersion": null, "documentDigest": null, "lastImport": null, "unclaimed": false },
       "a device no document ever reached reports every import member null, and is not unclaimed",
+      { subset: true },
+    );
+
+    // The half the subset above gives up, kept as its own assertion: the
+    // member set is exactly these eight, so one added or removed without a
+    // decision turns this red. This was an exact-object assertion until F9
+    // legitimately grew the route, and the drift went unnoticed because
+    // nothing booted the image between -- `spec-pins.sh` compares the names a
+    // phase pins against the schema and is structurally unable to see a
+    // member the phase never named.
+    const status = JSON.parse(provisioning.body) as Record<string, unknown>;
+    const members = Object.keys(status).sort().join(",");
+    const expectedMembers = [
+      "baked", "bakedDigests", "documentDigest", "documentVersion",
+      "effective", "lastImport", "operator", "unclaimed",
+    ].join(",");
+    report.check(
+      members === expectedMembers,
+      "GET /api/v1/provisioning/status carries exactly the members the contract names",
+      `expected: ${expectedMembers}\nactual:   ${members}`,
+    );
+
+    // F9's gate, driven from outside the process for the first time: the
+    // baked, operator and effective readings are distinguishable. This guest
+    // has overridden nothing, so `operator` is empty and `effective` must
+    // equal the baked values -- the case that shows the three come from one
+    // resolution rather than each being read from somewhere of its own.
+    const layer = (name: string): Record<string, unknown> =>
+      (status[name] ?? {}) as Record<string, unknown>;
+    const layerValue = (name: string, group: string, key: string): string =>
+      JSON.stringify(((layer(name)[group] ?? {}) as Record<string, unknown>)[key]);
+    report.check(
+      Object.keys(layer("operator")).length === 0,
+      "a device whose operator has overridden nothing reports an empty operator layer",
+      `actual: ${JSON.stringify(status["operator"])}`,
+    );
+    report.check(
+      layerValue("effective", "update", "channel") === layerValue("baked", "update", "channel")
+        && layerValue("effective", "update", "source") === layerValue("baked", "update", "source")
+        && layerValue("effective", "fleet", "url") === layerValue("baked", "fleet", "url"),
+      "with nothing overridden the effective channel, source and fleet address are the baked ones",
+      `baked:     ${JSON.stringify({ update: layer("baked")["update"], fleet: layer("baked")["fleet"] })}\n`
+        + `effective: ${JSON.stringify({ update: layer("effective")["update"], fleet: layer("effective")["fleet"] })}`,
     );
 
     const claim = await client.get("/api/v1/claim");
