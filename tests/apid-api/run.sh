@@ -73,8 +73,26 @@ HTTPS_PORT="${MOS_QEMU_HTTPS_PORT:-18443}"
 HTTP_PORT="${MOS_QEMU_HTTP_PORT:-18080}"
 
 # A TCG boot with no /dev/kvm on a quiet machine reaches APID_LISTENING in
-# 60-66s and both readiness signals in 65-72s. That measures the daemon
+# 60-66s on x64 and both readiness signals in 65-72s. That measures the daemon
 # answering, not a login prompt; this harness never waits for a login prompt.
+#
+# BOTH BOARDS, MEASURED THE SAME WAY on 2026-09-06, wall clock from the
+# `docker run` to the APID_LISTENING line, fresh disk, 5s polling:
+#
+#   x64          75s   (guest 39.3s)   qemu-system-x86_64 -machine q35, OVMF
+#   virt-arm64   95s   (guest 57.8s)   qemu-system-aarch64 -machine virt, AAVMF
+#
+# So the arm64 board costs 1.27x the amd64 one under TCG -- NOT the order of
+# magnitude an emulated foreign architecture invites you to assume, and the
+# reason PLAN-085 made this a measurement rather than a predicted multiplier.
+# The gap is smaller than it looks even so: the guest-time figures differ by
+# 18.5s while the wall-clock ones differ by 20s, so most of the difference is
+# the guest's own work and not the firmware.
+#
+# READY_TIMEOUT IS NOT CHANGED FOR virt-arm64, and that is the conclusion the
+# measurement supports rather than a decision taken around it: 900s over a
+# measured 95s is 9.5x headroom, so a board-specific deadline would be
+# machinery for a problem that does not exist.
 #
 # READY_TIMEOUT stays at 900s regardless, because the deadline exists for the
 # bad case rather than the measured one: a contended host is materially slower
