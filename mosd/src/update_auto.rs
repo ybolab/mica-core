@@ -57,6 +57,7 @@ use chrono::Utc;
 use mosd_settings::{UPDATE_CHECK_EVENT, UPDATE_FETCH_EVENT, UPDATE_INSTALL_EVENT};
 
 use crate::time_status::ClockTrust;
+use crate::update_codes;
 use crate::update_lifecycle::{Available, Refusal, Settled};
 use crate::update_policy::{self, LoadedPolicy, RebootPolicy, UpdateMode};
 use crate::update_suppress::Suppression;
@@ -319,14 +320,20 @@ impl AutoDriver {
                              running system"
                         .to_string(),
                 };
-                self.defer("no-newer-release", &detail).await;
+                self.defer(update_codes::DEFER_NO_NEWER_RELEASE, &detail)
+                    .await;
             }
             // It found one: that supersedes the fact above and nothing else.
             // A window that was shut a minute ago is still shut.
-            Ok(_) => self.routes.resume(Some("no-newer-release")).await,
+            Ok(_) => {
+                self.routes
+                    .resume(Some(update_codes::DEFER_NO_NEWER_RELEASE))
+                    .await
+            }
             Err(refusal) => {
                 tracing::debug!(reason = refusal.message(), "automatic check skipped");
-                self.defer("check-refused", refusal.message()).await;
+                self.defer(update_codes::DEFER_CHECK_REFUSED, refusal.message())
+                    .await;
             }
         }
     }
@@ -355,11 +362,13 @@ impl AutoDriver {
             // suppression instead of whatever happens to be staged.
             match self.routes.suppression(&candidate.version).await {
                 Ok(Some(record)) => {
-                    self.defer("version-suppressed", &record.detail).await;
+                    self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
+                        .await;
                     return;
                 }
                 Err(error) => {
-                    self.defer("suppression-unreadable", &error).await;
+                    self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
+                        .await;
                     return;
                 }
                 Ok(None) => {}
@@ -369,7 +378,8 @@ impl AutoDriver {
                 self.routes.audit(UPDATE_FETCH_EVENT).await;
                 if let Err(refusal) = self.routes.fetch(SENDER).await {
                     tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
-                    self.defer("fetch-refused", refusal.message()).await;
+                    self.defer(update_codes::DEFER_FETCH_REFUSED, refusal.message())
+                        .await;
                     return;
                 }
             }
@@ -393,23 +403,28 @@ impl AutoDriver {
         // deliberately unaffected — neither is time-keyed, and refusing them
         // would make a clockless device stop even discovering updates.
         if let Some(reason) = self.routes.clock().await.untrusted_reason() {
-            self.defer("clock-untrusted", &reason).await;
+            self.defer(update_codes::DEFER_CLOCK_UNTRUSTED, &reason)
+                .await;
             return;
         }
         // The same refusal `InstallUpdate` answers an operator with: the
         // maintenance window, which `auto` requires the document to name.
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason).await;
+            self.defer(update_codes::DEFER_OUTSIDE_WINDOW, &reason)
+                .await;
             return;
         }
         let Some(facts) = self.routes.facts().await else {
-            self.defer("slot-status-unknown", "RAUC did not answer the slot query")
-                .await;
+            self.defer(
+                update_codes::DEFER_SLOT_STATUS_UNKNOWN,
+                "RAUC did not answer the slot query",
+            )
+            .await;
             return;
         };
         if facts.reboot_pending {
             self.defer(
-                "reboot-pending",
+                update_codes::DEFER_REBOOT_PENDING,
                 "a slot is already installed and waiting for its first boot",
             )
             .await;
@@ -424,15 +439,18 @@ impl AutoDriver {
             Ok(Settled::Done(candidate)) => Some(candidate),
             Ok(Settled::NoneCompatible) => None,
             Ok(Settled::Unready(unready)) => {
-                self.defer("workspace-unready", &unready.reason()).await;
+                self.defer(update_codes::DEFER_WORKSPACE_UNREADY, &unready.reason())
+                    .await;
                 return;
             }
-            Ok(Settled::Failed(reason)) => {
-                self.defer("recheck-failed", &reason).await;
+            Ok(Settled::Failed(failed)) => {
+                self.defer(update_codes::DEFER_RECHECK_FAILED, &failed.text)
+                    .await;
                 return;
             }
             Err(refusal) => {
-                self.defer("recheck-refused", refusal.message()).await;
+                self.defer(update_codes::DEFER_RECHECK_REFUSED, refusal.message())
+                    .await;
                 return;
             }
         };
@@ -447,7 +465,7 @@ impl AutoDriver {
             // fetches what was named.
             Some(candidate) => {
                 self.defer(
-                    "superseded",
+                    update_codes::DEFER_SUPERSEDED,
                     &format!("the check now names {}", candidate.name),
                 )
                 .await;
@@ -472,14 +490,16 @@ impl AutoDriver {
         // operator reading the record has been told and is choosing.
         match self.routes.suppression(&version).await {
             Ok(Some(record)) => {
-                self.defer("version-suppressed", &record.detail).await;
+                self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
+                    .await;
                 return;
             }
             // A store that exists and cannot be read is not an empty store.
             // Reading it as one is precisely how the loop restarts, so the
             // closed side here is refusing the install.
             Err(error) => {
-                self.defer("suppression-unreadable", &error).await;
+                self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
+                    .await;
                 return;
             }
             Ok(None) => {}
@@ -493,7 +513,10 @@ impl AutoDriver {
                 // before now is stale.
                 self.routes.resume(None).await;
             }
-            Err(refusal) => self.defer("install-refused", &refusal).await,
+            Err(refusal) => {
+                self.defer(update_codes::DEFER_INSTALL_REFUSED, &refusal)
+                    .await
+            }
         }
     }
 
@@ -531,7 +554,8 @@ impl AutoDriver {
             return;
         }
         if let Some(reason) = update_policy::install_refusal(loaded, Utc::now()) {
-            self.defer("outside-window", &reason).await;
+            self.defer(update_codes::DEFER_OUTSIDE_WINDOW, &reason)
+                .await;
             return;
         }
         if let Err(refusal) = self.routes.reboot(SENDER).await {
@@ -539,7 +563,8 @@ impl AutoDriver {
             // reporting a blocking health status. Automation defers and the
             // next window re-attempts. It does not arm the override — there
             // is no method on `AutoRoutes` to arm it with.
-            self.defer("reboot-gate-closed", &refusal).await;
+            self.defer(update_codes::DEFER_REBOOT_GATE_CLOSED, &refusal)
+                .await;
             return;
         }
         // The machine is going down; the stage it leaves behind is moot, and
@@ -1027,33 +1052,17 @@ mod tests {
         );
     }
 
-    /// Every reason the driver can mint, read out of its own source.
-    ///
-    /// The needle is assembled rather than written so that this scan cannot
-    /// find itself. Reading the source is what turns PLAN-071 U5's gate
-    /// (*each deferral reason reachable in a test*) into a criterion that
-    /// keeps holding: a new `defer` call site with a new reason fails the
-    /// comparison below until a case covers it.
-    fn reasons_the_driver_can_mint() -> BTreeSet<String> {
-        let needle = format!("self.{}(", "defer");
-        let source = include_str!("update_auto.rs");
-        let mut reasons = BTreeSet::new();
-        for (index, _) in source.match_indices(&needle) {
-            let rest = &source[index + needle.len()..];
-            let opening = rest.find('"').expect("a defer call names its reason");
-            let rest = &rest[opening + 1..];
-            let closing = rest.find('"').expect("an unterminated reason literal");
-            reasons.insert(rest[..closing].to_string());
-        }
-        reasons
-    }
-
     /// PLAN-071 U5: each deferral reason reachable in a test.
     ///
-    /// Fifteen reasons over eighteen call sites, and the set is compared
-    /// against [`reasons_the_driver_can_mint`] at the end rather than against
-    /// a list written here — a list would only assert what its author
-    /// remembered on the day.
+    /// Fifteen reasons over eighteen call sites, and the set a pass produced
+    /// is compared at the end against [`update_codes::DEFERRALS`] — the
+    /// closed vocabulary itself, not a list written here. That is
+    /// `update_codes`'s own rule read from this side (*a code that no test can
+    /// produce is a code nobody has seen*), and it is the half RFCT-339 could
+    /// not assert: its
+    /// `every_deferral_reaches_the_document_as_a_code_and_nothing_else_does`
+    /// proves what the recording site will carry, and this proves which code
+    /// the driver *chooses* for a given failure.
     #[tokio::test]
     async fn every_deferral_reason_the_driver_can_mint_is_reachable() {
         let mut observed: BTreeSet<String> = BTreeSet::new();
@@ -1073,7 +1082,11 @@ mod tests {
         scene.daemon.will_check(Ok(Settled::NoneCompatible));
         scene.cadence.advance_past_the_check_interval();
         scene.tick().await;
-        record(&scene, "no-newer-release", "channel `stable`");
+        record(
+            &scene,
+            update_codes::DEFER_NO_NEWER_RELEASE,
+            "channel `stable`",
+        );
 
         // 2. The cadence check, refused by the policy an operator would meet.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1082,7 +1095,11 @@ mod tests {
         )));
         scene.cadence.advance_past_the_check_interval();
         scene.tick().await;
-        record(&scene, "check-refused", "network mode is offline");
+        record(
+            &scene,
+            update_codes::DEFER_CHECK_REFUSED,
+            "network mode is offline",
+        );
 
         // 3. §6 one step before the install: a rolled-back version is not
         //    downloaded again either.
@@ -1090,14 +1107,14 @@ mod tests {
         scene.suppress("1.5.0");
         FakeDaemon::set(&scene.daemon.available, Some(the_candidate()));
         scene.tick().await;
-        record(&scene, "version-suppressed", "rootfs.1");
+        record(&scene, update_codes::DEFER_VERSION_SUPPRESSED, "rootfs.1");
 
         // 4. A store that exists and does not parse is not an empty store.
         let mut scene = Scene::auto(&open_window(), "window");
         scene.corrupt_the_suppression_store();
         FakeDaemon::set(&scene.daemon.available, Some(the_candidate()));
         scene.tick().await;
-        record(&scene, "suppression-unreadable", "parse ");
+        record(&scene, update_codes::DEFER_SUPPRESSION_UNREADABLE, "parse ");
 
         // 5. The fetch, refused by the policy an operator would meet.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1106,14 +1123,22 @@ mod tests {
             "network mode is metered: bundle downloads are refused".to_string(),
         )));
         scene.tick().await;
-        record(&scene, "fetch-refused", "network mode is metered");
+        record(
+            &scene,
+            update_codes::DEFER_FETCH_REFUSED,
+            "network mode is metered",
+        );
 
         // 6. §7's predicate, first in the list on purpose.
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         FakeDaemon::set(&scene.daemon.clock, untrusted_clock());
         scene.tick().await;
-        record(&scene, "clock-untrusted", "offline-degraded");
+        record(
+            &scene,
+            update_codes::DEFER_CLOCK_UNTRUSTED,
+            "offline-degraded",
+        );
 
         // 7. The maintenance window, which `auto` requires the document to
         //    name and which gates the install and only the install.
@@ -1122,7 +1147,7 @@ mod tests {
         scene.tick().await;
         record(
             &scene,
-            "outside-window",
+            update_codes::DEFER_OUTSIDE_WINDOW,
             "outside every configured maintenance window",
         );
 
@@ -1131,7 +1156,11 @@ mod tests {
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         FakeDaemon::set(&scene.daemon.facts, None);
         scene.tick().await;
-        record(&scene, "slot-status-unknown", "RAUC did not answer");
+        record(
+            &scene,
+            update_codes::DEFER_SLOT_STATUS_UNKNOWN,
+            "RAUC did not answer",
+        );
 
         // 9. A slot already installed and waiting for its first boot.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1144,27 +1173,42 @@ mod tests {
             }),
         );
         scene.tick().await;
-        record(&scene, "reboot-pending", "waiting for its first boot");
+        record(
+            &scene,
+            update_codes::DEFER_REBOOT_PENDING,
+            "waiting for its first boot",
+        );
 
         // 10. The re-check, refused by the workspace probe.
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         scene.daemon.will_check(Ok(Settled::Unready(Unready {
             status: "degraded".to_string(),
-            kind: "read-only".to_string(),
+            kind: update_codes::WORKSPACE_READ_ONLY,
             detail: "/mos is mounted read-only".to_string(),
         })));
         scene.tick().await;
-        record(&scene, "workspace-unready", "degraded read-only");
+        record(
+            &scene,
+            update_codes::DEFER_WORKSPACE_UNREADY,
+            "degraded read-only",
+        );
 
         // 11. The re-check ran and failed.
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         scene
             .daemon
-            .will_check(Ok(Settled::Failed("state file corrupt".to_string())));
+            .will_check(Ok(Settled::Failed(update_codes::CodedReason::new(
+                update_codes::CLIENT_EXIT_FAILURE,
+                "state file corrupt",
+            ))));
         scene.tick().await;
-        record(&scene, "recheck-failed", "state file corrupt");
+        record(
+            &scene,
+            update_codes::DEFER_RECHECK_FAILED,
+            "state file corrupt",
+        );
 
         // 12. The re-check was not admitted at all.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1173,7 +1217,11 @@ mod tests {
             "/usr/bin/rauc-update is not present on this image".to_string(),
         )));
         scene.tick().await;
-        record(&scene, "recheck-refused", "rauc-update is not present");
+        record(
+            &scene,
+            update_codes::DEFER_RECHECK_REFUSED,
+            "rauc-update is not present",
+        );
 
         // 13. §5: the metadata names something else. The staged bundle is
         //     superseded rather than provably withdrawn, so it is not deleted.
@@ -1183,7 +1231,11 @@ mod tests {
             .daemon
             .will_check(Ok(Settled::Done(candidate("mos-1.6.0.raucb", "1.6.0"))));
         scene.tick().await;
-        record(&scene, "superseded", "the check now names mos-1.6.0.raucb");
+        record(
+            &scene,
+            update_codes::DEFER_SUPERSEDED,
+            "the check now names mos-1.6.0.raucb",
+        );
         assert_eq!(
             scene.daemon.staged.lock().expect("staged").as_deref(),
             Some(BUNDLE),
@@ -1198,7 +1250,7 @@ mod tests {
         scene.suppress("1.5.0");
         scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
         scene.tick().await;
-        record(&scene, "version-suppressed", "rootfs.1");
+        record(&scene, update_codes::DEFER_VERSION_SUPPRESSED, "rootfs.1");
         assert!(
             scene.daemon.installs().is_empty(),
             "the refusal that closes the loop must stop the install"
@@ -1211,7 +1263,7 @@ mod tests {
         scene.corrupt_the_suppression_store();
         scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
         scene.tick().await;
-        record(&scene, "suppression-unreadable", "parse ");
+        record(&scene, update_codes::DEFER_SUPPRESSION_UNREADABLE, "parse ");
 
         // 16. The install route's own refusal, verbatim.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1222,7 +1274,11 @@ mod tests {
             Err("an update install is already running; query GetUpdateState and retry".to_string()),
         );
         scene.tick().await;
-        record(&scene, "install-refused", "already running");
+        record(
+            &scene,
+            update_codes::DEFER_INSTALL_REFUSED,
+            "already running",
+        );
 
         // 17. The safe-to-reboot gate, reached the only way the driver can
         //     reach it: an install of its own that finished.
@@ -1245,7 +1301,11 @@ mod tests {
             ),
         );
         scene.tick().await;
-        record(&scene, "reboot-gate-closed", "safe-to-reboot gate");
+        record(
+            &scene,
+            update_codes::DEFER_REBOOT_GATE_CLOSED,
+            "safe-to-reboot gate",
+        );
 
         // 18. The window again, on the reboot rather than on the install: an
         //     operator who shut it between the two is obeyed by both.
@@ -1264,7 +1324,7 @@ mod tests {
         scene.tick().await;
         record(
             &scene,
-            "outside-window",
+            update_codes::DEFER_OUTSIDE_WINDOW,
             "outside every configured maintenance window",
         );
         assert!(
@@ -1272,12 +1332,14 @@ mod tests {
             "a shut window is asked before the gate is"
         );
 
+        let declared: BTreeSet<String> = update_codes::DEFERRALS
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         assert_eq!(
-            observed,
-            reasons_the_driver_can_mint(),
-            "every reason the driver can record must be reachable from a test"
+            observed, declared,
+            "every word in the deferral vocabulary must be one a pass produces"
         );
-        assert_eq!(observed.len(), 15, "the vocabulary is fifteen reasons");
     }
 
     /// PLAN-071 U4, and the plan's own acceptance for the slice: a bad bundle
@@ -1354,7 +1416,7 @@ mod tests {
             .deferrals()
             .pop()
             .expect("the refusal is recorded, not silent");
-        assert_eq!(reason, "version-suppressed");
+        assert_eq!(reason, update_codes::DEFER_VERSION_SUPPRESSED);
         assert!(detail.contains("rolled back"), "got: {detail}");
 
         // And it stays closed: an operator who has not cleared the record
@@ -1379,7 +1441,7 @@ mod tests {
         );
         assert_eq!(
             scene.daemon.deferrals().pop().expect("recorded").0.as_str(),
-            "version-suppressed"
+            update_codes::DEFER_VERSION_SUPPRESSED
         );
 
         // Cleared explicitly by an operator — the one thing that lifts it —
@@ -1426,7 +1488,7 @@ mod tests {
             "the install is: a maintenance window is UTC wall-clock"
         );
         let (reason, detail) = scene.daemon.the_deferral();
-        assert_eq!(reason, "clock-untrusted");
+        assert_eq!(reason, update_codes::DEFER_CLOCK_UNTRUSTED);
         assert!(
             detail.contains("offline-degraded") && detail.contains("has not advanced since boot"),
             "the deferral names both limbs so an operator knows which to fix: {detail}"
@@ -1540,7 +1602,7 @@ mod tests {
             "a permanently blocking application permanently defers, visibly: {deferrals:?}"
         );
         for (reason, detail) in &deferrals {
-            assert_eq!(reason, "reboot-gate-closed");
+            assert_eq!(reason, update_codes::DEFER_REBOOT_GATE_CLOSED);
             assert_eq!(
                 detail, CLOSED,
                 "the gate's refusal is recorded verbatim, override sentence and all"

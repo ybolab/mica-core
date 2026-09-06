@@ -1903,7 +1903,25 @@ pub(crate) struct ApiHealth {
     /// Why the probe did not complete, in the words of whatever refused it.
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    // PLAN-076 B4 on the health path. `detail` above is unbounded by
+    // construction -- it is whatever zbus, the kernel or mosd said -- so a
+    // monitor that wanted to distinguish "mosd is not there" from "mosd
+    // answered nonsense" had to match on that text. This is the closed
+    // alternative, present exactly when `detail` is.
+    /// Which class of failure the probe hit, from a fixed set:
+    /// `mosd_unreachable` (the call could not be made or was refused),
+    /// `mosd_timeout` (the bounded call expired), `mosd_bad_answer` (mosd
+    /// replied with something that is not the documented shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
+
+/// The bounded call to mosd expired.
+const HEALTH_MOSD_TIMEOUT: &str = "mosd_timeout";
+/// The call could not be made, or mosd refused it.
+const HEALTH_MOSD_UNREACHABLE: &str = "mosd_unreachable";
+/// mosd answered, and what it answered is not the documented shape.
+const HEALTH_MOSD_BAD_ANSWER: &str = "mosd_bad_answer";
 
 // Never serve this from `access_cache`: that cache answers from apid's own
 // memory, so a health route reading it would report mosd healthy for as long
@@ -1924,7 +1942,7 @@ pub(crate) struct ApiHealth {
     context_path = API,
     tag = "diagnostics",
     responses(
-        (status = 200, description = "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code", body = ApiHealth),
+        (status = 200, description = "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `mosd_unreachable`, `mosd_timeout` or `mosd_bad_answer` — beside the free-text `detail`; the code is the member to match on", body = ApiHealth),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
@@ -1933,22 +1951,36 @@ pub(crate) async fn api_v1_health(
     _credential: ApiCredential,
     State(state): State<AppState>,
 ) -> Response {
-    let (mosd, checked_at, detail) = match state.api.get_state(HEALTH_PROBE_PATH).await {
+    let (mosd, checked_at, detail, code) = match state.api.get_state(HEALTH_PROBE_PATH).await {
         // Any answer that is not the number of seconds mosd documents is
         // classified with the failures rather than reported as health. `ok`
         // has to mean "the round trip completed and produced a usable answer";
         // a state key that came back the wrong shape did not.
         Ok(value) => match value.as_u64() {
-            Some(seconds) => ("ok", Some(seconds), None),
+            Some(seconds) => ("ok", Some(seconds), None, None),
             None => (
                 "unreachable",
                 None,
                 Some(format!(
                     "mosd answered GetState(\"{HEALTH_PROBE_PATH}\") with {value}, which is not a count of seconds"
                 )),
+                Some(HEALTH_MOSD_BAD_ANSWER),
             ),
         },
-        Err(err) => ("unreachable", None, Some(format!("{err:#}"))),
+        // The code is decided from the error's TYPE, not from the sentence it
+        // renders to (PLAN-076 B4): `MosdCallTimeout` is the one the bounded
+        // call raises, and everything else is "the call did not happen".
+        Err(err) => {
+            let code = if err
+                .downcast_ref::<crate::bus_client::MosdCallTimeout>()
+                .is_some()
+            {
+                HEALTH_MOSD_TIMEOUT
+            } else {
+                HEALTH_MOSD_UNREACHABLE
+            };
+            ("unreachable", None, Some(format!("{err:#}")), Some(code))
+        }
     };
     api_response(
         StatusCode::OK,
@@ -1957,6 +1989,7 @@ pub(crate) async fn api_v1_health(
             mosd,
             checked_at,
             detail,
+            code,
         },
     )
 }

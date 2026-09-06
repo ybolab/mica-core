@@ -632,6 +632,7 @@ export const zhCN: Translation = {
           'slot-status-unknown': '设备无法读取自己的槽位状态',
           superseded: '已暂存的升级包不再是更新源当前指定的版本',
           'suppression-unreadable': '无法读取被拒绝版本的记录',
+          unknown: '设备遇到了一个它无法命名的拒绝原因，具体原因见设备日志',
           'version-suppressed': '设备已经从该版本回滚过，不会再自动安装它',
           'workspace-unready': '更新工作区尚未就绪',
         },

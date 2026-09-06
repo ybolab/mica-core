@@ -61,6 +61,7 @@ mod telemetry;
 mod time_status;
 mod transient;
 mod update_auto;
+mod update_codes;
 mod update_lifecycle;
 mod update_policy;
 mod update_suppress;

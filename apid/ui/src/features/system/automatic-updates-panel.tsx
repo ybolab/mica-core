@@ -337,7 +337,10 @@ function DeferralNotice({ deferred }: { deferred?: Deferral }) {
   )
 }
 
-/// The vocabulary `update_auto.rs` records.
+/// The vocabulary `update_auto.rs` records, plus the `unknown` the daemon
+/// reports a reason outside it as (PLAN-076 B4). The daemon clamps to this
+/// set, so anything else reaching the branch below is a device older than
+/// that gate.
 const DEFERRAL_REASONS = [
   'check-refused',
   'clock-untrusted',
@@ -353,5 +356,6 @@ const DEFERRAL_REASONS = [
   'superseded',
   'suppression-unreadable',
   'version-suppressed',
+  'unknown',
   'workspace-unready',
 ] as const

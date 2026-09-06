@@ -45,8 +45,12 @@ use crate::settings_api::SettingsApi;
 /// -- the clock, the time-status document and a `clock_implicated` reading,
 /// recorded beside a failed install (PLAN-078 §S4). Nothing migrates a stored
 /// snapshot and nothing needs to: the number is what lets a reader holding
-/// two of them tell which shape each is.
-pub const SCHEMA_VERSION: u64 = 3;
+/// two of them tell which shape each is. 4 is the one shipped now, which adds
+/// PLAN-076 B4's `boot.update.last_error_code` and
+/// `boot.update.install.error_code` -- the class of a RAUC failure beside the
+/// sentence, so a support case can group what it is reading without matching
+/// on RAUC's words.
+pub const SCHEMA_VERSION: u64 = 4;
 /// The redaction schema version; bumped when the allowlist changes.
 ///
 /// 2 is the allowlist that followed the rename above, 3 the one that added
@@ -58,8 +62,11 @@ pub const SCHEMA_VERSION: u64 = 3;
 /// a refused update. 5 is the one that names `boot.update.install.time`, whose
 /// absence from the allowlist would have dropped it SILENTLY -- the snapshot
 /// would have carried a failed install's `certificate has expired` and not the
-/// clock that may have caused it.
-pub const REDACTION_SCHEMA_VERSION: u64 = 5;
+/// clock that may have caused it. 6 is the one that names the two members of
+/// PLAN-076 B4 that sit beside an allowlisted sibling -- a code that is
+/// dropped here while its sentence is kept is the enumerated-failure gate
+/// answered on the API and not on the surface a support case actually reads.
+pub const REDACTION_SCHEMA_VERSION: u64 = 6;
 /// The shipped location of the store: the system-owned DATA namespace, so a
 /// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
@@ -307,6 +314,13 @@ fn schema() -> Rule {
     let update = obj(vec![
         ("operation", S),
         ("last_error", S),
+        // PLAN-076 B4's classification of the sentence above. `lifecycle` is
+        // deliberately NOT added beside it: that subtree carries
+        // `policy.sourceUrl`, an operator-typed URL whose userinfo can hold a
+        // credential -- which is why mosd refuses to log the document either
+        // -- so admitting it needs a redaction decision of its own rather than
+        // arriving as a side effect of this gate.
+        ("last_error_code", S),
         (
             "progress",
             obj(vec![("percentage", S), ("message", S), ("depth", S)]),
@@ -332,6 +346,7 @@ fn schema() -> Rule {
                 ("bundle", S),
                 ("requested_by", S),
                 ("error", S),
+                ("error_code", S),
                 // PLAN-078 §S4: the clock and the synchronization state,
                 // recorded BESIDE a failed install because RAUC's
                 // "certificate has expired" is the same sentence whether the
@@ -1786,6 +1801,7 @@ mod tests {
                     "bundle": "/mos/updates/verified/x.raucb",
                     "requested_by": ":1.7",
                     "error": "signature verification failed",
+                    "error_code": "signature-invalid",
                     "time": {
                         "clock": "2075-01-01T00:00:00Z",
                         "clock_implicated": true,
@@ -1798,7 +1814,7 @@ mod tests {
         let snapshot = Collector::new(&fake).collect().await.snapshot;
 
         assert_eq!(
-            snapshot["schemaVersion"], 3,
+            snapshot["schemaVersion"], 4,
             "the shipped version does not name the shape below"
         );
         let system = &snapshot["system"]["system"];
@@ -1814,6 +1830,10 @@ mod tests {
         // expired` and not the clock that may have caused it.
         let install = &snapshot["boot"]["update"]["install"];
         assert_eq!(install["error"], "signature verification failed");
+        // PLAN-076 B4, through the same real redaction pass: a code the
+        // allowlist did not name would be dropped silently, leaving a support
+        // bundle that carries RAUC's sentence and not its class.
+        assert_eq!(install["error_code"], "signature-invalid");
         assert_eq!(install["time"]["clock"], "2075-01-01T00:00:00Z");
         assert_eq!(install["time"]["clock_implicated"], true);
         assert_eq!(install["time"]["status"]["status"], "offline-degraded");

@@ -33,6 +33,7 @@ use crate::telemetry::{self, TelemetrySource, UnavailableTelemetry};
 use crate::time_status::{self, ClockTrust, TimeStatusSource, UnavailableTimeStatus, status_json};
 use crate::transient;
 use crate::update_auto::{self, AutoRoutes, UpdateFacts};
+use crate::update_codes;
 use crate::update_lifecycle::{
     Available, DEFAULT_WORKSPACE_ROOT, LifecycleHost, NoClient, Refusal, Settled, UpdateClient,
     UpdateLifecycle,
@@ -709,11 +710,18 @@ impl MosdService {
                         &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                         observed,
                     );
+                    // PLAN-076 B4: the class beside the sentence. RAUC's
+                    // vocabulary is RAUC's, so most failures land on
+                    // `unknown` and that is the honest answer — the words are
+                    // in `error` and in the log line above, and a consumer
+                    // reading `error_code` never has to decide whether what it
+                    // got is a code or a message.
                     serde_json::json!({
                         "status": "failed",
                         "bundle": bundle.to_string_lossy(),
                         "requested_by": sender,
                         "error": error,
+                        "error_code": update_codes::rauc_error_code(&error),
                         "time": facts,
                     })
                 }
@@ -2791,10 +2799,54 @@ mod tests {
                 .is_some_and(|err| err.contains("signature verification failed")),
             "the failure reason must be recorded, got {install}"
         );
+        // PLAN-076 B4, driven through the real install path rather than
+        // asserted at the classifier: RAUC's sentence stays in `error` and its
+        // class is beside it, so a fleet groups signature refusals without
+        // matching on RAUC's words.
+        assert_eq!(
+            install["error_code"],
+            crate::update_codes::RAUC_SIGNATURE_INVALID,
+            "got {install}"
+        );
         service
             .request_install(":1.9", bundle)
             .await
             .expect("flag released");
+    }
+
+    // The same path with a failure this repository has NOT measured: the code
+    // is `unknown` and it is NOT the sentence. This is the half of the gate
+    // that a mapping with a pass-through fallback would silently fail —
+    // there, `error_code` would read `Compatible mismatch: …` and a consumer
+    // matching on codes would be back to matching on text without being told.
+    #[tokio::test]
+    async fn an_unmeasured_install_failure_is_unknown_and_never_its_own_text() {
+        let reason = "Compatible mismatch: expected `mos-cx3576` but the bundle has `mos-x64`";
+        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+            install_error: Some(reason.to_string()),
+            ..MockRauc::default()
+        });
+        let bundle = verified_bundle(&dir, "wrong-compatible.raucb");
+
+        service
+            .request_install(":1.9", bundle.as_str())
+            .await
+            .expect("admitted");
+        wait_for_install_status(&service, "failed").await;
+
+        let install = service.get_state("update.install").await.expect("state");
+        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
+        assert!(
+            install["error"]
+                .as_str()
+                .is_some_and(|err| err.contains("Compatible mismatch")),
+            "the words are kept where a human reads them: {install}"
+        );
+        assert_eq!(
+            install["error_code"],
+            crate::update_codes::UNKNOWN,
+            "{install}"
+        );
     }
 
     /// PLAN-078 §S4, end to end: the recorded failure carries the device's own

@@ -2667,10 +2667,22 @@ struct FailingSettings {
     /// The fdo error name mosd answered with, or `None` for a failure that
     /// never reached mosd at all.
     fdo_name: Option<&'static str>,
+    /// Fail with the bounded call's own error type instead. Its own field
+    /// rather than a third `fdo_name` value because a timeout is not an fdo
+    /// error at all: it is apid's, raised when mosd never answered, and the
+    /// classification that reads it downcasts to the type rather than reading
+    /// a name.
+    timeout: bool,
 }
 
 impl FailingSettings {
     fn error(&self) -> anyhow::Error {
+        if self.timeout {
+            return anyhow::Error::new(crate::bus_client::MosdCallTimeout::new(
+                "GetState",
+                std::time::Duration::from_secs(5),
+            ));
+        }
         match self.fdo_name {
             Some(name) => method_error(name, MOSD_MESSAGE).into(),
             None => anyhow::anyhow!("no connection to mosd"),
@@ -2804,7 +2816,26 @@ async fn failing_app(fdo_name: Option<&'static str>) -> (Router, String) {
     let (entry, wire) = seeded_token(0);
     let mut tree = configured_tree("hunter2secret");
     tree["access"]["apiTokens"] = json!([entry]);
-    let api = Arc::new(FailingSettings { tree, fdo_name });
+    let api = Arc::new(FailingSettings {
+        tree,
+        fdo_name,
+        timeout: false,
+    });
+    let router = app(AppState::new(api, SIGNING_KEY));
+    (router, wire)
+}
+
+// The same fixture, failing with the bounded call's timeout rather than with
+// a connection failure.
+async fn timing_out_app() -> (Router, String) {
+    let (entry, wire) = seeded_token(0);
+    let mut tree = configured_tree("hunter2secret");
+    tree["access"]["apiTokens"] = json!([entry]);
+    let api = Arc::new(FailingSettings {
+        tree,
+        fdo_name: None,
+        timeout: true,
+    });
     let router = app(AppState::new(api, SIGNING_KEY));
     (router, wire)
 }
@@ -3606,6 +3637,15 @@ fn health_app(uptime: u64) -> (Router, Arc<FakeSettings>) {
     (router, fake)
 }
 
+// The same, with a bearer token seeded into the tree: the route is
+// authenticated, so a test that reads its body needs a credential.
+fn health_app_with_token(uptime: serde_json::Value) -> (Router, Arc<FakeSettings>, String) {
+    let (tree, wire) = with_token(configured_tree("hunter2secret"));
+    let (router, fake) = test_app(tree);
+    fake.set_state_entry("uptime", uptime);
+    (router, fake, wire)
+}
+
 // §2.4 case 3's first shape, exactly: `apid` ok, `mosd` ok, and `checkedAt`
 // carrying the appliance's uptime.
 //
@@ -3642,7 +3682,53 @@ async fn health_reports_an_unreachable_mosd_and_still_answers_200() {
         body["detail"].as_str().is_some_and(|d| !d.is_empty()),
         "the unreachable answer must say why: {body}"
     );
+    assert_eq!(body["code"], json!("mosd_unreachable"), "{body}");
     assert!(body.get("checkedAt").is_none(), "{body}");
+}
+
+// PLAN-076 B4 on the health path: all three failure classes, and the ok
+// answer that carries no code at all.
+//
+// `detail` is unbounded by construction — it renders whatever zbus, the
+// kernel or mosd said — so before this the only way to tell a timeout from a
+// dead socket was to match on that sentence. The three cases are driven
+// through the real route rather than asserted at a mapping function, because
+// the classification reads the error's TYPE and a fixture that handed the
+// route a pre-classified value would be testing the fixture.
+#[tokio::test]
+async fn the_health_route_classifies_every_failure_and_codes_none_of_the_successes() {
+    // 1. The bounded call expired. Distinguishable from case 2 only by type.
+    let (router, token) = timing_out_app().await;
+    let response = bearer(&router, "GET", "/api/v1/health", &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
+    assert_eq!(body["mosd"], json!("unreachable"));
+    assert_eq!(body["code"], json!("mosd_timeout"), "{body}");
+
+    // 2. mosd answered, with something that is not a count of seconds. Not
+    // reported as health: `ok` has to mean the round trip produced a usable
+    // answer.
+    let (router, _fake, token) = health_app_with_token(json!("about ninety thousand"));
+    let response = bearer(&router, "GET", "/api/v1/health", &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
+    assert_eq!(body["mosd"], json!("unreachable"));
+    assert_eq!(body["code"], json!("mosd_bad_answer"), "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("about ninety thousand")),
+        "the words stay in `detail`, which is what makes the code safe to close: {body}"
+    );
+
+    // 3. The healthy answer names no failure, so it carries no code: a member
+    // present with a meaningless value is worse than an absent one.
+    let (router, _fake, token) = health_app_with_token(json!(90_061));
+    let response = bearer(&router, "GET", "/api/v1/health", &token).await;
+    let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
+    assert_eq!(body["mosd"], json!("ok"));
+    assert!(body.get("code").is_none(), "{body}");
+    assert!(body.get("detail").is_none(), "{body}");
 }
 
 // The probe is a live bus call and not a flag: move the appliance's uptime and
