@@ -45,7 +45,7 @@ ART_DIR="${OUT_DIR}/apid-api"
 # assignment under `set -e`, as a bare exit 1 with no output. Refuse with a
 # sentence instead; the image check further down never gets a chance to.
 if ! RUN_DIR_REAL="$(readlink -f "${RUN_DIR}")"; then
-    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-x64" >&2
+    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board x64" >&2
     exit 1
 fi
 OUT_REAL="$(readlink -f "${REPO_ROOT}/_out")"
@@ -318,7 +318,7 @@ finish() {
 note "repository ${REPO_ROOT}"
 
 if [ ! -e "${IMG}" ]; then
-    fail "image ${IMG##*/} is missing; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-x64"
+    fail "image ${IMG##*/} is missing; this harness builds nothing. Build it: MOS_BOARD=x64 bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board x64"
     finish
 fi
 pass "image present: ${IMG##*/} -> $(basename "$(readlink -f "${IMG}")")"

@@ -368,7 +368,7 @@ async function main(): Promise<void> {
   if (!fs.existsSync(img)) {
     die(
       `error: ${img} not found. Build it: MOS_BOARD=x64 bash rootfs/build.sh && ` +
-        `bash build/run.sh --mkimage-x64`,
+        `bash build/run.sh --mkimage-uefi --board x64`,
     );
   }
 
@@ -378,7 +378,7 @@ async function main(): Promise<void> {
   // state rather than from whatever the last one left. It is copied under _out/
   // and not through a temporary directory because it is ~2 GiB and because a
   // bind of a /tmp path does not propagate to the daemon on this host anyway
-  // (see build/src/mkimage-x64.ts).
+  // (see build/src/mkimage-uefi.ts).
   //
   // MOS_QEMU_REUSE_DISK keeps the disk a previous --prepare-only made, so
   // tools/qemu-seed-state.sh's writes survive into the boot. Without it every
