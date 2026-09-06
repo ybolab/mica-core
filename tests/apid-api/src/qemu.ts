@@ -91,7 +91,23 @@ export const QEMU_ARCHES: Readonly<Record<string, QemuArch>> = {
     machine: "virt",
     // qemu-system-arm provides qemu-system-aarch64; qemu-efi-aarch64 is
     // `Architecture: all` and provides AAVMF, Debian's EDK2 build for aarch64.
-    packages: "qemu-system-arm qemu-efi-aarch64",
+    //
+    // ipxe-qemu IS NAMED HERE AND IS NOT NAMED IN THE amd64 ROW, and the
+    // asymmetry is the packaging's rather than a slip. It ships
+    // /usr/share/qemu/efi-virtio.rom, the option ROM `virtio-net-pci` loads.
+    // qemu-system-x86 DEPENDS on it, so the amd64 row gets it for free;
+    // qemu-system-arm only RECOMMENDS it, and the apt line below runs with
+    // --no-install-recommends -- deliberately, so that what lands is what is
+    // named. The two together mean the arm64 guest starts without the ROM.
+    //
+    // MEASURED, from a boot that failed in 25 seconds:
+    //   qemu-system-aarch64: -device virtio-net-pci,netdev=net0:
+    //       failed to find romfile "efi-virtio.rom"
+    // QEMU refuses to start the machine at all, so this is loud rather than a
+    // guest that comes up without a NIC -- but it is only loud once someone
+    // boots, which is why slice 5 of PLAN-085 is a measurement and not a
+    // prediction.
+    packages: "qemu-system-arm qemu-efi-aarch64 ipxe-qemu",
     // AAVMF_CODE.fd is a symlink to the no-secboot variant, and that is the one
     // wanted: the secure-boot builds expect an enrolled key this project does
     // not have, and docs/design/security-model.md section 4 already places

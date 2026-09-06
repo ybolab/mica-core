@@ -1017,6 +1017,18 @@ try {
     "the arm64 row installs the aarch64 emulator and AAVMF, and not ovmf",
     [`expected: qemu-system-arm + qemu-efi-aarch64, without ovmf`, `actual:   ${arm.packages}`].join("\n"),
   );
+  // ...and the option ROM, which is the one package apt will NOT supply on its
+  // own here: qemu-system-x86 Depends on ipxe-qemu, qemu-system-arm only
+  // Recommends it, and the install runs --no-install-recommends. Measured from a
+  // boot that died in 25s with `failed to find romfile "efi-virtio.rom"`.
+  outer.check(
+    arm.packages.includes("ipxe-qemu"),
+    "the arm64 row names ipxe-qemu, without which virtio-net-pci has no option ROM and QEMU refuses to start",
+    [
+      `expected: ipxe-qemu among the arm64 packages`,
+      `actual:   ${arm.packages}`,
+    ].join("\n"),
+  );
   // An architecture with no row is REFUSED, naming the board and what is known.
   // Without this an unknown arch reads as `undefined` and the run dies later on
   // a property of it, in a message about JavaScript rather than about a board.
