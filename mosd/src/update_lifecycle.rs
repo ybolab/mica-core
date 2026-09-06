@@ -2467,7 +2467,10 @@ mod tests {
     async fn a_client_that_cannot_run_and_one_that_will_not_speak_are_two_codes() {
         for (script, expected) in [
             (
-                ("sync", Err("spawn rauc-update: No such file or directory".to_string())),
+                (
+                    "sync",
+                    Err("spawn rauc-update: No such file or directory".to_string()),
+                ),
                 update_codes::CLIENT_SPAWN_FAILED,
             ),
             (
