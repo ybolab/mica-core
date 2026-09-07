@@ -282,6 +282,14 @@ qemu_port() {
     local kv
     envargs=()
     for kv in "${QEMU_ENV[@]}"; do envargs+=(-e "${kv}"); done
+    # MOS_BOARD, EXPLICITLY. It is exported at the top of this script so that
+    # src/qemu.ts "reads the same value rather than defaulting independently",
+    # and that only holds for a process in this shell's environment -- the
+    # engine runs in a CONTAINER, which inherits nothing. Without this the
+    # engine took its own `?? "x64"` default and refused with
+    # "_out/x64/x64-mos-latest.img not found" on a run that had already passed
+    # its "image present" precondition against the board actually asked for.
+    envargs+=(-e "MOS_BOARD=${MOS_BOARD}")
     if [ "${1:-}" = "--reuse" ]; then
         envargs+=(-e MOS_QEMU_REUSE_DISK=1)
         shift
