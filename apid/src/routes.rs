@@ -2055,12 +2055,14 @@ pub(crate) async fn api_v1_settings(
 /// Four shapes and not one validator per path, because the write surface
 /// admits its paths on one ground: each value's validity *"depends on nothing
 /// else in the tree"*. A hostname, which `valid_hostname` decides on its own;
-/// three switches, which *"cannot be invalid at all"*; and the two `time`
+/// four switches, which accept either boolean value; and the two `time`
 /// values, whose rules ([`mosd_settings::validate_timezone_name`] and
 /// [`mosd_settings::validate_ntp_servers`]) are each self-contained — stated
 /// once, in the crate that owns the model, and only CALLED here, so this
 /// surface cannot drift from what `Settings::set` enforces. Anything
-/// relational is a later milestone by construction.
+/// relational is handled by resource routes or mosd's reconcilers. In
+/// particular, a Wi-Fi client switch does not promise association or resolve
+/// a station/AP interface conflict; clients must inspect the apply state.
 #[derive(Clone, Copy)]
 enum ScalarShape {
     /// A JSON string [`valid_hostname`] accepts.
@@ -2088,11 +2090,12 @@ enum ScalarShape {
 /// undeclared `wg9` writes a physical-kind `network.wg9` carrying a WireGuard
 /// block. Every path this list does not carry is refused by
 /// [`settings_write_refusal`] before any bus call is made.
-const WRITABLE_SETTINGS: [(&str, ScalarShape); 6] = [
+const WRITABLE_SETTINGS: [(&str, ScalarShape); 7] = [
     ("hostname", ScalarShape::Hostname),
     ("access.ssh.enabled", ScalarShape::Flag),
     ("container.enabled", ScalarShape::Flag),
     ("mqtt.enabled", ScalarShape::Flag),
+    ("wifi.client.enabled", ScalarShape::Flag),
     ("time.ntp.servers", ScalarShape::NtpServers),
     ("time.timezone", ScalarShape::Timezone),
 ];
@@ -2104,7 +2107,7 @@ const SETTINGS_COLLECTION: &str = "settings";
 /// The sentence a refusal carries when nothing more specific is true of the
 /// path: it is a real part of the tree, and this route is not how it is
 /// written.
-const WRITES_SIX: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and `time.timezone` and no other dot-path; every other subtree is written through its own resource route";
+const WRITABLE_SETTINGS_NOTICE: &str = "this route writes `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `wifi.client.enabled`, `time.ntp.servers` and `time.timezone` and no other dot-path; every other subtree is written through its own resource route";
 
 /// The shape `path` is written with, when this route writes it at all.
 fn writable_shape(path: &str) -> Option<ScalarShape> {
@@ -2198,7 +2201,7 @@ fn settings_write_refusal(path: &str) -> Response {
     // `""` and `"."` as replacing the root. It is a real path this route
     // refuses, so it takes the refusal rather than the 422 below.
     if path == "." {
-        return refused(WRITES_SIX.to_string());
+        return refused(WRITABLE_SETTINGS_NOTICE.to_string());
     }
     let Some(segments) = mosd_settings::path_segments(path) else {
         return api_response(
@@ -2225,7 +2228,7 @@ fn settings_write_refusal(path: &str) -> Response {
         // the subtree where a passthrough is actively destructive rather than
         // merely wrong.
         "network" => "the `network` subtree is not written through this route: it is written through the typed network routes — `PUT /api/v1/network/{iface}` and the `DELETE` beside it, `PUT /api/v1/network` for the whole map, and the peer collection under each interface. A raw write here would create an entry of the default kind for an interface that has none, and would run none of the relational rules: a bridge naming a port that does not exist would be accepted".to_string(),
-        _ => WRITES_SIX.to_string(),
+        _ => WRITABLE_SETTINGS_NOTICE.to_string(),
     })
 }
 
@@ -2235,7 +2238,7 @@ fn settings_write_refusal(path: &str) -> Response {
 ///
 /// The schema is wide because the dot-path decides what is acceptable. What
 /// is actually accepted is narrow: a JSON string for `hostname` and
-/// `time.timezone`, `true` or `false` for the three switches, and a JSON
+/// `time.timezone`, `true` or `false` for the four switches, and a JSON
 /// array of server strings for `time.ntp.servers`. Anything else is **422**.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(transparent)]
@@ -2245,8 +2248,8 @@ pub(crate) struct SettingsWrite(Value);
 // which would invite a client to trust the echo over its own GET.
 /// Write one scalar setting by dot-path.
 ///
-/// Accepts six paths and no others: `hostname`, `access.ssh.enabled`,
-/// `container.enabled`, `mqtt.enabled`, `time.ntp.servers` and
+/// Accepts seven paths and no others: `hostname`, `access.ssh.enabled`,
+/// `container.enabled`, `mqtt.enabled`, `wifi.client.enabled`, `time.ntp.servers` and
 /// `time.timezone`. Any other path is refused.
 ///
 /// Answers **202** with the queued task id on success. Takes a bearer token.
@@ -2255,7 +2258,7 @@ pub(crate) struct SettingsWrite(Value);
     path = V1_SETTINGS_DOC,
     context_path = API,
     tag = "resources",
-    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` or `time.timezone`")),
+    params(("path" = String, Path, description = "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `wifi.client.enabled`, `time.ntp.servers` or `time.timezone`")),
     request_body = SettingsWrite,
     responses(
         (status = 202, description = "The value was persisted and its scoped reconciliation was queued", body = TaskAccepted),
