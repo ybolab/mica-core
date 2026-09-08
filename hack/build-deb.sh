@@ -252,3 +252,50 @@ for name in "${BINARIES[@]}"; do
     cp "${RELEASE_DIR}/${name}" "${STAGE}/${name}"
 done
 echo "build-deb: staged ${BINARIES[*]} into ${STAGE}"
+
+# THE BUILD COMMIT, RECORDED BY THE PATH THAT COMPILED THE BINARIES.
+# `verify/src/smoke.ts` executes mosd and apid inside the packed root and
+# compares the commit their `--version` line reports against this record;
+# `rootfs/build.sh` copies the one matching the board's architecture into
+# `_out/<board>/` beside the factory root. The comparison is worth exactly what
+# the two sides' origins make it worth, and rootfs/build.sh says what that is
+# where it makes the copy.
+#
+# ARCH-SCOPED, which is the whole reason it is not one file. The pool carries an
+# amd64 and an arm64 build of these packages side by side and either can be
+# rebuilt alone, so a single record would describe whichever ran last: an x64
+# rootfs build after an arm64 producer run would read `aarch64-unknown-linux-gnu`
+# while `_out/x64/` held x86_64 binaries.
+#
+# WRITTEN ONLY BY THE PRODUCER THAT OWNS THEM. The mqtt producer reaches this
+# same script, from the same commit, for two binaries that report no commit of
+# their own (`embedsBuildCommit` in verify/src/smoke-register.ts); a record
+# written by that run would name a build that did not produce what the record is
+# asserted against, and would look exactly like one that did.
+#
+# LAST, after the compile, the independence assertion and the staging, so a run
+# that failed any of them leaves no record. Absent is a state the smoke runner
+# handles by saying the commit was not asserted; a record for a build that did
+# not finish is one nothing could catch.
+#
+# Tab-separated `key<TAB>value` with `#` comments, the shape
+# build/src/stages.ts writes for factory-root.txt, so one reader reads both.
+COMMIT_REPORTING=(mosd apid)
+owns_reporting=0
+for name in "${BINARIES[@]}"; do
+    for c in "${COMMIT_REPORTING[@]}"; do
+        [ "${name}" != "${c}" ] || owns_reporting=1
+    done
+done
+if [ "${owns_reporting}" = 1 ]; then
+    BUILD_RECORD="${REPO_ROOT}/_out/mosd-build-${ARCH}.txt"
+    {
+        echo "# What pkgs/mosd/hack/build-deb.sh compiled for ${ARCH}, and the commit it embedded."
+        echo "# Written after the binaries were staged; rootfs/build.sh copies it into _out/<board>/."
+        printf 'producer\t%s\n' "${PRODUCER}"
+        printf 'target\t%s\n' "${TRIPLE}"
+        printf 'elf-arch\t%s\n' "${ELF_ARCH}"
+        printf 'commit\t%s\n' "${MOS_BUILD_COMMIT}"
+    } >"${BUILD_RECORD}"
+    echo "build-deb: recorded build commit ${MOS_BUILD_COMMIT} in ${BUILD_RECORD}"
+fi

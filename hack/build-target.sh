@@ -101,29 +101,15 @@ else
     echo "mosd: no build commit could be resolved; mosd and apid will report unknown" >&2
 fi
 
-# The record the smoke runner reads, written beside the build rather than
-# inferred from it. `verify/src/smoke.ts` asserts the commit these binaries
-# report against the commit this build embedded, and that second value cannot
-# come from `git rev-parse HEAD` at run time, which would pass on any freshly
-# built tree. rootfs/build.sh copies this into _out/<board>/ beside the
-# factory root it goes into.
-#
-# This copy describes the last build for any target, which is why the runner
-# reads the per-board copy instead: an x64 rootfs build followed by
-# `bash pkgs/mosd/hack/build-aarch64.sh` leaves this file saying
-# target=aarch64-unknown-linux-gnu while _out/x64/ still holds x86_64 binaries.
-#
-# Tab-separated `key<TAB>value` with `#` comments, the shape
-# build/src/stages.ts writes for factory-root.txt, so one reader reads both.
-MOSD_BUILD_RECORD="${REPO_ROOT}/_out/mosd-build.txt"
-{
-    echo "# What pkgs/mosd/hack/build-target.sh built, and the commit it embedded in mosd and apid."
-    echo "# Written on every build. rootfs/build.sh copies it into _out/<board>/."
-    echo "# An empty commit means none could be resolved; the binaries then report unknown."
-    printf 'target\t%s\n' "${TARGET}"
-    printf 'elf-arch\t%s\n' "${ELF_ARCH}"
-    printf 'commit\t%s\n' "${MOS_BUILD_COMMIT}"
-} >"${MOSD_BUILD_RECORD}"
+# NO BUILD RECORD IS WRITTEN HERE, and that is a decision rather than an
+# omission. This script used to write `_out/mosd-build.txt` for the smoke runner
+# to assert against; a composed root has never carried the binaries it produces.
+# They come out of the mosd and mos-apid packages, which
+# pkgs/mosd/hack/build-deb.sh compiles, and it is that script that records the
+# commit -- per architecture, in `_out/mosd-build-<arch>.txt`. A record from
+# here would name the commit of a build whose output nothing installs, and
+# would be indistinguishable from one that named the build that did. See
+# RFCT-356.
 
 # The repository is mounted, not pkgs/mosd/. That used to be forced: pkgs/mosd/Cargo.toml
 # listed one workspace member outside this directory, and mounting pkgs/mosd/ alone
