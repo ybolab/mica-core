@@ -4279,7 +4279,7 @@ fn the_openapi_document_covers_the_token_routes() {
     assert!(minted["token"].is_object(), "{minted}");
 }
 
-// A tree with all four writable paths already present, so a write is a change
+// A tree with all writable paths already present, so a write is a change
 // of value and never a creation -- the creation case is what the refusal list
 // exists to prevent, and it must not be smuggled into the happy path.
 fn writable_tree(password: &str) -> serde_json::Value {
@@ -4287,17 +4287,18 @@ fn writable_tree(password: &str) -> serde_json::Value {
     tree["access"]["ssh"] = json!({ "enabled": false });
     tree["container"] = json!({ "enabled": false });
     tree["mqtt"] = json!({ "enabled": false });
+    tree["wifi"] = serde_json::to_value(mosd_settings::WifiSettings::default()).unwrap();
     tree["time"] = json!({ "ntp": { "servers": [] }, "timezone": "UTC" });
     tree
 }
 
-// The six dot-paths admitted, each written and
+// The seven dot-paths admitted, each written and
 // each read back through the route that answers for it.
 //
 // 202 and a task id: persistence has completed, while reconciliation is a
 // separately observable lifecycle.
 #[tokio::test]
-async fn the_write_route_writes_the_six_scalar_settings() {
+async fn the_write_route_writes_the_scalar_settings() {
     let (tree, token) = with_token(writable_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
 
@@ -4306,6 +4307,8 @@ async fn the_write_route_writes_the_six_scalar_settings() {
         ("access.ssh.enabled", "true"),
         ("container.enabled", "true"),
         ("mqtt.enabled", "true"),
+        ("wifi.client.enabled", "true"),
+        ("wifi.client.enabled", "false"),
         ("time.ntp.servers", r#"["0.pool.ntp.org","192.0.2.7"]"#),
         ("time.timezone", r#""Europe/Berlin""#),
     ] {
@@ -4339,6 +4342,8 @@ async fn the_write_route_writes_the_six_scalar_settings() {
             "access.ssh.enabled",
             "container.enabled",
             "mqtt.enabled",
+            "wifi.client.enabled",
+            "wifi.client.enabled",
             "time.ntp.servers",
             "time.timezone"
         ],
@@ -4347,11 +4352,71 @@ async fn the_write_route_writes_the_six_scalar_settings() {
 
     let tasks = bearer(&router, "GET", "/api/v1/tasks", &token).await;
     assert_eq!(tasks.status(), StatusCode::OK);
-    assert_eq!(body_json(tasks).await.as_array().unwrap().len(), 6);
+    assert_eq!(body_json(tasks).await.as_array().unwrap().len(), 8);
 
     let missing = bearer(&router, "GET", "/api/v1/tasks/not-retained", &token).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(envelope(missing).await["code"], "task_not_found");
+}
+
+#[tokio::test]
+async fn the_browser_wifi_switch_requires_a_session_and_csrf() {
+    let tree = writable_tree("hunter2secret");
+    let original_wifi = tree["wifi"].clone();
+    let (router, fake) = test_app(tree);
+    let url = "/api/v1/settings/wifi.client.enabled";
+
+    let unauthenticated = json_request(&router, "PUT", url, json!(true), None, None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(envelope(unauthenticated).await["code"], "not_authenticated");
+
+    let login = json_request(
+        &router,
+        "POST",
+        "/api/v1/session",
+        json!({ "password": "hunter2secret" }),
+        None,
+        None,
+    )
+    .await;
+    let cookie = session_cookie_value(&login);
+    let session = body_json(login).await;
+    let csrf = session["csrfToken"].as_str().unwrap();
+
+    for invalid_csrf in [None, Some("wrong-token")] {
+        let response = json_request(
+            &router,
+            "PUT",
+            url,
+            json!(true),
+            Some(&cookie),
+            invalid_csrf,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(envelope(response).await["code"], "csrf_invalid");
+    }
+    assert!(fake.set_paths().is_empty());
+
+    for enabled in [true, false] {
+        let response = json_request(
+            &router,
+            "PUT",
+            url,
+            json!(enabled),
+            Some(&cookie),
+            Some(csrf),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(body_json(response).await["taskId"].is_string());
+        let read = get(&router, "/api/v1/settings/wifi", Some(&cookie)).await;
+        assert_eq!(read.status(), StatusCode::OK);
+        let mut expected = original_wifi.clone();
+        expected["client"]["enabled"] = json!(enabled);
+        assert_eq!(body_json(read).await, expected);
+    }
+    assert_eq!(fake.set_paths(), vec!["wifi.client.enabled"; 2]);
 }
 
 // §2.2's round trip, driven exactly as the client that motivates the rule
@@ -4437,7 +4502,11 @@ async fn every_dot_path_outside_the_allowlist_is_refused_with_409() {
         "access.webAdmin.password_hash",
         "provisioning",
         "wifi",
+        "wifi.client",
+        "wifi.client.interface",
         "wifi.client.networks",
+        "wifi.ap",
+        "wifi.ap.mode",
         "container",
         "mqtt",
         "mqtt.listen.port",
@@ -4631,6 +4700,11 @@ async fn a_body_of_the_wrong_shape_is_refused_and_not_written() {
         ("access.ssh.enabled", r#""yes""#, "switch"),
         ("container.enabled", "1", "switch"),
         ("mqtt.enabled", "null", "switch"),
+        ("wifi.client.enabled", r#""true""#, "switch"),
+        ("wifi.client.enabled", "1", "switch"),
+        ("wifi.client.enabled", "null", "switch"),
+        ("wifi.client.enabled", "{}", "switch"),
+        ("wifi.client.enabled", "[]", "switch"),
         ("time.timezone", "true", "text"),
         ("time.timezone", r#""Not A Zone!""#, "IANA"),
         ("time.timezone", r#""Etc//UTC""#, "IANA"),

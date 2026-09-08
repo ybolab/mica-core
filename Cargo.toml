@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker", "ui-bundle"]
+members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference"]
 
 [workspace.package]
 edition = "2024"

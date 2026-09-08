@@ -2200,13 +2200,13 @@
           "resources"
         ],
         "summary": "Write one scalar setting by dot-path.",
-        "description": "Accepts six paths and no others: `hostname`, `access.ssh.enabled`,\n`container.enabled`, `mqtt.enabled`, `time.ntp.servers` and\n`time.timezone`. Any other path is refused.\n\nAnswers **202** with the queued task id on success. Takes a bearer token.",
+        "description": "Accepts seven paths and no others: `hostname`, `access.ssh.enabled`,\n`container.enabled`, `mqtt.enabled`, `wifi.client.enabled`, `time.ntp.servers` and\n`time.timezone`. Any other path is refused.\n\nAnswers **202** with the queued task id on success. Takes a bearer token.",
         "operationId": "api_v1_settings_write",
         "parameters": [
           {
             "name": "path",
             "in": "path",
-            "description": "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `time.ntp.servers` or `time.timezone`",
+            "description": "The settings dot-path to write: `hostname`, `access.ssh.enabled`, `container.enabled`, `mqtt.enabled`, `wifi.client.enabled`, `time.ntp.servers` or `time.timezone`",
             "required": true,
             "schema": {
               "type": "string"
@@ -6111,7 +6111,7 @@
         }
       },
       "SettingsWrite": {
-        "description": "The body of a settings `PUT`: the value to write, and nothing around it.\n\nA bare JSON value, the same shape `GET` answers.\n\nThe schema is wide because the dot-path decides what is acceptable. What\nis actually accepted is narrow: a JSON string for `hostname` and\n`time.timezone`, `true` or `false` for the three switches, and a JSON\narray of server strings for `time.ntp.servers`. Anything else is **422**."
+        "description": "The body of a settings `PUT`: the value to write, and nothing around it.\n\nA bare JSON value, the same shape `GET` answers.\n\nThe schema is wide because the dot-path decides what is acceptable. What\nis actually accepted is narrow: a JSON string for `hostname` and\n`time.timezone`, `true` or `false` for the four switches, and a JSON\narray of server strings for `time.ntp.servers`. Anything else is **422**."
       },
       "SetupRequest": {
         "type": "object",
