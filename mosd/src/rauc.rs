@@ -7,14 +7,17 @@
 //!
 //! What this module deliberately does NOT do: confirm the booted slot. The
 //! boot health gate (`rootfs/overlay/usr/lib/mos/mos-health`) owns the
-//! PENDING_CONFIRM -> CONFIRMED edge — it probes systemd, mosd and apid and
-//! only then runs `rauc status mark-good`. An automatic mark-good here would
-//! duplicate that gate and, worse, could confirm a slot the gate would have
-//! failed. The bus does expose a *manual* mark (`MarkUpdate`) for the operator
-//! case the gate cannot decide — e.g. a failed unit outside the allowlist that
-//! the operator has judged acceptable — and it is validated down to
-//! `good`/`bad` on `booted`/`other`: activation (`active`) is the installer's
-//! job and is not offered.
+//! PENDING_CONFIRM -> CONFIRMED edge — it establishes the required set named in
+//! `/etc/mos/health.conf` (the boot transaction settled, mosd answering, apid
+//! answering) and only then runs `rauc status mark-good`. An automatic
+//! mark-good here would duplicate that gate and, worse, could confirm a slot
+//! the gate would have failed. The bus does expose a *manual* mark
+//! (`MarkUpdate`) for the operator case the gate cannot decide — a slot judged
+//! good or bad on evidence the gate does not have, such as an application that
+//! is up and behaving wrongly — and it is validated down to `good`/`bad` on
+//! `booted`/`other`: activation (`active`) is the installer's job and is not
+//! offered. Since PLAN-089 the gate REQUIRES a named set rather than forbidding
+//! every failed unit, so a failed unit is not one of the cases this overrules.
 //!
 //! Recording that mosd RAN on a slot is a different act, and it is not that
 //! one. [`crate::confirmed_boot`] writes mosd's own observation of the system
