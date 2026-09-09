@@ -43,7 +43,7 @@ const DEFAULT_DROP_IN: &str = "/etc/ssh/sshd_config.d/10-mos.conf";
 /// Directory the per-account authorized-keys files are rendered into.
 ///
 /// Under `/etc/ssh`, a STATE-backed bind mount (`etc-ssh.mount` binds
-/// `/mnt/state/ssh` over it), so the files survive an A/B update; `/root` is on
+/// `/mnt/data/state/ssh` over it), so the files survive an A/B update; `/root` is on
 /// the ephemeral filesystem and a key written there is gone on the next boot.
 ///
 /// The static `05-mos-authorized-keys.conf` points sshd at

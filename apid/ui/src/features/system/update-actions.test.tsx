@@ -11,16 +11,16 @@ afterEach(() => {
 })
 
 describe('update actions', () => {
-  it('sends the JSON body required to install a staged bundle', async () => {
+  it('installs the exact acquired signed deployment identity', async () => {
     const fetch = stubFetch({
-      '/api/v1/update': { lifecycle: { state: 'ready' } },
+      '/api/v1/update': { lifecycle: { state: 'ready', deploymentId: 'a'.repeat(64) } },
       'POST /api/v1/update/install': () => jsonResponse({}, 202),
     })
     renderPanel(<UpdateActions />)
     await userEvent.click(await screen.findByRole('button', { name: 'Install update' }))
     await waitFor(() => expect(fetch.mock.calls.some(([path]) => path === '/api/v1/update/install')).toBe(true))
     const request = fetch.mock.calls.find(([path]) => path === '/api/v1/update/install')?.[1]
-    expect(request?.body).toBe('{}')
+    expect(JSON.parse(String(request?.body))).toEqual({ deploymentId: 'a'.repeat(64) })
     expect(new Headers(request?.headers).get('content-type')).toBe('application/json')
   })
 
@@ -28,7 +28,7 @@ describe('update actions', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ lifecycle: { state: 'checking' } }))
-      .mockImplementation(() => Promise.resolve(jsonResponse({ lifecycle: { state: 'ready', reason: 'check finished' } })))
+      .mockImplementation(() => Promise.resolve(jsonResponse({ lifecycle: { state: 'ready', deploymentId: 'a'.repeat(64), reason: 'check finished' } })))
     vi.stubGlobal('fetch', fetch)
     renderPanel(<><UpdatePanel /><UpdateActions /></>)
     await screen.findByText('checking')
@@ -40,4 +40,14 @@ describe('update actions', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(fetch).toHaveBeenCalledTimes(calls)
   })
+})
+
+it('displays the running, candidate and fallback identities with the running components', async () => {
+  stubFetch({ '/api/v1/update': {
+    boot: { deploymentId: 'a'.repeat(64), kernelId: 'c'.repeat(64), rootfsId: 'd'.repeat(64), contentVerified: true, secureBoot: true, backend: 'uefi', bootVerified: true },
+    state: { current: 'a'.repeat(64), candidate: 'e'.repeat(64), fallback: 'b'.repeat(64), highestGeneration: 3, failed: [] },
+    lifecycle: { state: 'reboot-required' },
+  } })
+  renderPanel(<UpdatePanel />)
+  for (const id of ['a', 'b', 'c', 'd', 'e']) expect(await screen.findByText(id.repeat(64))).toBeTruthy()
 })

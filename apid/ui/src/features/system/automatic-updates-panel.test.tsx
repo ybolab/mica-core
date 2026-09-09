@@ -150,7 +150,6 @@ describe('the automatic update policy', () => {
     const expected: [string, RegExp][] = [
       ['no-newer-release', /publishes nothing newer/],
       ['outside-window', /outside the maintenance window/],
-      ['version-suppressed', /already rolled back that version/],
       ['clock-untrusted', /does not trust its clock/],
       ['reboot-gate-closed', /must not be interrupted/],
       // The fallback the daemon can actually produce: it clamps every

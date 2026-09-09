@@ -81,10 +81,12 @@ trait Mosd {
     fn get_update_state(&self) -> zbus::Result<String>;
     fn check_update(&self) -> zbus::Result<()>;
     fn fetch_update(&self) -> zbus::Result<()>;
-    fn install_update(&self, bundle_path: &str) -> zbus::Result<()>;
-    fn mark_update(&self, state: &str, slot: &str) -> zbus::Result<(String, String)>;
+    fn install_update(&self, deployment_id: &str) -> zbus::Result<()>;
+    fn confirm_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
+    fn reject_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
+    fn rollback_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
     fn set_reboot_override(&self, seconds: u32) -> zbus::Result<String>;
-    fn clear_update_suppression(&self, version: &str) -> zbus::Result<String>;
+
     fn set_update_config(&self, patch_json: &str) -> zbus::Result<String>;
     /// Emitted by mosd after every successful settings write, with the
     /// changed dot-path and its new JSON-encoded value. The subscriber
@@ -422,27 +424,31 @@ impl SettingsApi for BusSettings {
             .await
     }
 
-    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
+    async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
         let proxy = self.proxy().await?;
-        self.call("MarkUpdate", proxy.mark_update(state, slot))
+        self.call("ConfirmDeployment", proxy.confirm_deployment(deployment_id))
             .await
+    }
+
+    async fn reject_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        let proxy = self.proxy().await?;
+        self.call("RejectDeployment", proxy.reject_deployment(deployment_id))
+            .await
+    }
+
+    async fn rollback_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        let proxy = self.proxy().await?;
+        self.call(
+            "RollbackDeployment",
+            proxy.rollback_deployment(deployment_id),
+        )
+        .await
     }
 
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
         let proxy = self.proxy().await?;
         let json = self
             .call("SetRebootOverride", proxy.set_reboot_override(seconds))
-            .await?;
-        Ok(serde_json::from_str(&json)?)
-    }
-
-    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
-        let proxy = self.proxy().await?;
-        let json = self
-            .call(
-                "ClearUpdateSuppression",
-                proxy.clear_update_suppression(version),
-            )
             .await?;
         Ok(serde_json::from_str(&json)?)
     }

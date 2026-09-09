@@ -352,10 +352,8 @@ const DEFERRAL_REASONS = [
   'reboot-pending',
   'recheck-failed',
   'recheck-refused',
-  'slot-status-unknown',
+  'deployment-status-unknown',
   'superseded',
-  'suppression-unreadable',
-  'version-suppressed',
   'unknown',
   'workspace-unready',
 ] as const

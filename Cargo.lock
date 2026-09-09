@@ -1721,6 +1721,7 @@ dependencies = [
  "mos-busname",
  "mosd-settings",
  "ring",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

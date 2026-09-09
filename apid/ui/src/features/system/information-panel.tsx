@@ -36,7 +36,7 @@ export function InformationPanel() {
                 <FactRow label={t('system.information.software.system')} fact={value.system} value={systemSummary(value)} />
                 <FactRow label={t('system.information.software.commitDate')} fact={value.system.commitDate ?? value.system} value={value.system.commitDate?.date} />
                 <FactRow label={t('system.information.software.daemon')} fact={value.daemon} value={join([value.daemon.name, value.daemon.version, value.daemon.commit])} />
-                <FactRow label={t('system.information.software.slot')} fact={value.slot} value={join([value.slot.booted, value.slot.bootname, value.slot.bootStatus, value.slot.primary ? t('system.information.software.primary') : undefined])} />
+                <FactRow label={t('system.information.software.deployment')} fact={value.deployment} value={join([value.deployment.id, value.deployment.version])} />
                 <FactRow label={t('system.information.software.uptime')} fact={value.uptime} value={value.uptime.seconds === undefined ? undefined : formatUptime(value.uptime.seconds, t)} />
               </dl>
             </Card>

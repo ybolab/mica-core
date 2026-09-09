@@ -4,7 +4,6 @@ import { FolderTree, HardDrive, Layers, ShieldQuestion } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import type { StorageBind, StorageMedium, StorageStatus, StorageTier } from '@/lib/types'
 import { Card, CardHeader } from '@/components/ui/card'
-import { Status } from '@/components/ui/status'
 import { formatBytes } from '@/shared/components/fact'
 
 function useStorage() {
@@ -29,7 +28,6 @@ export function StoragePanel() {
 export function TiersPanel() {
   const { t } = useTranslation()
   const status = useStorage()
-  const workspace = status.data?.tiers.find((tier) => tier.updateWorkspace)?.updateWorkspace
   return (
     <Card>
       <CardHeader title={t('system.storage.tiers.title')} description={t('system.storage.tiers.description')} action={<Layers className="size-5 text-muted-foreground" />} />
@@ -42,19 +40,6 @@ export function TiersPanel() {
           </div>
         ))}
       </dl>
-      {workspace ? (
-        <>
-          <h3 className="text-sm font-semibold">{t('system.storage.workspace.title')}</h3>
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">{t('system.storage.workspace.description')}</p>
-          <div className="service-state">
-            <Status ok={workspace.available}>
-              {workspace.available
-                ? t('system.storage.workspace.available', { size: formatBytes(workspace.reservedBytes) })
-                : t('system.storage.workspace.exhausted', { size: formatBytes(workspace.reservedBytes) })}
-            </Status>
-          </div>
-        </>
-      ) : null}
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
     </Card>
   )

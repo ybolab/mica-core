@@ -12,7 +12,6 @@ function status(overrides: Partial<StorageStatus> = {}): StorageStatus {
         mounted: true, mount: '/mnt/data', filesystem: 'ext4', readOnly: false,
         space: { totalBytes: 8_589_934_592, usedBytes: 4_294_967_296, freeBytes: 4_294_967_296, reservedBytes: 429_496_729, usedPercent: 50 },
         pressure: 'normal',
-        updateWorkspace: { root: '/mos/updates', reservedBytes: 1_073_741_824, available: true },
         check: { unit: 'systemd-fsck@dev-mmcblk0p8.service', result: 'success', exitStatus: 0 },
       },
       {
@@ -41,7 +40,7 @@ function status(overrides: Partial<StorageStatus> = {}): StorageStatus {
     ],
     policy: {
       warningPercent: 85, warningClearPercent: 80, criticalPercent: 95, criticalClearPercent: 90,
-      updateWorkspaceReservedBytes: 1_073_741_824, updateWorkspaceRoot: '/mos/updates', watchedTiers: ['data'],
+      watchedTiers: ['data'],
     },
     lifecycle: { backupRestore: 'unsupported', secureErase: 'unsupported' },
     ...overrides,
@@ -69,13 +68,12 @@ describe('storage status', () => {
     expect(screen.getAllByText(/of 8.0 GiB used/)).toHaveLength(1)
   })
 
-  it('reports an absent tier, its reserved pool and the reserved update workspace', async () => {
+  it('reports an absent tier, its reserved pool and check evidence', async () => {
     stubFetch({ '/api/v1/storage/status': status() })
     renderPanel(<StoragePanel />)
 
     expect(await screen.findByText('not present on this board')).toBeTruthy()
     expect(screen.getByText(/409.6 MiB reserved for root/)).toBeTruthy()
-    expect(screen.getByText('1.0 GiB reserved and available')).toBeTruthy()
     expect(screen.getByText(/last check: success \(exit 0\)/)).toBeTruthy()
   })
 

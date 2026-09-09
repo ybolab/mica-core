@@ -25,7 +25,7 @@ function information(overrides: Partial<SystemInformation> = {}): SystemInformat
       { name: 'mos-system', version: '2026.09.0', architecture: 'arm64', mos: true },
       { name: 'busybox', version: '1.36.1', architecture: 'arm64', mos: false },
     ] },
-    slot: { ...available, booted: 'rootfs.0', bootname: 'A', bootStatus: 'good', primary: true },
+    deployment: { ...available, id: 'a'.repeat(64), version: '2026.09.0', confirmed: true },
     uptime: { ...available, seconds: 93_784 },
     ...overrides,
   }
@@ -51,7 +51,7 @@ describe('system information', () => {
     expect(screen.getByText('Radxa CM3576 · device-tree')).toBeTruthy()
     expect(screen.getByText('2026.09.0 · mos-system · git abc1234 (consistent)')).toBeTruthy()
     expect(screen.getByText('2026-09-01T12:34:56+08:00')).toBeTruthy()
-    expect(screen.getByText('rootfs.0 · A · good · primary')).toBeTruthy()
+    expect(screen.getByText(`${'a'.repeat(64)} · 2026.09.0`)).toBeTruthy()
     expect(screen.getByText('1d 2h 3m')).toBeTruthy()
     expect(screen.getByText('2 packages, including 1 mos packages.')).toBeTruthy()
     expect(screen.getByText('busybox')).toBeTruthy()
@@ -61,14 +61,14 @@ describe('system information', () => {
     stubFetch({
       '/api/v1/system/info': information({
         machineId: { available: false, detail: '/etc/machine-id is empty' },
-        slot: { available: false, detail: 'this image was not installed by RAUC' },
+        deployment: { available: false, detail: 'native deployment status is unavailable' },
       }),
       '/api/v1/system/telemetry': telemetryAbsent,
     })
     renderPanel(<InformationPanel />)
 
     expect(await screen.findByText('Unavailable — /etc/machine-id is empty')).toBeTruthy()
-    expect(screen.getByText('Unavailable — this image was not installed by RAUC')).toBeTruthy()
+    expect(screen.getByText('Unavailable — native deployment status is unavailable')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 

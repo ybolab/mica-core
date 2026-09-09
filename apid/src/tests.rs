@@ -2270,7 +2270,6 @@ async fn the_storage_status_route_answers_mosds_observation_read_only() {
             "readOnly": false,
             "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 },
             "pressure": "warning",
-            "updateWorkspace": { "reservedBytes": 268435456, "available": false },
             "check": { "unit": "systemd-fsck@dev-mmcblk0p11.service", "result": "success", "exitStatus": 1 },
         }],
         "media": [{ "name": "nvme0n1", "kind": "nvme", "health": { "supported": false, "reason": "no SMART reader" } }],
@@ -2285,7 +2284,6 @@ async fn the_storage_status_route_answers_mosds_observation_read_only() {
     assert_eq!(status["tiers"][0]["name"], "data");
     assert_eq!(status["tiers"][0]["pressure"], "warning");
     assert_eq!(status["tiers"][0]["space"]["reservedBytes"], 50);
-    assert_eq!(status["tiers"][0]["updateWorkspace"]["available"], false);
     // An unsupported metric reaches the client as unsupported, not as an
     // omission that reads like health.
     assert_eq!(status["media"][0]["health"]["supported"], false);
@@ -2788,15 +2786,19 @@ impl SettingsApi for FailingSettings {
         Err(self.error())
     }
 
-    async fn mark_update(&self, _state: &str, _slot: &str) -> anyhow::Result<(String, String)> {
+    async fn confirm_deployment(&self, _deployment_id: &str) -> anyhow::Result<()> {
+        Err(self.error())
+    }
+
+    async fn reject_deployment(&self, _deployment_id: &str) -> anyhow::Result<()> {
+        Err(self.error())
+    }
+
+    async fn rollback_deployment(&self, _deployment_id: &str) -> anyhow::Result<()> {
         Err(self.error())
     }
 
     async fn set_reboot_override(&self, _seconds: u32) -> anyhow::Result<serde_json::Value> {
-        Err(self.error())
-    }
-
-    async fn clear_update_suppression(&self, _version: &str) -> anyhow::Result<serde_json::Value> {
         Err(self.error())
     }
 

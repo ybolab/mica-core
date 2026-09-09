@@ -31,28 +31,6 @@ pub const DEFAULT_PATH: &str = "/var/lib/mos/settings.toml";
 /// The name the STATE document is reported under.
 const STATE_DOCUMENT: &str = "settings.toml";
 
-/// What the tolerant newer-schema load did to ONE document, for the caller to
-/// log loudly.
-///
-/// Produced only when that document's on-disk `schema_version` was greater
-/// than the version this build writes — i.e. on the A/B rollback path. See
-/// [`Store::load_with_report`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RollbackReport {
-    /// The document this report is about, by file name.
-    pub document: String,
-    /// The newer schema version the document carried.
-    pub from: u32,
-    /// Keys stripped to make the document parse, in the order they were
-    /// dropped. Recursive: a same-named key elsewhere in the document is
-    /// dropped by the same pass.
-    pub dropped_keys: Vec<String>,
-    /// True when stripping was not enough — the newer schema reshaped an
-    /// existing key — and the load fell back to this document's schema
-    /// default, abandoning everything it stored.
-    pub defaulted: bool,
-}
-
 /// One `/mos/config/` document that exists and did **not** become
 /// configuration (PLAN-070 §5.2.7, F6g).
 ///
@@ -111,19 +89,11 @@ pub struct DocumentRefusal {
     pub subtrees: &'static [&'static str],
 }
 
-/// A load of the whole store: the addressed tree, what the tolerant
-/// newer-schema path did, and which documents were refused.
-///
-/// Three outcomes rather than two because they are three different facts and
-/// collapsing any pair loses the one that matters. A rollback report is a
-/// document that WAS adopted, with keys dropped; a refusal is a document that
-/// was not adopted at all.
+/// Loaded settings and explicit per-document refusals.
 #[derive(Debug, Clone)]
 pub struct LoadedStore {
     /// The one addressed tree, total as always.
     pub settings: Settings,
-    /// What the A/B rollback path did, per document.
-    pub rollback: Vec<RollbackReport>,
     /// The `/mos/config/` documents that exist and did not load.
     pub refusals: Vec<DocumentRefusal>,
 }
@@ -142,8 +112,7 @@ enum Format {
 }
 
 impl Format {
-    /// Parse into the format-neutral tree the version check and the tolerant
-    /// load both work on.
+    /// Parse into a format-neutral tree before enforcing the exact schema.
     fn parse(self, text: &str) -> Result<Value, String> {
         match self {
             Self::Toml => toml::from_str(text).map_err(|err: toml::de::Error| err.to_string()),
@@ -163,40 +132,6 @@ impl Format {
                 })
                 .map_err(|err| err.to_string()),
         }
-    }
-}
-
-/// The field name out of a serde `deny_unknown_fields` rejection, if that is
-/// what `message` is.
-///
-/// Serde spells it `` unknown field `name`, expected ... `` and both toml and
-/// serde_json carry the message through; the toml workspace pin (`=0.9`-line)
-/// keeps the spelling stable.
-fn unknown_field_name(message: &str) -> Option<String> {
-    let rest = message.split("unknown field `").nth(1)?;
-    let (name, _) = rest.split_once('`')?;
-    (!name.is_empty()).then(|| name.to_string())
-}
-
-/// Remove every key named `key` anywhere in `value`, recursively (arrays
-/// included). Returns whether anything was removed.
-fn strip_key(value: &mut Value, key: &str) -> bool {
-    match value {
-        Value::Object(map) => {
-            let mut removed = map.remove(key).is_some();
-            for (_, child) in map.iter_mut() {
-                removed |= strip_key(child, key);
-            }
-            removed
-        }
-        Value::Array(items) => {
-            let mut removed = false;
-            for item in items {
-                removed |= strip_key(item, key);
-            }
-            removed
-        }
-        _ => false,
     }
 }
 
@@ -227,88 +162,10 @@ fn declared_version(doc: &Value, document: &str) -> Result<u32, SettingsError> {
     }
 }
 
-/// The tolerant path for a document newer than this build writes.
-///
-/// **Infallible by design.** This is the A/B rollback path: the other slot ran
-/// a newer mosd, wrote its documents, and this slot was rolled back to.
-/// Refusing such a document makes mosd exit, and under `Restart=on-failure`
-/// the rolled-back-to slot is then a crash loop — which also fails that slot's
-/// health gate, so a rollback whose whole point is reaching a working slot
-/// produces a device with no confirmable slot at all. Down-migrations cannot
-/// help by construction: this binary cannot carry the migration a future
-/// schema will need.
-///
-/// What "tolerantly" means: keys this schema does not know are dropped, one at
-/// a time and recursively, until the document parses. The next [`Store::save`]
-/// persists the stripped document at this schema version. If stripping is not
-/// enough — a future schema **reshaped** an existing key — the last resort is
-/// this document's schema default, reported rather than returned as an error.
-/// Schema authors owe the mitigation: prefer additive bumps; a reshaping bump
-/// forfeits that document's settings on rollback and must say so.
-///
-/// **The blast radius is one document**, which is part of what the
-/// per-document version buys: a reshaped `wifi.json` costs the Wi-Fi settings
-/// and leaves the network, the ssh policy and the management credential alone.
-fn load_newer<T: DeserializeOwned + Default>(
-    mut doc: Value,
-    from: u32,
-    version: u32,
-    document: &str,
-) -> (T, RollbackReport) {
-    // The version stamp itself is the first "key this schema does not
-    // recognise the value of": rewrite it to ours so the parse below is over a
-    // document claiming the schema it is being read as.
-    if let Some(object) = doc.as_object_mut() {
-        object.insert("schema_version".to_string(), Value::from(version));
-    }
-    let mut dropped = Vec::new();
-    // Bounded: each pass must strip at least one key or the loop ends. The
-    // bound itself is defensive; a document has finitely many keys.
-    for _ in 0..64 {
-        match serde_json::from_value::<T>(doc.clone()) {
-            Ok(parsed) => {
-                return (
-                    parsed,
-                    RollbackReport {
-                        document: document.to_string(),
-                        from,
-                        dropped_keys: dropped,
-                        defaulted: false,
-                    },
-                );
-            }
-            Err(err) => {
-                let Some(key) = unknown_field_name(&err.to_string()) else {
-                    break; // reshaped, not additive: fall through
-                };
-                if !strip_key(&mut doc, &key) {
-                    break; // named key not found: cannot make progress
-                }
-                dropped.push(key);
-            }
-        }
-    }
-    (
-        T::default(),
-        RollbackReport {
-            document: document.to_string(),
-            from,
-            dropped_keys: dropped,
-            defaulted: true,
-        },
-    )
-}
-
-/// How a document failed, in words this build chose rather than words the
-/// document supplied.
-///
-/// Three classes, because three are what a reader can act on — fix the bytes,
-/// fix the version, fix the permissions — and because a fourth would have to
-/// come from the parser, which is the half that must not be served
-/// ([`DocumentRefusal::message`]).
+/// Public classification without the parser's potentially sensitive values.
 fn refusal_class(err: &SettingsError) -> &'static str {
     match err {
-        SettingsError::Migration(_) => "is at a schema version this build has no migration for",
+        SettingsError::SchemaVersion(_) => "has an unsupported schema version",
         SettingsError::Io(_) => "could not be read",
         _ => "did not parse as this build's schema",
     }
@@ -325,7 +182,6 @@ fn read_document<T: DeserializeOwned + Default>(
     document: &str,
     format: Format,
     version: u32,
-    reports: &mut Vec<RollbackReport>,
 ) -> Result<T, SettingsError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -336,19 +192,9 @@ fn read_document<T: DeserializeOwned + Default>(
         .parse(&text)
         .map_err(|message| SettingsError::Parse(format!("{document}: {message}")))?;
     let from = declared_version(&doc, document)?;
-    if from > version {
-        let (parsed, report) = load_newer(doc, from, version, document);
-        reports.push(report);
-        return Ok(parsed);
-    }
-    if from < version {
-        // Reachable only once a document has bumped past v1 and this build is
-        // older than the file it found. There is no migration registry to walk
-        // — the `V0→V12` chain was deleted with the document it migrated — so
-        // the honest answer is a refusal that names the document.
-        return Err(SettingsError::Migration(format!(
-            "{document} is at schema version {from} and this build reads version {version}; \
-             no migration is registered"
+    if from != version {
+        return Err(SettingsError::SchemaVersion(format!(
+            "{document} declares schema version {from}; this build requires {version}"
         )));
     }
     serde_json::from_value(doc).map_err(|err| SettingsError::Parse(format!("{document}: {err}")))
@@ -483,48 +329,24 @@ impl Store {
         })
     }
 
-    /// Load settings from disk, discarding the rollback reports.
-    ///
-    /// See [`Store::load_with_report`] for the full contract; this wrapper
-    /// exists so callers that cannot log (tests, one-shot tools) keep the
-    /// short call. mosd itself calls [`Store::load_with_report`] and logs.
+    /// Load the current schema without conversion. Missing documents use their
+    /// defaults; unreadable, malformed or differently versioned files fail.
     ///
     /// # Errors
-    ///
-    /// As [`Store::load_with_report`].
+    /// Returns the storage, parse or schema-version failure for the document.
     pub fn load(&self) -> Result<Settings, SettingsError> {
-        self.load_with_report().map(|(settings, _)| settings)
-    }
-
-    /// Load every document and compose the one addressed tree.
-    ///
-    /// A missing document yields its schema default without creating the file;
-    /// a missing `/mos/config/` **directory** does not, because that is the
-    /// medium being gone rather than a document never having been written
-    /// ([`Store::ensure_config_medium`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SettingsError::Unavailable`] when the configuration medium is
-    /// not mounted, [`SettingsError::Io`] on read failures,
-    /// [`SettingsError::Parse`] on a document that does not parse, and
-    /// [`SettingsError::Migration`] for a document older than this build
-    /// reads. A document NEWER than this build writes never errors — see
-    /// [`load_newer`].
-    pub fn load_with_report(&self) -> Result<(Settings, Vec<RollbackReport>), SettingsError> {
-        let loaded = self.read_store(None)?;
-        Ok((loaded.settings, loaded.rollback))
+        self.read_store(None).map(|loaded| loaded.settings)
     }
 
     /// Load every document, refusing per document instead of per daemon
     /// (PLAN-070 §5.2.7, F6g — **the pour**).
     ///
-    /// This is [`Store::load_with_report`] with one rule changed, and it is the
+    /// This is [`Store::load`] with one rule changed, and it is the
     /// rule the pour exists for. An integrator hand-writes these documents onto
     /// a device that is not running; the next boot validates what it finds
     /// exactly as it validates mosd's own output, and a document that does not
     /// survive that is a [`DocumentRefusal`] rather than an aborted load. Under
-    /// `load_with_report` a single mistyped `wifi.json` stops the daemon, which
+    /// `load` a single mistyped `wifi.json` stops the daemon, which
     /// takes the network reconciler down with it and puts the device off the
     /// air for a mistake in an unrelated subsystem.
     ///
@@ -547,10 +369,10 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// As [`Store::load_with_report`], less the per-document failures this
+    /// As [`Store::load`], less the per-document failures this
     /// collects instead: [`SettingsError::Unavailable`] for the medium, and
     /// [`SettingsError::Io`] / [`SettingsError::Parse`] /
-    /// [`SettingsError::Migration`] for the STATE document alone.
+    /// [`SettingsError::SchemaVersion`] for the STATE document alone.
     pub fn load_with_refusals(&self) -> Result<LoadedStore, SettingsError> {
         let mut refusals = Vec::new();
         self.read_store(Some(&mut refusals))
@@ -569,48 +391,24 @@ impl Store {
     ) -> Result<LoadedStore, SettingsError> {
         self.ensure_config_medium()?;
         crate::transaction::recover(&self.path, &self.config_dir)?;
-        let mut reports = Vec::new();
         let documents = DocumentSet {
             system: self.read_config(
                 SYSTEM_DOCUMENT,
                 SYSTEM_SCHEMA_VERSION,
-                &mut reports,
                 refusals.as_deref_mut(),
             )?,
             network: self.read_config(
                 NETWORK_DOCUMENT,
                 NETWORK_SCHEMA_VERSION,
-                &mut reports,
                 refusals.as_deref_mut(),
             )?,
-            wifi: self.read_config(
-                WIFI_DOCUMENT,
-                WIFI_SCHEMA_VERSION,
-                &mut reports,
-                refusals.as_deref_mut(),
-            )?,
-            ssh: self.read_config(
-                SSH_DOCUMENT,
-                SSH_SCHEMA_VERSION,
-                &mut reports,
-                refusals.as_deref_mut(),
-            )?,
-            mqtt: self.read_config(
-                MQTT_DOCUMENT,
-                MQTT_SCHEMA_VERSION,
-                &mut reports,
-                refusals.as_deref_mut(),
-            )?,
-            time: self.read_config(
-                TIME_DOCUMENT,
-                TIME_SCHEMA_VERSION,
-                &mut reports,
-                refusals.as_deref_mut(),
-            )?,
+            wifi: self.read_config(WIFI_DOCUMENT, WIFI_SCHEMA_VERSION, refusals.as_deref_mut())?,
+            ssh: self.read_config(SSH_DOCUMENT, SSH_SCHEMA_VERSION, refusals.as_deref_mut())?,
+            mqtt: self.read_config(MQTT_DOCUMENT, MQTT_SCHEMA_VERSION, refusals.as_deref_mut())?,
+            time: self.read_config(TIME_DOCUMENT, TIME_SCHEMA_VERSION, refusals.as_deref_mut())?,
             container: self.read_config(
                 CONTAINER_DOCUMENT,
                 CONTAINER_SCHEMA_VERSION,
-                &mut reports,
                 refusals.as_deref_mut(),
             )?,
             // The STATE remainder, and NOT through the refusal path: see
@@ -620,12 +418,10 @@ impl Store {
                 STATE_DOCUMENT,
                 Format::Toml,
                 STATE_SCHEMA_VERSION,
-                &mut reports,
             )?,
         };
         Ok(LoadedStore {
             settings: documents.compose(),
-            rollback: reports,
             refusals: refusals.map(std::mem::take).unwrap_or_default(),
         })
     }
@@ -634,11 +430,10 @@ impl Store {
         &self,
         document: &str,
         version: u32,
-        reports: &mut Vec<RollbackReport>,
         refusals: Option<&mut Vec<DocumentRefusal>>,
     ) -> Result<T, SettingsError> {
         let path = self.config_dir.join(document);
-        let read = read_document(&path, document, Format::Json, version, reports);
+        let read = read_document(&path, document, Format::Json, version);
         match (read, refusals) {
             (Ok(value), _) => Ok(value),
             (Err(err), None) => Err(err),

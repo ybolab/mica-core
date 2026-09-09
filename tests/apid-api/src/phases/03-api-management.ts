@@ -166,11 +166,13 @@ const phase: Phase = {
     );
 
     if (terminalTasks !== undefined) {
-      for (const task of terminalTasks) {
-        const path = task["dotPath"];
+      for (const [path, id] of parallelTaskIds) {
+        // A queued ancestor write can absorb this write and retain its path.
+        // The admission's task ID still identifies the result to observe.
+        const task = terminalTasks.find((row) => row["id"] === id);
         report.check(
-          typeof path === "string" && parallelTaskIds.get(path) === task["id"] && task["outcome"] === "succeeded",
-          `task list reports the parallel ${String(path)} enable as succeeded`,
+          task?.["outcome"] === "succeeded",
+          `task list reports the parallel ${path} enable as succeeded`,
           `actual task: ${JSON.stringify(task)}`,
         );
       }

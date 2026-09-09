@@ -1,89 +1,50 @@
-//! Update lifecycle: the explicit state machine over `rauc-update` and RAUC.
-//!
-//! Like power actions and installs, the lifecycle is an action surface, not a
-//! settings subtree — nothing here persists and nothing reconciles on boot.
-//! Everything observable is recorded in the live-state tree under
-//! `update.lifecycle` through the [`LifecycleHost`] the bus layer provides.
-//!
-//! The states, and who produces them:
-//!
-//! - `idle`, `checking`, `downloading`, `ready`, `update-unavailable`,
-//!   `failed` — this module's own machine, driven by `CheckUpdate`/
-//!   `FetchUpdate` running the device-side client `rauc-update` as a bounded
-//!   subprocess. `update-unavailable` is the PLAN-061 readiness verdict: the
-//!   `/mos/updates` DATA workspace is probed (`rauc-update probe`) BEFORE
-//!   every check and fetch, and a workspace that is `unavailable` (not
-//!   mounted, not the DATA pool) or `degraded` (read-only, exhausted, probe
-//!   failed) is that named state with its reason, entered before any
-//!   acquisition starts and cleared by the next probe that passes.
-//! - `installing` — mirrored from the bus layer's install flag; the install
-//!   itself stays on the existing `InstallUpdate` path.
-//! - `reboot-required`, `validating`, `succeeded`, `rolled-back` — derived
-//!   from RAUC slot status plus boot state by [`derive_boot_phase`]; see its
-//!   docs for exactly what each derivation reads and the stated limit.
-//!
-//! Verify-before-install stays in `rauc-update`: the only bundle path this
-//! module ever records as `ready` is the verified path the client printed,
-//! and it must be a bundle inside `/mos/updates/verified` (never a `.part`,
-//! never a file anywhere else); mosd's install surface remains
-//! `InstallUpdate` — an explicit operator action against a named path, held
-//! to the same rule by [`UpdateLifecycle::installable`]. No mosd lock is held
-//! across a subprocess or an install.
+//! Signed deployment acquisition, operator policy and boot lifecycle.
+//! Native commands enforce trust, capacity and generation; this layer records
+//! progress and applies the shared maintenance and reboot gates.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, SecondsFormat, Utc};
 use mosd_settings::configuration;
 use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Mutex;
 
-use crate::rauc::SlotStatus;
+use crate::deployment::Status;
 use crate::update_codes::{self, CodedReason};
 use crate::update_policy::{
     self, EffectivePolicy, GateVerdict, LoadedPolicy, PolicyStore, Selection, Workspace,
 };
-use crate::update_suppress::{LoadedSuppressions, Suppression, SuppressionStore};
 
-/// Where the device-side update client lives unless `MOSD_RAUC_UPDATE_BIN`
-/// says otherwise. Shipping the binary there is the image side's half of the
-/// contract; its absence is reported, never panicked over.
-pub const DEFAULT_CLIENT_PATH: &str = "/usr/bin/rauc-update";
+/// Fixed native command shipped in the complete system image.
+pub const DEFAULT_CLIENT_PATH: &str = "/usr/bin/mos-deploy";
 
 /// The `/mos/updates` workspace the client acquires into (PLAN-061/063):
-/// partials in `downloads/`, verified bundles in `verified/`. The client's
+/// partials in `downloads/`, verified descriptors and objects in `verified/`. The client's
 /// own default; restated here because this module decides what may be
 /// recorded as `ready` and what may be installed.
 pub const DEFAULT_WORKSPACE_ROOT: &str = "/mos/updates";
-
-/// The environment variable that relocates the workspace — the client's
-/// `RAUC_UPDATE_ROOT`, read by `main.rs` so that mosd and the subprocess it
-/// spawns (which inherits it) can never disagree about where `verified/`
-/// is. Tests only; production is the default.
-pub const WORKSPACE_ROOT_ENV: &str = "RAUC_UPDATE_ROOT";
-
-/// `rauc-update`'s exit code for "the workspace is not ready": the one exit
-/// that names a state rather than a failure.
-const EXIT_UNREADY: i32 = 3;
 
 /// Bound on one `probe` subprocess: a handful of stat calls and one fsync;
 /// a minute is a wedged disk, not a slow one.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Bound on one `sync` or `check` subprocess: metadata is a handful of files
+/// Bound on one `check` subprocess: metadata is a handful of files
 /// capped at 1 MiB each, so ten minutes is generous slack for a slow link,
 /// not an expected duration.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Bound on one `fetch` subprocess. A bundle is hundreds of MiB and the link
+/// Bound on one `fetch` subprocess. Component payloads can be hundreds of MiB and the link
 /// may be slow; four hours is a fault bound, and a fetch that dies there
 /// resumes from its `.part` file on the next attempt.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
 
 /// What one client invocation produced.
+#[derive(Debug)]
 pub struct ClientOutput {
     /// Process exit code; `None` when killed by a signal.
     pub code: Option<i32>,
@@ -104,7 +65,7 @@ impl std::fmt::Display for ClientUnavailable {
 
 impl std::error::Error for ClientUnavailable {}
 
-/// Runs `rauc-update` (or a stand-in) with an argument vector.
+/// Runs `mos-deploy` (or a stand-in) with an argument vector.
 ///
 /// One method rather than one per subcommand: the argument rendering and the
 /// output parsing are pure functions tested on their own, so the trait's only
@@ -122,6 +83,15 @@ pub trait UpdateClient: Send + Sync {
 /// Production client: spawn the configured binary as a subprocess.
 pub struct SubprocessClient {
     binary: PathBuf,
+}
+
+struct ClientProcessGroup(Option<rustix::process::Pid>);
+impl Drop for ClientProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 impl SubprocessClient {
@@ -147,11 +117,14 @@ impl UpdateClient for SubprocessClient {
         let mut command = tokio::process::Command::new(&self.binary);
         command
             .args(args)
+            .env_clear()
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .process_group(0)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let child = command.spawn().map_err(|err| {
+        let mut child = command.spawn().map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 anyhow::Error::new(ClientUnavailable(format!(
                     "{} is not present on this image",
@@ -161,21 +134,50 @@ impl UpdateClient for SubprocessClient {
                 anyhow::Error::from(err).context(format!("spawn {}", self.binary.display()))
             }
         })?;
-        let output = tokio::time::timeout(timeout, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "{} {} did not finish within {timeout:?}",
-                    self.binary.display(),
-                    args.first().map(String::as_str).unwrap_or_default()
-                )
-            })??;
+        let group = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .context("missing client process ID")?;
+        let mut group = ClientProcessGroup(Some(group));
+        let stdout = child.stdout.take().context("missing client stdout")?;
+        let stderr = child.stderr.take().context("missing client stderr")?;
+        let result = tokio::time::timeout(timeout, async {
+            tokio::try_join!(
+                read_client_output(stdout, 65536),
+                read_client_output(stderr, 16384),
+                async { Ok::<_, anyhow::Error>(child.wait().await?) }
+            )
+        })
+        .await
+        .context("update client exceeded its deadline")
+        .and_then(|result| result);
+        let (stdout, stderr, status) = match result {
+            Ok(output) => output,
+            Err(error) => {
+                drop(group);
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(error);
+            }
+        };
+        group.0 = None;
         Ok(ClientOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
+}
+
+async fn read_client_output(stream: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    stream
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    ensure!(bytes.len() <= limit, "update client output exceeds bound");
+    Ok(bytes)
 }
 
 /// The client a daemon that was never handed one has: none. The default in
@@ -230,7 +232,7 @@ impl Refusal {
 /// The candidate the last `check` selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Available {
-    pub name: String,
+    pub deployment_id: String,
     pub version: String,
     pub channel: String,
 }
@@ -239,50 +241,50 @@ pub struct Available {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CheckOutcome {
     Selected(Available),
-    /// Exit 2: everything published was rejected; the device is up to date
-    /// (or nothing compatible is published, which the reasons distinguish).
+    /// The signed catalog selects no newer deployment for this device.
     NoneCompatible,
 }
 
-/// Parse `rauc-update check` output by its printed contract:
-/// `selected <name> version <v> channel <c> (<n> bytes)` on success, exit 2
-/// for "nothing compatible", anything else is the stderr reason.
-pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, CodedReason> {
-    match output.code {
-        Some(0) => {
-            let selected = output
-                .stdout
-                .lines()
-                .rev()
-                .find(|line| line.starts_with("selected "));
-            let Some(line) = selected else {
-                return Err(CodedReason::new(
-                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
-                    format!(
-                        "check exited 0 without a `selected` line; stdout: {}",
-                        output.stdout.trim()
-                    ),
-                ));
-            };
-            let mut words = line.split_whitespace();
-            let name = words.nth(1).unwrap_or_default().to_string();
-            let version = words.nth(1).unwrap_or_default().to_string();
-            let channel = words.nth(1).unwrap_or_default().to_string();
-            if name.is_empty() || version.is_empty() || channel.is_empty() {
-                return Err(CodedReason::new(
-                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
-                    format!("unparseable selection line: `{line}`"),
-                ));
-            }
-            Ok(CheckOutcome::Selected(Available {
-                name,
-                version,
-                channel,
-            }))
-        }
-        Some(2) => Ok(CheckOutcome::NoneCompatible),
-        code => Err(exit_reason("check", code, &output.stderr)),
+fn client_json(operation: &str, output: &ClientOutput) -> Result<Value, CodedReason> {
+    if output.code != Some(0) {
+        return Err(exit_reason(operation, output.code, &output.stderr));
     }
+    serde_json::from_str(&output.stdout).map_err(|error| {
+        CodedReason::new(
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+            format!("invalid {operation} JSON: {error}"),
+        )
+    })
+}
+
+/// The helper authenticates the catalog before returning its exact selection.
+pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, CodedReason> {
+    let value = client_json("check", output)?;
+    if value.get("selected") == Some(&Value::Null) {
+        return Ok(CheckOutcome::NoneCompatible);
+    }
+    let parsed = (|| {
+        let id = value.pointer("/selected/deploymentId")?.as_str()?;
+        let version = value.pointer("/selected/deployment/version")?.as_str()?;
+        let channel = value.get("channel")?.as_str()?;
+        if !crate::deployment::valid_id(id)
+            || version.is_empty()
+            || !matches!(channel, "stable" | "beta" | "dev")
+        {
+            return None;
+        }
+        Some(Available {
+            deployment_id: id.to_string(),
+            version: version.into(),
+            channel: channel.into(),
+        })
+    })();
+    parsed.map(CheckOutcome::Selected).ok_or_else(|| {
+        CodedReason::new(
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+            "check did not return a deployment selection",
+        )
+    })
 }
 
 /// What an awaited lifecycle operation did, in the four answers the recorded
@@ -295,7 +297,7 @@ pub fn parse_check(output: &ClientOutput) -> Result<CheckOutcome, CodedReason> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Settled<T> {
     /// The operation produced its result: a selected candidate, a staged
-    /// bundle path.
+    /// descriptor path.
     Done(T),
     /// Nothing published is compatible — the device is up to date, or the
     /// selected channel holds nothing newer than the running system.
@@ -307,11 +309,7 @@ pub enum Settled<T> {
     Failed(CodedReason),
 }
 
-/// The workspace is not ready, as `rauc-update` named it: `status` is
-/// `unavailable` (`/mos` not mounted, or not the DATA pool) or `degraded`
-/// (the pool, but read-only, exhausted, or the probe itself failed); `kind`
-/// is the specific reason (`mount-missing`, `not-data`, `read-only`,
-/// `exhausted`, `probe-failed`). Both refuse acquisition.
+/// Native workspace preflight refused acquisition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unready {
     pub status: String,
@@ -329,163 +327,69 @@ impl Unready {
     }
 }
 
-/// Parse one `<status> <kind>: <detail>` line, with or without the binary's
-/// `rauc-update: ` stderr prefix. `None` for any other line.
-///
-/// The kind is CLAMPED to [`crate::update_codes::workspace_code`] rather than
-/// forwarded (PLAN-076 B4). A word this daemon does not know still names a
-/// workspace that refused the acquisition — the status is what refuses it —
-/// so returning `None` here would turn a correct `update-unavailable` into a
-/// wrong `failed`. Reporting the word itself would put an unbounded string on
-/// the wire, which is the defect. So the state survives, the word does not,
-/// and the word is logged.
-pub fn parse_unready(line: &str) -> Option<Unready> {
-    let line = line.trim();
-    let line = line.strip_prefix("rauc-update: ").unwrap_or(line);
-    let (status, rest) = line.split_once(' ')?;
-    if !matches!(status, "unavailable" | "degraded") {
-        return None;
-    }
-    let (kind, detail) = rest.split_once(": ")?;
-    if kind.is_empty() || kind.contains(' ') {
-        return None;
-    }
-    let code = update_codes::workspace_code(kind);
-    if code == update_codes::UNKNOWN {
-        tracing::warn!(
-            kind,
-            status,
-            "update client named a workspace verdict this daemon has no code for; \
-             reported as `unknown`"
-        );
-    }
-    Some(Unready {
-        status: status.to_string(),
-        kind: code,
-        detail: detail.trim().to_string(),
-    })
-}
-
-/// The unready line an exit-3 client left, on stdout (`probe`) or stderr
-/// (`fetch`), newest first.
-fn unready_in(output: &ClientOutput) -> Option<Unready> {
-    output
-        .stdout
-        .lines()
-        .rev()
-        .find_map(parse_unready)
-        .or_else(|| output.stderr.lines().rev().find_map(parse_unready))
-}
-
 /// What a finished `probe` said.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbeOutcome {
-    /// The workspace is ready; the report's `key=value` pairs as an object
-    /// (`pool`, `source`, `free`, `used`, `budget`, ...), numbers as numbers.
+    /// The workspace is ready; the bounded native JSON report is preserved.
     Ready(Value),
     Unready(Unready),
 }
 
-/// Parse `rauc-update probe` output by its printed contract: `ready k=v ...`
-/// on exit 0, `<status> <kind>: <detail>` on exit 3.
+/// Parse the bounded native readiness report.
 pub fn parse_probe(output: &ClientOutput) -> Result<ProbeOutcome, CodedReason> {
-    match output.code {
-        Some(0) => {
-            let Some(line) = output
-                .stdout
-                .lines()
-                .rev()
-                .find(|line| line.starts_with("ready "))
-            else {
-                return Err(CodedReason::new(
-                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
-                    format!(
-                        "probe exited 0 without a `ready` line; stdout: {}",
-                        output.stdout.trim()
-                    ),
-                ));
-            };
-            let mut report = serde_json::Map::new();
-            for pair in line["ready ".len()..].split_whitespace() {
-                if let Some((key, value)) = pair.split_once('=') {
-                    let value = value
-                        .parse::<u64>()
-                        .map_or_else(|_| json!(value), |number| json!(number));
-                    report.insert(key.to_string(), value);
-                }
-            }
-            Ok(ProbeOutcome::Ready(Value::Object(report)))
-        }
-        Some(EXIT_UNREADY) => unready_in(output)
-            .map(ProbeOutcome::Unready)
-            .ok_or_else(|| {
-                CodedReason::new(
-                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
-                    format!(
-                        "probe exited {EXIT_UNREADY} without naming the unready state; \
-                         stdout: {} stderr: {}",
-                        output.stdout.trim(),
-                        output.stderr.trim()
-                    ),
-                )
-            }),
-        code => Err(exit_reason("probe", code, &output.stderr)),
+    if output.code != Some(0) {
+        return Ok(ProbeOutcome::Unready(Unready {
+            status: "degraded".into(),
+            kind: update_codes::WORKSPACE_PROBE_FAILED,
+            detail: output.stderr.trim().into(),
+        }));
     }
+    let value = client_json("probe", output)?;
+    if value.get("status").and_then(Value::as_str) != Some("ready") {
+        return Err(CodedReason::new(
+            update_codes::CLIENT_OUTPUT_UNPARSEABLE,
+            "probe did not report a ready workspace",
+        ));
+    }
+    Ok(ProbeOutcome::Ready(value))
 }
 
 /// What a finished `fetch` said.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FetchOutcome {
-    /// A verified bundle at this path, inside `verified/`.
+    /// A verified descriptor at this path, inside `verified/`.
     Staged(String),
-    /// Exit 2: nothing compatible.
+    /// No deployment was selected.
     NoneCompatible,
-    /// Exit 3: the workspace refused the acquisition.
-    Unready(Unready),
 }
 
-/// Parse `rauc-update fetch` output: the last stdout line of a successful
-/// fetch is the verified local bundle path — the one path this module will
-/// ever record as `ready`, and only when it is a bundle directly inside
-/// `verified_dir` (a `.part`, or a path anywhere else, is a client bug, not
-/// something to install).
+/// Accept only the descriptor and object directory returned by native acquisition.
 pub fn parse_fetch(
     output: &ClientOutput,
     verified_dir: &Path,
 ) -> Result<FetchOutcome, CodedReason> {
-    match output.code {
-        Some(0) => match output.stdout.lines().last() {
-            Some(line)
-                if line.starts_with('/')
-                    && Path::new(line).parent() == Some(verified_dir)
-                    && !line.ends_with(".part") =>
-            {
-                Ok(FetchOutcome::Staged(line.to_string()))
-            }
-            other => Err(CodedReason::new(
-                update_codes::UNVERIFIED_BUNDLE_PATH,
-                format!(
-                    "fetch exited 0 with {other:?} as its last line, which is not a bundle \
-                     inside {}; only a verified path is recorded as ready",
-                    verified_dir.display()
-                ),
-            )),
-        },
-        Some(2) => Ok(FetchOutcome::NoneCompatible),
-        Some(EXIT_UNREADY) => unready_in(output)
-            .map(FetchOutcome::Unready)
-            .ok_or_else(|| {
-                CodedReason::new(
-                    update_codes::CLIENT_OUTPUT_UNPARSEABLE,
-                    format!(
-                        "fetch exited {EXIT_UNREADY} without naming the unready state; \
-                         stderr: {}",
-                        output.stderr.trim()
-                    ),
-                )
-            }),
-        code => Err(exit_reason("fetch", code, &output.stderr)),
+    let value = client_json("fetch", output)?;
+    if value.is_null() {
+        return Ok(FetchOutcome::NoneCompatible);
     }
+    let path = (|| {
+        let id = value.get("id")?.as_str()?;
+        let path = Path::new(value.get("path")?.as_str()?);
+        let objects = Path::new(value.get("objects")?.as_str()?);
+        if !crate::deployment::valid_id(id)
+            || path != verified_dir.join(format!("{id}.json"))
+            || objects != verified_dir.join("objects")
+        {
+            return None;
+        }
+        Some(path.to_string_lossy().into_owned())
+    })();
+    path.map(FetchOutcome::Staged).ok_or_else(|| {
+        CodedReason::new(
+            update_codes::UNVERIFIED_DEPLOYMENT_PATH,
+            "fetch did not return a verified deployment descriptor",
+        )
+    })
 }
 
 /// How a client operation did not produce its outcome: the workspace refused
@@ -521,94 +425,6 @@ fn exit_reason(verb: &str, code: Option<i32>, stderr: &str) -> CodedReason {
             format!("{verb} was killed by a signal"),
         ),
     }
-}
-
-/// Boot-derived lifecycle phases; see [`derive_boot_phase`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootPhase {
-    RebootRequired,
-    Validating,
-    Succeeded,
-    RolledBack,
-}
-
-impl BootPhase {
-    fn name(self) -> &'static str {
-        match self {
-            Self::RebootRequired => "reboot-required",
-            Self::Validating => "validating",
-            Self::Succeeded => "succeeded",
-            Self::RolledBack => "rolled-back",
-        }
-    }
-}
-
-/// Derive the boot-related lifecycle phase from slot status, the primary
-/// slot and the health gate's boot report, in strength order:
-///
-/// - **rolled-back**: a slot we are NOT running has `boot-status: bad` — its
-///   boot attempts are exhausted, which is exactly what an automatic fallback
-///   leaves behind.
-/// - **reboot-required**: the bootloader's first pick is not the booted slot
-///   (an installed-and-activated bundle is waiting for its first boot).
-/// - **validating** / **succeeded**: only distinguishable when the boot
-///   health gate has reported into the live-state `health.boot` entry —
-///   `ok` is a confirmed boot, anything else is a boot still under judgement.
-///   RAUC's own `boot-status` cannot carry this: the U-Boot backend reads the
-///   attempt counter as exhausted-or-not, the same stated limit as
-///   [`crate::rauc::pending_not_confirmed`]. Today's `mos-health` does not
-///   report that entry yet (recorded as owed in `docs/design/updates.md`), so
-///   until it does a healthy converged system reads as plain `None` — honest
-///   silence rather than a guessed `succeeded`.
-///
-/// `None` when the slots say nothing update-related is going on.
-pub fn derive_boot_phase(
-    slots: &[SlotStatus],
-    primary: Option<&str>,
-    boot_health: Option<&str>,
-) -> Option<(BootPhase, String)> {
-    if let Some(fallen) = rolled_back_slot(slots) {
-        return Some((
-            BootPhase::RolledBack,
-            format!(
-                "slot {} exhausted its boot attempts; the system fell back to {}",
-                fallen.name,
-                crate::rauc::booted_slot(slots).map_or("the running slot", |slot| &slot.name)
-            ),
-        ));
-    }
-    if crate::rauc::pending_not_confirmed(slots, primary) {
-        let primary = primary.unwrap_or("(unknown)");
-        return Some((
-            BootPhase::RebootRequired,
-            format!("slot {primary} is installed and activated; reboot to run it"),
-        ));
-    }
-    match boot_health {
-        Some("ok") => Some((
-            BootPhase::Succeeded,
-            "the boot health gate confirmed this boot".to_string(),
-        )),
-        Some(status) => Some((
-            BootPhase::Validating,
-            format!("the boot health gate reports `{status}`; this boot is not confirmed"),
-        )),
-        None => None,
-    }
-}
-
-/// The slot a fallback left behind: one we are NOT running whose boot
-/// attempts are exhausted.
-///
-/// One function because two callers ask the same question and must not be
-/// able to disagree: [`derive_boot_phase`] renders it as `rolled-back`, and
-/// [`UpdateLifecycle::refresh`] suppresses the version it carries. A second
-/// spelling here would be a device that reports a rollback it did not
-/// suppress, or suppresses one it did not report.
-pub fn rolled_back_slot(slots: &[SlotStatus]) -> Option<&SlotStatus> {
-    slots.iter().find(|slot| {
-        slot.state.as_deref() != Some("booted") && slot.boot_status.as_deref() == Some("bad")
-    })
 }
 
 /// Why the last automatic pass did not proceed (PLAN-071 §2, U5).
@@ -660,10 +476,10 @@ struct Machine {
     /// The last passing probe's report (`pool`, `free`, `used`, ...).
     workspace: Option<Value>,
     available: Option<Available>,
-    /// The verified bundle path the last fetch staged.
-    bundle: Option<String>,
+    /// The verified descriptor path the last fetch staged.
+    descriptor: Option<String>,
     last_check: Option<String>,
-    boot_phase: Option<(BootPhase, String)>,
+    boot_phase: Option<(&'static str, String)>,
     override_record: Option<OverrideRecord>,
     /// Why the last automatic attempt did not proceed; `None` once one did.
     deferred: Option<Deferral>,
@@ -678,11 +494,8 @@ pub struct UpdateLifecycle {
     /// and the install refusal there can never disagree.
     installing: Arc<AtomicBool>,
     /// The `/mos/updates` workspace root; `verified/` below it is the only
-    /// place a recorded or installed bundle may be.
+    /// place a recorded or installed descriptor may be.
     workspace_root: PathBuf,
-    /// PLAN-071 §6's suppressed versions, on STATE. Consulted by the
-    /// automatic path only; written here, where a rollback is observed.
-    suppression: SuppressionStore,
     machine: Mutex<Machine>,
 }
 
@@ -700,30 +513,12 @@ impl UpdateLifecycle {
             host,
             installing,
             workspace_root,
-            suppression: SuppressionStore::none(),
             machine: Mutex::new(Machine::default()),
         }
     }
 
-    /// Attach the STATE-backed suppression store.
-    ///
-    /// A builder step rather than a sixth constructor argument for
-    /// [`crate::bus::MosdService::with_update`]'s reason: the default
-    /// touches no file, so a dry-run daemon or a test cannot write a refusal
-    /// into the host's STATE partition, and only `main.rs` knows where that
-    /// partition is.
-    #[must_use]
-    pub fn with_suppression(mut self, suppression: SuppressionStore) -> Self {
-        self.suppression = suppression;
-        self
-    }
-
-    /// The suppression store, for a rebuild around a new workspace.
-    pub fn suppression(&self) -> SuppressionStore {
-        self.suppression.clone()
-    }
-
     /// The client this lifecycle runs, for a rebuild around a new workspace.
+    #[cfg(test)]
     pub fn client(&self) -> Arc<dyn UpdateClient> {
         Arc::clone(&self.client)
     }
@@ -737,12 +532,12 @@ impl UpdateLifecycle {
         &self.workspace_root
     }
 
-    /// `<workspace>/verified`: the one directory an installable bundle is in.
+    /// `<workspace>/verified`: the one directory an installable descriptor is in.
     pub fn verified_dir(&self) -> PathBuf {
         self.workspace_root.join("verified")
     }
 
-    /// Why `path` must not be handed to RAUC, or `Ok` when it is a regular
+    /// Why `path` must not be handed to the native backend, or `Ok` when it is a regular
     /// file (not a symbolic link) directly inside `verified/` and not a
     /// `.part`. The bus layer's `InstallUpdate` asks this for every path,
     /// including an operator's explicit one: a partial, or a file outside
@@ -751,7 +546,7 @@ impl UpdateLifecycle {
         let verified = self.verified_dir();
         if !path.is_absolute() || path.parent() != Some(verified.as_path()) {
             return Err(format!(
-                "bundle path `{}` is not inside {}; only a verified bundle is handed to RAUC",
+                "descriptor path `{}` is not inside the verified directory {}",
                 path.display(),
                 verified.display()
             ));
@@ -759,20 +554,23 @@ impl UpdateLifecycle {
         if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_none_or(|name| name.ends_with(".part"))
+            .is_none_or(|name| {
+                name.strip_suffix(".json")
+                    .is_none_or(|id| !crate::deployment::valid_id(id))
+            })
         {
             return Err(format!(
-                "bundle path `{}` is a partial download, not a verified bundle",
+                "path `{}` is not a deployment descriptor",
                 path.display()
             ));
         }
         match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_file() => Ok(()),
             Ok(_) => Err(format!(
-                "bundle path `{}` is not a regular file (a symbolic link is not followed)",
+                "descriptor path `{}` is not a regular file (a symbolic link is not followed)",
                 path.display()
             )),
-            Err(err) => Err(format!("bundle path `{}`: {err}", path.display())),
+            Err(err) => Err(format!("descriptor path `{}`: {err}", path.display())),
         }
     }
 
@@ -829,7 +627,7 @@ impl UpdateLifecycle {
         let settled = match result {
             Ok(CheckOutcome::Selected(available)) => {
                 tracing::info!(
-                    name = %available.name,
+                    name = %available.deployment_id,
                     version = %available.version,
                     "update check selected a candidate"
                 );
@@ -864,9 +662,9 @@ impl UpdateLifecycle {
         settled
     }
 
-    /// Start a bundle fetch. Selection happens inside `rauc-update fetch`
+    /// Start a descriptor fetch. Selection happens inside `mos-deploy fetch`
     /// itself, so a fetch does not require a prior check; on success the
-    /// verified bundle path is recorded and the state becomes `ready`.
+    /// verified descriptor path is recorded and the state becomes `ready`.
     pub async fn request_fetch(self: &Arc<Self>, sender: &str) -> Result<(), Refusal> {
         let policy = self.admit_fetch(sender).await?;
         let this = Arc::clone(self);
@@ -912,8 +710,8 @@ impl UpdateLifecycle {
         machine.operation = None;
         let settled = match result {
             Ok(FetchOutcome::Staged(path)) => {
-                tracing::info!(bundle = %path, "update fetch staged a verified bundle");
-                machine.bundle = Some(path.clone());
+                tracing::info!(descriptor = %path, "update fetch staged a verified descriptor");
+                machine.descriptor = Some(path.clone());
                 Settled::Done(path)
             }
             Ok(FetchOutcome::NoneCompatible) => {
@@ -921,7 +719,7 @@ impl UpdateLifecycle {
                 machine.available = None;
                 Settled::NoneCompatible
             }
-            Ok(FetchOutcome::Unready(unready)) | Err(Failure::Unready(unready)) => {
+            Err(Failure::Unready(unready)) => {
                 tracing::warn!(reason = %unready.reason(), "update workspace not ready; fetch not started");
                 machine.unready = Some(unready.clone());
                 Settled::Unready(unready)
@@ -946,41 +744,37 @@ impl UpdateLifecycle {
         self.machine.lock().await.available.clone()
     }
 
-    /// The verified bundle path the last fetch staged, if one is staged.
-    pub async fn staged_bundle(&self) -> Option<String> {
-        self.machine.lock().await.bundle.clone()
+    /// The verified descriptor path the last fetch staged, if one is staged.
+    pub async fn staged_descriptor(&self) -> Option<String> {
+        self.machine.lock().await.descriptor.clone()
     }
 
-    /// Delete the staged verified bundle and forget it, recording `why`.
-    ///
-    /// PLAN-071 §5's answer to a release withdrawn between the fetch and the
-    /// window: the automatic path installs only what the current metadata
-    /// still names, and deletes what it does not. The path is the recorded
-    /// one and [`Self::installable`] re-validates it first, so the only file
-    /// this can unlink is one it would otherwise have installed. The bundle
-    /// is forgotten whether or not the unlink succeeded — a file automation
-    /// refuses to install is not one it may go on offering.
-    pub async fn discard_bundle(&self, why: &str) {
-        let Some(bundle) = self.machine.lock().await.bundle.clone() else {
+    /// Discard all bounded acquisition files under the native transaction lock.
+    pub async fn discard_descriptor(&self, why: &str) {
+        if self.machine.lock().await.descriptor.is_none() {
             return;
-        };
-        match self.installable(Path::new(&bundle)) {
-            Ok(()) => match std::fs::remove_file(&bundle) {
-                Ok(()) => tracing::warn!(bundle, why, "staged bundle deleted"),
-                Err(err) => {
-                    tracing::warn!(bundle, why, error = %err, "staged bundle could not be deleted");
-                }
-            },
-            Err(reason) => tracing::warn!(
-                bundle,
-                reason,
-                "recorded bundle is no longer installable; leaving the file alone"
-            ),
         }
-        self.machine.lock().await.bundle = None;
+        if let Err(refusal) = self.begin("discarding").await {
+            tracing::warn!(reason = refusal.message(), "workspace discard refused");
+            return;
+        }
+        let result = self.client.run(&["discard".into()], PROBE_TIMEOUT).await;
+        let mut machine = self.machine.lock().await;
+        machine.operation = None;
+        machine.descriptor = None;
+        machine.available = None;
+        let error = match result {
+            Ok(output) => client_json("discard", &output).err(),
+            Err(error) => Some(CodedReason::new(
+                update_codes::CLIENT_SPAWN_FAILED,
+                format!("discard: {error:#}"),
+            )),
+        };
+        machine.failed = error;
+        drop(machine);
         self.record_snapshot_with(Some(CodedReason::new(
-            update_codes::NOTE_BUNDLE_DISCARDED,
-            format!("staged bundle {bundle} discarded: {why}"),
+            update_codes::NOTE_DEPLOYMENT_DISCARDED,
+            format!("staged deployment discarded: {why}"),
         )))
         .await;
     }
@@ -1006,14 +800,14 @@ impl UpdateLifecycle {
         Ok(())
     }
 
-    /// The PLAN-061 readiness probe, before any acquisition: `rauc-update
+    /// The PLAN-061 readiness probe, before any acquisition: `mos-deploy
     /// probe` against the policy's budget. A passing probe records the
     /// workspace report; a failing one is the `update-unavailable` state.
     async fn probe(&self, workspace: &Workspace) -> Result<(), Failure> {
         let args = vec![
-            "probe".to_string(),
             "--max-bytes".to_string(),
             workspace.max_bytes.to_string(),
+            "probe".to_string(),
         ];
         let output = self.client.run(&args, PROBE_TIMEOUT).await.map_err(|err| {
             Failure::Error(CodedReason::new(
@@ -1032,41 +826,15 @@ impl UpdateLifecycle {
 
     async fn run_check(&self, policy: &EffectivePolicy) -> Result<CheckOutcome, Failure> {
         self.probe(&policy.workspace).await?;
-        let selection = selection_of(policy)?;
-        if let Some(url) = &selection.url {
-            let sync_args = vec![
-                "sync".to_string(),
-                "--url".to_string(),
-                url.clone(),
-                "--repo".to_string(),
-                policy.workspace.repo_dir.clone(),
-            ];
-            let output = self
-                .client
-                .run(&sync_args, CHECK_TIMEOUT)
-                .await
-                .map_err(|err| {
-                    Failure::Error(CodedReason::new(
-                        update_codes::CLIENT_SPAWN_FAILED,
-                        format!("sync: {err:#}"),
-                    ))
-                })?;
-            if output.code != Some(0) {
-                return Err(Failure::Error(exit_reason(
-                    "sync",
-                    output.code,
-                    &output.stderr,
-                )));
-            }
-        }
+        let args = acquisition_args("check", selection_of(policy)?, &policy.workspace)?;
         let output = self
             .client
-            .run(&check_args(selection, &policy.workspace), CHECK_TIMEOUT)
+            .run(&args, CHECK_TIMEOUT)
             .await
-            .map_err(|err| {
+            .map_err(|error| {
                 Failure::Error(CodedReason::new(
                     update_codes::CLIENT_SPAWN_FAILED,
-                    format!("check: {err:#}"),
+                    format!("check: {error:#}"),
                 ))
             })?;
         parse_check(&output).map_err(Failure::Error)
@@ -1074,167 +842,36 @@ impl UpdateLifecycle {
 
     async fn run_fetch(&self, policy: &EffectivePolicy) -> Result<FetchOutcome, Failure> {
         self.probe(&policy.workspace).await?;
-        let selection = selection_of(policy)?;
-        let Some(url) = &selection.url else {
-            // Unreachable through `request_fetch` (the policy refusal caught
-            // it), kept as an error rather than a panic all the same.
-            return Err(Failure::Error(CodedReason::new(
-                update_codes::NO_SOURCE_CONFIGURED,
-                "no update source configured",
-            )));
-        };
-        // No `--reserve-dir`: the client's default is the workspace's
-        // downloads/, and there is no other place a partial may go.
-        let mut args = check_args(selection, &policy.workspace);
-        args[0] = "fetch".to_string();
-        args.extend([
-            "--url".to_string(),
-            url.clone(),
-            "--max-bytes".to_string(),
-            policy.workspace.max_bytes.to_string(),
-        ]);
-        let output = self.client.run(&args, FETCH_TIMEOUT).await.map_err(|err| {
-            Failure::Error(CodedReason::new(
-                update_codes::CLIENT_SPAWN_FAILED,
-                format!("fetch: {err:#}"),
-            ))
-        })?;
+        let args = acquisition_args("fetch", selection_of(policy)?, &policy.workspace)?;
+        let output = self
+            .client
+            .run(&args, FETCH_TIMEOUT)
+            .await
+            .map_err(|error| {
+                Failure::Error(CodedReason::new(
+                    update_codes::CLIENT_SPAWN_FAILED,
+                    format!("fetch: {error:#}"),
+                ))
+            })?;
         parse_fetch(&output, &self.verified_dir()).map_err(Failure::Error)
     }
 
-    /// Refresh the boot-derived phase from a fresh slot query and re-record.
-    /// Called by the bus layer's `GetUpdateState` so the lifecycle entry is
-    /// exactly as new as the slot facts beside it.
-    pub async fn refresh(&self, slots: &[SlotStatus], primary: Option<&str>) {
-        let health = self.host.health().await;
-        let boot_health = health
-            .get("boot")
-            .and_then(|entry| entry.get("status"))
-            .and_then(Value::as_str);
-        let phase = derive_boot_phase(slots, primary, boot_health);
-        self.machine.lock().await.boot_phase = phase;
-        self.suppress_rolled_back(slots);
+    /// The status and the phase are derived from the same native observation.
+    pub async fn refresh(&self, status: &Status) {
+        self.machine.lock().await.boot_phase = Some(status.phase());
         self.record_snapshot().await;
     }
 
-    /// PLAN-071 §6: write down the version whose slot rolled back.
-    ///
-    /// Here, and not in the automatic driver, for two reasons. The evidence
-    /// is here — this is the one place that holds a fresh slot list beside
-    /// the phase derived from it — and a fallback must be recorded whether
-    /// or not the device is in `auto`: an operator who turns `auto` on after
-    /// a failed manual install should not be handed the loop as a welcome.
-    ///
-    /// Idempotent by [`SuppressionStore::record`]: this runs on every
-    /// `GetUpdateState` for as long as the failed slot is visible, and only
-    /// the first one writes, so the recorded instant is when the rollback
-    /// was first SEEN rather than when it was last polled.
-    ///
-    /// A slot RAUC names no `bundle_version` for cannot be suppressed —
-    /// there is no version to refuse — and that is logged rather than
-    /// guessed at. It is the one hole in this mechanism and it is the
-    /// installer's to close: a slot written by something that recorded no
-    /// version is a slot nothing downstream can talk about.
-    fn suppress_rolled_back(&self, slots: &[SlotStatus]) {
-        let Some(fallen) = rolled_back_slot(slots) else {
-            return;
-        };
-        let Some(version) = fallen.bundle_version.clone() else {
-            tracing::warn!(
-                slot = %fallen.name,
-                "a rolled-back slot carries no bundle version; it cannot be suppressed"
-            );
-            return;
-        };
-        let booted = crate::rauc::booted_slot(slots)
-            .map_or_else(|| "the running slot".to_string(), |slot| slot.name.clone());
-        let entry = Suppression {
-            version: version.clone(),
-            slot: fallen.name.clone(),
-            at: now_rfc3339(),
-            boot_status: fallen.boot_status.clone(),
-            detail: format!(
-                "version {version} was installed into slot {}, which exhausted its boot \
-                 attempts; the system fell back to {booted}. Automatic installs of this \
-                 version are refused until an operator clears the suppression; a manual \
-                 install is still permitted",
-                fallen.name
-            ),
-        };
-        match self.suppression.record(&entry) {
-            Ok(true) => tracing::warn!(
-                version = %entry.version,
-                slot = %entry.slot,
-                "version suppressed after a rollback; automatic installs of it are refused"
-            ),
-            Ok(false) => {}
-            Err(error) => tracing::warn!(
-                version = %entry.version,
-                error,
-                "the version suppression could not be recorded"
-            ),
+    /// Installing a staged candidate consumes its pending acquisition state.
+    pub async fn installed(&self, status: &Status) {
+        let mut machine = self.machine.lock().await;
+        if status.state.candidate.is_some() {
+            machine.descriptor = None;
+            machine.available = None;
         }
-    }
-
-    /// The suppression on `version`, or the store's own error.
-    ///
-    /// The error is answered rather than swallowed because the automatic
-    /// path defers on it: a store that does not parse must not read as
-    /// "nothing is suppressed", which is the reading that restarts the loop.
-    ///
-    /// # Errors
-    ///
-    /// The store exists and could not be read or parsed.
-    pub fn suppression_for(&self, version: &str) -> Result<Option<Suppression>, String> {
-        let loaded = self.suppression.load();
-        match loaded.error {
-            Some(error) => Err(error),
-            None => Ok(loaded.get(version).cloned()),
-        }
-    }
-
-    /// Clear the suppression on `version` on behalf of `sender`; answers the
-    /// record that was removed.
-    ///
-    /// PLAN-071 §6's *"an operator clears the suppression explicitly, and the
-    /// clearing is audited"*. Explicit means naming the version: there is
-    /// deliberately no member that empties the store, because the operator
-    /// who has diagnosed one bad release has not thereby diagnosed the
-    /// others, and a device that forgot every refusal at once would install
-    /// the whole set again on the next window.
-    ///
-    /// # Errors
-    ///
-    /// [`Refusal::Invalid`] when the version is not suppressed — a typo must
-    /// not read as a successful clearing — and [`Refusal::Unavailable`] when
-    /// the store could not be read or written.
-    pub async fn clear_suppression(&self, sender: &str, version: &str) -> Result<Value, Refusal> {
-        let cleared = self
-            .suppression
-            .clear(version)
-            .map_err(Refusal::Unavailable)?;
-        let Some(record) = cleared else {
-            return Err(Refusal::Invalid(format!(
-                "version `{version}` is not suppressed"
-            )));
-        };
-        // The one log line that must exist for the audit trail: who lifted
-        // the refusal, and on which version. apid records its own audit event
-        // beside it, the same pair `SetRebootOverride` is audited by.
-        tracing::warn!(
-            sender,
-            version,
-            slot = %record.slot,
-            since = %record.at,
-            "update version suppression cleared; automatic installs of it are permitted again"
-        );
-        let rendered = record.to_json();
-        self.record_snapshot_with(Some(CodedReason::new(
-            update_codes::NOTE_SUPPRESSION_CLEARED,
-            format!("suppression on version {version} cleared by {sender}"),
-        )))
-        .await;
-        Ok(rendered)
+        machine.boot_phase = Some(status.phase());
+        drop(machine);
+        self.record_snapshot().await;
     }
 
     /// Write the operator's update document (PLAN-071 §3, U11).
@@ -1280,9 +917,7 @@ impl UpdateLifecycle {
             // succeeded.
             Refusal::Unavailable(format!("the saved document could not be rendered: {err}"))
         })?;
-        // The audit trail's mosd half, the pair `ClearUpdateSuppression` is
-        // recorded by: who changed the device's update configuration, and
-        // where. apid records the event with U8's actor beside it.
+        // Record the actor and path; apid records the authenticated actor too.
         //
         // **The document is deliberately not in this line.** It carries no
         // secret by schema, but `source.url` is an operator-typed URL and a
@@ -1471,7 +1106,6 @@ impl UpdateLifecycle {
     /// Build the full `update.lifecycle` entry and hand it to the host.
     async fn record_snapshot_with(&self, last_refusal: Option<CodedReason>) {
         let loaded = self.policy.load();
-        let suppressions = self.suppression.load();
         let health = self.host.health().await;
         let installing = self.installing.load(Ordering::Acquire);
         let mut machine = self.machine.lock().await;
@@ -1485,7 +1119,6 @@ impl UpdateLifecycle {
         let entry = render_entry(
             &machine,
             &loaded,
-            &suppressions,
             &verdict,
             installing,
             self.client.unavailable(),
@@ -1528,33 +1161,36 @@ fn selection_of(policy: &EffectivePolicy) -> Result<&Selection, Failure> {
     })
 }
 
-/// The `check` argument vector; `fetch` extends it.
-///
-/// No `--root`: the anchor left the operator document with the move
-/// (PLAN-070 §5.3.5) and F7 removed the flag from the client entirely — the
-/// keys it will accept come from the baked manifest's `trust.signingKeys`,
-/// which mosd cannot name or override.
-fn check_args(selection: &Selection, workspace: &Workspace) -> Vec<String> {
-    vec![
-        "check".to_string(),
-        "--repo".to_string(),
-        workspace.repo_dir.clone(),
-        "--state".to_string(),
-        workspace.state_path.clone(),
-        "--channel".to_string(),
+fn acquisition_args(
+    verb: &str,
+    selection: &Selection,
+    workspace: &Workspace,
+) -> Result<Vec<String>, Failure> {
+    let source = selection.url.as_ref().ok_or_else(|| {
+        Failure::Error(CodedReason::new(
+            update_codes::NO_SOURCE_CONFIGURED,
+            "no update source configured",
+        ))
+    })?;
+    Ok(vec![
+        "--max-bytes".into(),
+        workspace.max_bytes.to_string(),
+        verb.into(),
+        "--source".into(),
+        source.clone(),
+        "--channel".into(),
         selection.channel.clone(),
-    ]
+    ])
 }
 
 /// The one place the recorded entry is shaped, so the state precedence —
 /// installing over a running client operation over an unready workspace
-/// over a failure over a staged bundle over the boot-derived phase over
+/// over a failure over a staged descriptor over the boot-derived phase over
 /// idle — is written once.
 #[allow(clippy::too_many_arguments)]
 fn render_entry(
     machine: &Machine,
     loaded: &LoadedPolicy,
-    suppressions: &LoadedSuppressions,
     gate: &GateVerdict,
     installing: bool,
     client_unavailable: Option<String>,
@@ -1565,7 +1201,7 @@ fn render_entry(
     // `code` is present exactly for the two states that report a FAILURE, and
     // absent for the rest (PLAN-076 B4). `ready` and the boot-derived phases
     // carry a `reason` too, but theirs describes a state that is already its
-    // own enumerated word — coding "a verified bundle is staged" would add a
+    // own enumerated word — coding "a verified descriptor is staged" would add a
     // second spelling of `ready` and nothing else.
     let (state, reason, code): (&str, Option<String>, Option<&'static str>) = if installing {
         ("installing", None, None)
@@ -1579,14 +1215,14 @@ fn render_entry(
         )
     } else if let Some(failed) = &machine.failed {
         ("failed", Some(failed.text.clone()), Some(failed.code))
-    } else if machine.bundle.is_some() {
+    } else if machine.descriptor.is_some() {
         (
             "ready",
-            Some("a verified bundle is staged for install".to_string()),
+            Some("a verified descriptor is staged for install".to_string()),
             None,
         )
     } else if let Some((phase, why)) = &machine.boot_phase {
-        (phase.name(), Some(why.clone()), None)
+        (*phase, Some(why.clone()), None)
     } else {
         ("idle", None, None)
     };
@@ -1606,14 +1242,17 @@ fn render_entry(
         entry.insert(
             "available".into(),
             json!({
-                "name": available.name,
+                "deploymentId": available.deployment_id,
                 "version": available.version,
                 "channel": available.channel,
             }),
         );
     }
-    if let Some(bundle) = &machine.bundle {
-        entry.insert("bundle".into(), json!(bundle));
+    if let Some(descriptor) = &machine.descriptor {
+        entry.insert(
+            "deploymentId".into(),
+            json!(Path::new(descriptor).file_stem().and_then(|id| id.to_str())),
+        );
     }
     if let Some(last_check) = &machine.last_check {
         entry.insert("last_check".into(), json!(last_check));
@@ -1718,25 +1357,6 @@ fn render_entry(
     if let Some(error) = &loaded.error {
         entry.insert("policy_error".into(), json!(error));
     }
-    // PLAN-071 §6's store, served beside the policy that reads it. A device
-    // that refuses a version has to be able to say WHICH and WHY without a
-    // second read route: "this device refuses 1.5.0" with no reason is the
-    // support case with nothing in it that §6 names. The error is rendered
-    // too, because an unreadable store is a state the automatic path defers
-    // in and an empty list would otherwise report it as "nothing refused".
-    entry.insert(
-        "suppressed".into(),
-        Value::Array(
-            suppressions
-                .records
-                .iter()
-                .map(Suppression::to_json)
-                .collect(),
-        ),
-    );
-    if let Some(error) = &suppressions.error {
-        entry.insert("suppressed_error".into(), json!(error));
-    }
     let mut gate_entry = gate.to_json();
     if let (Some(record), Some(map)) = (&machine.override_record, gate_entry.as_object_mut()) {
         map.insert(
@@ -1767,6 +1387,40 @@ mod tests {
         }
     }
 
+    fn selection_output() -> ClientOutput {
+        output(
+            0,
+            &json!({"revision":1,"channel":"stable","selected":{
+                "deploymentId":"a".repeat(64),"deployment":{"version":"1.1.0"}}
+            })
+            .to_string(),
+            "",
+        )
+    }
+
+    fn fetch_output(path: &str) -> ClientOutput {
+        output(
+            0,
+            &json!({"id":"a".repeat(64),"path":path,
+                "objects":"/mos/updates/verified/objects","version":"1.1.0","generation":3
+            })
+            .to_string(),
+            "",
+        )
+    }
+
+    fn staged_path() -> String {
+        format!("/mos/updates/verified/{}.json", "a".repeat(64))
+    }
+
+    fn no_selection() -> ClientOutput {
+        output(
+            0,
+            r#"{"revision":1,"channel":"stable","selected":null}"#,
+            "",
+        )
+    }
+
     /// A client killed by a signal: no exit code at all.
     fn output_signalled(stderr: &str) -> ClientOutput {
         ClientOutput {
@@ -1776,256 +1430,94 @@ mod tests {
         }
     }
 
-    fn slot(name: &str, state: &str, boot_status: Option<&str>) -> SlotStatus {
-        SlotStatus {
-            name: name.to_string(),
-            state: Some(state.to_string()),
-            boot_status: boot_status.map(str::to_string),
-            ..SlotStatus::default()
-        }
-    }
-
     #[test]
-    fn check_output_parses_by_its_printed_contract() {
-        let selected = output(
-            0,
-            "rejected old-1.raucb: version 0.9 is not newer\n\
-             selected update-1.1.0.raucb version 1.1.0 channel stable (1234 bytes)\n",
-            "",
-        );
+    fn check_output_parses_native_json_and_reports_failure_codes() {
+        assert!(matches!(
+            parse_check(&selection_output()),
+            Ok(CheckOutcome::Selected(_))
+        ));
         assert_eq!(
-            parse_check(&selected),
-            Ok(CheckOutcome::Selected(Available {
-                name: "update-1.1.0.raucb".to_string(),
-                version: "1.1.0".to_string(),
-                channel: "stable".to_string(),
-            }))
-        );
-        assert_eq!(
-            parse_check(&output(2, "none\n", "")),
+            parse_check(&no_selection()),
             Ok(CheckOutcome::NoneCompatible)
         );
-        let failed = parse_check(&output(1, "", "rauc-update: state file corrupt\n"))
-            .expect_err("exit 1 is a failure");
-        assert!(
-            failed.text.contains("state file corrupt"),
-            "got: {failed:?}"
-        );
-        // PLAN-076 B4: an exit the client judged, and an exit 0 whose output
-        // it did not print, are two codes and not one. The stderr tail stays
-        // in `text`; it is never what a consumer reads as the class.
-        assert_eq!(failed.code, update_codes::CLIENT_EXIT_FAILURE);
-        let unparseable =
-            parse_check(&output(0, "something else\n", "")).expect_err("no selected line");
-        assert!(
-            unparseable.text.contains("selected"),
-            "got: {unparseable:?}"
-        );
-        assert_eq!(unparseable.code, update_codes::CLIENT_OUTPUT_UNPARSEABLE);
         assert_eq!(
-            parse_check(&output(0, "selected only-a-name\n", ""))
-                .expect_err("an incomplete selection line")
+            parse_check(&output(1, "", "catalog is expired"))
+                .unwrap_err()
                 .code,
-            update_codes::CLIENT_OUTPUT_UNPARSEABLE
+            update_codes::CLIENT_EXIT_FAILURE
         );
-        // Killed by a signal is not the same failure as a judged exit: the
-        // client never got to judge anything.
+        for malformed in ["selected only-a-name", "{}", r#"{"selected":{}}"#] {
+            assert_eq!(
+                parse_check(&output(0, malformed, "")).unwrap_err().code,
+                update_codes::CLIENT_OUTPUT_UNPARSEABLE
+            );
+        }
         assert_eq!(
-            parse_check(&output_signalled(""))
-                .expect_err("no exit code")
-                .code,
+            parse_check(&output_signalled("")).unwrap_err().code,
             update_codes::CLIENT_SPAWN_FAILED
         );
     }
 
     #[test]
-    fn fetch_output_is_a_verified_path_or_nothing() {
+    fn fetch_output_is_an_identified_verified_descriptor_or_nothing() {
         let verified = Path::new("/mos/updates/verified");
-        let staged = output(
-            0,
-            "selected update-1.1.0.raucb version 1.1.0 channel stable (12 bytes)\n\
-             /mos/updates/verified/update-1.1.0.raucb\n",
-            "",
+        assert_eq!(
+            parse_fetch(&fetch_output(&staged_path()), verified),
+            Ok(FetchOutcome::Staged(staged_path()))
         );
         assert_eq!(
-            parse_fetch(&staged, verified),
-            Ok(FetchOutcome::Staged(
-                "/mos/updates/verified/update-1.1.0.raucb".to_string()
-            ))
-        );
-        assert_eq!(
-            parse_fetch(&output(2, "none\n", ""), verified),
+            parse_fetch(&output(0, "null", ""), verified),
             Ok(FetchOutcome::NoneCompatible)
         );
-        assert!(
-            parse_fetch(&output(0, "not-a-path\n", ""), verified).is_err(),
-            "a relative last line must not be recorded as a bundle"
-        );
-        // A path anywhere but verified/, or a partial even there, is never
-        // recorded as ready — whatever exit code came with it.
         for outside in [
-            "/mos/updates/downloads/update-1.1.0.raucb.part",
-            "/mos/updates/downloads/update-1.1.0.raucb",
-            "/mos/updates/staging/update-1.1.0.raucb",
-            "/mos/updates/verified/update-1.1.0.raucb.part",
-            "/mos/updates/verified/nested/update-1.1.0.raucb",
-            "/var/lib/mos/update/reserve/update-1.1.0.raucb",
+            "/mos/updates/downloads/a.json",
+            "/mos/updates/verified/a.json",
+            "/tmp/a.json",
+            "/mos/updates/verified/a.json.partial",
         ] {
-            let err =
-                parse_fetch(&output(0, &format!("{outside}\n"), ""), verified).expect_err(outside);
-            assert!(err.text.contains("verified"), "{outside}: {err:?}");
-            assert_eq!(err.code, update_codes::UNVERIFIED_BUNDLE_PATH, "{outside}");
+            assert_eq!(
+                parse_fetch(&fetch_output(outside), verified)
+                    .unwrap_err()
+                    .code,
+                update_codes::UNVERIFIED_DEPLOYMENT_PATH
+            );
         }
+        let mut wrong: Value = serde_json::from_str(&fetch_output(&staged_path()).stdout).unwrap();
+        wrong["objects"] = json!("/tmp/objects");
+        assert!(parse_fetch(&output(0, &wrong.to_string(), ""), verified).is_err());
         assert_eq!(
-            parse_fetch(&output(1, "", "budget exceeded\n"), verified)
-                .expect_err("exit 1 is a failure")
+            parse_fetch(&output(1, "", "budget exceeded"), verified)
+                .unwrap_err()
                 .code,
             update_codes::CLIENT_EXIT_FAILURE
         );
-        assert_eq!(
-            parse_fetch(&output(3, "something else\n", ""), verified)
-                .expect_err("exit 3 without a verdict")
-                .code,
-            update_codes::CLIENT_OUTPUT_UNPARSEABLE
-        );
-        // Exit 3 carries the workspace's refusal, from stderr.
-        assert_eq!(
-            parse_fetch(
-                &output(
-                    3,
-                    "",
-                    "rauc-update: degraded exhausted: free space is 0 bytes\n"
-                ),
-                verified
-            ),
-            Ok(FetchOutcome::Unready(Unready {
-                status: "degraded".to_string(),
-                kind: "exhausted",
-                detail: "free space is 0 bytes".to_string(),
-            }))
-        );
-        assert!(parse_fetch(&output(3, "", "something else\n"), verified).is_err());
     }
 
     #[test]
-    fn probe_output_parses_ready_reports_and_unready_lines() {
-        let ready = output(
-            0,
-            "ready root=/mos/updates pool=/mnt/data source=/dev/mmcblk0p7 fs_root=/mos \
-             fstype=ext4 free=123456789 used=100 budget=500000000\n",
-            "",
-        );
-        let ProbeOutcome::Ready(report) = parse_probe(&ready).expect("parses") else {
-            panic!("ready expected");
+    fn probe_output_requires_ready_json_and_preserves_native_refusals() {
+        let (_, ready) = ready_probe();
+        let ProbeOutcome::Ready(report) = parse_probe(&ready.unwrap()).unwrap() else {
+            panic!("ready expected")
         };
-        assert_eq!(report["pool"], "/mnt/data");
-        assert_eq!(report["source"], "/dev/mmcblk0p7");
-        assert_eq!(report["free"], 123_456_789u64);
-        assert_eq!(report["used"], 100);
-        assert_eq!(report["budget"], 500_000_000u64);
-        for (line, status, kind) in [
-            (
-                "unavailable mount-missing: /mos is not a mount point",
-                "unavailable",
-                "mount-missing",
-            ),
-            (
-                "unavailable not-data: /mos is mounted from tmpfs",
-                "unavailable",
-                "not-data",
-            ),
-            (
-                "degraded read-only: /mos is mounted read-only (/dev/x)",
-                "degraded",
-                "read-only",
-            ),
-            (
-                "degraded exhausted: the reserve budget is spent",
-                "degraded",
-                "exhausted",
-            ),
-            (
-                "degraded probe-failed: statvfs failed",
-                "degraded",
-                "probe-failed",
-            ),
+        assert_eq!(report["freeBytes"], 1_000_000_000u64);
+        for detail in [
+            "DATA is not mounted",
+            "read-only filesystem",
+            "insufficient workspace capacity",
         ] {
-            let outcome = parse_probe(&output(3, &format!("{line}\n"), "")).expect("parses");
-            let ProbeOutcome::Unready(unready) = outcome else {
-                panic!("unready expected for {line}");
+            let ProbeOutcome::Unready(unready) = parse_probe(&output(1, "", detail)).unwrap()
+            else {
+                panic!("refusal expected")
             };
-            assert_eq!(unready.status, status);
-            assert_eq!(unready.kind, kind);
-            assert_eq!(unready.reason(), line);
+            assert_eq!(unready.kind, update_codes::WORKSPACE_PROBE_FAILED);
+            assert_eq!(unready.detail, detail);
         }
-        assert_eq!(
-            parse_probe(&output(0, "nothing useful\n", ""))
-                .expect_err("no ready line")
-                .code,
-            update_codes::CLIENT_OUTPUT_UNPARSEABLE
-        );
-        assert_eq!(
-            parse_probe(&output(3, "not a verdict\n", ""))
-                .expect_err("exit 3 without a verdict")
-                .code,
-            update_codes::CLIENT_OUTPUT_UNPARSEABLE
-        );
-        assert_eq!(
-            parse_probe(&output(1, "", "rauc-update: boom\n"))
-                .expect_err("exit 1 is a failure")
-                .code,
-            update_codes::CLIENT_EXIT_FAILURE
-        );
-        // The binary's stderr prefix is stripped; other words are not verdicts.
-        assert_eq!(
-            parse_unready("rauc-update: degraded read-only: ro").map(|u| u.kind),
-            Some("read-only")
-        );
-        assert_eq!(parse_unready("failed read-only: ro"), None);
-        assert_eq!(parse_unready("degraded: no kind"), None);
-        // PLAN-076 B4's second half at the one seam where a foreign process
-        // chooses the word. The verdict still refuses the acquisition — the
-        // status is what does that — and the word the client invented does
-        // NOT reach the recorded kind.
-        let invented = parse_unready("degraded quota-exceeded: 0 left").expect("still a verdict");
-        assert_eq!(invented.status, "degraded");
-        assert_eq!(invented.kind, update_codes::UNKNOWN);
-        assert_eq!(invented.detail, "0 left");
-    }
-
-    #[test]
-    fn boot_phase_derivation_covers_every_derived_state() {
-        let converged = [
-            slot("rootfs.0", "booted", Some("good")),
-            slot("rootfs.1", "inactive", Some("good")),
-        ];
-        // Converged and unreported: honest silence, not a guessed success.
-        assert_eq!(derive_boot_phase(&converged, Some("rootfs.0"), None), None);
-        // Installed and activated, not yet booted.
-        let (phase, why) =
-            derive_boot_phase(&converged, Some("rootfs.1"), None).expect("pending derives");
-        assert_eq!(phase, BootPhase::RebootRequired);
-        assert!(why.contains("rootfs.1"), "got: {why}");
-        // The other slot exhausted its attempts: automatic fallback.
-        let fallen = [
-            slot("rootfs.0", "booted", Some("good")),
-            slot("rootfs.1", "inactive", Some("bad")),
-        ];
-        let (phase, why) =
-            derive_boot_phase(&fallen, Some("rootfs.1"), None).expect("fallback derives");
-        assert_eq!(phase, BootPhase::RolledBack);
-        assert!(
-            why.contains("rootfs.1") && why.contains("rootfs.0"),
-            "got: {why}"
-        );
-        // The health gate's report is what splits validating from succeeded.
-        let (phase, _) = derive_boot_phase(&converged, Some("rootfs.0"), Some("ok"))
-            .expect("a confirmed boot derives");
-        assert_eq!(phase, BootPhase::Succeeded);
-        let (phase, why) = derive_boot_phase(&converged, Some("rootfs.0"), Some("probing"))
-            .expect("an unconfirmed boot derives");
-        assert_eq!(phase, BootPhase::Validating);
-        assert!(why.contains("probing"), "got: {why}");
+        for malformed in ["ready free=123", "{}", r#"{"status":"unknown"}"#] {
+            assert_eq!(
+                parse_probe(&output(0, malformed, "")).unwrap_err().code,
+                update_codes::CLIENT_OUTPUT_UNPARSEABLE
+            );
+        }
     }
 
     /// Scripted client: each expected invocation is `(leading subcommand,
@@ -2071,7 +1563,8 @@ mod tests {
             anyhow::ensure!(!script.is_empty(), "unexpected client call: {args:?}");
             let (verb, result) = script.remove(0);
             anyhow::ensure!(
-                args.first() == Some(&verb),
+                args.get(usize::from(args.first().is_some_and(|arg| arg == "--max-bytes")) * 2)
+                    == Some(&verb),
                 "expected `{verb}`, got {args:?}"
             );
             result.map_err(|reason| anyhow::anyhow!("{reason}"))
@@ -2148,8 +1641,7 @@ mod tests {
             "probe",
             Ok(output(
                 0,
-                "ready root=/mos/updates pool=/mnt/data source=/dev/data fs_root=/mos \
-                 fstype=ext4 free=1000000000 used=0 budget=500000000\n",
+                r#"{"status":"ready","root":"/mos/updates","freeBytes":1000000000,"maxBytes":500000000,"freeInodes":10000}"#,
                 "",
             )),
         )
@@ -2169,107 +1661,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_check_syncs_then_checks_and_records_the_selection() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-        let client = MockClient::new(vec![
-            ready_probe(),
-            ("sync", Ok(output(0, "synced root v1 ...\n", ""))),
-            (
-                "check",
-                Ok(output(
-                    0,
-                    "selected update-1.1.0.raucb version 1.1.0 channel stable (9 bytes)\n",
-                    "",
-                )),
-            ),
-        ]);
+    async fn a_check_probes_then_checks_the_signed_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
+        let client = MockClient::new(vec![ready_probe(), ("check", Ok(selection_output()))]);
         let calls = Arc::clone(&client.calls);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
-
-        lifecycle.request_check("test").await.expect("accepted");
+        lifecycle.request_check("test").await.unwrap();
         let recorded = settled(&host).await;
         assert_eq!(recorded["state"], "idle");
         assert_eq!(recorded["available"]["version"], "1.1.0");
+        assert_eq!(recorded["workspace"]["freeBytes"], 1_000_000_000u64);
         assert!(recorded["last_check"].is_string());
-        assert_eq!(recorded["client"]["available"], true);
-        // The passing probe's report, the pool's figures stated once.
-        assert_eq!(recorded["workspace"]["status"], "ready");
-        assert_eq!(recorded["workspace"]["root"], "/mos/updates");
-        assert_eq!(recorded["workspace"]["pool"], "/mnt/data");
-        assert_eq!(recorded["workspace"]["free"], 1_000_000_000u64);
-
-        let calls = calls.lock().expect("calls").clone();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[0][0], "probe");
-        assert!(
-            calls[0].contains(&"--max-bytes".to_string())
-                && calls[0].contains(&"500000000".to_string()),
-            "the probe carries the policy budget: {calls:?}"
-        );
-        assert_eq!(calls[1][0], "sync");
-        assert!(calls[1].contains(&"http://mirror/tuf".to_string()));
-        assert_eq!(calls[2][0], "check");
-        assert!(
-            calls[2].contains(&"--channel".to_string()) && calls[2].contains(&"stable".to_string()),
-            "check must carry the policy channel: {calls:?}"
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], ["--max-bytes", "500000000", "probe"]);
+        assert_eq!(
+            calls[1],
+            [
+                "--max-bytes",
+                "500000000",
+                "check",
+                "--source",
+                "https://updates.example",
+                "--channel",
+                "stable"
+            ]
         );
     }
 
     #[tokio::test]
-    async fn a_fetch_records_the_verified_path_as_ready() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+    async fn a_fetch_records_the_verified_descriptor_as_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
-            (
-                "fetch",
-                Ok(output(
-                    0,
-                    "selected x version 1 channel stable (9 bytes)\n\
-                     /mos/updates/verified/x.raucb\n",
-                    "",
-                )),
-            ),
+            ("fetch", Ok(fetch_output(&staged_path()))),
         ]);
         let calls = Arc::clone(&client.calls);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
-
-        lifecycle.request_fetch("test").await.expect("accepted");
+        lifecycle.request_fetch("test").await.unwrap();
         let recorded = settled(&host).await;
         assert_eq!(recorded["state"], "ready");
-        assert_eq!(recorded["bundle"], "/mos/updates/verified/x.raucb");
-        let calls = calls.lock().expect("calls").clone();
-        assert_eq!(calls[1][0], "fetch");
-        assert!(
-            !calls[1].contains(&"--reserve-dir".to_string()),
-            "mosd names no reserve directory; the workspace's downloads/ is the only one: {calls:?}"
+        assert_eq!(recorded["deploymentId"], "a".repeat(64));
+        assert_eq!(
+            calls.lock().unwrap()[1],
+            [
+                "--max-bytes",
+                "500000000",
+                "fetch",
+                "--source",
+                "https://updates.example",
+                "--channel",
+                "stable"
+            ]
         );
-        assert!(calls[1].contains(&"--max-bytes".to_string()));
     }
 
     #[tokio::test]
     async fn a_fetch_path_outside_verified_is_never_recorded_as_ready() {
         for printed in [
-            "/mos/updates/downloads/x.raucb.part",
-            "/mos/updates/downloads/x.raucb",
-            "/mos/updates/verified/x.raucb.part",
-            "/var/lib/mos/update/reserve/x.raucb",
+            "/mos/updates/downloads/x.json.part",
+            "/mos/updates/downloads/x.json",
+            "/mos/updates/verified/x.json.part",
+            "/tmp/outside/x.json",
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-            let client = MockClient::new(vec![
-                ready_probe(),
-                ("fetch", Ok(output(0, &format!("{printed}\n"), ""))),
-            ]);
+            let client = MockClient::new(vec![ready_probe(), ("fetch", Ok(fetch_output(printed)))]);
             let host = TestHost::new();
             let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
             lifecycle.request_fetch("test").await.expect("accepted");
             let recorded = settled(&host).await;
             assert_eq!(recorded["state"], "failed", "{printed}: {recorded}");
-            assert!(recorded.get("bundle").is_none(), "{printed}: {recorded}");
+            assert!(
+                recorded.get("deploymentId").is_none(),
+                "{printed}: {recorded}"
+            );
             assert!(
                 recorded["reason"]
                     .as_str()
@@ -2279,113 +1749,53 @@ mod tests {
             );
             assert_eq!(
                 recorded["code"],
-                update_codes::UNVERIFIED_BUNDLE_PATH,
+                update_codes::UNVERIFIED_DEPLOYMENT_PATH,
                 "{printed}: {recorded}"
             );
         }
     }
 
     #[tokio::test]
-    async fn an_unready_workspace_is_a_named_state_before_any_acquisition() {
-        for (status, kind) in [
-            ("unavailable", "mount-missing"),
-            ("unavailable", "not-data"),
-            ("degraded", "read-only"),
-            ("degraded", "exhausted"),
-            ("degraded", "probe-failed"),
-        ] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-            let verdict = format!("{status} {kind}: the detail for {kind}\n");
-            // The probe refuses; then, on the second request, passes — and
-            // only then are sync and check ever asked for.
-            let client = MockClient::new(vec![
-                ("probe", Ok(output(3, &verdict, ""))),
-                ready_probe(),
-                ("sync", Ok(output(0, "", ""))),
-                ("check", Ok(output(2, "none\n", ""))),
-            ]);
-            let calls = Arc::clone(&client.calls);
-            let host = TestHost::new();
-            let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
-
-            lifecycle.request_check("test").await.expect("accepted");
-            let recorded = settled(&host).await;
-            assert_eq!(
-                recorded["state"], "update-unavailable",
-                "{kind}: {recorded}"
-            );
-            assert_eq!(
-                recorded["reason"],
-                format!("{status} {kind}: the detail for {kind}"),
-                "{recorded}"
-            );
-            assert_eq!(recorded["workspace"]["status"], status);
-            assert_eq!(recorded["workspace"]["kind"], kind);
-            assert_eq!(recorded["workspace"]["root"], "/mos/updates");
-            // The state's code is the workspace verdict, not a second word
-            // for it (PLAN-076 B4).
-            assert_eq!(recorded["code"], kind, "{recorded}");
-            assert!(
-                recorded.get("last_check").is_none(),
-                "no check ran: {recorded}"
-            );
-            assert_eq!(
-                calls.lock().expect("calls").len(),
-                1,
-                "{kind}: nothing beyond the probe may run"
-            );
-
-            // The next probe passes: the state clears, the check runs, and
-            // the workspace report replaces the verdict.
-            lifecycle.request_check("test").await.expect("accepted");
-            let recorded = settled(&host).await;
-            assert_eq!(
-                recorded["state"], "idle",
-                "{kind}: the second probe passed: {recorded}"
-            );
-            assert!(recorded["last_check"].is_string(), "{recorded}");
-            assert_eq!(recorded["workspace"]["status"], "ready");
-            assert_eq!(recorded["workspace"]["pool"], "/mnt/data");
-            assert!(recorded["workspace"].get("kind").is_none(), "{recorded}");
-            assert!(
-                recorded.get("code").is_none(),
-                "an idle device names no failure: {recorded}"
-            );
-            assert_eq!(calls.lock().expect("calls").len(), 4, "{kind}");
-        }
+    async fn an_unready_workspace_refuses_acquisition_until_a_probe_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
+        let client = MockClient::new(vec![
+            ("probe", Ok(output(1, "", "DATA is read-only"))),
+            ready_probe(),
+            ("check", Ok(no_selection())),
+        ]);
+        let calls = Arc::clone(&client.calls);
+        let host = TestHost::new();
+        let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
+        lifecycle.request_check("test").await.unwrap();
+        let recorded = settled(&host).await;
+        assert_eq!(recorded["state"], "update-unavailable");
+        assert_eq!(recorded["code"], update_codes::WORKSPACE_PROBE_FAILED);
+        assert_eq!(recorded["workspace"]["detail"], "DATA is read-only");
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        lifecycle.request_check("test").await.unwrap();
+        let recorded = settled(&host).await;
+        assert_eq!(recorded["state"], "idle");
+        assert_eq!(recorded["workspace"]["status"], "ready");
+        assert!(recorded.get("code").is_none());
+        assert_eq!(calls.lock().unwrap().len(), 3);
     }
 
     #[tokio::test]
-    async fn a_fetch_the_workspace_refuses_is_the_same_named_state() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
+    async fn a_fetch_failure_never_records_a_descriptor_as_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
-            (
-                "fetch",
-                Ok(output(
-                    3,
-                    "selected x version 1 channel stable (9 bytes)\n",
-                    "rauc-update: degraded exhausted: free space on the DATA pool (/mnt/data) \
-                     is 10 bytes, below the 9000 bytes needed\n",
-                )),
-            ),
+            ("fetch", Ok(output(1, "", "component digest mismatch"))),
         ]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
-        lifecycle.request_fetch("test").await.expect("accepted");
+        lifecycle.request_fetch("test").await.unwrap();
         let recorded = settled(&host).await;
-        assert_eq!(recorded["state"], "update-unavailable", "{recorded}");
-        assert!(
-            recorded["reason"]
-                .as_str()
-                .expect("reason")
-                .starts_with("degraded exhausted: free space on the DATA pool"),
-            "{recorded}"
-        );
-        assert_eq!(recorded["workspace"]["status"], "degraded");
-        assert!(recorded.get("bundle").is_none());
+        assert_eq!(recorded["state"], "failed");
+        assert_eq!(recorded["code"], update_codes::CLIENT_EXIT_FAILURE);
+        assert!(recorded.get("deploymentId").is_none());
     }
 
     #[test]
@@ -2404,7 +1814,7 @@ mod tests {
         );
         assert_eq!(lifecycle.verified_dir(), verified);
 
-        let good = verified.join("mos-cx3576-1.1.0.raucb");
+        let good = verified.join(format!("{}.json", "a".repeat(64)));
         std::fs::write(&good, b"verified bytes").expect("seed");
         assert_eq!(lifecycle.installable(&good), Ok(()));
 
@@ -2412,20 +1822,23 @@ mod tests {
             let err = lifecycle.installable(path).expect_err(needle);
             assert!(err.contains(needle), "{}: {err}", path.display());
         };
-        let part = verified.join("mos-cx3576-1.2.0.raucb.part");
+        let part = verified.join("invalid.json.part");
         std::fs::write(&part, b"partial").expect("seed");
-        refused(&part, "partial download");
-        let in_downloads = root.join("downloads").join("mos-cx3576-1.2.0.raucb");
+        refused(&part, "not a deployment descriptor");
+        let in_downloads = root.join("downloads").join("invalid.json");
         std::fs::write(&in_downloads, b"unverified").expect("seed");
         refused(&in_downloads, "not inside");
-        let elsewhere = dir.path().join("mos-cx3576-1.2.0.raucb");
+        let elsewhere = dir.path().join("invalid.json");
         std::fs::write(&elsewhere, b"unverified").expect("seed");
         refused(&elsewhere, "not inside");
-        let link = verified.join("link.raucb");
+        let link = verified.join(format!("{}.json", "b".repeat(64)));
         std::os::unix::fs::symlink(&elsewhere, &link).expect("symlink");
         refused(&link, "not a regular file");
-        refused(&verified.join("absent.raucb"), "No such file");
-        refused(Path::new("relative.raucb"), "not inside");
+        refused(
+            &verified.join(format!("{}.json", "e".repeat(64))),
+            "No such file",
+        );
+        refused(Path::new("relative.json"), "not inside");
     }
 
     #[tokio::test]
@@ -2434,10 +1847,7 @@ mod tests {
         let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
-            (
-                "sync",
-                Ok(output(1, "", "rauc-update: connection refused\n")),
-            ),
+            ("check", Ok(output(1, "", "connection refused\n"))),
         ]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
@@ -2465,32 +1875,28 @@ mod tests {
     // exit status at all.
     #[tokio::test]
     async fn a_client_that_cannot_run_and_one_that_will_not_speak_are_two_codes() {
-        for (script, expected) in [
+        for (result, code) in [
             (
-                (
-                    "sync",
-                    Err("spawn rauc-update: No such file or directory".to_string()),
-                ),
+                Err("spawn failed".into()),
                 update_codes::CLIENT_SPAWN_FAILED,
             ),
             (
-                ("sync", Ok(output(0, "", ""))),
+                Ok(output(0, "hello", "")),
                 update_codes::CLIENT_OUTPUT_UNPARSEABLE,
             ),
         ] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-            let mut steps = vec![ready_probe(), script];
-            if expected == update_codes::CLIENT_OUTPUT_UNPARSEABLE {
-                // A check that exits 0 and prints nothing it promised to.
-                steps.push(("check", Ok(output(0, "hello?\n", ""))));
-            }
+            let dir = tempfile::tempdir().unwrap();
+            let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
             let host = TestHost::new();
-            let (lifecycle, _) = lifecycle(MockClient::new(steps), policy, Arc::clone(&host));
-            lifecycle.request_check("test").await.expect("accepted");
+            let (lifecycle, _) = lifecycle(
+                MockClient::new(vec![ready_probe(), ("check", result)]),
+                policy,
+                Arc::clone(&host),
+            );
+            lifecycle.request_check("test").await.unwrap();
             let recorded = settled(&host).await;
-            assert_eq!(recorded["state"], "failed", "{expected}: {recorded}");
-            assert_eq!(recorded["code"], expected, "{recorded}");
+            assert_eq!(recorded["state"], "failed");
+            assert_eq!(recorded["code"], code);
         }
     }
 
@@ -2499,62 +1905,24 @@ mod tests {
     // refusals, so both need a code; neither would be reachable from a
     // refusal test.
     #[tokio::test]
-    async fn the_two_notes_that_share_the_refusal_member_carry_their_own_codes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-        let host = TestHost::new();
-        let store = SuppressionStore::at(dir.path().join("suppressed.json"));
-        store
-            .record(&Suppression {
-                version: "1.5.0".to_string(),
-                slot: "rootfs.1".to_string(),
-                at: "2026-09-06T00:00:00Z".to_string(),
-                boot_status: Some("bad".to_string()),
-                detail: "the slot exhausted its boot attempts".to_string(),
-            })
-            .expect("recorded");
-        // The staged bundle is put there by a real fetch, so `discard_bundle`
-        // below is discarding something the module itself recorded.
+    async fn discarding_a_staged_deployment_uses_native_workspace_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_file(&dir, r#"{"source":{"url":"https://updates.example"}}"#);
         let client = MockClient::new(vec![
             ready_probe(),
-            (
-                "fetch",
-                Ok(output(0, "/mos/updates/verified/x.raucb\n", "")),
-            ),
+            ("fetch", Ok(fetch_output(&staged_path()))),
+            ("discard", Ok(output(0, "{\"removed\":3}", ""))),
         ]);
-        let lifecycle = Arc::new(
-            UpdateLifecycle::new(
-                Arc::new(client),
-                policy,
-                Arc::clone(&host) as Arc<dyn LifecycleHost>,
-                Arc::new(AtomicBool::new(false)),
-                PathBuf::from(DEFAULT_WORKSPACE_ROOT),
-            )
-            .with_suppression(store),
-        );
-        lifecycle.request_fetch("test").await.expect("accepted");
-        let recorded = settled(&host).await;
-        assert_eq!(recorded["state"], "ready", "{recorded}");
-
-        lifecycle
-            .clear_suppression(":1.7", "1.5.0")
-            .await
-            .expect("cleared");
+        let calls = Arc::clone(&client.calls);
+        let host = TestHost::new();
+        let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
+        lifecycle.fetch_now("test").await.unwrap();
+        lifecycle.discard_descriptor("release withdrawn").await;
+        assert_eq!(calls.lock().unwrap().last().unwrap(), &["discard"]);
+        assert!(lifecycle.staged_descriptor().await.is_none());
         assert_eq!(
             host.last()["last_refusal_code"],
-            update_codes::NOTE_SUPPRESSION_CLEARED,
-            "{}",
-            host.last()
-        );
-
-        lifecycle
-            .discard_bundle("the current metadata no longer names it")
-            .await;
-        assert_eq!(
-            host.last()["last_refusal_code"],
-            update_codes::NOTE_BUNDLE_DISCARDED,
-            "{}",
-            host.last()
+            update_codes::NOTE_DEPLOYMENT_DISCARDED
         );
     }
 
@@ -2613,12 +1981,10 @@ mod tests {
         for reason in [
             update_codes::DEFER_CHECK_REFUSED,
             update_codes::DEFER_NO_NEWER_RELEASE,
-            update_codes::DEFER_VERSION_SUPPRESSED,
-            update_codes::DEFER_SUPPRESSION_UNREADABLE,
             update_codes::DEFER_FETCH_REFUSED,
             update_codes::DEFER_CLOCK_UNTRUSTED,
             update_codes::DEFER_OUTSIDE_WINDOW,
-            update_codes::DEFER_SLOT_STATUS_UNKNOWN,
+            update_codes::DEFER_DEPLOYMENT_STATUS_UNKNOWN,
             update_codes::DEFER_REBOOT_PENDING,
             update_codes::DEFER_WORKSPACE_UNREADY,
             update_codes::DEFER_RECHECK_FAILED,
@@ -2689,11 +2055,7 @@ mod tests {
             &dir,
             r#"{"source": {"url": "http://mirror/tuf"}, "network": {"mode": "metered"}}"#,
         );
-        let client = MockClient::new(vec![
-            ready_probe(),
-            ("sync", Ok(output(0, "", ""))),
-            ("check", Ok(output(2, "none\n", ""))),
-        ]);
+        let client = MockClient::new(vec![ready_probe(), ("check", Ok(no_selection()))]);
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
         let refusal = lifecycle.request_fetch("test").await.expect_err("refused");
@@ -2715,7 +2077,7 @@ mod tests {
     async fn an_absent_client_is_reported_never_panicked_over() {
         let dir = tempfile::tempdir().expect("tempdir");
         let policy = policy_file(&dir, r#"{"source": {"url": "http://mirror/tuf"}}"#);
-        let client = MockClient::absent("/usr/bin/rauc-update is not present on this image");
+        let client = MockClient::absent("/usr/bin/mos-deploy is not present on this image");
         let host = TestHost::new();
         let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
         let refusal = lifecycle.request_check("test").await.expect_err("refused");
@@ -2836,24 +2198,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_derives_the_boot_phase_from_fresh_slots() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let policy = policy_file(&dir, "{}");
-        let client = MockClient::new(vec![]);
+    async fn native_status_drives_boot_phase_and_consumes_an_installed_candidate() {
+        let dir = tempfile::tempdir().unwrap();
         let host = TestHost::new();
-        let (lifecycle, _) = lifecycle(client, policy, Arc::clone(&host));
-
-        let slots = [
-            slot("rootfs.0", "booted", Some("good")),
-            slot("rootfs.1", "inactive", Some("good")),
-        ];
-        lifecycle.refresh(&slots, Some("rootfs.1")).await;
-        assert_eq!(host.last()["state"], "reboot-required");
-
-        // The health gate's boot report flips the derived state.
-        host.set_health(json!({ "boot": { "status": "ok", "detail": "" } }));
-        lifecycle.refresh(&slots, Some("rootfs.0")).await;
+        let (lifecycle, _) = lifecycle(
+            MockClient::new(vec![]),
+            policy_file(&dir, "{}"),
+            Arc::clone(&host),
+        );
+        let status = Status::parse(&crate::deployment::tests::fixture().to_string()).unwrap();
+        lifecycle.refresh(&status).await;
         assert_eq!(host.last()["state"], "succeeded");
+        let mut pending = status;
+        pending.state.candidate = Some("e".repeat(64));
+        lifecycle.machine.lock().await.descriptor = Some(staged_path());
+        lifecycle.installed(&pending).await;
+        assert_eq!(host.last()["state"], "reboot-required");
+        assert!(lifecycle.staged_descriptor().await.is_none());
     }
 
     #[tokio::test]
@@ -2883,75 +2244,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_subprocess_client_runs_a_real_binary_and_reports_absence() {
-        // A stub standing in for rauc-update, exercising the spawn, the
-        // capture and the exit-code path — the parts a mock cannot vouch for.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let stub = dir.path().join("rauc-update");
-        std::fs::write(
-            &stub,
-            "#!/bin/sh\n\
-             case \"$1\" in\n\
-             check) echo 'selected u.raucb version 2.0 channel stable (5 bytes)'; exit 0 ;;\n\
-             fetch) echo /mos/updates/verified/u.raucb; exit 0 ;;\n\
-             probe) echo 'unavailable mount-missing: /mos is not a mount point'; exit 3 ;;\n\
-             none) echo none; exit 2 ;;\n\
-             *) echo 'boom' >&2; exit 1 ;;\n\
-             esac\n",
-        )
-        .expect("write stub");
-        let mut permissions = std::fs::metadata(&stub).expect("stat").permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-        std::fs::set_permissions(&stub, permissions).expect("chmod");
-
-        let client = SubprocessClient::new(stub.clone());
-        assert_eq!(client.unavailable(), None);
-        let run = |arg: &str| {
-            let args = vec![arg.to_string()];
-            let client = SubprocessClient::new(stub.clone());
-            async move { client.run(&args, Duration::from_secs(10)).await }
-        };
-        let checked = run("check").await.expect("check runs");
-        assert_eq!(
-            parse_check(&checked).expect("parses"),
-            CheckOutcome::Selected(Available {
-                name: "u.raucb".to_string(),
-                version: "2.0".to_string(),
-                channel: "stable".to_string(),
-            })
+    async fn the_subprocess_client_bounds_output_and_stops_its_transport_group() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("transport");
+        let pid = dir.path().join("child.pid");
+        std::fs::write(&stub, "#!/bin/sh\nif [ \"$1\" = large ]; then head -c 70000 /dev/zero; else sleep 60 & echo $! > \"$1\"; wait; fi\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let client = Arc::new(SubprocessClient::new(stub));
+        assert!(
+            client
+                .run(&["large".into()], Duration::from_secs(5))
+                .await
+                .is_err()
         );
-        let fetched = run("fetch").await.expect("fetch runs");
+        assert!(
+            client
+                .run(
+                    &[pid.to_string_lossy().into_owned()],
+                    Duration::from_millis(150)
+                )
+                .await
+                .is_err()
+        );
+        let child = std::fs::read_to_string(pid).unwrap();
+        assert_transport_stopped(child.trim()).await;
+        let cancelled_pid = dir.path().join("cancelled.pid");
+        let args = vec![cancelled_pid.to_string_lossy().into_owned()];
+        let task = tokio::spawn(async move { client.run(&args, Duration::from_secs(30)).await });
+        for _ in 0..100 {
+            if cancelled_pid.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let child = std::fs::read_to_string(cancelled_pid).unwrap();
+        task.abort();
+        let _ = task.await;
+        assert_transport_stopped(child.trim()).await;
+    }
+
+    async fn assert_transport_stopped(pid: &str) {
+        // SIGKILL delivery precedes the child's final scheduler transition.
+        // Bound that transition instead of racing one immediate /proc read.
+        for _ in 0..100 {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            if stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z') {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("transport child survived client termination");
+    }
+
+    #[tokio::test]
+    async fn the_subprocess_client_runs_a_real_native_protocol_and_reports_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("mos-deploy");
+        std::fs::write(&stub, format!("#!/bin/sh\ncase \"$1\" in\ncheck) echo '{}' ;;\nfetch) echo '{}' ;;\nprobe) echo 'DATA is not mounted' >&2; exit 1 ;;\n*) echo boom >&2; exit 1 ;;\nesac\n", selection_output().stdout, fetch_output(&staged_path()).stdout)).unwrap();
+        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let client = SubprocessClient::new(stub);
+        assert_eq!(client.unavailable(), None);
+        let checked = client
+            .run(&["check".into()], Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(matches!(
+            parse_check(&checked),
+            Ok(CheckOutcome::Selected(_))
+        ));
+        let fetched = client
+            .run(&["fetch".into()], Duration::from_secs(10))
+            .await
+            .unwrap();
         assert_eq!(
             parse_fetch(&fetched, Path::new("/mos/updates/verified")),
-            Ok(FetchOutcome::Staged(
-                "/mos/updates/verified/u.raucb".to_string()
-            ))
+            Ok(FetchOutcome::Staged(staged_path()))
         );
-        let probed = run("probe")
+        let probed = client
+            .run(&["probe".into()], Duration::from_secs(10))
             .await
-            .expect("exit 3 is an output, not an error");
-        assert_eq!(
-            parse_probe(&probed),
-            Ok(ProbeOutcome::Unready(Unready {
-                status: "unavailable".to_string(),
-                kind: "mount-missing",
-                detail: "/mos is not a mount point".to_string(),
-            }))
-        );
-        let none = run("none")
-            .await
-            .expect("exit 2 is an output, not an error");
-        assert_eq!(none.code, Some(2));
-        let failed = run("explode").await.expect("exit 1 is an output too");
-        assert_eq!(failed.code, Some(1));
-        assert!(failed.stderr.contains("boom"));
-
+            .unwrap();
+        assert!(matches!(parse_probe(&probed), Ok(ProbeOutcome::Unready(_))));
         let absent = SubprocessClient::new(dir.path().join("gone"));
+        assert!(absent.unavailable().is_some());
         assert!(
             absent
-                .unavailable()
-                .expect("absence reported")
-                .contains("not present")
+                .run(&["status".into()], Duration::from_secs(10))
+                .await
+                .unwrap_err()
+                .is::<ClientUnavailable>()
         );
     }
 
@@ -3016,5 +2399,41 @@ mod tests {
         );
         assert_eq!(changed["deferred"]["attempts"], 1);
         assert_eq!(changed["deferred"]["since"], changed["deferred"]["at"]);
+    }
+    #[test]
+    fn native_acquisition_json_selects_and_stages_only_a_deployment_descriptor() {
+        let id = "a".repeat(64);
+        let checked = ClientOutput { code: Some(0), stderr: String::new(), stdout: json!({
+            "revision":1,"channel":"stable","selected":{"deploymentId":id,"deployment":{"version":"1.0"}}
+        }).to_string() };
+        assert_eq!(
+            parse_check(&checked).unwrap(),
+            CheckOutcome::Selected(Available {
+                deployment_id: id.to_string(),
+                version: "1.0".into(),
+                channel: "stable".into(),
+            })
+        );
+        let none = ClientOutput {
+            code: Some(0),
+            stderr: String::new(),
+            stdout: "{\"revision\":2,\"channel\":\"stable\",\"selected\":null}".into(),
+        };
+        assert_eq!(parse_check(&none).unwrap(), CheckOutcome::NoneCompatible);
+        let ready = ClientOutput { code:Some(0),stderr:String::new(),stdout:json!({"id":id,
+            "path":format!("/mos/updates/verified/{id}.json"),"objects":"/mos/updates/verified/objects","version":"1.0","generation":3}).to_string() };
+        assert_eq!(
+            parse_fetch(&ready, Path::new("/mos/updates/verified")).unwrap(),
+            FetchOutcome::Staged(format!("/mos/updates/verified/{id}.json"))
+        );
+        let probe = ClientOutput {
+            code: Some(0),
+            stderr: String::new(),
+            stdout: "{\"status\":\"ready\",\"freeBytes\":200000000}".into(),
+        };
+        assert!(matches!(
+            parse_probe(&probe).unwrap(),
+            ProbeOutcome::Ready(_)
+        ));
     }
 }

@@ -1,20 +1,5 @@
-//! The update cluster: one state read and seven actions over mosd's update
-//! surface (`GetUpdateState`, `CheckUpdate`, `FetchUpdate`, `InstallUpdate`,
-//! `MarkUpdate`, `SetRebootOverride`, `ClearUpdateSuppression`).
-//!
-//! Six actions over five action members and no sixth: the guarded rollback is
-//! composed here out of `GetUpdateState` (which carries mosd's own rollback
-//! verdict) and `MarkUpdate`, rather than being a second way into RAUC.
-//!
-//! A bounded module beside `routes.rs` rather than more of it: the routes
-//! here share that file's session gate ([`ApiCredential`]), envelope and
-//! audit sink, and add exactly one mapping of their own — mosd's
-//! `AccessDenied`, which on this surface means "the update policy said no"
-//! and is answered as **409** `policy_refused` rather than a 500.
-//!
-//! Every action is POST-only behind the credential extractor, so navigation
-//! and prefetch cannot trigger one, and every action is audited before the
-//! response leaves.
+//! Authenticated signed deployment actions through mosd.
+//! Every mutation is POST-only and uses the shared credential, CSRF and audit gates.
 
 use axum::Json;
 use axum::extract::State;
@@ -35,10 +20,10 @@ pub(crate) const V1_UPDATE_PATH: &str = "/v1/update";
 pub(crate) const V1_UPDATE_CHECK_PATH: &str = "/v1/update/check";
 pub(crate) const V1_UPDATE_FETCH_PATH: &str = "/v1/update/fetch";
 pub(crate) const V1_UPDATE_INSTALL_PATH: &str = "/v1/update/install";
-pub(crate) const V1_UPDATE_MARK_PATH: &str = "/v1/update/mark";
+pub(crate) const V1_UPDATE_CONFIRM_PATH: &str = "/v1/update/confirm";
+pub(crate) const V1_UPDATE_REJECT_PATH: &str = "/v1/update/reject";
 pub(crate) const V1_UPDATE_ROLLBACK_PATH: &str = "/v1/update/rollback";
 pub(crate) const V1_UPDATE_REBOOT_OVERRIDE_PATH: &str = "/v1/update/reboot-override";
-pub(crate) const V1_UPDATE_CLEAR_SUPPRESSION_PATH: &str = "/v1/update/clear-suppression";
 pub(crate) const V1_UPDATE_CONFIG_PATH: &str = "/v1/update/config";
 
 /// The D-Bus error name mosd's update surface refuses policy-forbidden
@@ -96,21 +81,18 @@ fn body_rejection(rejection: axum::extract::rejection::JsonRejection) -> Respons
 
 /// Read the complete update state.
 ///
-/// Asks mosd's `GetUpdateState`, which queries RAUC and re-derives the
-/// lifecycle first — this is the polling surface for a UI watching a check,
-/// download or install, and it is never answered from a stale record. The
-/// `rollback` object is derived from the same fresh slot list, so an operator
-/// deciding whether to roll back reads the verdict and the slots it came from
-/// in one answer.
+/// Reads native deployment records and the current acquisition lifecycle from
+/// mosd. The same response binds the rollback verdict to its retained target
+/// and includes check, download and installation progress.
 #[utoipa::path(
     get,
     path = V1_UPDATE_PATH,
     context_path = API,
     tag = "update",
     responses(
-        (status = 200, description = "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`, `explanation` — the sentence a refusal carries only where it adds something the reason code does not already say, and `null` otherwise), `install`, `last_mark`.\n\n**Every failure in this document carries an enumerated code beside its sentence, and the sentence is never the code.** Match on the code; the reason/detail/error beside it is for a human reading one device and may be reworded at any time. A failure this device has no code for is reported as `unknown` — never as its text — and its words go to the journal.\n\n- `lifecycle.code`, present exactly for the two failing states. For `failed`: `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-bundle-path`, `no-source-configured`, `policy-not-loaded`. For `update-unavailable` it is the workspace verdict, equal to `lifecycle.workspace.kind`: `mount-missing`, `not-data`, `read-only`, `exhausted`, `probe-failed`, or `unknown`.\n- `lifecycle.last_refusal_code`, beside `lifecycle.last_refusal`: `policy-invalid`, `policy-not-loaded`, `network-offline`, `no-source-configured`, `network-metered`, `client-unavailable`, and the two notes that share the member, `bundle-discarded` and `suppression-cleared`.\n- `lifecycle.deferred.reason` is itself a code — the fifteen the automatic path mints (`check-refused`, `no-newer-release`, `version-suppressed`, `suppression-unreadable`, `fetch-refused`, `clock-untrusted`, `outside-window`, `slot-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`) or `unknown`.\n- `lifecycle.reboot_gate.codes`, one per entry of `reboot_gate.reasons` and in the same order: `install-in-flight`, `health-blocking`. Which component reported the block is in the reason beside it, because a component name is not a closed set.\n- `last_error_code` and `install.error_code` classify RAUC's own words. One class is claimed — `signature-invalid` — and every other RAUC failure is `unknown`; the set grows when a failure is measured, not when one is imagined.\n- `rollback.reason` is already a code: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`.\n\nThree failure facts carry no code because the member IS the enumeration: `client.available: false`, `policy_error` present, `suppressed_error` present.", body = UpdateState),
+        (status = 200, description = "Authenticated native deployment state: `boot` (running deployment and kernel/root IDs, content verification and Secure Boot), `state` (current, fallback, candidate, failed deployment IDs and highestGeneration), `deployments` (version, generation, components and remaining trials), `rollback` (permitted, target and reason), `install`, `last_action`, and `lifecycle` (acquisition progress, workspace, policy and reboot gate). A failure carries a closed code beside its detail: `unknown`, `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-deployment-path`, `no-source-configured`, `policy-not-loaded`, `probe-failed`, `policy-invalid`, `network-offline`, `network-metered`, `client-unavailable`, `deployment-discarded`, `check-refused`, `no-newer-release`, `fetch-refused`, `clock-untrusted`, `outside-window`, `deployment-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`, `install-in-flight`, `health-blocking`. Rollback reasons: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`. Failed deployment IDs and the generation floor are enforced by the native backend for every install.", body = UpdateState),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to answer, e.g. RAUC unreachable (`mosd_failed`)", body = ApiError),
+        (status = 500, description = "mosd could not read native deployment state (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
@@ -194,306 +176,244 @@ pub(crate) async fn api_v1_update_fetch(
     }
 }
 
-/// `POST /api/v1/update/install` request body.
+/// An exact signed deployment identity already verified in the acquisition workspace.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct InstallRequest {
-    /// Absolute path of the bundle to install. Omitted = the staged bundle
-    /// the last fetch/import verified (the lifecycle's `bundle`).
-    #[serde(default)]
-    bundle_path: Option<String>,
+pub(crate) struct DeploymentRequest {
+    #[serde(deserialize_with = "deployment_id")]
+    #[schema(min_length = 64, max_length = 64, pattern = "^[0-9a-f]{64}$")]
+    deployment_id: String,
 }
 
-/// Install a bundle through mosd.
-///
-/// With a JSON body omitting `bundlePath` (`{}`), installs the bundle the lifecycle has
-/// staged as `ready` — the path `rauc-update` verified. With `bundlePath`,
-/// forwards that explicit operator path to `InstallUpdate` unchanged, which
-/// is the manual/offline route after `rauc-update import`; mosd admits it
-/// only when it is a regular file inside `/mos/updates/verified` and not a
-/// `.part`, so a partial or a file anywhere else is never handed to RAUC.
-/// Answers **202**: the install runs on mosd's background task; poll the
-/// state document.
-#[utoipa::path(
-    post,
-    path = V1_UPDATE_INSTALL_PATH,
-    context_path = API,
-    tag = "update",
-    request_body = InstallRequest,
+fn valid_deployment_id(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn deployment_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let id = <String as serde::Deserialize>::deserialize(deserializer)?;
+    if !valid_deployment_id(&id) {
+        return Err(serde::de::Error::custom(
+            "deploymentId must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(id)
+}
+
+/// Install an acquired signed deployment; poll update state for completion.
+#[utoipa::path(post, path = V1_UPDATE_INSTALL_PATH, context_path = API, tag = "update",
+    request_body = DeploymentRequest,
     responses(
-        (status = 202, description = "The install was admitted and is running; poll `GET /api/v1/update`"),
-        (status = 400, description = "The body is not JSON or not this shape (`request_invalid`)", body = ApiError),
-        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 409, description = "Outside the maintenance window or the policy file is unreadable (`policy_refused`); or nothing is staged and no path was given (`no_staged_bundle`)", body = ApiError),
-        (status = 422, description = "The bundle path is not an absolute existing regular file inside `/mos/updates/verified`, or is a `.part` partial (`validation_failed`)", body = ApiError),
-        (status = 500, description = "An install is already running, or mosd failed (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
-        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
-    ),
-)]
+        (status = 202, description = "The deployment action was accepted"),
+        (status = 400, description = "Invalid JSON or deployment identity (`request_invalid`)", body = ApiError),
+        (status = 401, description = "Authentication required (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
+        (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
+    ))]
 pub(crate) async fn api_v1_update_install(
     _credential: ApiCredential,
     State(state): State<AppState>,
     Source(source): Source,
-    body: Result<Json<InstallRequest>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<DeploymentRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    // A JSON body is required (`{}` for "install what is staged"): an
-    // unparseable body must be a 400, never a silently defaulted install.
     let Json(request) = match body {
         Ok(body) => body,
         Err(rejection) => return body_rejection(rejection),
     };
-    let explicit = request.bundle_path;
-    let bundle = match explicit {
-        Some(path) => path,
-        // The staged path comes from the recorded lifecycle rather than a
-        // guess: it is the last verified output `rauc-update` printed, and
-        // there is no other path this route will fill in.
-        None => match state.api.get_state("update.lifecycle").await {
-            Ok(lifecycle) => match lifecycle.get("bundle").and_then(Value::as_str) {
-                Some(path) => path.to_string(),
-                None => {
-                    return api_response(
-                        StatusCode::CONFLICT,
-                        ApiError::apid(
-                            "no_staged_bundle",
-                            "no verified bundle is staged; run a fetch or import first, \
-                             or name a bundlePath explicitly"
-                                .to_string(),
-                        ),
-                    );
-                }
-            },
-            Err(err) => return update_bus_error(&err),
-        },
-    };
-    match state.api.install_update(&bundle).await {
+    match state.api.install_update(&request.deployment_id).await {
         Ok(()) => {
-            state.audit.record(UPDATE_INSTALL_EVENT, REQUESTED, &source);
-            accepted()
+            state.audit.record(
+                UPDATE_INSTALL_EVENT,
+                &format!("{} {}", REQUESTED, request.deployment_id),
+                &source,
+            );
+            api_response(
+                StatusCode::ACCEPTED,
+                serde_json::json!({"deploymentId":request.deployment_id}),
+            )
         }
-        Err(err) => update_bus_error(&err),
+        Err(error) => update_bus_error(&error),
     }
 }
 
-/// `POST /api/v1/update/mark` request body: mosd's offered vocabulary,
-/// verbatim.
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct MarkRequest {
-    /// `good` or `bad`.
-    state: String,
-    /// `booted` or `other`. Concrete slot names and `active` are refused by
-    /// mosd — activation is the installer's job.
-    slot: String,
-}
-
-/// The mark's answer: RAUC's resolved slot name and message.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MarkResponse {
-    slot_name: String,
-    message: String,
-}
-
-/// Manually mark a slot good or bad.
-///
-/// The operator escape hatch over the boot health gate, forwarded to mosd's
-/// `MarkUpdate` (the gate owns the automatic confirm; mosd never marks on
-/// its own).
-#[utoipa::path(
-    post,
-    path = V1_UPDATE_MARK_PATH,
-    context_path = API,
-    tag = "update",
-    request_body = MarkRequest,
+/// Confirm the authenticated running deployment explicitly.
+#[utoipa::path(post, path = V1_UPDATE_CONFIRM_PATH, context_path = API, tag = "update",
+    request_body = DeploymentRequest,
     responses(
-        (status = 200, description = "The mark was applied; RAUC's resolved slot name and message", body = MarkResponse),
-        (status = 400, description = "The body is not JSON or not this shape (`request_invalid`)", body = ApiError),
-        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 422, description = "A state outside `good`/`bad` or a slot outside `booted`/`other` (`validation_failed`)", body = ApiError),
-        (status = 500, description = "RAUC refused or failed the mark (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
-        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
-    ),
-)]
-pub(crate) async fn api_v1_update_mark(
+        (status = 200, description = "The deployment action was accepted"),
+        (status = 400, description = "Invalid JSON or deployment identity (`request_invalid`)", body = ApiError),
+        (status = 401, description = "Authentication required (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
+        (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
+    ))]
+pub(crate) async fn api_v1_update_confirm(
     _credential: ApiCredential,
     State(state): State<AppState>,
     Source(source): Source,
-    body: Result<Json<MarkRequest>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<DeploymentRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Json(request) = match body {
         Ok(body) => body,
         Err(rejection) => return body_rejection(rejection),
     };
-    match state.api.mark_update(&request.state, &request.slot).await {
-        Ok((slot_name, message)) => {
-            state.audit.record("update-mark", &request.state, &source);
-            api_response(StatusCode::OK, MarkResponse { slot_name, message })
+    match state.api.confirm_deployment(&request.deployment_id).await {
+        Ok(()) => {
+            state.audit.record(
+                "update-confirm",
+                &format!("{} {}", REQUESTED, request.deployment_id),
+                &source,
+            );
+            api_response(
+                StatusCode::OK,
+                serde_json::json!({"deploymentId":request.deployment_id}),
+            )
         }
-        Err(err) => update_bus_error(&err),
+        Err(error) => update_bus_error(&error),
     }
 }
 
-/// The guard's refusal reasons, exactly as `rollback_eligibility` in
-/// `pkgs/mosd/mosd/src/rauc.rs` writes them into the state document.
-///
-/// Listed here because `ApiError`'s code is a `&'static str` and mosd's
-/// verdict arrives as a bus string: this is the vocabulary apid serves, and a
-/// reason outside it is answered as the generic `rollback_refused` carrying
-/// mosd's word verbatim, so a renamed reason degrades to something honest
-/// instead of being silently reported as one of these.
-const ROLLBACK_REASONS: [&str; 7] = [
-    "no_alternate_slot",
-    "alternate_is_booted_slot",
-    "alternate_never_installed",
-    "alternate_marked_bad",
-    "alternate_is_newer",
-    "install_order_unknown",
-    "booted_slot_not_confirmed",
+/// Reject a deployment while retaining a usable fallback.
+#[utoipa::path(post, path = V1_UPDATE_REJECT_PATH, context_path = API, tag = "update",
+    request_body = DeploymentRequest,
+    responses(
+        (status = 200, description = "The deployment action was accepted"),
+        (status = 400, description = "Invalid JSON or deployment identity (`request_invalid`)", body = ApiError),
+        (status = 401, description = "Authentication required (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
+        (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
+    ))]
+pub(crate) async fn api_v1_update_reject(
+    _credential: ApiCredential,
+    State(state): State<AppState>,
+    Source(source): Source,
+    body: Result<Json<DeploymentRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => return body_rejection(rejection),
+    };
+    match state.api.reject_deployment(&request.deployment_id).await {
+        Ok(()) => {
+            state.audit.record(
+                "update-reject",
+                &format!("{} {}", REQUESTED, request.deployment_id),
+                &source,
+            );
+            api_response(
+                StatusCode::OK,
+                serde_json::json!({"deploymentId":request.deployment_id}),
+            )
+        }
+        Err(error) => update_bus_error(&error),
+    }
+}
+
+const ROLLBACK_REASONS: [&str; 3] = [
+    "candidate_pending",
+    "running_not_confirmed",
+    "no_usable_fallback",
 ];
 
-/// What a rollback did: RAUC's answer to the mark, and the slot the next boot
-/// will therefore come from.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RollbackResponse {
-    /// RAUC's resolved name for the slot that was marked bad — the one this
-    /// system is running from.
-    slot_name: String,
-    /// RAUC's own message for the mark.
-    message: String,
-    /// The slot the next boot comes from.
+    deployment_id: String,
     target: String,
-    /// What the operator must still do; this route deliberately does not.
     next_step: String,
 }
 
-/// mosd's verdict as an error code: itself when this surface knows it, and
-/// the generic `rollback_refused` when it does not.
 fn rollback_reason_code(reason: Option<&str>) -> &'static str {
     reason
         .and_then(|reason| ROLLBACK_REASONS.into_iter().find(|known| *known == reason))
         .unwrap_or("rollback_refused")
 }
 
-/// **409** for a rollback the device's slot state forbids.
-///
-/// Not 422: the request is well formed and authenticated, and it is the
-/// device that says no. The reason from mosd is the error code when it is one
-/// this surface knows, and the message carries it either way.
-fn rollback_refused(reason: Option<&str>) -> Response {
-    let code = rollback_reason_code(reason);
-    api_response(
-        StatusCode::CONFLICT,
-        ApiError::apid(
-            code,
-            format!(
-                "the device's slot state does not permit a rollback ({}); \
-                 read `rollback` in `GET /api/v1/update` for the resolved target",
-                reason.unwrap_or("the update state carries no rollback verdict"),
-            ),
-        ),
-    )
-}
-
-/// Roll back to the alternate slot, if the guard permits it.
-///
-/// The guard is mosd's `rollback_eligibility`, read out of the same
-/// `GetUpdateState` document `GET /api/v1/update` serves — one derivation of
-/// the slot state, not a second one here. It refuses when there is no
-/// alternate slot, when the alternate is the booted slot, when the alternate
-/// was never written or is marked bad, when the alternate is NOT the older of
-/// the two installs (a rollback goes backward; a newer or unorderable target
-/// is a pending update, not a rollback target), and when the booted slot is
-/// itself pending-not-confirmed (that window belongs to the bootloader's
-/// attempt counter, and a manual rollback inside it races the credit being
-/// spent).
-///
-/// What it then does is ONE mark: `bad` on the **booted** slot. That is what
-/// makes the bootloader pick the other one, and it is why this route cannot
-/// confirm the slot it rolls back to — PLAN-048's "cannot mark an unverified
-/// slot good" holds structurally, not by review. The unguarded
-/// `POST /api/v1/update/mark` remains the operator escape hatch beside it;
-/// this route is the guarded one.
-///
-/// It does NOT reboot. A rollback is a boot-order change, and the reboot that
-/// realises it goes through the safe-to-reboot gate like every other
-/// (`docs/design/updates.md` §4) — folding it in here would either bypass
-/// that gate or duplicate its override semantics. The answer names the next
-/// step instead.
-#[utoipa::path(
-    post,
-    path = V1_UPDATE_ROLLBACK_PATH,
-    context_path = API,
-    tag = "update",
+/// Reject the confirmed running deployment and select its retained fallback.
+/// The native backend revalidates this operation under its transaction lock.
+/// Reboot remains a separate action governed by the shared reboot gate.
+#[utoipa::path(post, path = V1_UPDATE_ROLLBACK_PATH, context_path = API, tag = "update",
     responses(
-        (status = 200, description = "The booted slot was marked bad; the next boot comes from `target`. Reboot with `POST /api/v1/actions/reboot`", body = RollbackResponse),
-        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 409, description = "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know", body = ApiError),
-        (status = 500, description = "RAUC refused or failed the mark, or mosd could not read the slot state (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
-        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
-    ),
-)]
+        (status = 200, description = "Rollback committed; reboot to run the retained fallback", body = RollbackResponse),
+        (status = 401, description = "Authentication required (`not_authenticated`)", body = ApiError),
+        (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "Native state refuses rollback: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`, or `rollback_refused`", body = ApiError),
+        (status = 500, description = "The native backend refused or failed rollback (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
+    ))]
 pub(crate) async fn api_v1_update_rollback(
     _credential: ApiCredential,
     State(state): State<AppState>,
     Source(source): Source,
 ) -> Response {
-    // No request body: this action takes no parameters, and a slot it could
-    // name is a slot the guard did not resolve.
     let update = match state.api.get_update_state().await {
         Ok(update) => update,
-        Err(err) => return update_bus_error(&err),
+        Err(error) => return update_bus_error(&error),
     };
-    let rollback = update.get("rollback");
-    let permitted = rollback
-        .and_then(|rollback| rollback.get("permitted"))
+    let reason = update.pointer("/rollback/reason").and_then(Value::as_str);
+    let target = update
+        .pointer("/rollback/target")
+        .and_then(Value::as_str)
+        .filter(|id| valid_deployment_id(id));
+    let running = update
+        .pointer("/boot/deploymentId")
+        .and_then(Value::as_str)
+        .filter(|id| valid_deployment_id(id));
+    let permitted = update
+        .pointer("/rollback/permitted")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let reason = rollback
-        .and_then(|rollback| rollback.get("reason"))
-        .and_then(Value::as_str);
-    // A permitted verdict always names its target; a document that permits
-    // without one is refused rather than acted on, so the answer can never
-    // claim a slot the guard did not resolve.
-    let target = rollback
-        .and_then(|rollback| rollback.get("target"))
-        .and_then(Value::as_str);
-    let (Some(target), true) = (target, permitted) else {
+        == Some(true);
+    let (Some(target), Some(running), true) = (target, running, permitted) else {
         let code = rollback_reason_code(reason);
         state
             .audit
             .record("update-rollback", &format!("refused: {code}"), &source);
-        return rollback_refused(reason);
+        return api_response(
+            StatusCode::CONFLICT,
+            ApiError::apid(
+                code,
+                format!(
+                    "the native deployment state does not permit rollback: {}",
+                    reason.unwrap_or("missing or invalid verdict")
+                ),
+            ),
+        );
     };
-    let target = target.to_string();
-    // The one mark a rollback emits; `RollbackEligibility::mark` in
-    // `pkgs/mosd/mosd/src/rauc.rs` is where that is a proven invariant.
-    match state.api.mark_update("bad", "booted").await {
-        Ok((slot_name, message)) => {
-            state
-                .audit
-                .record("update-rollback", &format!("to {target}"), &source);
+    match state.api.rollback_deployment(running).await {
+        Ok(()) => {
+            state.audit.record(
+                "update-rollback",
+                &format!("{running} to {target}"),
+                &source,
+            );
             api_response(
                 StatusCode::OK,
                 RollbackResponse {
-                    slot_name,
-                    message,
-                    target,
-                    next_step: "POST /api/v1/actions/reboot".to_string(),
+                    deployment_id: running.into(),
+                    target: target.into(),
+                    next_step: "POST /api/v1/actions/reboot".into(),
                 },
             )
         }
-        Err(err) => update_bus_error(&err),
+        Err(error) => update_bus_error(&error),
     }
 }
 
@@ -550,74 +470,6 @@ pub(crate) async fn api_v1_update_reboot_override(
                 .audit
                 .record("update-reboot-override", "armed", &source);
             api_response(StatusCode::OK, RebootOverride(record))
-        }
-        Err(err) => update_bus_error(&err),
-    }
-}
-
-/// `POST /api/v1/update/clear-suppression` request body.
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ClearSuppressionRequest {
-    /// The suppressed version to permit again, exactly as
-    /// `lifecycle.suppressed[].version` spells it.
-    version: String,
-}
-
-/// The suppression that was cleared, as mosd recorded it.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ClearedSuppression(Value);
-
-/// Permit automatic installs of a version this device rolled back.
-///
-/// A version is suppressed when the slot it was installed into exhausted its
-/// boot attempts and the bootloader fell back; the automatic path then
-/// refuses to select it again, which is what stops `auto` from installing the
-/// same bad bundle once per maintenance window forever. A **manual** install
-/// of that version is never refused, so this route lifts a restriction on the
-/// machine and not on the operator.
-///
-/// The version is named explicitly and there is deliberately no route that
-/// empties the store: an operator who has diagnosed one bad release has not
-/// thereby diagnosed the others. Audited on both sides — this route records
-/// the event, and mosd logs who cleared what.
-#[utoipa::path(
-    post,
-    path = V1_UPDATE_CLEAR_SUPPRESSION_PATH,
-    context_path = API,
-    tag = "update",
-    request_body = ClearSuppressionRequest,
-    responses(
-        (status = 200, description = "The suppression that was cleared: `version`, `slot`, `at`, `bootStatus`, `detail`", body = ClearedSuppression),
-        (status = 400, description = "The body is not JSON or not this shape (`request_invalid`)", body = ApiError),
-        (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 422, description = "That version is not suppressed (`validation_failed`)", body = ApiError),
-        (status = 500, description = "mosd failed to clear it, e.g. the store could not be written (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
-        (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
-    ),
-)]
-pub(crate) async fn api_v1_update_clear_suppression(
-    _credential: ApiCredential,
-    State(state): State<AppState>,
-    Source(source): Source,
-    body: Result<Json<ClearSuppressionRequest>, axum::extract::rejection::JsonRejection>,
-) -> Response {
-    let Json(request) = match body {
-        Ok(body) => body,
-        Err(rejection) => return body_rejection(rejection),
-    };
-    match state.api.clear_update_suppression(&request.version).await {
-        Ok(record) => {
-            state.audit.record(
-                "update-clear-suppression",
-                &format!("version {}", request.version),
-                &source,
-            );
-            api_response(StatusCode::OK, ClearedSuppression(record))
         }
         Err(err) => update_bus_error(&err),
     }

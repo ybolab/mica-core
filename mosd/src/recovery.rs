@@ -4,7 +4,7 @@
 //! the existing flows already consume.
 //!
 //! **This module knows nothing about which mechanism produced the intent.** A
-//! GRUB menu entry, a U-Boot menu selection, a button pattern, a USB event —
+//! firmware recovery entry, a U-Boot menu selection, a button pattern, a USB event —
 //! the board's BSP implements one and the board declares it; what arrives here
 //! is a string on the kernel command line. Everything per-board is in the
 //! declaration ([`mosd_settings::Declaration`]), and nothing in this file

@@ -18,11 +18,9 @@
 //! # Three layers, one precedence rule (PLAN-070 §5.1)
 //!
 //! 1. **The baked manifest**, `/usr/share/mos/meta/updates/manifest.json`,
-//!    inside the read-only dm-verity root: the configuration and the trust
-//!    anchors covered by the same signature as the code that reads them.
-//!    Nothing on the device writes it. It **owns** the anchors and carries
-//!    *defaults* for the source URL, the channel, the policy and the check
-//!    interval.
+//!    inside the read-only dm-verity root, carries defaults for the source URL,
+//!    channel, policy and check interval. Nothing on the device writes it.
+//!    Metadata trust keys belong exclusively to the authenticated kernel package.
 //! 2. **`/mos/config/updates.json`**, on DATA: operator-owned, and the only
 //!    place any of those four is overridden. It also *owns* the keys layer 1
 //!    never carries — the windows, the network mode, the workspace paths and
@@ -188,7 +186,6 @@ pub struct BakedManifest {
     pub schema: String,
     pub product: Product,
     pub update: BakedUpdate,
-    pub trust: BakedTrust,
     pub http: BakedHttp,
     pub fleet: BakedFleet,
 }
@@ -212,19 +209,6 @@ pub struct BakedUpdate {
     pub channel: String,
     pub policy: UpdateMode,
     pub check_interval_minutes: u64,
-}
-
-/// The package anchors. Owned by this layer: no operator document may name
-/// either, which is the premise the overridable source URL rests on
-/// (PLAN-070 §5.3.2).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct BakedTrust {
-    /// The trusted ed25519 public keys, inline (PLAN-070 §2.1).
-    pub signing_keys: Vec<String>,
-    /// Their sha256 ids, derived by the build so a ceremony record can be
-    /// checked without decoding base64 by hand.
-    pub signing_key_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -273,10 +257,6 @@ impl BakedManifest {
                 model: String::new(),
             },
             update: BakedUpdate::code_defaults(),
-            trust: BakedTrust {
-                signing_keys: Vec::new(),
-                signing_key_ids: Vec::new(),
-            },
             http: BakedHttp {
                 credential_hosts: Vec::new(),
             },
@@ -474,8 +454,8 @@ pub const OVERRIDE_CEILING_SECONDS: u64 = 3600;
 /// Key names that would move a trust anchor into an operator document.
 ///
 /// Refused by name, at any depth, rather than left to `deny_unknown_fields`.
-/// `signingKeyIds` is here as well as the singular the plan names, because
-/// the plural is what the baked manifest actually calls the field and a list
+/// Both singular and plural spellings are forbidden in operator documents;
+/// the authenticated boot policy exclusively owns the accepted metadata keys. A list
 /// that missed it would have a hole exactly where the sibling document has a
 /// key. Widening the schema to admit any of these is not a smaller version of
 /// the overridable-address decision; it is the deletion of its premise.
@@ -569,17 +549,9 @@ pub struct UpdatesDocument {
     pub reboot_gate: RebootGatePolicy,
 }
 
-/// Where updates come from and how much of the `/mos/updates` workspace they
-/// may hold.
-///
-/// `url` and `channel` override the baked defaults; the three workspace
-/// values are layer 2's own and default to the deployment contract
-/// `docs/design/updates.md` records. Where bundles are staged is NOT a policy
-/// knob: the client's workspace is `/mos/updates` and nothing else
-/// (PLAN-061/063), so there is no key that could point it elsewhere. There is
-/// no `rootPath`: it was the anchor half of the old `[source]` block and
-/// PLAN-070 §5.3.5 keeps it retired while the URL beside it became
-/// overridable.
+/// Online catalog selection and the byte budget for acquired component files.
+/// The acquisition workspace and durable metadata locations are fixed by the
+/// signed deployment contract; policy cannot redirect them.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UpdatesSource {
@@ -592,36 +564,20 @@ pub struct UpdatesSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub url: Override<String>,
-    /// Release channel to follow (`rauc-update check --channel`).
+    /// Release channel to follow (`mos-deploy check --channel`).
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub channel: Override<String>,
-    /// Local metadata mirror directory (`rauc-update --repo`).
-    #[serde(default = "default_repo_dir")]
-    pub repo_dir: String,
-    /// Persistent rollback state (`rauc-update --state`).
-    #[serde(default = "default_state_path")]
-    pub state_path: String,
-    /// Byte budget for the workspace — downloads/, verified/ and staging/
-    /// together (`rauc-update --max-bytes`); readiness also requires the DATA
-    /// pool to back what is unspent of it.
+    /// Byte budget for acquired component files (`mos-deploy --max-bytes`).
     #[serde(default = "default_max_bytes")]
     pub max_bytes: u64,
 }
 
-fn default_repo_dir() -> String {
-    "/var/lib/mos/update/tuf-mirror".to_string()
-}
-fn default_state_path() -> String {
-    "/var/lib/mos/update/uptane-state.json".to_string()
-}
 fn default_max_bytes() -> u64 {
-    // Half a gigabyte: comfortably one compressed rootfs bundle, a small
-    // share of the growable DATA pool the workspace lives on. The operator
-    // raises it deliberately for larger bundles; PLAN-049 owns the quota.
+    // The operator can raise this limit for larger component sets.
     500_000_000
 }
 
@@ -630,8 +586,6 @@ impl Default for UpdatesSource {
         Self {
             url: None,
             channel: None,
-            repo_dir: default_repo_dir(),
-            state_path: default_state_path(),
             max_bytes: default_max_bytes(),
         }
     }
@@ -643,14 +597,14 @@ impl Default for UpdatesSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkMode {
-    /// Unrestricted: metadata sync and bundle downloads allowed.
+    /// Unrestricted: catalog checks and component downloads allowed.
     #[default]
     Online,
-    /// Metered: metadata checks (KiB) allowed, bundle downloads (hundreds of
+    /// Metered: catalog checks (KiB) allowed, component downloads (hundreds of
     /// MiB) refused unless `meteredAllowsFetch` says otherwise.
     Metered,
     /// No network use at all: import-only. `check` and `fetch` are refused;
-    /// the offline lockbox path is the update channel.
+    /// the offline import path is the update channel.
     Offline,
 }
 
@@ -659,7 +613,7 @@ pub enum NetworkMode {
 pub struct NetworkPolicy {
     #[serde(default)]
     pub mode: NetworkMode,
-    /// Permit bundle downloads on a metered link. Explicitly the exception,
+    /// Permit component downloads on a metered link. Explicitly the exception,
     /// so the metered default is the cheap one.
     #[serde(default)]
     pub metered_allows_fetch: bool,
@@ -929,10 +883,8 @@ pub fn validate(document: &UpdatesDocument) -> Result<(), String> {
 ///
 /// **Three states per overridable key, the document's own three** (§1.1):
 /// absent = leave it alone, `null` = clear the override and take the baked
-/// default again, a value = override. The workspace keys (`repoDir`,
-/// `statePath`, `maxBytes`) are deliberately not here: where bundles are
-/// staged is not a policy knob, and `deny_unknown_fields` is what says so at
-/// the API rather than a sentence in a document.
+/// default again, a value = override. The acquisition budget (`maxBytes`)
+/// remains a file-managed setting; this API rejects unsupported keys.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UpdatesPatch {
@@ -1136,16 +1088,12 @@ pub struct Selection {
 /// The workspace values layer 2 owns outright.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
-    pub repo_dir: String,
-    pub state_path: String,
     pub max_bytes: u64,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            repo_dir: default_repo_dir(),
-            state_path: default_state_path(),
             max_bytes: default_max_bytes(),
         }
     }
@@ -1223,8 +1171,6 @@ pub fn resolve(baked: &BakedUpdate, document: UpdatesDocument) -> EffectivePolic
                 .unwrap_or(baked.check_interval_minutes),
         }),
         workspace: Workspace {
-            repo_dir: document.source.repo_dir,
-            state_path: document.source.state_path,
             max_bytes: document.source.max_bytes,
         },
         network: document.network,
@@ -1326,9 +1272,31 @@ pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn baked_manifest_keeps_metadata_anchors_in_the_authenticated_boot_policy() {
+        let mut value = serde_json::to_value(super::BakedManifest::code_defaults()).unwrap();
+        value.as_object_mut().unwrap().remove("trust");
+        assert!(serde_json::from_value::<super::BakedManifest>(value.clone()).is_ok());
+        value["trust"] = serde_json::json!({"signingKeys": [], "signingKeyIds": []});
+        assert!(serde_json::from_value::<super::BakedManifest>(value).is_err());
+    }
+
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn update_sources_reject_removed_metadata_path_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updates.json");
+        for key in ["repoDir", "statePath"] {
+            std::fs::write(&path, json!({"source":{key:"/tmp/metadata"}}).to_string()).unwrap();
+            assert!(
+                load_updates(&path).is_err(),
+                "removed option accepted: {key}"
+            );
+        }
+    }
 
     /// A document with something in every shape the write has to preserve:
     /// an override that is set, an override cleared to `null`, an override
@@ -1340,7 +1308,7 @@ mod tests {
               "schema": "mos/update-config/v1",
               "policy": "check",
               "checkIntervalMinutes": null,
-              "source": { "channel": "beta", "repoDir": "/var/lib/mos/mirror" },
+              "source": { "channel": "beta", "maxBytes": 123456789 },
               "maintenance": { "windows": [ { "days": ["mon"], "start": "02:00", "end": "04:00" } ] }
             }"#,
         )
@@ -1364,7 +1332,7 @@ mod tests {
         assert_eq!(after.check_interval_minutes, Some(None));
         assert_eq!(after.source.url, None);
         assert_eq!(after.source.channel, Some(Some("beta".to_string())));
-        assert_eq!(after.source.repo_dir, "/var/lib/mos/mirror");
+        assert_eq!(after.source.max_bytes, 123_456_789);
         assert_eq!(after.maintenance.windows.len(), 1);
 
         let written: Value =
@@ -1429,7 +1397,7 @@ mod tests {
         // console renders.
         assert_eq!(saved.policy, Some(Some(UpdateMode::Check)));
         assert_eq!(saved.check_interval_minutes, Some(None));
-        assert_eq!(saved.source.repo_dir, "/var/lib/mos/mirror");
+        assert_eq!(saved.source.max_bytes, 123_456_789);
         assert_eq!(saved.maintenance.windows.len(), 1);
     }
 

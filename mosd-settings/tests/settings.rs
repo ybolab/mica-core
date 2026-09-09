@@ -627,11 +627,7 @@ fn all_three_kinds_round_trip_through_the_store() {
     let store = store_at(&dir);
     store.save(&every_kind()).unwrap();
 
-    let (settings, reports) = store.load_with_report().unwrap();
-    assert!(
-        reports.is_empty(),
-        "a document at this schema version is not a rollback"
-    );
+    let settings = store.load().unwrap();
     assert_eq!(settings, every_kind());
 
     // Spelled on disk the way the design spells it, in the ONE document that
@@ -940,8 +936,7 @@ fn the_token_list_round_trips_through_the_store() {
     assert!(text.contains(r#"id = "3f2a9c41""#), "{text}");
     assert!(text.contains("created = 1700000000"), "{text}");
 
-    let (loaded, reports) = store.load_with_report().unwrap();
-    assert!(reports.is_empty());
+    let loaded = store.load().unwrap();
     assert_eq!(loaded, settings);
 
     // Order is the list's own and is not sorted underneath the caller: the id
@@ -973,12 +968,8 @@ password_hash = "$argon2id$fake"
     )
     .unwrap();
 
-    let (settings, reports) = store.load_with_report().unwrap();
+    let settings = store.load().unwrap();
 
-    assert!(
-        reports.is_empty(),
-        "a document at this version is not a rollback"
-    );
     assert!(settings.access.api_tokens.is_empty());
     assert_eq!(
         settings.access.web_admin.unwrap().password_hash,
@@ -1518,24 +1509,14 @@ fn an_older_document_is_refused_by_name_because_there_is_no_migration() {
     write_config(&dir, MQTT_DOCUMENT, r#"{"schema_version": 0, "mqtt": {}}"#);
 
     let err = store.load().unwrap_err();
-    let SettingsError::Migration(message) = &err else {
-        panic!("expected a migration error, got {err:?}");
+    let SettingsError::SchemaVersion(message) = &err else {
+        panic!("expected a schema version error, got {err:?}");
     };
     assert!(message.starts_with(MQTT_DOCUMENT), "{message}");
-    assert!(message.contains("no migration is registered"), "{message}");
+    assert!(message.contains("this build requires"), "{message}");
 }
 
-/// `wifi.json` as a build one schema version AHEAD of this one wrote it: the
-/// A/B rollback path.
-///
-/// **The stamp is derived, not written.** Its deleted predecessor carried the
-/// literal `13` and had to be repaired nine times, because the moment the
-/// schema catches up with the fixture the document stops being newer, the
-/// tolerant path stops running, and the test goes on passing while asserting
-/// nothing about rollback. `WIFI_SCHEMA_VERSION + 1` cannot fall behind.
-///
-/// `band` is the key this schema does not know. Everything else is a key it
-/// does, and has to survive.
+/// A future schema that must be refused without rewriting its fields.
 fn newer_wifi_document() -> String {
     json!({
         "schema_version": WIFI_SCHEMA_VERSION + 1,
@@ -1549,141 +1530,6 @@ fn newer_wifi_document() -> String {
         },
     })
     .to_string()
-}
-
-/// **The tolerant load, restored.** A document newer than this build writes is
-/// read by dropping the keys this schema does not know, one name at a time,
-/// and it never errors: refusing it would make the rolled-back-to slot a crash
-/// loop, which is a rollback that reaches no working slot at all.
-#[test]
-fn a_newer_document_loads_with_the_unknown_keys_dropped() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_at(&dir);
-    write_config(&dir, WIFI_DOCUMENT, &newer_wifi_document());
-
-    let (settings, reports) = store.load_with_report().unwrap();
-
-    // Everything this schema understands survives.
-    assert_eq!(settings.wifi.ap.mode, ApMode::Always);
-    assert_eq!(settings.wifi.ap.ssid.as_deref(), Some("mos-ap"));
-    assert_eq!(settings.wifi.ap.channel, 11);
-    assert!(settings.wifi.client.enabled);
-    assert_eq!(settings.wifi.client.networks.len(), 1);
-    assert_eq!(settings.wifi.client.networks[0].ssid, "site");
-    assert_eq!(settings.wifi.client.networks[0].priority, 3);
-
-    // The report names what the rollback cost, for mosd to log, and names the
-    // document it cost it in — which is the part the split added.
-    assert_eq!(reports.len(), 1, "{reports:?}");
-    assert_eq!(reports[0].document, WIFI_DOCUMENT);
-    assert_eq!(reports[0].from, WIFI_SCHEMA_VERSION + 1);
-    assert_eq!(reports[0].dropped_keys, vec!["band".to_string()]);
-    assert!(!reports[0].defaulted);
-}
-
-/// The strip is by NAME and reaches everywhere, arrays included: one pass
-/// removes the same key at every depth, and the report records it once.
-#[test]
-fn stripping_is_recursive_and_drops_same_named_keys_everywhere() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_at(&dir);
-    write_config(
-        &dir,
-        WIFI_DOCUMENT,
-        &json!({
-            "schema_version": WIFI_SCHEMA_VERSION + 1,
-            "wifi": {
-                "ap": { "mode": "always", "extra": "at a table" },
-                "client": {
-                    "enabled": true,
-                    "networks": [{ "ssid": "site", "extra": "inside an array" }],
-                },
-            },
-        })
-        .to_string(),
-    );
-
-    let (settings, reports) = store.load_with_report().unwrap();
-
-    assert_eq!(settings.wifi.ap.mode, ApMode::Always);
-    assert!(settings.wifi.client.enabled);
-    assert_eq!(settings.wifi.client.networks[0].ssid, "site");
-    assert_eq!(reports.len(), 1, "{reports:?}");
-    assert_eq!(reports[0].dropped_keys, vec!["extra".to_string()]);
-    assert!(!reports[0].defaulted);
-}
-
-/// Rolling forward again restores the defaults, not the values: the tolerated
-/// document is persisted at THIS schema version with the newer schema's key
-/// gone, so the next load is the ordinary path and reports nothing.
-#[test]
-fn a_tolerated_document_saves_back_at_this_schema_version() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_at(&dir);
-    store.save(&Settings::default()).unwrap();
-    write_config(&dir, WIFI_DOCUMENT, &newer_wifi_document());
-
-    let (settings, reports) = store.load_with_report().unwrap();
-    assert_eq!(reports.len(), 1, "{reports:?}");
-    store.save(&settings).unwrap();
-
-    let text = fs::read_to_string(dir.path().join("config").join(WIFI_DOCUMENT)).unwrap();
-    assert!(
-        !text.contains("band"),
-        "the newer schema's key is gone: {text}"
-    );
-    assert_eq!(
-        config_document(&dir, WIFI_DOCUMENT)["schema_version"],
-        json!(WIFI_SCHEMA_VERSION)
-    );
-
-    let (reloaded, reports) = store.load_with_report().unwrap();
-    assert_eq!(reloaded, settings);
-    assert!(reports.is_empty(), "{reports:?}");
-}
-
-/// **The containment the split is for, and the property nothing asserted.**
-///
-/// A newer document that stripping cannot rescue — a future schema RESHAPED a
-/// key — falls back to a schema default. Before the split that default was
-/// `Settings::default()` entire: every setting, the network, the ssh policy
-/// and the admin credential, which is a device back in setup mode because one
-/// subsystem's schema moved. Per document, the loss is that document's
-/// subtree and the other seven are untouched.
-#[test]
-fn a_reshaped_newer_document_costs_its_own_subtree_and_nothing_else() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_at(&dir);
-    let settings = configured();
-    store.save(&settings).unwrap();
-
-    // `wifi` became a scalar. No amount of unknown-key stripping makes this
-    // build parse it.
-    write_config(
-        &dir,
-        WIFI_DOCUMENT,
-        &json!({ "schema_version": WIFI_SCHEMA_VERSION + 1, "wifi": "reshaped" }).to_string(),
-    );
-
-    let (loaded, reports) = store.load_with_report().unwrap();
-
-    // The loss, and its whole extent: everything except `wifi` is what was
-    // saved, compared as one value so a subtree this test forgot to name is
-    // still covered.
-    let mut expected = settings.clone();
-    expected.wifi = Settings::default().wifi;
-    assert_eq!(
-        loaded, expected,
-        "a reshaped wifi.json must cost the wifi subtree and nothing else"
-    );
-    // Named separately because it is the one that put the device back in setup
-    // mode, and it is not even in the same file.
-    assert_eq!(loaded.access.web_admin, settings.access.web_admin);
-
-    assert_eq!(reports.len(), 1, "{reports:?}");
-    assert_eq!(reports[0].document, WIFI_DOCUMENT);
-    assert_eq!(reports[0].from, WIFI_SCHEMA_VERSION + 1);
-    assert!(reports[0].defaulted);
 }
 
 /// **A key written to one document leaves the others byte-identical** — the
@@ -1912,7 +1758,6 @@ fn a_hand_written_namespace_is_adopted_whole() {
         "a valid pour refuses nothing: {:?}",
         loaded.refusals
     );
-    assert!(loaded.rollback.is_empty());
     for entry in poured_namespace() {
         assert!(
             (entry.adopted)(&loaded.settings),
@@ -2342,7 +2187,7 @@ fn a_served_refusal_says_which_of_three_things_went_wrong() {
         ),
         (
             r#"{"schema_version": 0, "mqtt": {}}"#,
-            "is at a schema version this build has no migration for",
+            "has an unsupported schema version",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -2356,4 +2201,20 @@ fn a_served_refusal_says_which_of_three_things_went_wrong() {
             loaded.refusals[0].message
         );
     }
+}
+
+#[test]
+fn rejects_future_settings_without_stripping_or_defaulting_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(&dir);
+    let original = newer_wifi_document();
+    write_config(&dir, WIFI_DOCUMENT, &original);
+    assert!(store.load().is_err(), "future schema was silently adopted");
+    let loaded = store.load_with_refusals().unwrap();
+    assert_eq!(loaded.refusals.len(), 1);
+    assert_eq!(loaded.refusals[0].document, WIFI_DOCUMENT);
+    assert_eq!(
+        fs::read_to_string(store.config_dir().join(WIFI_DOCUMENT)).unwrap(),
+        original
+    );
 }

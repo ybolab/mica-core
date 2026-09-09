@@ -14,18 +14,10 @@
 //! took more than its row is this module's failure mode, so the tests below
 //! assert survival and not only removal.
 //!
-//! Two stores this module cannot reach, by construction rather than by
-//! promise:
-//!
-//! - **META.** §2.1 marks it `unaffected` for tiers 1 and 2 and `preserved`
-//!   for tier 3, and `docs/design/access.md` §5.2 is why: the lockdown bit is
-//!   one-way, and a tier that re-seeded META would be the exact software
-//!   action the bit exists to exclude. There is no META path in this file.
-//! - **Both system slots.** §2.1 footnote `[^slots]`: a reset resets state,
-//!   not the software version. Slot vocabulary lives in one place —
-//!   `validate_mark` and `rollback_eligibility` in [`crate::rauc`] — and this
-//!   module names no slot, calls neither, and installs, activates or condemns
-//!   nothing.
+//! DATA/state holds persistent service state. DATA/meta holds lifecycle and
+//! deployment metadata and is preserved by every tier. Resets use physical
+//! backing directories and share DATA/meta/transaction.lock with installation.
+//! SYSTEM content and boot entries are outside every reset scope.
 //!
 //! **Identity and calibration survive every tier**, §2.1 footnote
 //! `[^identity]`: `provisioning.deviceId`, the per-device secrets under the
@@ -58,12 +50,6 @@ pub const DATA_ROOT_ENV: &str = "MOS_DATA_ROOT";
 /// `/mos` and `/srv` are binds of this ONE pool).
 pub const DEFAULT_DATA_ROOT: &str = "/mnt/data";
 
-/// The STATE partition root, and the variable that relocates it for tests.
-pub const STATE_ROOT_ENV: &str = "MOSD_STATE_ROOT";
-/// Where STATE is mounted when nothing relocates it (`docs/design/ro-root.md`
-/// §4's bind table).
-pub const DEFAULT_STATE_ROOT: &str = "/mnt/state";
-
 /// The system-owned DATA namespace, relative to the pool root.
 const SYSTEM_DIR: &str = "mos";
 /// The user-owned DATA namespace, relative to the pool root.
@@ -82,6 +68,8 @@ const SYSTEM_SKELETON: &[&str] = &[
     "ui",
     "config",
     "containers",
+    "containers/networks",
+    "diagnostics",
     "home",
     "root",
     "apps",
@@ -116,7 +104,7 @@ const CONFIG_DIR: &str = "config";
 /// The `/mos` subtrees the application layer owns, which tier 2 clears.
 ///
 /// §2.1 footnote `[^apps-mos]`: `/mos` is the system-owned namespace and tier
-/// 2 does not empty it. `ui/`, `updates/` — a verified bundle is not
+/// 2 does not empty it. `ui/`, `updates/` — an acquired deployment is not
 /// application data — and the `home/`/`root/` backing directories are not
 /// opened.
 const APPLICATION_DIRS: &[&str] = &["apps", "containers"];
@@ -141,21 +129,21 @@ const STATE_APPLICATION_DIRS: &[&str] = &["quadlet", "systemd-units"];
 /// code.
 #[derive(Debug, Clone)]
 pub struct Roots {
-    /// The DATA pool root; `/mos` and `/srv` are its two subdirectories.
+    /// The physical DATA filesystem root.
     pub data: PathBuf,
-    /// The STATE partition root.
+    /// The physical DATA/state namespace.
     pub state: PathBuf,
 }
 
 impl Roots {
-    /// The roots this device uses, honouring the two test hooks.
+    /// Resolve one physical DATA root, including its persistent state.
     #[must_use]
     pub fn from_env() -> Self {
+        let data = std::env::var_os(DATA_ROOT_ENV)
+            .map_or_else(|| PathBuf::from(DEFAULT_DATA_ROOT), PathBuf::from);
         Self {
-            data: std::env::var_os(DATA_ROOT_ENV)
-                .map_or_else(|| PathBuf::from(DEFAULT_DATA_ROOT), PathBuf::from),
-            state: std::env::var_os(STATE_ROOT_ENV)
-                .map_or_else(|| PathBuf::from(DEFAULT_STATE_ROOT), PathBuf::from),
+            state: data.join("state"),
+            data,
         }
     }
 
@@ -166,6 +154,72 @@ impl Roots {
     fn user(&self) -> PathBuf {
         self.data.join(USER_DIR)
     }
+}
+
+/// Traversal is bounded before any removal and again during the mutation pass.
+struct Traversal {
+    started: std::time::Instant,
+    entries: usize,
+}
+impl Traversal {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            entries: 0,
+        }
+    }
+    fn visit(&mut self, depth: usize) -> Result<()> {
+        anyhow::ensure!(depth <= 64, "reset directory depth exceeds limit");
+        self.entries += 1;
+        anyhow::ensure!(self.entries <= 1_000_000, "reset entry count exceeds limit");
+        anyhow::ensure!(
+            self.started.elapsed() < std::time::Duration::from_secs(30),
+            "reset traversal deadline exceeded"
+        );
+        Ok(())
+    }
+}
+
+fn preflight_tree(path: &Path, depth: usize, traversal: &mut Traversal) -> Result<()> {
+    traversal.visit(depth)?;
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    // Symlinks are removable leaves, never traversal roots.
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            preflight_tree(&entry?.path(), depth + 1, traversal)?;
+        }
+    }
+    Ok(())
+}
+
+fn preflight_reset(roots: &Roots, tier: ResetTier) -> Result<()> {
+    let targets = match tier {
+        ResetTier::Configuration => vec![roots.system().join(CONFIG_DIR)],
+        ResetTier::ApplicationData => APPLICATION_DIRS
+            .iter()
+            .map(|dir| roots.system().join(dir))
+            .chain(
+                STATE_APPLICATION_DIRS
+                    .iter()
+                    .map(|dir| roots.state.join(dir)),
+            )
+            .chain([roots.user()])
+            .collect(),
+        ResetTier::FullFactory => STATE_APPLICATION_DIRS
+            .iter()
+            .map(|dir| roots.state.join(dir))
+            .chain([roots.system(), roots.user()])
+            .collect(),
+    };
+    let mut traversal = Traversal::new();
+    for target in targets {
+        preflight_tree(&target, 0, &mut traversal)?;
+    }
+    Ok(())
 }
 
 /// What [`apply_pending`] did.
@@ -216,6 +270,20 @@ pub fn apply_pending(store: &Store, settings: &mut Settings, roots: &Roots) -> R
     let Some(intent) = settings.reset.clone() else {
         return Ok(Outcome::NoIntent);
     };
+    validate_roots(roots)?;
+    let lock_path = roots.data.join("meta/transaction.lock");
+    if let Ok(metadata) = lock_path.symlink_metadata() {
+        anyhow::ensure!(metadata.is_file(), "invalid storage transaction lock");
+    }
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock.try_lock()
+        .context("another storage transaction is active")?;
+    preflight_reset(roots, intent.tier)?;
     tracing::info!(
         tier = ?intent.tier,
         requested = intent.requested,
@@ -316,7 +384,11 @@ fn clear_application_state(roots: &Roots) -> Result<()> {
     }
     for dir in APPLICATION_DIRS {
         let path = roots.system().join(dir);
-        clear_contents(&path).with_context(|| format!("clear {}", path.display()))?;
+        if *dir == "containers" {
+            reseed_tree(&path, &["networks"])?;
+        } else {
+            clear_contents(&path).with_context(|| format!("clear {}", path.display()))?;
+        }
     }
     // §2.1 marks `/srv` `cleared` and not `re-seeded`, footnote `[^apps-mos]`:
     // the product gives that namespace to the operator, so mos recreates the
@@ -324,6 +396,66 @@ fn clear_application_state(roots: &Roots) -> Result<()> {
     // the directory is exactly that.
     let user = roots.user();
     clear_contents(&user).with_context(|| format!("clear {}", user.display()))
+}
+
+/// Validate physical namespaces before the first removal. A same-device check
+/// cannot detect a bind into another DATA namespace, so inspect mount points.
+fn validate_roots(roots: &Roots) -> Result<()> {
+    anyhow::ensure!(roots.data.is_absolute(), "DATA root must be absolute");
+    anyhow::ensure!(
+        roots.state == roots.data.join("state"),
+        "state must be on DATA"
+    );
+    for path in [
+        roots.data.clone(),
+        roots.state.clone(),
+        roots.data.join("meta"),
+        roots.system(),
+        roots.user(),
+    ] {
+        anyhow::ensure!(
+            path.symlink_metadata()?.is_dir(),
+            "invalid physical directory {}",
+            path.display()
+        );
+    }
+    let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+    reject_nested_mounts(&roots.data, &mounts)?;
+    for path in STATE_APPLICATION_DIRS
+        .iter()
+        .map(|p| roots.state.join(p))
+        .chain(SYSTEM_SKELETON.iter().map(|p| roots.system().join(p)))
+    {
+        if let Ok(metadata) = path.symlink_metadata() {
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "invalid reset namespace {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn reject_nested_mounts(data: &Path, mounts: &str) -> Result<()> {
+    for line in mounts.lines() {
+        let Some(path) = line.split_whitespace().nth(4) else {
+            continue;
+        };
+        let path = path
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        let path = Path::new(&path);
+        anyhow::ensure!(
+            !path.starts_with(data) || path == data,
+            "unexpected mount inside reset backing storage: {}",
+            path.display()
+        );
+    }
+
+    Ok(())
 }
 
 /// Remove every entry inside `dir`, keeping `dir` itself.
@@ -334,6 +466,11 @@ fn clear_application_state(roots: &Roots) -> Result<()> {
 /// planted in a cleared tree is unlinked rather than followed into a store the
 /// tier has no business opening.
 fn clear_contents(dir: &Path) -> Result<()> {
+    clear_directory(dir, 0, &mut Traversal::new())
+}
+
+fn clear_directory(dir: &Path, depth: usize, traversal: &mut Traversal) -> Result<()> {
+    traversal.visit(depth)?;
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -341,8 +478,9 @@ fn clear_contents(dir: &Path) -> Result<()> {
     };
     for entry in entries {
         let entry = entry.with_context(|| format!("read an entry of {}", dir.display()))?;
-        remove(&entry.path(), &entry.file_type()?)?;
+        remove(&entry.path(), &entry.file_type()?, depth + 1, traversal)?;
     }
+    fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 
@@ -353,10 +491,17 @@ fn clear_contents(dir: &Path) -> Result<()> {
 /// `mos-data-layout` established, so this module never restates them.
 fn reseed_tree(root: &Path, skeleton: &[&str]) -> Result<()> {
     let declared: BTreeSet<PathBuf> = skeleton.iter().map(PathBuf::from).collect();
-    reseed_dir(root, Path::new(""), &declared)
+    reseed_dir(root, Path::new(""), &declared, 0, &mut Traversal::new())
 }
 
-fn reseed_dir(dir: &Path, relative: &Path, declared: &BTreeSet<PathBuf>) -> Result<()> {
+fn reseed_dir(
+    dir: &Path,
+    relative: &Path,
+    declared: &BTreeSet<PathBuf>,
+    depth: usize,
+    traversal: &mut Traversal,
+) -> Result<()> {
+    traversal.visit(depth)?;
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -371,17 +516,25 @@ fn reseed_dir(dir: &Path, relative: &Path, declared: &BTreeSet<PathBuf>) -> Resu
         // directory, and leaving it would leave the pretence of a re-seeded
         // tree.
         if file_type.is_dir() && declared.contains(&child) {
-            reseed_dir(&entry.path(), &child, declared)?;
+            reseed_dir(&entry.path(), &child, declared, depth + 1, traversal)?;
         } else {
-            remove(&entry.path(), &file_type)?;
+            remove(&entry.path(), &file_type, depth + 1, traversal)?;
         }
     }
+    fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 
-fn remove(path: &Path, file_type: &fs::FileType) -> Result<()> {
+fn remove(
+    path: &Path,
+    file_type: &fs::FileType,
+    depth: usize,
+    traversal: &mut Traversal,
+) -> Result<()> {
+    traversal.visit(depth)?;
     let removed = if file_type.is_dir() {
-        fs::remove_dir_all(path)
+        clear_directory(path, depth, traversal)?;
+        fs::remove_dir(path)
     } else {
         fs::remove_file(path)
     };
@@ -453,8 +606,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let roots = Roots {
             data: dir.path().join("data"),
-            state: dir.path().join("state"),
+            state: dir.path().join("data/state"),
         };
+        fs::create_dir_all(roots.data.join("meta")).unwrap();
+        write(&roots.data.join("meta/lockdown"), "retained");
+        write(
+            &roots.state.join("machine-id"),
+            "0123456789abcdef0123456789abcdef",
+        );
         for relative in SYSTEM_SKELETON {
             fs::create_dir_all(roots.system().join(relative)).unwrap();
         }
@@ -469,7 +628,10 @@ mod tests {
         write(&roots.system().join("apps/inventory/db.sqlite"), "app data");
         write(&roots.system().join("containers/overlay/layer"), "layer");
         write(&roots.system().join("ui/active/index.html"), "custom ui");
-        write(&roots.system().join("updates/verified/os.raucb"), "bundle");
+        write(
+            &roots.system().join("updates/verified/deployment.json"),
+            "descriptor",
+        );
         write(&roots.system().join("home/operator/.profile"), "profile");
         write(&roots.system().join("root/.ssh/known_hosts"), "hosts");
         write(&roots.user().join("operator/report.csv"), "operator data");
@@ -494,6 +656,14 @@ mod tests {
     /// roots entirely, and these are the stores inside them that survive every
     /// row of §2.1.
     fn assert_identity_survived(roots: &Roots) {
+        assert_eq!(
+            fs::read_to_string(roots.state.join("machine-id")).unwrap(),
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            fs::read_to_string(roots.data.join("meta/lockdown")).unwrap(),
+            "retained"
+        );
         assert_eq!(
             fs::read_to_string(roots.state.join("mos/secrets/device-password")).unwrap(),
             "secret",
@@ -625,8 +795,8 @@ mod tests {
         // PRESERVED: `/mos` is the system-owned namespace and tier 2 does not
         // empty it — a verified bundle is not application data.
         assert_eq!(
-            fs::read_to_string(roots.system().join("updates/verified/os.raucb")).unwrap(),
-            "bundle"
+            fs::read_to_string(roots.system().join("updates/verified/deployment.json")).unwrap(),
+            "descriptor"
         );
         assert!(exists(&roots.system().join("ui/active/index.html")));
         assert!(exists(&roots.system().join("home/operator/.profile")));
@@ -662,7 +832,9 @@ mod tests {
         assert_eq!(settings.access.ssh, Default::default());
         assert!(!exists(&roots.system().join("apps/inventory")));
         assert!(!exists(&roots.system().join("ui/active")));
-        assert!(!exists(&roots.system().join("updates/verified/os.raucb")));
+        assert!(!exists(
+            &roots.system().join("updates/verified/deployment.json")
+        ));
         assert!(!exists(&roots.system().join("home/operator")));
         assert!(!exists(&roots.user().join("operator")));
         assert!(!exists(&roots.state.join("quadlet/web.container")));
@@ -761,6 +933,25 @@ mod tests {
     /// target survives, so a tier cannot be steered into a store §2.1 marks
     /// `unaffected`.
     #[test]
+    fn reset_refuses_excessive_depth_before_removing_any_payload() {
+        let (dir, roots) = populated_roots();
+        let store = store_at(&dir, &roots);
+        let mut deep = roots.user();
+        for _ in 0..65 {
+            deep = deep.join("nested");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        write(&deep.join("retained"), "deep payload");
+        let mut settings = fielded_settings();
+        stage(&mut settings, ResetTier::FullFactory);
+        let error = apply_pending(&store, &mut settings, &roots).unwrap_err();
+        assert!(format!("{error:#}").contains("depth"));
+        assert!(roots.system().join("apps/inventory/db.sqlite").is_file());
+        assert!(deep.join("retained").is_file());
+        assert!(settings.reset.is_some());
+    }
+
+    #[test]
     fn a_symlink_in_a_cleared_tree_is_unlinked_rather_than_followed() {
         let (dir, roots) = populated_roots();
         let store = store_at(&dir, &roots);
@@ -809,7 +1000,53 @@ mod tests {
         );
         // And it did not widen: the STATE and `/mos` work its own row calls
         // for ran, but nothing outside that row was touched.
-        assert!(exists(&roots.system().join("updates/verified/os.raucb")));
+        assert!(exists(
+            &roots.system().join("updates/verified/deployment.json")
+        ));
         assert_identity_survived(&roots);
+    }
+
+    #[test]
+    fn reset_refuses_a_namespace_symlink_before_removing_any_payload() {
+        let (dir, roots) = populated_roots();
+        let store = store_at(&dir, &roots);
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        write(&outside.join("retained"), "identity");
+        fs::remove_dir_all(roots.state.join("quadlet")).unwrap();
+        std::os::unix::fs::symlink(&outside, roots.state.join("quadlet")).unwrap();
+        let mut settings = fielded_settings();
+        stage(&mut settings, ResetTier::ApplicationData);
+        assert!(apply_pending(&store, &mut settings, &roots).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("retained")).unwrap(),
+            "identity"
+        );
+        assert!(roots.system().join("apps/inventory/db.sqlite").exists());
+        assert!(settings.reset.is_some());
+    }
+
+    #[test]
+    fn reset_and_installer_share_one_data_transaction_lock() {
+        let (dir, roots) = populated_roots();
+        let store = store_at(&dir, &roots);
+        fs::create_dir_all(roots.data.join("meta")).unwrap();
+        let lock = fs::File::create(roots.data.join("meta/transaction.lock")).unwrap();
+        lock.try_lock().unwrap();
+        let mut settings = fielded_settings();
+        stage(&mut settings, ResetTier::FullFactory);
+        assert!(apply_pending(&store, &mut settings, &roots).is_err());
+        assert!(roots.system().join("apps/inventory/db.sqlite").exists());
+        drop(lock);
+        apply_pending(&store, &mut settings, &roots).unwrap();
+        assert!(roots.data.join("meta/transaction.lock").exists());
+    }
+
+    #[test]
+    fn reset_rejects_nested_binds_even_on_the_same_device() {
+        let base = "30 1 8:3 / /mnt/data rw - ext4 /dev/vda3 rw\n";
+        reject_nested_mounts(Path::new("/mnt/data"), base).unwrap();
+        let bound = format!("{base}31 30 8:3 /state /mnt/data/srv/escape rw - ext4 /dev/vda3 rw\n");
+        assert!(reject_nested_mounts(Path::new("/mnt/data"), &bound).is_err());
     }
 }

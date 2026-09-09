@@ -42,7 +42,7 @@
 
 mod apply_queue;
 mod bus;
-mod confirmed_boot;
+mod deployment;
 mod diagnostics;
 mod fswrite;
 mod identity;
@@ -50,7 +50,6 @@ mod network_state;
 mod power;
 mod provisioning;
 mod provisioning_doc;
-mod rauc;
 mod reconciler;
 mod recovery;
 mod reset;
@@ -64,7 +63,6 @@ mod update_auto;
 mod update_codes;
 mod update_lifecycle;
 mod update_policy;
-mod update_suppress;
 mod wgkeys;
 
 use std::path::{Path, PathBuf};
@@ -183,7 +181,7 @@ async fn serve() -> anyhow::Result<()> {
     // The recovery route is `docs/design/recovery.md`'s — the serial console
     // and the reset tiers — not a silently degraded network.
     //
-    // `load_with_refusals` and not `load_with_report`, which is the other half
+    // `load_with_refusals` and not `load`, which is the other half
     // of the same rule (PLAN-070 §5.2.7, F6g — **the pour**). The medium is a
     // start refusal because a device that cannot reach its configuration must
     // not render a different one; a single DOCUMENT that does not parse is
@@ -194,7 +192,6 @@ async fn serve() -> anyhow::Result<()> {
     // gates is refused; its neighbours run.
     let mosd_settings::LoadedStore {
         mut settings,
-        rollback,
         refusals,
     } = store
         .load_with_refusals()
@@ -229,32 +226,6 @@ async fn serve() -> anyhow::Result<()> {
             .map(|refusal| refusal.document.as_str())
             .collect::<Vec<_>>(),
     );
-    // The A/B rollback path: a document was written by a NEWER schema and was
-    // loaded tolerantly instead of crash-looping the daemon
-    // (docs/design/api.md §10.3 item 5). Loud on purpose — this is the one
-    // place the loss `mosd.md` §5.2 prices is actually paid. One report per
-    // document, because after PLAN-070 §5.2.3 the version is per document and
-    // so is the loss.
-    for report in rollback {
-        if report.defaulted {
-            tracing::error!(
-                document = report.document,
-                from_schema = report.from,
-                dropped = ?report.dropped_keys,
-                "a settings document is from a newer, reshaped schema; everything it \
-                 stored is abandoned and its defaults loaded"
-            );
-        } else {
-            tracing::warn!(
-                document = report.document,
-                from_schema = report.from,
-                dropped = ?report.dropped_keys,
-                "a settings document is from a newer schema; unknown keys dropped \
-                 (the documented cost of an A/B rollback across a schema bump)"
-            );
-        }
-    }
-
     // Before the reconcilers exist, so the very first reconcile already sees a
     // seeded tree rather than the built-in defaults. Skipped under dry-run,
     // which must not write to STATE at all.
@@ -303,11 +274,15 @@ async fn serve() -> anyhow::Result<()> {
         }
         match reset::apply_pending(&store, &mut settings, &reset::Roots::from_env()) {
             Ok(outcome) => tracing::info!(?outcome, "staged reset checked"),
-            Err(err) => tracing::error!(
-                error = %err,
-                "the staged reset could not be applied; it stays staged and the next boot \
-                 retries the same tier"
-            ),
+            Err(error) => {
+                // Keep application writers stopped until the staged scope is
+                // complete; shared DATA failure needs recovery, not a new root.
+                std::fs::write(
+                    "/run/mos/shared-data-failure",
+                    format!("staged reset failed: {error:#}"),
+                )?;
+                return Err(error).context("staged reset failed; DATA recovery required");
+            }
         }
         // BEFORE seeding, and that order is the point: a factory-injected
         // `provisioning.deviceId` has to be in the tree when `ensure_identity`
@@ -412,22 +387,7 @@ async fn serve() -> anyhow::Result<()> {
         transient::production_shadow_path(),
         Value::Object(state),
     );
-    // The `/mos/updates` workspace: the client's own `RAUC_UPDATE_ROOT`
-    // relocates it (tests only) — read here, before the update client is
-    // attached, so the lifecycle and the subprocess that inherits the
-    // variable agree about where verified/ is. Applied under dry-run too:
-    // the install admission rule does not depend on having a client.
-    if let Some(root) = std::env::var_os(update_lifecycle::WORKSPACE_ROOT_ENV) {
-        service = service.with_update_workspace(PathBuf::from(root));
-    }
-    // Same shape as the power control: under dry-run the production RAUC
-    // client is never constructed, so a daemon started by a test cannot
-    // install a bundle on — or mark a slot of — the host it runs on. The
-    // service's built-in default is already the dry-run client; the
-    // production client must be attached HERE, because main.rs is the only
-    // place that knows this daemon runs on a real device.
     if !dry_run {
-        service = service.with_rauc(Arc::new(rauc::Rauc::new()));
         service =
             service.with_network_state(Arc::new(network_state::SystemdNetworkState::production()));
         service = service.with_time_status(Arc::new(time_status::SystemdTimesync));
@@ -441,50 +401,16 @@ async fn serve() -> anyhow::Result<()> {
         // Same reasoning again: the rotation writes a private key onto STATE
         // and deletes a kernel device, so a dry-run daemon is never given one.
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));
-        // The update lifecycle's client and policy, same reasoning once more:
-        // only here is it known that /usr/bin/rauc-update may exist and that
-        // the operator document on the DATA pool is the host's. The client
-        // binary's ABSENCE is a reported state, not a failure — a sibling
-        // workstream ships it into the image. The baked layer travels with the
-        // store, so precedence is resolved in one place rather than at each
-        // reader (PLAN-070 §5.1).
-        let update_bin = std::env::var("MOSD_RAUC_UPDATE_BIN")
-            .unwrap_or_else(|_| update_lifecycle::DEFAULT_CLIENT_PATH.to_string());
         let policy_path = std::env::var("MOSD_UPDATE_POLICY_PATH").map_or_else(
             |_| PathBuf::from(update_policy::DEFAULT_POLICY_PATH),
             PathBuf::from,
         );
-        // PLAN-071 §6's suppression store, and it is on STATE deliberately.
-        // §9.1 settles the same question for the downgrade floor: the policy
-        // document moves to `/mos/config/` on DATA, and a refusal an operator
-        // document can lift is not a refusal. Derived from the state
-        // directory rather than from the policy path so that the move cannot
-        // take it along.
-        let suppression_path = std::env::var("MOSD_UPDATE_SUPPRESSION_PATH").map_or_else(
-            |_| {
-                state_dir_for(&settings_path)
-                    .join("update")
-                    .join(update_suppress::DEFAULT_FILE_NAME)
-            },
-            PathBuf::from,
-        );
         service = service.with_update(
             Arc::new(update_lifecycle::SubprocessClient::new(PathBuf::from(
-                update_bin,
+                update_lifecycle::DEFAULT_CLIENT_PATH,
             ))),
             update_policy::PolicyStore::at(policy_path).with_baked(meta.manifest.update.clone()),
-            update_suppress::SuppressionStore::at(suppression_path),
         );
-        // PLAN-071 §7's confirmed-boot record, on STATE and derived from the
-        // same directory for §9.1's reason once more: it is what the device
-        // OBSERVES about itself, and an operator document able to rewrite the
-        // order in which this device booted its two systems would be an order
-        // nobody observed.
-        let confirmed_boots_path = state_dir_for(&settings_path)
-            .join("update")
-            .join(confirmed_boot::DEFAULT_FILE_NAME);
-        service = service
-            .with_confirmed_boots(confirmed_boot::ConfirmedBootStore::at(confirmed_boots_path));
     }
     if let Some(registry) = &registry {
         service = service.with_service_registry(Arc::clone(registry));

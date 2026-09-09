@@ -26,16 +26,7 @@ import {
 import { ConfigError, loadConfig, type Config } from "./config.ts";
 import { Reporter } from "./report.ts";
 import { EmptyAssumesError, runPhases, type Phase, type PhaseContext } from "./runner.ts";
-import {
-  ESP_GRUB_CFG,
-  NoLinuxLineError,
-  QEMU_ARCHES,
-  applyKernelAppend,
-  espOffsetBytes,
-  qemuArchFor,
-  readBoardEnv,
-  type AppendResult,
-} from "./qemu.ts";
+import { QEMU_ARCHES, qemuArchFor, requireSignedInputs } from "./qemu.ts";
 
 // the stub peer
 
@@ -235,20 +226,6 @@ async function requireRejected(
   }
   failureMessages.set(name, detail);
   outer.pass(name);
-}
-
-/**
- * `applyKernelAppend` with a refusal turned into a value, so that one case
- * driving it into a refusal does not take the rest of the phase down with it --
- * a pattern that matches nothing makes it throw, and that is exactly what the
- * cases below are measuring.
- */
-function appended(text: string, append: string): AppendResult & { readonly refusal: string } {
-  try {
-    return { ...applyKernelAppend(text, append), refusal: "" };
-  } catch (error) {
-    return { text, applied: false, matched: 0, refusal: String(error) };
-  }
 }
 
 /** The other direction: a CORRECT input must be accepted, or the negatives above
@@ -787,194 +764,14 @@ try {
   );
   outer.endPhase();
 
-  // -- the boot engine's four defects, as fixtures --------------------------
-  //
-  // src/qemu.ts is the port of the shell boot engine this harness used to call
-  // out to, and the record four defects in the block of it that
-  // rewrites the disk copy's ESP grub.cfg. Three of them (5.2, 5.3, 5.4) made
-  // `make os-apid-api-test` unable to reach a boot AT ALL, because this harness
-  // always sets MOS_QEMU_APPEND -- its readiness signal is the journald console
-  // line that append produces -- and every one of them was found by running the
-  // thing rather than by reading it. Each is a case below, with a positive
-  // control beside it.
-  //
-  // No docker, no QEMU and no image: the offset is arithmetic over a board
-  // layout and the rewrite is text, so both are driven on strings here. That is
-  // the whole reason they are factored out of the run path.
-  outer.beginPhase(
-    "selftest-qemu",
-    "the boot engine computes the ESP offset and rewrites the linux line correctly",
-    "nothing; espOffsetBytes and applyKernelAppend are pure -- no docker, no QEMU, no image",
-  );
-  outer.note("");
-  outer.note("PHASE selftest-qemu: the boot engine computes the ESP offset and rewrites the linux line correctly");
-
-  // (5.2) The offset is the ESP's, and never the boot slot's. On x64 those are
-  // two different partitions and only one holds a grub.cfg: the ESP at 1 MiB
-  // carries EFI/mos/grub.cfg, BOOT-A at 65 MiB has no EFI directory at all.
-  const layout = readBoardEnv(
-    ["# boards/x64/board.env, cut to the two keys this decision reads",
-      "ESP_START_MIB=1",
-      "BOOT_A_START_MIB=65",
-      "ESP_OFFSET_BYTES=$((ESP_START_MIB * MIB_BYTES))",
-      ""].join("\n"),
-  );
-  outer.check(
-    espOffsetBytes(layout) === 1 * 1048576,
-    "the ESP grub.cfg offset is ESP_START_MIB * 1048576, on a layout that also defines BOOT_A_START_MIB",
-    [
-      `expected: 1048576 (1 MiB, the ESP)`,
-      `actual:   ${espOffsetBytes(layout)}${espOffsetBytes(layout) === 65 * 1048576 ? " -- that is BOOT_A_START_MIB, the partition with no EFI directory" : ""}`,
-    ].join("\n"),
-  );
-
-  // ...and a swap of the two keys is caught, which a reader of BOOT_A_START_MIB
-  // would pass: with the values exchanged it would answer 1048576 here and look
-  // right. The function has to follow the key, not the number.
-  const swapped = readBoardEnv("ESP_START_MIB=65\nBOOT_A_START_MIB=1\n");
-  outer.check(
-    espOffsetBytes(swapped) === 65 * 1048576,
-    "swapping ESP_START_MIB and BOOT_A_START_MIB moves the offset, so the key is what is read",
-    [
-      `expected: 68157440 -- it follows ESP_START_MIB wherever the layout puts it`,
-      `actual:   ${espOffsetBytes(swapped)}${espOffsetBytes(swapped) === 1048576 ? " -- it read BOOT_A_START_MIB" : ""}`,
-    ].join("\n"),
-  );
-
-  // A layout that stopped defining the key refuses by name. There is no default
-  // offset that could be right, and 0 would read the GPT as a filesystem.
-  let noEsp: unknown;
-  try {
-    espOffsetBytes(readBoardEnv("BOOT_A_START_MIB=65\n"));
-  } catch (error) {
-    noEsp = error;
+  outer.beginPhase("selftest-qemu", "signed UEFI boot inputs and architecture selection", "pure input validation; no Docker or QEMU");
+  for (const [image, certificate, append] of [[undefined, "cert", undefined], ["disk", undefined, undefined], ["disk", "cert", "init=/bin/sh"]]) {
+    let refused = false;
+    try { requireSignedInputs(image, certificate, append); } catch { refused = true; }
+    outer.check(refused, "missing signed boot inputs and command-line overrides are refused", JSON.stringify({ image, certificate, append }));
   }
-  outer.check(
-    noEsp instanceof Error && noEsp.message.includes("ESP_START_MIB") && noEsp.message.includes(ESP_GRUB_CFG),
-    "a layout defining no ESP_START_MIB is refused, naming the key and the file read at that offset",
-    [
-      `expected: an Error naming ESP_START_MIB and ${ESP_GRUB_CFG}`,
-      `actual:   ${noEsp === undefined ? "it returned an offset" : String(noEsp)}`,
-    ].join("\n"),
-  );
-
-  // (5.3) The indentation. boards/x64/grub.cfg indents both linux lines with
-  // EIGHT spaces and always has, so the four-space pattern the shell carried
-  // matched neither and the count came back 0 on every run.
-  const GRUB_CFG = [
-    'menuentry "mos slot A" --id A {',
-    "    else",
-    "        linux (${slot_a_root})/vmlinuz dm-mod.create=\"rootfs,,,ro,0 100 verity 1\"",
-    "    fi",
-    "}",
-    'menuentry "mos slot B" --id B {',
-    "        linux (${slot_b_root})/vmlinuz dm-mod.create=\"rootfs,,,ro,0 100 verity 1\"",
-    "}",
-    "",
-  ].join("\n");
-  const APPEND = "systemd.journald.forward_to_console=1";
-  const eight = appended(GRUB_CFG, APPEND);
-  outer.check(
-    eight.matched === 2 && eight.text.split("\n").filter((l) => l.includes(APPEND)).length === 2,
-    "an eight-space linux line is matched and rewritten, on both slots",
-    [
-      `expected: 2 linux lines matched and 2 carrying the append`,
-      `actual:   ${eight.matched} matched, ${eight.text.split("\n").filter((l) => l.includes(APPEND)).length} carrying it`,
-      `          ${eight.refusal === "" ? "no refusal" : eight.refusal}`,
-    ].join("\n"),
-  );
-  outer.check(
-    /^ {4}linux /m.test(GRUB_CFG) === false,
-    "the four-space pattern the shell original carried would have matched nothing in that same file",
-    [
-      `expected: /^ {4}linux /m to match nothing -- the template indents with eight`,
-      `actual:   it matched, so this fixture no longer reproduces the measured defect`,
-    ].join("\n"),
-  );
-
-  // (5.4) Zero matches is a refusal that says so. In the shell this guard was
-  // UNREACHABLE: `before=$(grep -c ...)` under `set -e` aborted the shell on a
-  // count of zero, before the guard on the next line could run, so a completely
-  // unmatched pattern presented as a prepare step that printed nothing and
-  // failed. There is no such trap in TypeScript, so what is asserted here is the
-  // semantic: no linux line means an error naming the file and saying the append
-  // would have added nothing.
-  let noLinux: unknown;
-  try {
-    applyKernelAppend("menuentry \"mos slot A\" --id A {\n    echo no kernel here\n}\n", APPEND);
-  } catch (error) {
-    noLinux = error;
-  }
-  outer.check(
-    noLinux instanceof NoLinuxLineError &&
-      noLinux.message.includes(ESP_GRUB_CFG) &&
-      noLinux.message.includes("added nothing"),
-    "a grub.cfg with no linux line is refused, naming the ESP grub.cfg and saying the append would have added nothing",
-    [
-      `expected: NoLinuxLineError naming ${ESP_GRUB_CFG} and "added nothing"`,
-      `actual:   ${noLinux === undefined ? "it returned quietly, and the boot would have looked normal" : String(noLinux)}`,
-    ].join("\n"),
-  );
-  // The positive control: the same call on a file that HAS a linux line must
-  // not throw, or the refusal above is satisfied by a function that always does.
-  let threwOnGoodInput = false;
-  try {
-    applyKernelAppend(GRUB_CFG, APPEND);
-  } catch {
-    threwOnGoodInput = true;
-  }
-  outer.check(
-    threwOnGoodInput === false,
-    "a grub.cfg that does have a linux line is not refused, so the refusal above is specific",
-    `actual:   it threw on a file carrying two linux lines`,
-  );
-
-  // (5.5, last bullet) Idempotency. The append is applied on the prepare AND on
-  // every boot that reuses the disk, so an unconditional one lands the same
-  // arguments two or three times over a run. For forward_to_console=1 a repeat
-  // is the same value twice and costs nothing; for `systemd.run=` systemd takes
-  // each occurrence as another ExecStart and RUNS THE COMMAND AGAIN. Measured
-  // 2026-08-28: a duplicated systemd.run executed the seeded script twice, back
-  // to back, on one boot.
-  const RUN_APPEND = 'systemd.run="/bin/bash /mnt/state/m7-net-smoke.sh"';
-  const once = appended(GRUB_CFG, RUN_APPEND);
-  const twice = appended(once.text, RUN_APPEND);
-  const occurrences = twice.text.split(RUN_APPEND).length - 1;
-  outer.check(
-    once.applied === true && twice.applied === false && twice.text === once.text && occurrences === 2,
-    "applying the same append twice adds it once, so a reuse boot does not run a seeded systemd.run= a second time",
-    [
-      `expected: applied=true then applied=false, the text unchanged, and 2 occurrences (one per slot)`,
-      `actual:   applied=${once.applied} then ${twice.applied}, text ${twice.text === once.text ? "unchanged" : "REWRITTEN"}, ${occurrences} occurrences`,
-    ].join("\n"),
-  );
-
-  // ...and the already-there test is a FIXED STRING, not a pattern. `.` and `*`
-  // are ordinary characters in a kernel command line and are everywhere in
-  // these values; read as a pattern, `systemd.run=x` matches `systemdXrunAx`
-  // and the append is skipped as already present against a line that does not
-  // carry it.
-  const dotDecoy = GRUB_CFG.replace(/vmlinuz/g, "vmlinuz systemdXrun=x");
-  const dot = appended(dotDecoy, "systemd.run=x");
-  outer.check(
-    dot.applied === true && dot.text.includes("systemd.run=x"),
-    "an append carrying `.` is looked for as itself, so a line that matches it only as a pattern does not suppress it",
-    [
-      `expected: applied=true -- the line carries "systemdXrun=x", which is not "systemd.run=x"`,
-      `actual:   applied=${dot.applied}; the append was read as a pattern, matched the decoy and was skipped`,
-    ].join("\n"),
-  );
-  const starDecoy = GRUB_CFG.replace(/vmlinuz/g, "vmlinuz mos.debug=b");
-  const star = appended(starDecoy, "mos.debug=a*b");
-  outer.check(
-    star.applied === true && star.text.includes("mos.debug=a*b"),
-    "an append carrying `*` is likewise a literal: a line it would match only as a pattern is still appended to",
-    [
-      `expected: applied=true -- the line carries "mos.debug=b", which "a*b" matches only as a pattern`,
-      `actual:   applied=${star.applied}; the append was read as a pattern and skipped`,
-    ].join("\n"),
-  );
-
+  requireSignedInputs("disk", "cert", undefined);
+  outer.check(true, "explicit image and public boot certificate are accepted", "current signed boot inputs");
   // (5.6) The per-architecture machine/firmware/emulator table, added when this
   // harness stopped being x64's. Pure, so it belongs in this phase: it is a
   // lookup over a board's declared MOS_ARCH and nothing about it needs a

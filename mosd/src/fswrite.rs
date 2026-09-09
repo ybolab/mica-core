@@ -11,7 +11,7 @@
 //!   * a bound FILE -- /etc/hostname, the only one. The file is writable and
 //!     the squashfs directory around it is not, so no temporary file can be
 //!     created beside it. rename(2) onto it fails with EBUSY because it is a
-//!     mount point. And renaming over the SOURCE, /mnt/state/hostname, swaps
+//!     mount point. And renaming over the SOURCE, /mnt/data/state/hostname, swaps
 //!     the inode: the bind at /etc/hostname keeps pointing at the old one, so
 //!     the write succeeds, the file is right, and reading /etc/hostname still
 //!     gives the previous value until the next mount. That last failure passes

@@ -19,11 +19,10 @@ use zbus::message::Header;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 
 use crate::apply_queue::{ApplyJob, ApplyQueue, TaskRecord};
-use crate::confirmed_boot::ConfirmedBootStore;
+use crate::deployment::{self, DeploymentClient, NativeClient};
 use crate::diagnostics::{FailureEvidenceSource, UnavailableFailureEvidence};
 use crate::network_state::{NetworkState, UnavailableNetworkState};
 use crate::power::PowerControl;
-use crate::rauc::{self, RaucClient};
 use crate::reconciler::Reconciler;
 use crate::reconciler::network::WireguardRotate;
 use crate::scan::Registry;
@@ -39,7 +38,6 @@ use crate::update_lifecycle::{
     UpdateLifecycle,
 };
 use crate::update_policy::{LoadedPolicy, PolicyStore};
-use crate::update_suppress::{Suppression, SuppressionStore};
 
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mos.mosd";
@@ -80,23 +78,8 @@ pub struct MosdService {
     store: Store,
     reconcilers: Arc<Vec<Box<dyn Reconciler>>>,
     power: Box<dyn PowerControl>,
-    /// The update installer (RAUC) client. `Arc` rather than `Box` because a
-    /// running install outlives the bus call that started it: the background
-    /// task holds its own handle. Defaults to [`rauc::DryRunRauc`]; production
-    /// swaps in the real client via [`Self::with_rauc`].
-    rauc: Arc<dyn RaucClient>,
-    /// mosd's own confirmed-boot record (PLAN-071 §7): the observation that
-    /// this daemon ran from a slot, and the order it observed the two
-    /// installs in. Written on every update-state refresh — once per install,
-    /// not once per poll — and read by the rollback guard, which orders the
-    /// two installs by it in preference to the clock they were installed
-    /// under. Defaults to [`ConfirmedBootStore::none`], which observes
-    /// nothing: only `main.rs` knows there is a STATE partition to write to.
-    confirmed_boots: ConfirmedBootStore,
-    /// True while a bundle install is in flight. `InstallUpdate` refuses a
-    /// second install rather than queueing it: RAUC itself answers
-    /// `AlreadyInstalling` to a concurrent request, and refusing here keeps
-    /// the recorded `update.install` entry describing exactly one operation.
+    deployments: Arc<dyn DeploymentClient>,
+    /// Shared interlock for install admission and reboot refusal.
     installing: Arc<AtomicBool>,
     shadow_path: PathBuf,
     /// `Arc` so the install background task can record its outcome into the
@@ -172,7 +155,7 @@ struct InnerLifecycleHost(Arc<RwLock<Inner>>);
 impl LifecycleHost for InnerLifecycleHost {
     async fn record(&self, lifecycle: Value) {
         let mut inner = self.0.write().await;
-        rauc::update_entry(&mut inner.state).insert("lifecycle".into(), lifecycle);
+        update_entry(&mut inner.state).insert("lifecycle".into(), lifecycle);
         drop(inner);
     }
 
@@ -186,9 +169,19 @@ impl LifecycleHost for InnerLifecycleHost {
     }
 }
 
+fn update_entry(state: &mut Value) -> &mut serde_json::Map<String, Value> {
+    state
+        .as_object_mut()
+        .expect("live-state root is always an object")
+        .entry("update")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .expect("update is always an object")
+}
+
 /// The rotation a daemon with no key store has: none.
 ///
-/// The dry-run shape [`rauc::DryRunRauc`] and [`crate::power::DryRunPower`]
+/// The dry-run shape [`NoClient`] and [`crate::power::DryRunPower`]
 /// both take — a default that cannot touch the host, so only `main.rs`, which
 /// alone knows the daemon is running on a device, can attach one that can.
 struct NoRotation;
@@ -228,8 +221,7 @@ impl MosdService {
             store,
             reconcilers: Arc::new(reconcilers),
             power,
-            rauc: Arc::new(rauc::DryRunRauc),
-            confirmed_boots: ConfirmedBootStore::none(),
+            deployments: Arc::new(NativeClient::new(Arc::new(NoClient))),
             installing,
             shadow_path,
             inner,
@@ -296,55 +288,30 @@ impl MosdService {
         }
     }
 
-    /// Attach the update client and policy store, rebuilding the lifecycle
-    /// around them. A builder step for the reason [`Self::with_rauc`] is: the
-    /// defaults touch nothing on the host, and only `main.rs` knows the
-    /// daemon runs on a device with a client binary and a policy file.
+    /// Attach the native command transport and operator policy.
     #[must_use]
-    pub fn with_update(
-        mut self,
-        client: Arc<dyn UpdateClient>,
-        policy: PolicyStore,
-        suppression: SuppressionStore,
-    ) -> Self {
-        self.update = Arc::new(
-            UpdateLifecycle::new(
-                client,
-                policy,
-                Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
-                Arc::clone(&self.installing),
-                self.update.workspace_root().to_path_buf(),
-            )
-            .with_suppression(suppression),
-        );
+    pub fn with_update(mut self, client: Arc<dyn UpdateClient>, policy: PolicyStore) -> Self {
+        self.deployments = Arc::new(NativeClient::new(Arc::clone(&client)));
+        self.update = Arc::new(UpdateLifecycle::new(
+            client,
+            policy,
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+            self.update.workspace_root().to_path_buf(),
+        ));
         self
     }
 
-    /// Attach the confirmed-boot record on STATE, for
-    /// [`Self::with_update`]'s reason: the default writes nothing at all, and
-    /// only `main.rs` knows the daemon has a STATE partition under it.
-    #[must_use]
-    pub fn with_confirmed_boots(mut self, boots: ConfirmedBootStore) -> Self {
-        self.confirmed_boots = boots;
-        self
-    }
-
-    /// Relocate the `/mos/updates` workspace the lifecycle records `ready`
-    /// paths from and admits installs from. Tests only (the client's
-    /// `RAUC_UPDATE_ROOT`, which `main.rs` forwards); the default is the
-    /// contract.
+    #[cfg(test)]
     #[must_use]
     pub fn with_update_workspace(mut self, root: PathBuf) -> Self {
-        self.update = Arc::new(
-            UpdateLifecycle::new(
-                self.update.client(),
-                self.update.policy(),
-                Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
-                Arc::clone(&self.installing),
-                root,
-            )
-            .with_suppression(self.update.suppression()),
-        );
+        self.update = Arc::new(UpdateLifecycle::new(
+            self.update.client(),
+            self.update.policy(),
+            Arc::new(InnerLifecycleHost(Arc::clone(&self.inner))),
+            Arc::clone(&self.installing),
+            root,
+        ));
         self
     }
 
@@ -355,7 +322,7 @@ impl MosdService {
 
     /// Attach the WireGuard key rotation.
     ///
-    /// A builder step for the same reason [`Self::with_rauc`] is: the default
+    /// A builder step for the same reason [`Self::with_update`] is: the default
     /// touches nothing, and a test that has no state directory must not be
     /// able to draw a key into one.
     #[must_use]
@@ -416,16 +383,10 @@ impl MosdService {
         self
     }
 
-    /// Attach the update installer client.
-    ///
-    /// A builder step rather than a [`Self::new`] parameter for the same
-    /// reason as [`Self::with_service_registry`]: the default —
-    /// [`rauc::DryRunRauc`], which never touches the host — is the correct
-    /// client for every test, and only `main.rs` ever has a production
-    /// [`rauc::Rauc`] to hand over.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_rauc(mut self, rauc: Arc<dyn RaucClient>) -> Self {
-        self.rauc = rauc;
+    pub fn with_deployments(mut self, deployments: Arc<dyn DeploymentClient>) -> Self {
+        self.deployments = deployments;
         self
     }
 
@@ -464,7 +425,7 @@ impl MosdService {
     }
 
     /// Log a power request from `sender` and record it in the live-state tree
-    /// under `power`, with `update_warning` — an unconfirmed-slot warning, when
+    /// under `power`, with `update_warning` — an unconfirmed-deployment warning, when
     /// there is one — recorded beside it (absent key when there is none, the
     /// same convention the settings tree uses for optional values).
     ///
@@ -485,76 +446,33 @@ impl MosdService {
         drop(inner);
     }
 
-    /// The booted slot for the system-information surface, or `None`.
-    ///
-    /// Bounded and non-fatal, [`Self::reboot_update_warning`]'s reasoning:
-    /// an installer that is absent, wedged or slow makes the `slot` member
-    /// absent with a reason, never the whole answer. Failures are logged.
-    async fn slot_evidence(&self) -> Option<system_info::SlotEvidence> {
-        const SLOT_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
-        let query = async {
-            let slots = self.rauc.slot_status().await?;
-            let primary = self.rauc.primary().await?;
-            anyhow::Ok((slots, primary))
-        };
-        match tokio::time::timeout(SLOT_QUERY_TIMEOUT, query).await {
-            Ok(Ok((slots, primary))) => Some(system_info::SlotEvidence {
-                booted: rauc::booted_slot(&slots).cloned(),
-                primary,
-            }),
-            Ok(Err(err)) => {
-                tracing::debug!(error = %err, "slot status unavailable for system info");
+    /// Read authenticated deployment evidence without delaying unrelated power or information calls.
+    async fn deployment_evidence(&self) -> Option<deployment::Status> {
+        match tokio::time::timeout(Duration::from_secs(2), self.deployments.status()).await {
+            Ok(Ok(status)) => Some(status),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "deployment status unavailable");
                 None
             }
             Err(_) => {
-                tracing::warn!(
-                    timeout = ?SLOT_QUERY_TIMEOUT,
-                    "rauc did not answer the system-info slot query in time"
-                );
+                tracing::warn!("deployment query timed out");
                 None
             }
         }
     }
 
-    /// The unconfirmed-slot warning a reboot should carry, or `None`.
-    ///
-    /// Read fresh from RAUC rather than from the live-state tree: the recorded
-    /// `update` entry is only as new as the last query, and the whole point of
-    /// warning is the install that just happened.
-    ///
-    /// Bounded and non-fatal BY DESIGN: a reboot must go through even when
-    /// RAUC is absent (v1 image, container, dry-run), wedged, or slow — a
-    /// power action that hangs on an installer is strictly worse than one that
-    /// misses a warning. Failures are logged and answered with `None`.
     async fn reboot_update_warning(&self) -> Option<String> {
-        const SLOT_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
-        let query = async {
-            let slots = self.rauc.slot_status().await?;
-            let primary = self.rauc.primary().await?;
-            anyhow::Ok((slots, primary))
-        };
-        match tokio::time::timeout(SLOT_QUERY_TIMEOUT, query).await {
-            Ok(Ok((slots, primary))) => rauc::unconfirmed_slot_warning(&slots, primary.as_deref()),
-            Ok(Err(err)) => {
-                tracing::debug!(error = %err, "slot status unavailable before reboot; proceeding");
-                None
-            }
-            Err(_) => {
-                tracing::warn!(
-                    timeout = ?SLOT_QUERY_TIMEOUT,
-                    "rauc did not answer the pre-reboot slot query in time; proceeding"
-                );
-                None
-            }
-        }
+        let status = self.deployment_evidence().await?;
+        let (phase, reason) = status.phase();
+        matches!(phase, "reboot-required" | "validating").then_some(reason)
     }
 
     /// Reboot the machine on behalf of `sender`.
     ///
-    /// Update-aware: the slot status is read first, and a slot that is
+    /// Update-aware: the deployment status is read first, and a deployment that is
     /// installed-but-not-confirmed — a reboot into it burns one of its
     /// boot attempts — is logged and recorded in the `power` live-state entry
-    /// BEFORE the reboot fires. A warning, not a refusal: booting the new slot
+    /// BEFORE the reboot fires. A warning, not a refusal: booting the new deployment
     /// is exactly what the operator installing an update wants, and the
     /// attempt-burning edge case (rebooting *again* before the health gate
     /// confirms) is one the operator must be able to drive through anyway.
@@ -563,8 +481,8 @@ impl MosdService {
     /// forging a message header.
     pub async fn request_reboot(&self, sender: &str) -> fdo::Result<()> {
         // The safe-to-reboot interlock, and the one REFUSAL on this path.
-        // Distinct from the unconfirmed-slot warning below, which stays a
-        // warning: booting a fresh slot is what an updating operator wants,
+        // Distinct from the unconfirmed-deployment warning below, which stays a
+        // warning: booting a fresh deployment is what an updating operator wants,
         // while rebooting through an application's declared blocking work —
         // or through an install mid-write — is what nobody wants. The gate
         // opens by the reporter clearing its status, the install finishing,
@@ -575,7 +493,7 @@ impl MosdService {
         }
         let warning = self.reboot_update_warning().await;
         if let Some(warning) = &warning {
-            tracing::warn!(warning, "rebooting with an unconfirmed update slot");
+            tracing::warn!(warning, "rebooting with an unconfirmed deployment");
         }
         self.note_power_request("reboot", sender, warning).await;
         self.power
@@ -586,7 +504,7 @@ impl MosdService {
 
     /// Power the machine off on behalf of `sender`.
     ///
-    /// No unconfirmed-slot warning here, deliberately: a power-off does not
+    /// No unconfirmed-deployment warning here, deliberately: a power-off does not
     /// boot anything, so it spends no boot attempt. The attempt is spent by
     /// whatever powers the machine back ON, which is not an event mosd can
     /// see, let alone warn about.
@@ -598,226 +516,128 @@ impl MosdService {
             .map_err(|err| fdo::Error::Failed(format!("power off: {err}")))
     }
 
-    /// Install the update bundle at absolute path `bundle_path`, on behalf of
-    /// `sender`. Validates the path, refuses a concurrent install, records
-    /// `update.install` as `running`, and returns — the install itself runs on
-    /// a background task that records `done`/`failed` (plus a fresh status
-    /// query) when RAUC reports completion. Neither the service lock nor the
-    /// bus dispatcher is held across the install.
-    ///
-    /// Split out from the D-Bus method so unit tests can drive it without
-    /// forging a message header.
-    pub async fn request_install(&self, sender: &str, bundle_path: &str) -> fdo::Result<()> {
-        // The maintenance-window policy: installs run only when the window
-        // (when one is configured) is open. Before the path validation so a
-        // refused operator learns the real reason first.
+    /// Admit a verified descriptor and record the asynchronous native installation.
+    pub async fn request_install(&self, sender: &str, descriptor_path: &str) -> fdo::Result<()> {
         if let Some(refusal) = self.update.install_refusal().await {
-            tracing::warn!(sender, refusal, "install refused by update policy");
             return Err(fdo::Error::AccessDenied(refusal));
         }
-        let bundle = rauc::validate_bundle_path(bundle_path).map_err(fdo::Error::InvalidArgs)?;
-        // Only a verified bundle is handed to RAUC: a regular file inside
-        // /mos/updates/verified, never a `.part`, never a file anywhere else
-        // — the same rule for the staged path and an operator's explicit one.
+        let descriptor = PathBuf::from(descriptor_path);
         self.update
-            .installable(&bundle)
+            .installable(&descriptor)
             .map_err(fdo::Error::InvalidArgs)?;
-        // PLAN-049's reserved update workspace, enforced at the one seam
-        // where mos consumes DATA space for an update: the bundle staged
-        // there before this call names it. An install admitted onto a DATA
-        // tier with no workspace left is the failure the reservation exists
-        // to prevent, and it is cheaper to refuse here than halfway through
-        // writing a slot.
-        //
-        // A daemon whose observer sees nothing refuses nothing; see
-        // `storage_status::install_refusal`.
-        if let Ok(evidence) = self.storage_status.observe().await {
-            let bundle_bytes = std::fs::metadata(&bundle)
-                .map(|meta| meta.len())
-                .unwrap_or(0);
-            if let Some(refusal) =
-                storage_status::install_refusal(evidence.data_tier(), &bundle, bundle_bytes)
-            {
-                return Err(fdo::Error::Failed(refusal));
-            }
-        }
-        // The in-flight flag is taken BEFORE anything is recorded, in one
-        // compare-exchange, so two racing calls cannot both proceed. It is
-        // released only by the background task — including on install failure —
-        // so an early return below must not happen after this point without
-        // clearing it (there is none: the spawn is infallible).
         if self
             .installing
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return Err(fdo::Error::Failed(
-                "an update install is already running; query GetUpdateState and retry".into(),
+                "an update install is already running".into(),
             ));
         }
-        tracing::warn!(bundle = %bundle.display(), sender, "update install requested");
-        let started = serde_json::json!({
-            "status": "running",
-            "bundle": bundle.to_string_lossy(),
-            "requested_by": sender,
-        });
-        let mut inner = self.inner.write().await;
-        rauc::update_entry(&mut inner.state).insert("install".into(), started);
-        drop(inner);
-
-        let rauc_client = Arc::clone(&self.rauc);
+        let id = descriptor
+            .file_stem()
+            .expect("validated descriptor")
+            .to_string_lossy()
+            .into_owned();
+        tracing::warn!(deployment_id = id, sender, "deployment install requested");
+        update_entry(&mut self.inner.write().await.state).insert(
+            "install".into(),
+            serde_json::json!({"status":"running","deploymentId":id,"requested_by":sender}),
+        );
+        let client = Arc::clone(&self.deployments);
         let inner = Arc::clone(&self.inner);
         let installing = Arc::clone(&self.installing);
-        let time_status = Arc::clone(&self.time_status);
-        let confirmed_boots = self.confirmed_boots.clone();
-        let sender = sender.to_string();
+        let lifecycle = Arc::clone(&self.update);
+        let sender = sender.to_owned();
         tokio::spawn(async move {
-            let result = rauc_client.install_bundle(&bundle).await;
-            let outcome = match &result {
+            let outcome = match client.install(&descriptor).await {
                 Ok(()) => {
-                    tracing::info!(bundle = %bundle.display(), "update install finished");
-                    serde_json::json!({
-                        "status": "done",
-                        "bundle": bundle.to_string_lossy(),
-                        "requested_by": sender,
-                    })
+                    serde_json::json!({"status":"done","deploymentId":id,"requested_by":sender})
                 }
-                Err(err) => {
-                    tracing::error!(bundle = %bundle.display(), error = %err, "update install failed");
-                    // PLAN-078 §5's diagnostic mitigation, and it is only a
-                    // diagnostic: there is no cryptographic answer to a wrong
-                    // clock. RAUC verifies a signer's window against the clock
-                    // of the process doing the verifying, so a device with a
-                    // grossly wrong RTC refuses every valid signer with the
-                    // same sentence a real expiry produces. The facts are
-                    // gathered here, while the failure is fresh, because a
-                    // clock read minutes later by a separate query is a
-                    // different clock.
-                    //
-                    // Read SOFTLY: a status source that does not answer leaves
-                    // the member absent rather than turning a failed install
-                    // into a failed record. Absent evidence is not evidence of
-                    // a good clock, and install_failure_time_facts treats it
-                    // as such.
-                    let observed = time_status
-                        .observe()
-                        .await
-                        .ok()
-                        .map(|evidence| status_json(&evidence));
-                    let error = format!("{err:#}");
-                    let facts = rauc::install_failure_time_facts(
-                        &error,
-                        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                        observed,
-                    );
-                    // PLAN-076 B4: the class beside the sentence. RAUC's
-                    // vocabulary is RAUC's, so most failures land on
-                    // `unknown` and that is the honest answer — the words are
-                    // in `error` and in the log line above, and a consumer
-                    // reading `error_code` never has to decide whether what it
-                    // got is a code or a message.
-                    serde_json::json!({
-                        "status": "failed",
-                        "bundle": bundle.to_string_lossy(),
-                        "requested_by": sender,
-                        "error": error,
-                        "error_code": update_codes::rauc_error_code(&error),
-                        "time": facts,
-                    })
+                Err(error) => {
+                    tracing::error!(deployment_id = id, %error, "deployment install failed");
+                    serde_json::json!({"status":"failed","deploymentId":id,"requested_by":sender,
+                        "error":format!("{error:#}"),"error_code":update_codes::CLIENT_EXIT_FAILURE})
                 }
             };
-            // Refresh the whole update entry while the outcome is fresh, so
-            // the recorded slots show what the install just changed. Best
-            // effort: the install outcome above is recorded either way.
-            let refreshed = rauc::query(rauc_client.as_ref()).await.ok();
-            // The observation is about the slot this daemon is RUNNING from,
-            // which an install does not change; recording it here keeps the
-            // guard in this refresh reading the same record as the one in
-            // `refresh_update_state`.
-            let boots = refreshed.as_ref().map_or_else(Default::default, |query| {
-                confirmed_boots.observe(&query.slots)
-            });
-            let mut inner = inner.write().await;
-            let entry = rauc::update_entry(&mut inner.state);
+            let status = client.status().await.ok();
+            let mut guard = inner.write().await;
+            let entry = update_entry(&mut guard.state);
             entry.insert("install".into(), outcome);
-            if let Some(refreshed) = &refreshed {
-                refreshed.merge_into(entry, &boots);
+            if let Some(status) = &status
+                && let Err(error) = status.merge_into(entry)
+            {
+                tracing::error!(%error, "deployment status encoding failed");
             }
-            drop(inner);
-            // Release the flag only after the outcome is recorded: a caller
-            // admitted at this point sees `done`/`failed`, never a stale
-            // `running` beside an idle flag.
+            drop(guard);
             installing.store(false, Ordering::Release);
+            if let Some(status) = status {
+                lifecycle.installed(&status).await;
+            }
         });
         Ok(())
     }
 
-    /// Query RAUC's operation, last error, progress, slot statuses and primary
-    /// slot; record them under `update` in the live-state tree; return the
-    /// recorded entry as JSON.
-    ///
-    /// The queries run WITHOUT the service lock — a wedged installer must not
-    /// stall every other bus method — and the lock is taken only for the
-    /// merge. On a query failure nothing is recorded (the last known entry
-    /// stays) and the error goes to the caller, who is the one polling and can
-    /// tell staleness from absence.
+    /// Refresh every deployment fact from the authenticated native backend.
     pub async fn refresh_update_state(&self) -> fdo::Result<String> {
-        let query = rauc::query(self.rauc.as_ref())
+        let status = self
+            .deployments
+            .status()
             .await
-            .map_err(|err| fdo::Error::Failed(format!("query rauc: {err:#}")))?;
-        // Re-derive the lifecycle entry from the same fresh slots, so the
-        // answered `lifecycle` (recorded through the host before the merge
-        // below) is exactly as new as the slot facts beside it.
-        self.update
-            .refresh(&query.slots, query.primary.as_deref())
-            .await;
-        // mosd's own confirmed-boot fact, written before the guard below
-        // reads it: the slot this daemon is running from carries a system
-        // that booted, and the order those observations fall in is what the
-        // rollback guard orders the two installs by (PLAN-071 §7).
-        let boots = self.confirmed_boots.observe(&query.slots);
+            .map_err(|error| fdo::Error::Failed(format!("query deployments: {error:#}")))?;
+        self.update.refresh(&status).await;
         let mut inner = self.inner.write().await;
-        let entry = rauc::update_entry(&mut inner.state);
-        query.merge_into(entry, &boots);
-        let rendered = Value::Object(entry.clone()).to_string();
-        drop(inner);
-        Ok(rendered)
+        let entry = update_entry(&mut inner.state);
+        status
+            .merge_into(entry)
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        Ok(Value::Object(entry.clone()).to_string())
     }
 
-    /// Manually mark a slot `good` or `bad`, on behalf of `sender`; answers
-    /// RAUC's `(slot_name, message)`.
-    ///
-    /// The operator escape hatch over the boot health gate (`mos-health`),
-    /// which owns the automatic confirm — see `crate::rauc`'s module docs for
-    /// why mosd never marks anything on its own. `state` is validated down to
-    /// `good`/`bad` and `slot` to `booted`/`other` BEFORE RAUC is asked;
-    /// activation (`active`) is the installer's job and is not offered.
-    pub async fn request_mark(
+    /// Explicit operator action; automatic confirmation belongs to the boot health gate.
+    pub async fn request_deployment_action(
         &self,
         sender: &str,
-        state: &str,
-        slot: &str,
-    ) -> fdo::Result<(String, String)> {
-        rauc::validate_mark(state, slot).map_err(fdo::Error::InvalidArgs)?;
-        tracing::warn!(state, slot, sender, "manual slot mark requested");
-        let (slot_name, message) = self
-            .rauc
-            .mark(state, slot)
+        action: &str,
+        id: &str,
+    ) -> fdo::Result<()> {
+        if !deployment::valid_id(id) || !matches!(action, "confirm" | "reject" | "rollback") {
+            return Err(fdo::Error::InvalidArgs(
+                "invalid deployment action or ID".into(),
+            ));
+        }
+        if self.installing.load(Ordering::Acquire) {
+            return Err(fdo::Error::Failed("an update install is running".into()));
+        }
+        let status = self
+            .deployments
+            .status()
             .await
-            .map_err(|err| fdo::Error::Failed(format!("rauc mark: {err:#}")))?;
-        let mut inner = self.inner.write().await;
-        rauc::update_entry(&mut inner.state).insert(
-            "last_mark".into(),
-            serde_json::json!({
-                "state": state,
-                "slot": slot,
-                "slot_name": slot_name,
-                "message": message,
-                "requested_by": sender,
-            }),
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        if action != "reject" && status.boot.deployment_id != id {
+            return Err(fdo::Error::InvalidArgs(
+                "action must name the running deployment".into(),
+            ));
+        }
+        tracing::warn!(
+            sender,
+            action,
+            deployment_id = id,
+            "manual deployment action requested"
         );
-        drop(inner);
-        Ok((slot_name, message))
+        match action {
+            "confirm" => self.deployments.confirm().await,
+            "reject" => self.deployments.reject(id).await,
+            "rollback" => self.deployments.rollback().await,
+            _ => unreachable!("validated action"),
+        }
+        .map_err(|error| fdo::Error::Failed(format!("{action}: {error:#}")))?;
+        update_entry(&mut self.inner.write().await.state).insert(
+            "last_action".into(),
+            serde_json::json!({"action":action,"deploymentId":id,"requested_by":sender}),
+        );
+        self.refresh_update_state().await?;
+        Ok(())
     }
 
     /// The clock-trust evidence PLAN-071 §7's automatic-install predicate
@@ -1190,7 +1010,7 @@ fn to_bus_error(err: SettingsError) -> SettingsFault {
         SettingsError::Io(_) | SettingsError::Unavailable { .. } => {
             SettingsFault::Fdo(fdo::Error::IOError(err.to_string()))
         }
-        SettingsError::Parse(_) | SettingsError::Migration(_) => {
+        SettingsError::Parse(_) | SettingsError::SchemaVersion(_) => {
             SettingsFault::Fdo(fdo::Error::Failed(err.to_string()))
         }
     }
@@ -1380,10 +1200,10 @@ impl MosdService {
 
     /// JSON system information (PLAN-052): machine id, board, kernel,
     /// release, the image version with its git stamp and build date, the
-    /// installed packages, the booted slot and the uptime — every one read
+    /// installed packages, the running deployment and the uptime — every one read
     /// at call time from the seam that already carries it, none restated.
     ///
-    /// Observed rather than stored, the `uptime` reasoning again: the slot
+    /// Observed rather than stored, the `uptime` reasoning again: the deployment
     /// and the uptime move without any settings write. Read-only.
     async fn get_system_info(&self) -> Result<String, SettingsFault> {
         let evidence = self.system_info.observe().await.map_err(|err| {
@@ -1391,10 +1211,10 @@ impl MosdService {
                 "observe system information: {err:#}"
             )))
         })?;
-        let slot = self.slot_evidence().await;
+        let deployment = self.deployment_evidence().await;
         Ok(system_info::info_json(
             &evidence,
-            slot.as_ref(),
+            deployment.as_ref(),
             &system_info::DaemonIdentity::this_build(),
         )
         .to_string())
@@ -1527,51 +1347,57 @@ impl MosdService {
         self.request_power_off(sender_of(&header)).await
     }
 
-    /// Install the update bundle at absolute path `bundle_path` through RAUC.
-    ///
-    /// Exported as `InstallUpdate`. Answers as soon as the install has been
-    /// validated, recorded and handed to a background task; progress and the
-    /// outcome are read back through `GetUpdateState` (or the `update` subtree
-    /// of `GetState`). Refuses a relative path, a path that does not name an
-    /// existing regular file, a path outside `/mos/updates/verified` or a
-    /// `.part` (`InvalidArgs`: only a verified bundle is handed to RAUC), and
-    /// a second install while one runs.
+    /// Install a signed deployment already verified in the acquisition workspace.
     async fn install_update(
         &self,
         #[zbus(header)] header: Header<'_>,
-        bundle_path: &str,
+        deployment_id: &str,
     ) -> fdo::Result<()> {
-        self.request_install(sender_of(&header), bundle_path).await
+        if !deployment::valid_id(deployment_id) {
+            return Err(fdo::Error::InvalidArgs("invalid deployment ID".into()));
+        }
+        let path = self
+            .update
+            .verified_dir()
+            .join(format!("{deployment_id}.json"));
+        self.request_install(sender_of(&header), &path.to_string_lossy())
+            .await
     }
 
-    /// Query RAUC and answer the JSON-encoded `update` live-state entry:
-    /// operation, last error, progress, per-slot status, booted slot, primary
-    /// slot and the pending-not-confirmed flag, plus whatever `install` /
-    /// `last_mark` entries earlier calls recorded.
-    ///
-    /// Exported as `GetUpdateState`. Unlike `GetState("update")`, which
-    /// answers from the tree as last recorded, this asks RAUC first — the
-    /// polling surface for a UI watching an install.
+    /// Refresh native boot, deployment and rollback evidence, retaining the
+    /// installation, action and acquisition lifecycle records.
     async fn get_update_state(&self) -> fdo::Result<String> {
         self.refresh_update_state().await
     }
 
-    /// Manually mark a slot: `state` is `good` or `bad`, `slot` is `booted`
-    /// or `other`. Answers RAUC's `(slot_name, message)`.
-    ///
-    /// Exported as `MarkUpdate`. The manual escape hatch for the case the
-    /// boot health gate cannot decide (its automatic mark-good is the gate's
-    /// job, not mosd's); see `crate::rauc` for the split.
-    async fn mark_update(
+    async fn confirm_deployment(
         &self,
         #[zbus(header)] header: Header<'_>,
-        state: &str,
-        slot: &str,
-    ) -> fdo::Result<(String, String)> {
-        self.request_mark(sender_of(&header), state, slot).await
+        deployment_id: &str,
+    ) -> fdo::Result<()> {
+        self.request_deployment_action(sender_of(&header), "confirm", deployment_id)
+            .await
     }
 
-    /// Run an update metadata check (`rauc-update sync` + `check`) on a
+    async fn reject_deployment(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        deployment_id: &str,
+    ) -> fdo::Result<()> {
+        self.request_deployment_action(sender_of(&header), "reject", deployment_id)
+            .await
+    }
+
+    async fn rollback_deployment(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        deployment_id: &str,
+    ) -> fdo::Result<()> {
+        self.request_deployment_action(sender_of(&header), "rollback", deployment_id)
+            .await
+    }
+
+    /// Run an update metadata check (`mos-deploy sync` + `check`) on a
     /// background task.
     ///
     /// Exported as `CheckUpdate`. Answers as soon as the check is admitted;
@@ -1587,8 +1413,8 @@ impl MosdService {
             .map_err(refusal_to_fdo)
     }
 
-    /// Download the selected bundle (`rauc-update fetch`) on a background
-    /// task; on success the verified bundle path is recorded and the
+    /// Download the selected descriptor (`mos-deploy fetch`) on a background
+    /// task; on success the verified descriptor path is recorded and the
     /// lifecycle state becomes `ready`.
     ///
     /// Exported as `FetchUpdate`. The same admission and refusal shape as
@@ -1614,32 +1440,6 @@ impl MosdService {
         let record = self
             .update
             .set_reboot_override(sender_of(&header), u64::from(seconds))
-            .await
-            .map_err(refusal_to_fdo)?;
-        Ok(record.to_string())
-    }
-
-    /// Clear PLAN-071 §6's suppression on `version`; answers the record that
-    /// was removed, as JSON.
-    ///
-    /// Exported as `ClearUpdateSuppression`. A version is suppressed when
-    /// the slot it was installed into exhausted its boot attempts and the
-    /// device fell back, and the automatic path then refuses to select it
-    /// again — a *manual* install is never refused, so this method lifts a
-    /// restriction on the machine and not on the operator.
-    ///
-    /// Explicit by construction: the version is named, and there is no
-    /// member that empties the store. `InvalidArgs` when the version is not
-    /// suppressed, so a typo cannot read as a successful clearing. Audited
-    /// on both sides — mosd logs who cleared what, apid records the event.
-    async fn clear_update_suppression(
-        &self,
-        #[zbus(header)] header: Header<'_>,
-        version: &str,
-    ) -> fdo::Result<String> {
-        let record = self
-            .update
-            .clear_suppression(sender_of(&header), version)
             .await
             .map_err(refusal_to_fdo)?;
         Ok(record.to_string())
@@ -1819,7 +1619,7 @@ pub trait ServedDaemon: Send + Sync {
     async fn update_state(&self) -> fdo::Result<String>;
 
     /// The `InstallUpdate` route, with every gate it answers an operator with.
-    async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()>;
+    async fn install(&self, sender: &str, descriptor: &str) -> fdo::Result<()>;
 
     /// The `Reboot` route, honouring the safe-to-reboot gate.
     async fn reboot(&self, sender: &str) -> fdo::Result<()>;
@@ -1834,8 +1634,8 @@ impl ServedDaemon for InterfaceRef<MosdService> {
         self.get().await.refresh_update_state().await
     }
 
-    async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()> {
-        self.get().await.request_install(sender, bundle).await
+    async fn install(&self, sender: &str, descriptor: &str) -> fdo::Result<()> {
+        self.get().await.request_install(sender, descriptor).await
     }
 
     async fn reboot(&self, sender: &str) -> fdo::Result<()> {
@@ -1903,20 +1703,21 @@ impl<S: ServedDaemon + 'static> AutoRoutes for BusRoutes<S> {
     }
 
     async fn staged(&self) -> Option<String> {
-        self.lifecycle.staged_bundle().await
+        self.lifecycle.staged_descriptor().await
     }
 
     async fn discard_staged(&self, why: &str) {
-        self.lifecycle.discard_bundle(why).await;
+        self.lifecycle.discard_descriptor(why).await;
     }
 
     async fn facts(&self) -> Option<UpdateFacts> {
         let entry = self.update_state().await?;
         Some(UpdateFacts {
             reboot_pending: entry
-                .get("pending_not_confirmed")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .pointer("/state/candidate")
+                .is_some_and(Value::is_string)
+                || entry.pointer("/lifecycle/state").and_then(Value::as_str)
+                    == Some("reboot-required"),
             install_status: entry
                 .pointer("/install/status")
                 .and_then(Value::as_str)
@@ -1924,9 +1725,9 @@ impl<S: ServedDaemon + 'static> AutoRoutes for BusRoutes<S> {
         })
     }
 
-    async fn install(&self, sender: &str, bundle: &str) -> Result<(), String> {
+    async fn install(&self, sender: &str, descriptor: &str) -> Result<(), String> {
         self.service
-            .install(sender, bundle)
+            .install(sender, descriptor)
             .await
             .map_err(|err| err.to_string())
     }
@@ -1936,10 +1737,6 @@ impl<S: ServedDaemon + 'static> AutoRoutes for BusRoutes<S> {
             .reboot(sender)
             .await
             .map_err(|err| err.to_string())
-    }
-
-    async fn suppression(&self, version: &str) -> Result<Option<Suppression>, String> {
-        self.lifecycle.suppression_for(version)
     }
 
     async fn clock(&self) -> ClockTrust {
@@ -2009,10 +1806,79 @@ mod tests {
         BusRoutes, DocumentRefusal, Inner, MosdService, ServedDaemon, fdo, paths_overlap,
         record_policy_action, run_apply_worker,
     };
-    use crate::confirmed_boot::ConfirmedBootStore;
+    use crate::deployment::{DeploymentClient, Status};
     use crate::power::MockPower;
-    use crate::rauc::{MockRauc, SlotStatus};
     use crate::update_lifecycle::Refusal;
+
+    struct MockDeployments {
+        calls: CallLog,
+        status: Status,
+        install_error: Option<String>,
+        install_gate: Option<Arc<tokio::sync::Notify>>,
+        queries_fail: bool,
+    }
+
+    impl Default for MockDeployments {
+        fn default() -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                status: native_status(),
+                install_error: None,
+                install_gate: None,
+                queries_fail: false,
+            }
+        }
+    }
+
+    fn native_status() -> Status {
+        Status::parse(&crate::deployment::tests::fixture().to_string()).unwrap()
+    }
+
+    fn pending_status() -> Status {
+        let mut status = native_status();
+        let mut candidate = status.deployments[0].clone();
+        candidate.id = "e".repeat(64);
+        candidate.generation = 3;
+        candidate.tries_left = Some(3);
+        candidate.file = format!("mos-{}+3.conf", candidate.id);
+        status.state.candidate = Some(candidate.id.clone());
+        status.state.highest_generation = 3;
+        status.deployments.push(candidate);
+        status
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentClient for MockDeployments {
+        async fn status(&self) -> anyhow::Result<Status> {
+            anyhow::ensure!(!self.queries_fail, "native backend unreachable");
+            Ok(self.status.clone())
+        }
+        async fn install(&self, path: &std::path::Path) -> anyhow::Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("install {}", path.display()));
+            if let Some(gate) = &self.install_gate {
+                gate.notified().await;
+            }
+            if let Some(error) = &self.install_error {
+                anyhow::bail!("{error}");
+            }
+            Ok(())
+        }
+        async fn confirm(&self) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push("confirm".into());
+            Ok(())
+        }
+        async fn reject(&self, id: &str) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push(format!("reject {id}"));
+            Ok(())
+        }
+        async fn rollback(&self) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push("rollback".into());
+            Ok(())
+        }
+    }
 
     struct RecordingReconciler {
         name: &'static str,
@@ -2073,7 +1939,7 @@ mod tests {
     const SHADOW: &str = "root:!:19000:0:99999:7:::\n\
         daemon:*:19000:0:99999:7:::\n";
 
-    /// A mock's shared call log ([`MockPower::calls`] / [`MockRauc::calls`]).
+    /// A mock's shared call log ([`MockPower::calls`] / [`MockDeployments::calls`]).
     type CallLog = Arc<Mutex<Vec<String>>>;
 
     /// A store over a throwaway tree: the STATE document and the
@@ -2089,15 +1955,17 @@ mod tests {
     }
 
     /// Service backed by a throwaway settings file, a throwaway shadow file,
-    /// a recording power mock and the given RAUC mock; the power log and the
-    /// RAUC call log are returned alongside.
-    fn service_with_rauc(rauc: MockRauc) -> (MosdService, CallLog, CallLog, tempfile::TempDir) {
+    /// a recording power mock and the given the native backend mock; the power log and the
+    /// the native backend call log are returned alongside.
+    fn service_with_deployments(
+        native: MockDeployments,
+    ) -> (MosdService, CallLog, CallLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(&dir);
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let rauc_calls = Arc::clone(&rauc.calls);
+        let deployment_calls = Arc::clone(&native.calls);
         let service = MosdService::new(
             store,
             mosd_settings::Settings::default(),
@@ -2108,25 +1976,26 @@ mod tests {
             shadow_path,
             serde_json::json!({}),
         )
-        .with_rauc(Arc::new(rauc))
+        .with_deployments(Arc::new(native))
         // Installs are admitted only from <workspace>/verified; the tests'
-        // bundles are placed there by `verified_bundle`.
+        // descriptors are placed there by `verified_descriptor`.
         .with_update_workspace(dir.path().join("updates"));
-        (service, calls, rauc_calls, dir)
+        (service, calls, deployment_calls, dir)
     }
 
-    /// A bundle file inside the test service's `verified/`, as a string path.
-    fn verified_bundle(dir: &tempfile::TempDir, name: &str) -> String {
+    /// A descriptor file inside the test service's `verified/`, as a string path.
+    fn verified_descriptor(dir: &tempfile::TempDir, name: &str) -> String {
         let verified = dir.path().join("updates").join("verified");
         std::fs::create_dir_all(&verified).expect("verified/");
-        let bundle = verified.join(name);
-        std::fs::write(&bundle, b"bundle bytes").expect("seed bundle");
-        bundle.to_str().expect("utf-8").to_string()
+        let descriptor = verified.join(name);
+        std::fs::write(&descriptor, b"descriptor bytes").expect("seed descriptor");
+        descriptor.to_str().expect("utf-8").to_string()
     }
 
-    /// [`service_with_rauc`] over a default (idle, slotless) RAUC mock.
+    /// [`service_with_deployments`] over a default native backend mock.
     fn service_with_mock() -> (MosdService, Arc<Mutex<Vec<String>>>, tempfile::TempDir) {
-        let (service, calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         (service, calls, dir)
     }
 
@@ -2362,48 +2231,6 @@ mod tests {
         assert!(bcrypt::verify(second_password, &root_hash).expect("verify second hash"));
     }
 
-    /// A/B pair with `booted` running from `rootfs.0`; `boot_status` per slot.
-    fn ab_slots(booted_status: &str, other_status: &str) -> Vec<SlotStatus> {
-        let slot = |name: &str, state: &str, boot_status: &str| SlotStatus {
-            name: name.to_string(),
-            state: Some(state.to_string()),
-            boot_status: Some(boot_status.to_string()),
-            ..SlotStatus::default()
-        };
-        vec![
-            slot("rootfs.0", "booted", booted_status),
-            slot("rootfs.1", "inactive", other_status),
-        ]
-    }
-
-    /// The two install instants the rollback guard orders slots by when
-    /// nothing better is available — the clock each slot was written under.
-    const INSTALLED_OLDER: &str = "2026-08-01T10:00:00Z";
-    const INSTALLED_NEWER: &str = "2026-08-30T10:00:00Z";
-
-    /// [`ab_slots`] with install identities, so the rollback guard has two
-    /// installs to order rather than two never-written slots.
-    fn ab_slots_installed(booted_stamp: &str, other_stamp: &str) -> Vec<SlotStatus> {
-        let stamps = [booted_stamp, other_stamp];
-        ab_slots("good", "good")
-            .into_iter()
-            .zip(stamps)
-            .map(|(slot, stamp)| SlotStatus {
-                bundle_version: Some("2026.08".to_string()),
-                installed_timestamp: Some(stamp.to_string()),
-                ..slot
-            })
-            .collect()
-    }
-
-    /// The confirmed-boot record's path under a test service's state
-    /// directory, and the record `main.rs` would have put there.
-    fn confirmed_boots_at(dir: &tempfile::TempDir) -> std::path::PathBuf {
-        dir.path()
-            .join("update")
-            .join(crate::confirmed_boot::DEFAULT_FILE_NAME)
-    }
-
     /// Poll `update.install.status` until it reads `want` or ~2s elapse.
     async fn wait_for_install_status(service: &MosdService, want: &str) {
         for _ in 0..200 {
@@ -2449,13 +2276,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reboot_into_a_pending_slot_records_the_warning_first() {
-        let (service, calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            slots: ab_slots("good", "good"),
-            // The bootloader's first pick is not the slot we run from: the
-            // exact window in which this reboot burns a boot attempt.
-            primary: Some("rootfs.1".to_string()),
-            ..MockRauc::default()
+    async fn a_reboot_into_a_pending_deployment_records_the_warning_first() {
+        let (service, calls, _deployment_calls, _dir) = service_with_deployments(MockDeployments {
+            status: pending_status(),
+            ..MockDeployments::default()
         });
 
         service.request_reboot(":1.4").await.expect("reboot");
@@ -2466,17 +2290,15 @@ mod tests {
         assert_eq!(power["last_action"], "reboot");
         let warning = power["update_warning"]
             .as_str()
-            .expect("a pending slot must put update_warning beside the action");
-        assert!(warning.contains("rootfs.1"), "warning: {warning}");
-        assert!(warning.contains("boot attempt"), "warning: {warning}");
+            .expect("a pending deployment must put update_warning beside the action");
+        assert!(warning.contains(&"e".repeat(64)), "warning: {warning}");
+        assert!(warning.contains("awaits reboot"), "warning: {warning}");
     }
 
     #[tokio::test]
     async fn a_converged_system_reboots_without_an_update_warning() {
-        let (service, calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            slots: ab_slots("good", "good"),
-            primary: Some("rootfs.0".to_string()),
-            ..MockRauc::default()
+        let (service, calls, _deployment_calls, _dir) = service_with_deployments(MockDeployments {
+            ..MockDeployments::default()
         });
 
         service.request_reboot(":1.4").await.expect("reboot");
@@ -2491,12 +2313,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unreachable_rauc_does_not_block_the_reboot() {
-        // A v1 image or a wedged installer: the slot query fails, the reboot
+    async fn an_unreachable_native_does_not_block_the_reboot() {
+        // An unavailable native backend: the deployment query fails, the reboot
         // still goes through, and no warning is invented.
-        let (service, calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
+        let (service, calls, _deployment_calls, _dir) = service_with_deployments(MockDeployments {
             queries_fail: true,
-            ..MockRauc::default()
+            ..MockDeployments::default()
         });
 
         service.request_reboot(":1.4").await.expect("reboot");
@@ -2508,61 +2330,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_install_request_validates_the_path_before_touching_rauc() {
-        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
-
-        let relative = service
-            .request_install(":1.5", "data/bundle.raucb")
-            .await
-            .expect_err("a relative path must be refused");
-        assert!(relative.to_string().contains("absolute"), "{relative}");
-
-        let missing = dir.path().join("no-such.raucb");
-        service
-            .request_install(":1.5", missing.to_str().expect("utf-8"))
-            .await
-            .expect_err("a missing file must be refused");
-
-        service
-            .request_install(":1.5", dir.path().to_str().expect("utf-8"))
-            .await
-            .expect_err("a directory must be refused");
-
-        // A regular file outside <workspace>/verified, a `.part` inside it,
-        // and a symbolic link inside it are all refused: nothing but a
-        // verified bundle is handed to RAUC, whoever names the path.
-        let outside = dir.path().join("outside.raucb");
-        std::fs::write(&outside, b"bundle bytes").expect("seed");
-        let refused = service
-            .request_install(":1.5", outside.to_str().expect("utf-8"))
-            .await
-            .expect_err("a file outside verified/ must be refused");
-        assert!(refused.to_string().contains("verified"), "{refused}");
-        let part = verified_bundle(&dir, "half.raucb.part");
-        let refused = service
-            .request_install(":1.5", &part)
-            .await
-            .expect_err("a partial must be refused");
-        assert!(refused.to_string().contains("partial"), "{refused}");
-        let link = dir
-            .path()
-            .join("updates")
-            .join("verified")
-            .join("link.raucb");
-        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-        service
-            .request_install(":1.5", link.to_str().expect("utf-8"))
-            .await
-            .expect_err("a symbolic link must be refused");
-
-        assert!(
-            rauc_calls.lock().expect("lock").is_empty(),
-            "no invalid request may reach the installer"
-        );
-        assert!(
-            service.get_state("update").await.is_err(),
-            "a refused install must record nothing"
-        );
+    async fn install_admission_rejects_paths_outside_the_verified_descriptor_namespace() {
+        let (service, _, calls, dir) = service_with_deployments(MockDeployments::default());
+        let good = verified_descriptor(&dir, &format!("{}.json", "a".repeat(64)));
+        let verified = std::path::Path::new(&good).parent().unwrap();
+        let link = verified.join(format!("{}.json", "b".repeat(64)));
+        std::os::unix::fs::symlink(&good, &link).unwrap();
+        let outside = dir.path().join(format!("{}.json", "c".repeat(64)));
+        std::fs::write(&outside, b"unverified").unwrap();
+        let missing = verified.join(format!("{}.json", "d".repeat(64)));
+        let partial = verified_descriptor(&dir, "partial.json.partial");
+        for path in [
+            "relative.json",
+            dir.path().to_str().unwrap(),
+            link.to_str().unwrap(),
+            outside.to_str().unwrap(),
+            missing.to_str().unwrap(),
+            &partial,
+        ] {
+            assert!(
+                matches!(
+                    service.request_install(":1.5", path).await,
+                    Err(fdo::Error::InvalidArgs(_))
+                ),
+                "{path}"
+            );
+        }
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     /// A time observer the test controls, standing in for the two bus reads.
@@ -2586,7 +2380,8 @@ mod tests {
     #[tokio::test]
     async fn the_time_status_reports_an_unread_kernel_bit_as_unknown() {
         use crate::time_status::TimesyncEvidence;
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, _dir) =
+            service_with_deployments(MockDeployments::default());
 
         let observed = TimesyncEvidence {
             service_reachable: true,
@@ -2633,14 +2428,15 @@ mod tests {
             TierEvidence {
                 device: Some("/dev/mmcblk0p11".to_string()),
                 mount: Some(MountEvidence {
+                    root: "/".to_string(),
                     device: "/dev/mmcblk0p11".to_string(),
                     mount: "/srv".to_string(),
                     fstype: "ext4".to_string(),
                     read_only: false,
                 }),
                 space: Some(FsSpace {
-                    total: 4 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES,
-                    used: 4 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES - free,
+                    total: 1_000_000_000,
+                    used: 1_000_000_000 - free,
                     free,
                     reserved: 0,
                 }),
@@ -2648,6 +2444,8 @@ mod tests {
             },
         );
         StorageEvidence {
+            directory_bytes: std::collections::BTreeMap::new(),
+            project_quotas: None,
             tiers,
             media: Vec::new(),
             binds: std::collections::BTreeMap::new(),
@@ -2658,7 +2456,8 @@ mod tests {
     /// one says so instead of answering with an empty layout.
     #[tokio::test]
     async fn the_storage_status_is_observed_and_absent_without_an_observer() {
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, _dir) =
+            service_with_deployments(MockDeployments::default());
         let unobserved = service
             .get_storage_status()
             .await
@@ -2668,9 +2467,8 @@ mod tests {
             "{unobserved:?}"
         );
 
-        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(
-            10 * crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES / 100,
-        ))));
+        let service =
+            service.with_storage_status(Arc::new(FixedStorage(data_evidence(25_000_000))));
         let status = service.get_storage_status().await.expect("observed");
         let status: serde_json::Value = serde_json::from_str(&status).expect("json");
         let data = status["tiers"]
@@ -2682,62 +2480,22 @@ mod tests {
             .clone();
         assert_eq!(data["mount"], "/srv");
         assert_eq!(data["pressure"], "critical");
-        assert_eq!(data["updateWorkspace"]["available"], false);
-    }
-
-    /// The reservation, enforced at the install seam rather than only
-    /// reported: an install onto a DATA tier with no workspace left is
-    /// refused before the installer is touched.
-    #[tokio::test]
-    async fn an_install_is_refused_when_the_reserved_workspace_is_gone() {
-        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
-        let bundle = verified_bundle(&dir, "ok.raucb");
-
-        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(0))));
-        let refused = service
-            .request_install(":1.9", &bundle)
-            .await
-            .expect_err("a full DATA must refuse the install");
-        assert!(
-            refused.to_string().contains("reserved update workspace"),
-            "{refused}"
-        );
-        assert!(
-            rauc_calls.lock().expect("lock").is_empty(),
-            "a refused install must not reach the installer"
-        );
-        assert!(
-            service.get_state("update").await.is_err(),
-            "a refused install must record nothing"
-        );
-
-        // The positive control: the same request with the workspace intact
-        // is admitted, so the refusal above is the reservation and not a
-        // second path failure.
-        let service = service.with_storage_status(Arc::new(FixedStorage(data_evidence(
-            crate::storage_status::UPDATE_WORKSPACE_RESERVED_BYTES,
-        ))));
-        service
-            .request_install(":1.9", &bundle)
-            .await
-            .expect("an intact workspace admits the install");
-        wait_for_install_status(&service, "done").await;
     }
 
     #[tokio::test]
     async fn an_install_runs_in_the_background_and_records_its_lifecycle() {
         let gate = Arc::new(tokio::sync::Notify::new());
-        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc {
+        let (service, _calls, deployment_calls, dir) = service_with_deployments(MockDeployments {
             install_gate: Some(Arc::clone(&gate)),
-            ..MockRauc::default()
+            ..MockDeployments::default()
         });
-        let bundle = verified_bundle(&dir, "ok.raucb");
-        let bundle = bundle.as_str();
+        let descriptor = verified_descriptor(&dir, &format!("{}.json", "a".repeat(64)));
+        let descriptor = descriptor.as_str();
 
         // Returns while the install is still gated: the bus call cannot be
         // blocked by a slow installer.
         service
-            .request_install(":1.6", bundle)
+            .request_install(":1.6", descriptor)
             .await
             .expect("install");
         wait_for_install_status(&service, "running").await;
@@ -2745,7 +2503,7 @@ mod tests {
         // A second install while one runs is refused, and the refusal names
         // the reason rather than queueing silently.
         let busy = service
-            .request_install(":1.7", bundle)
+            .request_install(":1.7", descriptor)
             .await
             .expect_err("concurrent install must be refused");
         assert!(busy.to_string().contains("already running"), "{busy}");
@@ -2756,21 +2514,21 @@ mod tests {
         let install = service.get_state("update.install").await.expect("state");
         let install: serde_json::Value = serde_json::from_str(&install).expect("json");
         assert_eq!(install["requested_by"], ":1.6");
-        assert_eq!(install["bundle"], bundle);
+        assert_eq!(install["deploymentId"], "a".repeat(64));
         assert_eq!(
-            *rauc_calls.lock().expect("lock"),
-            vec![format!("install {bundle}")],
+            *deployment_calls.lock().expect("lock"),
+            vec![format!("install {descriptor}")],
             "exactly the admitted install reached the installer"
         );
         // The completed install refreshed the whole update entry.
         let update = service.get_state("update").await.expect("state");
         let update: serde_json::Value = serde_json::from_str(&update).expect("json");
-        assert_eq!(update["operation"], "idle");
+        assert_eq!(update["state"]["current"], "a".repeat(64));
 
         // The in-flight flag is released: a new install is admitted again.
         gate.notify_one();
         service
-            .request_install(":1.8", bundle)
+            .request_install(":1.8", descriptor)
             .await
             .expect("install");
         wait_for_install_status(&service, "done").await;
@@ -2778,15 +2536,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_install_records_the_error_and_releases_the_flag() {
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
+        let (service, _calls, _deployment_calls, dir) = service_with_deployments(MockDeployments {
             install_error: Some("signature verification failed".to_string()),
-            ..MockRauc::default()
+            ..MockDeployments::default()
         });
-        let bundle = verified_bundle(&dir, "bad.raucb");
-        let bundle = bundle.as_str();
+        let descriptor = verified_descriptor(&dir, &format!("{}.json", "a".repeat(64)));
+        let descriptor = descriptor.as_str();
 
         service
-            .request_install(":1.9", bundle)
+            .request_install(":1.9", descriptor)
             .await
             .expect("admitted");
         wait_for_install_status(&service, "failed").await;
@@ -2800,16 +2558,16 @@ mod tests {
             "the failure reason must be recorded, got {install}"
         );
         // PLAN-076 B4, driven through the real install path rather than
-        // asserted at the classifier: RAUC's sentence stays in `error` and its
+        // asserted at the classifier: the native backend's sentence stays in `error` and its
         // class is beside it, so a fleet groups signature refusals without
-        // matching on RAUC's words.
+        // matching on the native backend's words.
         assert_eq!(
             install["error_code"],
-            crate::update_codes::RAUC_SIGNATURE_INVALID,
+            crate::update_codes::CLIENT_EXIT_FAILURE,
             "got {install}"
         );
         service
-            .request_install(":1.9", bundle)
+            .request_install(":1.9", descriptor)
             .await
             .expect("flag released");
     }
@@ -2819,118 +2577,21 @@ mod tests {
     // that a mapping with a pass-through fallback would silently fail —
     // there, `error_code` would read `Compatible mismatch: …` and a consumer
     // matching on codes would be back to matching on text without being told.
-    #[tokio::test]
-    async fn an_unmeasured_install_failure_is_unknown_and_never_its_own_text() {
-        let reason = "Compatible mismatch: expected `mos-cx3576` but the bundle has `mos-x64`";
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
-            install_error: Some(reason.to_string()),
-            ..MockRauc::default()
-        });
-        let bundle = verified_bundle(&dir, "wrong-compatible.raucb");
-
-        service
-            .request_install(":1.9", bundle.as_str())
-            .await
-            .expect("admitted");
-        wait_for_install_status(&service, "failed").await;
-
-        let install = service.get_state("update.install").await.expect("state");
-        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
-        assert!(
-            install["error"]
-                .as_str()
-                .is_some_and(|err| err.contains("Compatible mismatch")),
-            "the words are kept where a human reads them: {install}"
-        );
-        assert_eq!(
-            install["error_code"],
-            crate::update_codes::UNKNOWN,
-            "{install}"
-        );
-    }
-
-    /// PLAN-078 §S4, end to end: the recorded failure carries the device's own
-    /// clock and its time state, so an operator reading one document can tell
-    /// a real expiry from a wrong RTC.
-    ///
-    /// Both halves in one test, because the second is what catches an
-    /// implementation that just always blames the clock.
-    #[tokio::test]
-    async fn a_failed_install_records_the_clock_beside_the_reason_without_blaming_it_wrongly() {
-        use crate::time_status::TimesyncEvidence;
-
-        // A clock nothing vouches for: timesyncd reachable, the kernel bit
-        // read and false. This is the state a stranded device is in.
-        let (undisciplined, _c, _r, dir) = service_with_rauc(MockRauc {
-            install_error: Some(
-                "signature verification failed: Verify error: certificate has expired".to_string(),
-            ),
-            ..MockRauc::default()
-        });
-        let undisciplined =
-            undisciplined.with_time_status(Arc::new(FixedTimesync(TimesyncEvidence {
-                service_reachable: true,
-                ntp_synchronized: Some(false),
-                ..TimesyncEvidence::default()
-            })));
-        let bundle = verified_bundle(&dir, "expired.raucb");
-        undisciplined
-            .request_install(":1.9", bundle.as_str())
-            .await
-            .expect("admitted");
-        wait_for_install_status(&undisciplined, "failed").await;
-        let install = undisciplined
-            .get_state("update.install")
-            .await
-            .expect("state");
-        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
-        assert!(
-            install["time"]["clock"]
-                .as_str()
-                .is_some_and(|c| c.ends_with('Z')),
-            "the device's own clock must be recorded beside the failure: {install}"
-        );
-        assert_eq!(install["time"]["status"]["status"], "offline-degraded");
-        assert_eq!(install["time"]["clock_implicated"], true);
-
-        // The SAME failure, on a clock the kernel vouches for. The time facts
-        // are still rendered -- a reader must not need a second query -- and
-        // the diagnosis does not attribute the failure to them.
-        let (good, _c2, _r2, dir2) = service_with_rauc(MockRauc {
-            install_error: Some(
-                "signature verification failed: Verify error: certificate has expired".to_string(),
-            ),
-            ..MockRauc::default()
-        });
-        let good = good.with_time_status(Arc::new(FixedTimesync(TimesyncEvidence {
-            service_reachable: true,
-            ntp_synchronized: Some(true),
-            ..TimesyncEvidence::default()
-        })));
-        let bundle2 = verified_bundle(&dir2, "really-expired.raucb");
-        good.request_install(":1.9", bundle2.as_str())
-            .await
-            .expect("admitted");
-        wait_for_install_status(&good, "failed").await;
-        let install = good.get_state("update.install").await.expect("state");
-        let install: serde_json::Value = serde_json::from_str(&install).expect("json");
-        assert_eq!(install["time"]["status"]["status"], "synchronized");
-        assert_eq!(
-            install["time"]["clock_implicated"], false,
-            "a good clock must not be blamed for a real expiry: {install}"
-        );
-    }
 
     #[tokio::test]
     async fn an_install_mid_flight_refuses_a_reboot_until_it_finishes() {
         let gate = Arc::new(tokio::sync::Notify::new());
-        let (service, power_calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
-            install_gate: Some(Arc::clone(&gate)),
-            ..MockRauc::default()
-        });
-        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
+        let (service, power_calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments {
+                install_gate: Some(Arc::clone(&gate)),
+                ..MockDeployments::default()
+            });
+        let descriptor = std::path::PathBuf::from(verified_descriptor(
+            &dir,
+            &format!("{}.json", "a".repeat(64)),
+        ));
         service
-            .request_install(":1.6", bundle.to_str().expect("utf-8"))
+            .request_install(":1.6", descriptor.to_str().expect("utf-8"))
             .await
             .expect("install");
         wait_for_install_status(&service, "running").await;
@@ -3003,23 +2664,26 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_policy_file_fails_installs_closed() {
-        let (service, _calls, rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         let policy_path = dir.path().join("updates.json");
         std::fs::write(&policy_path, "{not json").expect("seed policy");
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path),
-            crate::update_suppress::SuppressionStore::none(),
         );
-        let bundle = std::path::PathBuf::from(verified_bundle(&dir, "ok.raucb"));
+        let descriptor = std::path::PathBuf::from(verified_descriptor(
+            &dir,
+            &format!("{}.json", "a".repeat(64)),
+        ));
 
         let refused = service
-            .request_install(":1.5", bundle.to_str().expect("utf-8"))
+            .request_install(":1.5", descriptor.to_str().expect("utf-8"))
             .await
             .expect_err("an unreadable policy file must fail closed");
         assert!(refused.to_string().contains("invalid"), "{refused}");
         assert!(
-            rauc_calls.lock().expect("lock").is_empty(),
+            deployment_calls.lock().expect("lock").is_empty(),
             "the refused install must not reach the installer"
         );
     }
@@ -3028,7 +2692,8 @@ mod tests {
     /// patch changes what it names and nothing else.
     #[tokio::test]
     async fn the_write_route_merges_a_patch_and_the_next_state_read_reports_it() {
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         let policy_path = dir.path().join("updates.json");
         std::fs::write(
             &policy_path,
@@ -3038,7 +2703,6 @@ mod tests {
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path.clone()),
-            crate::update_suppress::SuppressionStore::none(),
         );
 
         let saved = service
@@ -3065,14 +2729,14 @@ mod tests {
     /// operator now and a device failing closed some hours later.
     #[tokio::test]
     async fn the_write_route_refuses_auto_without_a_window_and_replaces_nothing() {
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         let policy_path = dir.path().join("updates.json");
         std::fs::write(&policy_path, r#"{ "policy": "check" }"#).expect("seed policy");
         let before = std::fs::read_to_string(&policy_path).unwrap();
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path.clone()),
-            crate::update_suppress::SuppressionStore::none(),
         );
 
         let refused = service
@@ -3097,12 +2761,12 @@ mod tests {
     /// The address is the operator's; what the device will accept is not.
     #[tokio::test]
     async fn the_write_route_refuses_a_trust_anchor_by_name() {
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         let policy_path = dir.path().join("updates.json");
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path.clone()),
-            crate::update_suppress::SuppressionStore::none(),
         );
 
         let refused = service
@@ -3131,13 +2795,13 @@ mod tests {
     /// it is refused — 409, not 422 — because it is the file that is wrong.
     #[tokio::test]
     async fn the_write_route_refuses_to_patch_over_a_document_that_does_not_load() {
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc::default());
+        let (service, _calls, _deployment_calls, dir) =
+            service_with_deployments(MockDeployments::default());
         let policy_path = dir.path().join("updates.json");
         std::fs::write(&policy_path, "{not json").expect("seed policy");
         let service = service.with_update(
             Arc::new(crate::update_lifecycle::NoClient),
             crate::update_policy::PolicyStore::at(policy_path.clone()),
-            crate::update_suppress::SuppressionStore::none(),
         );
 
         let refused = service
@@ -3174,127 +2838,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_refreshed_state_carries_the_derived_lifecycle_beside_the_slots() {
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            slots: ab_slots("good", "good"),
-            primary: Some("rootfs.1".to_string()),
-            ..MockRauc::default()
+    async fn native_candidate_state_and_lifecycle_are_refreshed_together() {
+        let (service, _, _, _) = service_with_deployments(MockDeployments {
+            status: pending_status(),
+            ..MockDeployments::default()
         });
-        let rendered = service.refresh_update_state().await.expect("query");
-        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
-        assert_eq!(rendered["lifecycle"]["state"], "reboot-required");
-        assert_eq!(rendered["lifecycle"]["reboot_gate"]["safe"], true);
-        assert_eq!(
-            rendered["lifecycle"]["client"]["available"], false,
-            "a daemon with no client must say so"
-        );
-        assert_eq!(rendered["lifecycle"]["policy"]["networkMode"], "online");
+        let value: Value =
+            serde_json::from_str(&service.refresh_update_state().await.unwrap()).unwrap();
+        assert_eq!(value["lifecycle"]["state"], "reboot-required");
+        assert_eq!(value["state"]["candidate"], "e".repeat(64));
+        assert_eq!(value["rollback"]["reason"], "candidate_pending");
+        assert!(value.get("slots").is_none());
     }
 
     #[tokio::test]
     async fn update_state_is_queried_recorded_and_returned() {
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            slots: ab_slots("good", "good"),
-            primary: Some("rootfs.1".to_string()),
-            ..MockRauc::default()
-        });
-
-        let rendered = service.refresh_update_state().await.expect("query");
-        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
-        assert_eq!(rendered["operation"], "idle");
-        assert_eq!(rendered["booted_slot"], "rootfs.0");
-        assert_eq!(rendered["primary"], "rootfs.1");
-        assert_eq!(rendered["pending_not_confirmed"], true);
-        assert_eq!(rendered["slots"]["rootfs.0"]["state"], "booted");
-
-        // What was answered is exactly what was recorded.
-        let recorded = service.get_state("update").await.expect("state");
-        let recorded: serde_json::Value = serde_json::from_str(&recorded).expect("json");
-        assert_eq!(recorded, rendered);
+        let (service, _, _, _) = service_with_deployments(MockDeployments::default());
+        let value: Value =
+            serde_json::from_str(&service.refresh_update_state().await.unwrap()).unwrap();
+        assert_eq!(value["state"]["current"], "a".repeat(64));
+        assert_eq!(value["state"]["fallback"], "b".repeat(64));
+        assert_eq!(value["state"]["highestGeneration"], 2);
+        assert_eq!(value["boot"]["kernelId"], "c".repeat(64));
+        assert_eq!(value["rollback"]["permitted"], true);
+        assert_eq!(value["lifecycle"]["state"], "succeeded");
+        let recorded: Value =
+            serde_json::from_str(&service.get_state("update").await.unwrap()).unwrap();
+        assert_eq!(recorded, value);
     }
 
     #[tokio::test]
-    async fn a_refresh_records_mosd_s_own_boot_and_leaves_the_clock_deciding() {
-        // The first refresh on a device that has never held this record: the
-        // boot it is having is written down, and with only one install
-        // observed the verdict is the one the install timestamps give — the
-        // behaviour every device had before the record existed.
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
-            slots: ab_slots_installed(INSTALLED_NEWER, INSTALLED_OLDER),
-            primary: Some("rootfs.0".to_string()),
-            ..MockRauc::default()
-        });
-        let path = confirmed_boots_at(&dir);
-        let service = service.with_confirmed_boots(ConfirmedBootStore::at(path.clone()));
-        let rendered = service.refresh_update_state().await.expect("query");
-        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
-        assert_eq!(rendered["rollback"]["permitted"], true);
-        assert_eq!(rendered["rollback"]["target"], "rootfs.1");
-
-        let held: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-        assert_eq!(
-            held["boots"].as_array().map(Vec::len),
-            Some(1),
-            "the observation is about the slot mosd is running from, and only that one"
-        );
-        assert_eq!(held["boots"][0]["slot"], "rootfs.0");
-        assert_eq!(held["boots"][0]["sequence"], 1);
-        assert_eq!(held["boots"][0]["installedTimestamp"], INSTALLED_NEWER);
-    }
-
-    #[tokio::test]
-    async fn the_recorded_rollback_verdict_follows_mosd_s_own_boot_order() {
-        // PLAN-071 §7's dependency, through the surface that serves it. The
-        // install clock says the alternate is the NEWER install, so on the
-        // timestamps alone this device refuses to roll back. mosd observed
-        // the alternate running before the system it is running now, and the
-        // verdict recorded in the state document follows what it observed.
-        let (service, _calls, _rauc_calls, dir) = service_with_rauc(MockRauc {
-            slots: ab_slots_installed(INSTALLED_OLDER, INSTALLED_NEWER),
-            primary: Some("rootfs.0".to_string()),
-            ..MockRauc::default()
-        });
-        let path = confirmed_boots_at(&dir);
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        std::fs::write(
-            &path,
-            serde_json::json!({
-                "boots": [{
-                    "slot": "rootfs.1",
-                    "bundleVersion": "2026.08",
-                    "installedTimestamp": INSTALLED_NEWER,
-                    "sequence": 1,
-                    "firstSeenAt": "2026-09-01T10:00:00Z",
-                }],
-            })
-            .to_string(),
-        )
-        .expect("seed the confirmed-boot record");
-        let service = service.with_confirmed_boots(ConfirmedBootStore::at(path.clone()));
-
-        let rendered = service.refresh_update_state().await.expect("query");
-        let rendered: serde_json::Value = serde_json::from_str(&rendered).expect("json");
-        assert_eq!(
-            rendered["rollback"]["permitted"], true,
-            "the clock alone would answer alternate_is_newer here"
-        );
-        assert_eq!(rendered["rollback"]["reason"], serde_json::Value::Null);
-        assert_eq!(rendered["rollback"]["target"], "rootfs.1");
-
-        // The same refresh recorded its own boot, after the seeded one.
-        let held: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-        assert_eq!(held["boots"][1]["slot"], "rootfs.0");
-        assert_eq!(held["boots"][1]["sequence"], 2);
-    }
-
-    #[tokio::test]
-    async fn an_unreachable_rauc_fails_the_query_and_records_nothing() {
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            queries_fail: true,
-            ..MockRauc::default()
-        });
+    async fn an_unreachable_native_fails_the_query_and_records_nothing() {
+        let (service, _calls, _deployment_calls, _dir) =
+            service_with_deployments(MockDeployments {
+                queries_fail: true,
+                ..MockDeployments::default()
+            });
 
         service
             .refresh_update_state()
@@ -3307,40 +2886,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_mark_is_validated_before_rauc_and_recorded_after() {
-        let (service, _calls, rauc_calls, _dir) = service_with_rauc(MockRauc::default());
-
-        // `active` exists in RAUC and is deliberately not offered.
+    async fn native_actions_validate_identity_and_record_the_operator() {
+        let (service, _, calls, _) = service_with_deployments(MockDeployments::default());
+        for (action, id) in [
+            ("confirm", "a".repeat(63)),
+            ("activate", "a".repeat(64)),
+            ("confirm", "b".repeat(64)),
+        ] {
+            assert!(
+                service
+                    .request_deployment_action(":1.2", action, &id)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(calls.lock().unwrap().is_empty());
         service
-            .request_mark(":1.2", "active", "other")
+            .request_deployment_action(":1.2", "confirm", &"a".repeat(64))
             .await
-            .expect_err("activation is the installer's job");
-        // Concrete slot names are RAUC's, not this surface's.
+            .unwrap();
         service
-            .request_mark(":1.2", "good", "rootfs.0")
+            .request_deployment_action(":1.3", "reject", &"e".repeat(64))
             .await
-            .expect_err("slots are addressed as booted/other only");
-        assert!(
-            rauc_calls.lock().expect("lock").is_empty(),
-            "no invalid mark may reach the installer"
-        );
-
-        let (slot_name, message) = service
-            .request_mark(":1.2", "good", "booted")
+            .unwrap();
+        service
+            .request_deployment_action(":1.4", "rollback", &"a".repeat(64))
             .await
-            .expect("a valid mark");
-        assert_eq!(slot_name, "rootfs.9");
-        assert!(message.contains("good"), "message: {message}");
+            .unwrap();
         assert_eq!(
-            *rauc_calls.lock().expect("lock"),
-            vec!["mark good booted".to_string()]
+            *calls.lock().unwrap(),
+            vec![
+                "confirm".to_owned(),
+                format!("reject {}", "e".repeat(64)),
+                "rollback".into()
+            ]
         );
-        let last = service.get_state("update.last_mark").await.expect("state");
-        let last: serde_json::Value = serde_json::from_str(&last).expect("json");
-        assert_eq!(last["state"], "good");
-        assert_eq!(last["slot"], "booted");
-        assert_eq!(last["slot_name"], "rootfs.9");
-        assert_eq!(last["requested_by"], ":1.2");
+        let status: Value =
+            serde_json::from_str(&service.get_state("update").await.unwrap()).unwrap();
+        assert_eq!(status["last_action"]["requested_by"], ":1.4");
+        assert_eq!(status["last_action"]["action"], "rollback");
     }
 
     /// A service whose settings declare one WireGuard tunnel, with a rotation
@@ -3579,7 +3163,7 @@ mod tests {
                 "org.freedesktop.DBus.Error.Failed",
             ),
             (
-                SettingsError::Migration("stuck".into()),
+                SettingsError::SchemaVersion("stuck".into()),
                 "org.freedesktop.DBus.Error.Failed",
             ),
             // PLAN-070 §5.2.6's variant. An IO name and not `InvalidArgs`:
@@ -3687,15 +3271,15 @@ mod tests {
     }
 
     /// The system-information surface: absent without an observer, and with
-    /// one it carries the booted slot read from the RAUC client the service
+    /// one it carries the running deployment read from the native backend client the service
     /// already holds — one client, not a second reader of the installer.
     #[tokio::test]
-    async fn the_system_info_is_observed_with_the_booted_slot_and_absent_without_an_observer() {
-        let (service, _calls, _rauc_calls, _dir) = service_with_rauc(MockRauc {
-            slots: ab_slots("good", "good"),
-            primary: Some("rootfs.0".to_string()),
-            ..MockRauc::default()
-        });
+    async fn the_system_info_is_observed_with_the_running_deployment_and_absent_without_an_observer()
+     {
+        let (service, _calls, _deployment_calls, _dir) =
+            service_with_deployments(MockDeployments {
+                ..MockDeployments::default()
+            });
         let err = service
             .get_system_info()
             .await
@@ -3712,9 +3296,9 @@ mod tests {
             serde_json::from_str(&service.get_system_info().await.expect("observed")).unwrap();
         assert_eq!(info["machineId"]["id"], "0123456789abcdef0123456789abcdef");
         assert_eq!(info["uptime"]["seconds"], 42);
-        assert_eq!(info["slot"]["available"], true);
-        assert_eq!(info["slot"]["booted"], "rootfs.0");
-        assert_eq!(info["slot"]["primary"], "rootfs.0");
+        assert_eq!(info["deployment"]["available"], true);
+        assert_eq!(info["deployment"]["id"], "a".repeat(64));
+        assert_eq!(info["deployment"]["kernelId"], "c".repeat(64));
         assert_eq!(info["daemon"]["name"], "mosd");
         // A member the fixture did not supply is absent with a reason, not
         // manufactured.
@@ -4010,8 +3594,8 @@ mod tests {
             self.0.refresh_update_state().await
         }
 
-        async fn install(&self, sender: &str, bundle: &str) -> fdo::Result<()> {
-            self.0.request_install(sender, bundle).await
+        async fn install(&self, sender: &str, descriptor: &str) -> fdo::Result<()> {
+            self.0.request_install(sender, descriptor).await
         }
 
         async fn reboot(&self, sender: &str) -> fdo::Result<()> {
@@ -4023,7 +3607,7 @@ mod tests {
         }
     }
 
-    /// An update client scripted by subcommand, answering in `rauc-update`'s
+    /// An update client scripted by subcommand, answering in `mos-deploy`'s
     /// printed contract.
     ///
     /// By subcommand rather than in a fixed order because the driver decides
@@ -4049,22 +3633,22 @@ mod tests {
             args: &[String],
             _timeout: Duration,
         ) -> anyhow::Result<crate::update_lifecycle::ClientOutput> {
-            let verb = args.first().cloned().unwrap_or_default();
+            let verb = args
+                .get(if args.first().is_some_and(|arg| arg == "--max-bytes") {
+                    2
+                } else {
+                    0
+                })
+                .cloned()
+                .unwrap_or_default();
             self.calls.lock().expect("client calls").push(verb.clone());
+            let id = self.selected.strip_suffix(".json").unwrap();
             let stdout = match verb.as_str() {
-                "probe" => "ready root=/mos/updates pool=/mnt/data source=/dev/data fs_root=/mos \
-                            fstype=ext4 free=1000000000 used=0 budget=500000000\n"
-                    .to_string(),
-                "sync" => "synced root v1\n".to_string(),
-                "check" => format!(
-                    "selected {} version 1.5.0 channel stable (12 bytes)\n",
-                    self.selected
-                ),
-                "fetch" => format!(
-                    "selected {} version 1.5.0 channel stable (12 bytes)\n{}\n",
-                    self.selected, self.staged
-                ),
-                other => anyhow::bail!("the lifecycle ran an unscripted subcommand: {other}"),
+                "probe" => serde_json::json!({"status":"ready","freeBytes":1_000_000_000u64}).to_string(),
+                "check" => serde_json::json!({"revision":1,"channel":"stable","selected":{"deploymentId":id,"deployment":{"version":"1.5.0"}}}).to_string(),
+                "fetch" => serde_json::json!({"id":id,"path":self.staged,"objects":std::path::Path::new(&self.staged).parent().unwrap().join("objects"),"version":"1.5.0","generation":3}).to_string(),
+                "status" => crate::deployment::tests::fixture().to_string(),
+                other => anyhow::bail!("unexpected native command: {other}"),
             };
             Ok(crate::update_lifecycle::ClientOutput {
                 code: Some(0),
@@ -4081,24 +3665,25 @@ mod tests {
         lifecycle: Arc<crate::update_lifecycle::UpdateLifecycle>,
         routes: Arc<BusRoutes<TestServed>>,
         power: CallLog,
-        rauc: CallLog,
-        bundle: String,
+        native: CallLog,
+        descriptor: String,
     }
 
-    const STAGED_BUNDLE: &str = "mos-1.5.0.raucb";
+    const STAGED_BUNDLE: &str =
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.json";
 
     impl Device {
-        /// A device carrying `document`, a believed clock and the RAUC mock
+        /// A device carrying `document`, a believed clock and the native backend mock
         /// given.
-        fn with_rauc(document: &str, rauc: MockRauc) -> Self {
+        fn with_deployments(document: &str, native: MockDeployments) -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let shadow_path = dir.path().join("shadow");
             std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
             let policy_path = dir.path().join("updates.json");
             std::fs::write(&policy_path, document).expect("seed the policy document");
-            let bundle = verified_bundle(&dir, STAGED_BUNDLE);
+            let descriptor = verified_descriptor(&dir, STAGED_BUNDLE);
             let power = Arc::new(Mutex::new(Vec::new()));
-            let rauc_calls = Arc::clone(&rauc.calls);
+            let deployment_calls = Arc::clone(&native.calls);
             let service = MosdService::new(
                 store_in(&dir),
                 mosd_settings::Settings::default(),
@@ -4109,19 +3694,16 @@ mod tests {
                 shadow_path,
                 serde_json::json!({}),
             )
-            .with_rauc(Arc::new(rauc))
             .with_update_workspace(dir.path().join("updates"))
             .with_update(
                 Arc::new(ScriptedClient {
-                    staged: bundle.clone(),
+                    staged: descriptor.clone(),
                     selected: STAGED_BUNDLE.to_string(),
                     calls: Arc::new(Mutex::new(Vec::new())),
                 }),
                 crate::update_policy::PolicyStore::at(policy_path),
-                crate::update_suppress::SuppressionStore::at(
-                    dir.path().join("suppressed-versions.json"),
-                ),
             )
+            .with_deployments(Arc::new(native))
             // PLAN-071 §7's predicate is asserted on its own in
             // `update_auto`; here it must simply hold, or every install
             // below would defer on the clock before reaching its gate.
@@ -4138,13 +3720,13 @@ mod tests {
                 lifecycle,
                 routes,
                 power,
-                rauc: rauc_calls,
-                bundle,
+                native: deployment_calls,
+                descriptor,
             }
         }
 
         fn new(document: &str) -> Self {
-            Self::with_rauc(document, MockRauc::default())
+            Self::with_deployments(document, MockDeployments::default())
         }
 
         fn rewrite(&self, document: &str) {
@@ -4327,12 +3909,12 @@ mod tests {
         let device = Device::new(&auto_document(false, "manual"));
         let manual = device
             .service
-            .request_install(":1.7", &device.bundle)
+            .request_install(":1.7", &device.descriptor)
             .await
             .expect_err("a shut window refuses an operator's install");
         let automatic = device
             .routes
-            .install(SENDER, &device.bundle)
+            .install(SENDER, &device.descriptor)
             .await
             .expect_err("and the automatic one");
         assert!(
@@ -4341,11 +3923,11 @@ mod tests {
         );
         assert!(automatic.contains("outside every configured maintenance window"));
 
-        // The install, refused because the bundle is not a verified one. The
+        // The install, refused because the descriptor is not a verified one. The
         // automatic path reaches this route with a staged path, so the rule
         // that only `verified/` is installable binds it too.
-        let stray = device.dir.path().join("stray.raucb");
-        std::fs::write(&stray, b"not staged").expect("seed a stray bundle");
+        let stray = device.dir.path().join("stray.json");
+        std::fs::write(&stray, b"not staged").expect("seed a stray descriptor");
         let stray = stray.to_str().expect("utf-8");
         let device = Device::new(&auto_document(true, "manual"));
         let manual = device
@@ -4394,16 +3976,16 @@ mod tests {
         // lifts. Reached by an install this driver started, which is the only
         // way the automatic path can be holding one.
         let gate = Arc::new(tokio::sync::Notify::new());
-        let device = Device::with_rauc(
+        let device = Device::with_deployments(
             &auto_document(true, "window"),
-            MockRauc {
+            MockDeployments {
                 install_gate: Some(Arc::clone(&gate)),
-                ..MockRauc::default()
+                ..MockDeployments::default()
             },
         );
         device
             .routes
-            .install(SENDER, &device.bundle)
+            .install(SENDER, &device.descriptor)
             .await
             .expect("the window is open");
         wait_for_install_status(&device.service, "running").await;
@@ -4424,41 +4006,6 @@ mod tests {
         assert!(automatic.contains("install"), "{automatic}");
         gate.notify_one();
         wait_for_install_status(&device.service, "done").await;
-
-        // Where the two sets deliberately differ, and the only place they do:
-        // §6's suppression and §5's re-check bind the AUTOMATIC path alone,
-        // because the operator reading the record has been told and is
-        // choosing. A gate set test that did not pin this would be satisfied
-        // by a device that refused the human too.
-        let device = Device::new(&auto_document(true, "manual"));
-        device
-            .lifecycle
-            .suppression()
-            .record(&crate::update_suppress::Suppression {
-                version: "1.5.0".to_string(),
-                slot: "rootfs.1".to_string(),
-                at: "2026-09-05T02:11:00Z".to_string(),
-                boot_status: Some("bad".to_string()),
-                detail: "installed into rootfs.1, which rolled back".to_string(),
-            })
-            .expect("record the rollback");
-        let (mut driver, cadence) = device.driver();
-        cadence.advance_past_the_check_interval();
-        driver.tick().await;
-        assert_eq!(
-            device.deferral().await["reason"],
-            "version-suppressed",
-            "the automatic path refuses a version this device rolled back"
-        );
-        assert!(
-            device.rauc.lock().expect("rauc").is_empty(),
-            "and installs nothing"
-        );
-        device
-            .service
-            .request_install(":1.7", &device.bundle)
-            .await
-            .expect("a manual install of a suppressed version stays available");
     }
 
     /// PLAN-071 U2, end to end: an automatic pass driven against a closed
@@ -4467,7 +4014,7 @@ mod tests {
     /// The pairs above assert that both routes answer the same refusal; this
     /// asserts that the driver actually meets those routes — a driver that
     /// installed through some other path would leave the same policy document
-    /// and a very different RAUC call log.
+    /// and a very different the native backend call log.
     #[tokio::test]
     async fn an_automatic_pass_records_the_gates_own_refusal_and_reaches_nothing_behind_it() {
         use crate::update_auto::SENDER;
@@ -4482,7 +4029,7 @@ mod tests {
 
         let manual = device
             .service
-            .request_install(SENDER, &device.bundle)
+            .request_install(SENDER, &device.descriptor)
             .await
             .expect_err("the window is shut for an operator too");
         let deferred = device.deferral().await;
@@ -4496,14 +4043,14 @@ mod tests {
             "manual: {manual}, deferred: {deferred}"
         );
         assert!(
-            device.rauc.lock().expect("rauc").is_empty(),
+            device.native.lock().expect("native").is_empty(),
             "a refused install must not reach the installer: {:?}",
-            device.rauc.lock().expect("rauc")
+            device.native.lock().expect("native")
         );
         // The fetch DID run: the window gates installs and only installs.
         assert_eq!(
-            device.update_entry("update.lifecycle.bundle").await,
-            Value::String(device.bundle.clone())
+            device.update_entry("update.lifecycle.deploymentId").await,
+            Value::String("e".repeat(64))
         );
 
         // The operator opens the window; the same driver installs and reboots

@@ -397,7 +397,7 @@ impl TimeStatusSource for SystemdTimesync {
 /// whose MTIME is the value (`docs/design/time.md` §3.2).
 ///
 /// `/var/lib/systemd/timesync` is a bind mount whose source is
-/// `/mnt/state/timesync`, so this path survives a reboot and an A/B update.
+/// `/mnt/data/state/timesync`, so this path survives a reboot and an A/B update.
 pub const SAVED_CLOCK_PATH: &str = "/var/lib/systemd/timesync/clock";
 
 /// Where the kernel reports how long this boot has been running.

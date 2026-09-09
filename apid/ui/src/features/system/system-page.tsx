@@ -94,18 +94,19 @@ interface UpdateStateDoc {
   lifecycle?: {
     state?: string
     reason?: string
-    available?: { name?: string; version?: string; channel?: string }
-    bundle?: string
+    available?: { deploymentId: string; version: string; channel: string }
+    deploymentId?: string
     last_check?: string
     client?: { available?: boolean; reason?: string }
     policy_error?: string
     reboot_gate?: { safe?: boolean; reasons?: string[] }
   }
-  booted_slot?: string | null
-  pending_not_confirmed?: boolean
+  boot?: { deploymentId: string; kernelId: string; rootfsId: string; contentVerified: boolean; secureBoot: boolean; backend: 'uefi' | 'uboot-fit'; bootVerified: boolean }
+  state?: { current: string | null; candidate: string | null; fallback: string | null; highestGeneration: number; failed: string[] }
+  deployments?: { id: string; generation: number; version: string; kernelId: string; kernelRelease: string; rootfsId: string; triesLeft: number | null }[]
 }
 
-const activeUpdateStates = new Set(['checking', 'downloading', 'installing'])
+const activeUpdateStates = new Set(['checking', 'downloading', 'installing', 'discarding'])
 
 function useUpdateState() {
   return useQuery({
@@ -120,18 +121,33 @@ export function UpdatePanel() {
   const status = useUpdateState()
   const lifecycle = status.data?.lifecycle
   const available = lifecycle?.available
+  const boot = status.data?.boot
+  const deployment = status.data?.state
+  const running = status.data?.deployments?.find((entry) => entry.id === boot?.deploymentId)
   return (
     <Card>
       <CardHeader title={t('system.update.title')} description={t('system.update.description')} action={<PackageSearch className="size-5 text-muted-foreground" />} />
       <div className="service-state"><Status ok={!status.isPending && !status.isError && lifecycle?.state !== 'failed' && lifecycle?.state !== 'update-unavailable'}>{status.isPending ? t('system.update.checking') : (lifecycle?.state ?? t('common.states.unknown'))}</Status></div>
       {lifecycle?.reason ? <p className="text-sm text-muted-foreground">{lifecycle.reason}</p> : null}
       <dl className="details">
-        {available ? <div><dt>{t('system.update.available')}</dt><dd>{available.name} {available.version} ({available.channel})</dd></div> : null}
-        {lifecycle?.bundle ? <div><dt>{t('system.update.bundle')}</dt><dd>{lifecycle.bundle}</dd></div> : null}
-        {status.data?.booted_slot ? <div><dt>{t('system.update.bootedSlot')}</dt><dd>{status.data.booted_slot}</dd></div> : null}
+        {available ? <div><dt>{t('system.update.available')}</dt><dd>{available.version} · {available.deploymentId} ({available.channel})</dd></div> : null}
+        {lifecycle?.deploymentId ? <div><dt>{t('system.update.staged')}</dt><dd className="break-all">{lifecycle.deploymentId}</dd></div> : null}
+        {boot ? <>
+          <div><dt>{t('system.update.running')}</dt><dd className="break-all">{boot.deploymentId}</dd></div>
+          <div><dt>{t('system.update.kernel')}</dt><dd className="break-all">{boot.kernelId}</dd></div>
+          <div><dt>{t('system.update.rootfs')}</dt><dd className="break-all">{boot.rootfsId}</dd></div>
+        </> : null}
+        {running ? <div><dt>{t('system.update.version')}</dt><dd>{running.version} · {running.kernelRelease}</dd></div> : null}
+        {deployment ? <>
+          <div><dt>{t('system.update.generation')}</dt><dd>{deployment.highestGeneration}</dd></div>
+          {deployment.current && deployment.current !== boot?.deploymentId ? <div><dt>{t('system.update.confirmed')}</dt><dd className="break-all">{deployment.current}</dd></div> : null}
+          {deployment.candidate ? <div><dt>{t('system.update.candidate')}</dt><dd className="break-all">{deployment.candidate}</dd></div> : null}
+          {deployment.fallback ? <div><dt>{t('system.update.fallback')}</dt><dd className="break-all">{deployment.fallback}</dd></div> : null}
+          {deployment.failed.length ? <div><dt>{t('system.update.failed')}</dt><dd>{deployment.failed.map((id) => <div className="break-all" key={id}>{id}</div>)}</dd></div> : null}
+        </> : null}
         {lifecycle?.last_check ? <div><dt>{t('system.update.lastCheck')}</dt><dd>{lifecycle.last_check}</dd></div> : null}
       </dl>
-      {status.data?.pending_not_confirmed ? <p className="callout warning" role="status">{t('system.update.pendingReboot')}</p> : null}
+      {deployment?.candidate && deployment.candidate !== boot?.deploymentId ? <p className="callout warning" role="status">{t('system.update.pendingReboot')}</p> : null}
       {lifecycle?.client && lifecycle.client.available === false ? <p className="callout warning" role="status">{t('system.update.clientUnavailable', { reason: lifecycle.client.reason ?? '' })}</p> : null}
       {lifecycle?.policy_error ? <p className="callout error" role="alert">{t('system.update.policyError', { reason: lifecycle.policy_error })}</p> : null}
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
@@ -143,9 +159,9 @@ export function UpdateActions() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useUpdateState()
-  const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, json('POST', name === 'install' ? {} : undefined)), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
-  const busy = action.isPending || status.isPending || activeUpdateStates.has(status.data?.lifecycle?.state ?? '')
-  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={busy}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={busy}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={busy}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
+  const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, json('POST', name === 'install' ? { deploymentId: status.data?.lifecycle?.deploymentId } : undefined)), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
+  const busy = action.isPending || status.isPending || status.isError || activeUpdateStates.has(status.data?.lifecycle?.state ?? '')
+  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={busy}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={busy}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={busy || !status.data?.lifecycle?.deploymentId}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
 }
 
 /// The reset tiers and credential recovery bind REAL routes and are their own
@@ -173,20 +189,27 @@ export function UpdateChecks() {
           <span><StatusBadge tone={row.tone}>{row.tag}</StatusBadge><span>{row.value}</span></span>
         </div>
       ))}
-      <div className="panel-footer"><PlannedNotice>{t('system.update.checks.planned')}</PlannedNotice></div>
     </Surface>
   )
 }
 
 function ManualUpdate() {
   const { t } = useTranslation()
-  return (
-    <Surface>
-      <PlannedNotice>{t('system.update.manualPlanned')}</PlannedNotice>
-      <div className="panel-head"><span>{t('system.update.manualFormats')}</span></div>
-      <Button variant="outline" size="sm" disabled><Upload />{t('system.update.manualUpload')}</Button>
-    </Surface>
-  )
+  const queryClient = useQueryClient()
+  const [deploymentId, setDeploymentId] = useState('')
+  const install = useMutation({
+    mutationFn: () => api<unknown>('/api/v1/update/install', json('POST', { deploymentId })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }),
+  })
+  return <Surface><form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); install.mutate() }}>
+    <p className="text-sm text-muted-foreground">{t('system.update.manualFormats')}</p>
+    <Field label={t('system.update.deploymentId')}>
+      <Input value={deploymentId} onChange={(event) => setDeploymentId(event.target.value)} maxLength={64} pattern="[0-9a-f]{64}" required />
+    </Field>
+    <Button type="submit" disabled={install.isPending || !/^[0-9a-f]{64}$/.test(deploymentId)}>{t('system.update.install')}</Button>
+    {install.isSuccess ? <p className="callout success" role="status">{t('system.update.installAccepted')}</p> : null}
+    {install.error ? <p className="callout error" role="alert">{errorMessage(install.error, t('common.requestFailed'))}</p> : null}
+  </form></Surface>
 }
 
 function ConfigBackup() {

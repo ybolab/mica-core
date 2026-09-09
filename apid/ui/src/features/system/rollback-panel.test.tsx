@@ -12,49 +12,45 @@ afterEach(() => {
 describe('the guarded rollback', () => {
   it('offers the mark when the guard permits it, and says it does not reboot', async () => {
     const fetch = stubFetch({
-      '/api/v1/update': { rollback: { target: 'rootfs.1', permitted: true, reason: null } },
-      'POST /api/v1/update/rollback': () => jsonResponse({ slotName: 'rootfs.0', message: 'marked slot rootfs.0 as bad', target: 'rootfs.1', nextStep: 'POST /api/v1/actions/reboot' }),
+      '/api/v1/update': { rollback: { target: 'b'.repeat(64), permitted: true, reason: null } },
+      'POST /api/v1/update/rollback': () => jsonResponse({ deploymentId: 'a'.repeat(64), target: 'b'.repeat(64), nextStep: 'POST /api/v1/actions/reboot' }),
     })
     renderPanel(<RollbackPanel />)
 
-    expect(await screen.findByText('a rollback to rootfs.1 is permitted')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: 'Roll back to rootfs.1' }))
-    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Roll back to rootfs.1' }))
+    expect(await screen.findByText(`a rollback to ${'b'.repeat(64)} is permitted`)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: `Roll back to ${'b'.repeat(64)}` }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: `Roll back to ${'b'.repeat(64)}` }))
 
     await waitFor(() => expect(fetch.mock.calls.some(([input]) => String(input) === '/api/v1/update/rollback')).toBe(true))
-    expect(await screen.findByText('rootfs.0 was marked bad. The next boot comes from rootfs.1.')).toBeTruthy()
+    expect(await screen.findByText(`Deployment ${'a'.repeat(64)} was rejected. The next boot uses ${'b'.repeat(64)}.`)).toBeTruthy()
     expect(screen.getByText(/does not reboot. Reboot the device to complete the rollback/)).toBeTruthy()
-    expect(screen.getByText('marked slot rootfs.0 as bad')).toBeTruthy()
   })
 
   it('renders a refusal as a refusal and offers no control at all', async () => {
-    stubFetch({ '/api/v1/update': { rollback: { target: 'rootfs.1', permitted: false, reason: 'alternate_never_installed' } } })
+    stubFetch({ '/api/v1/update': { rollback: { target: 'b'.repeat(64), permitted: false, reason: 'no_usable_fallback' } } })
     renderPanel(<RollbackPanel />)
 
     expect(await screen.findByText('rollback not available')).toBeTruthy()
-    expect(screen.getByText(/never been written, so there is no system there to fall back to/)).toBeTruthy()
+    expect(screen.getByText(/no usable retained deployment/)).toBeTruthy()
     expect(screen.queryAllByRole('button')).toHaveLength(0)
   })
 
   it('reads a permitted-with-a-reason document as permitted and shows no refusal beside the control', async () => {
     // `permitted` is derived from the absence of a reason, so the two states
     // are the whole vocabulary. Nothing here may render a third.
-    stubFetch({ '/api/v1/update': { rollback: { target: 'rootfs.1', permitted: true, reason: null } } })
+    stubFetch({ '/api/v1/update': { rollback: { target: 'b'.repeat(64), permitted: true, reason: null } } })
     renderPanel(<RollbackPanel />)
 
-    await screen.findByText('a rollback to rootfs.1 is permitted')
-    expect(screen.queryByText(/^The device's slot state refuses/)).toBeNull()
+    await screen.findByText(`a rollback to ${'b'.repeat(64)} is permitted`)
+    expect(screen.queryByText(/^The deployment state refuses/)).toBeNull()
   })
 
   it('names each refusal the slot state can produce', async () => {
     const expected: [string, RegExp][] = [
-      ['no_alternate_slot', /RAUC names no booted slot/],
-      ['alternate_is_booted_slot', /single slot/],
-      ['alternate_marked_bad', /already condemned the other slot/],
-      ['alternate_is_newer', /already on the previous system/],
-      ['install_order_unknown', /cannot be ordered by install time/],
-      ['booted_slot_not_confirmed', /attempt counter/],
-      ['something_new', /slot state refuses a rollback/],
+      ['candidate_pending', /candidate deployment is pending/],
+      ['running_not_confirmed', /running deployment is not confirmed/],
+      ['no_usable_fallback', /no usable retained deployment/],
+      ['something_new', /deployment state refuses a rollback/],
     ]
     for (const [reason, copy] of expected) {
       stubFetch({ '/api/v1/update': { rollback: { target: null, permitted: false, reason } } })
@@ -66,15 +62,15 @@ describe('the guarded rollback', () => {
 
   it('maps a 409 from the mark onto the same refusal vocabulary', async () => {
     stubFetch({
-      '/api/v1/update': { rollback: { target: 'rootfs.1', permitted: true, reason: null } },
-      'POST /api/v1/update/rollback': () => jsonResponse({ error: { code: 'booted_slot_not_confirmed', message: 'refused' } }, 409),
+      '/api/v1/update': { rollback: { target: 'b'.repeat(64), permitted: true, reason: null } },
+      'POST /api/v1/update/rollback': () => jsonResponse({ error: { code: 'running_not_confirmed', message: 'refused' } }, 409),
     })
     renderPanel(<RollbackPanel />)
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Roll back to rootfs.1' }))
-    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Roll back to rootfs.1' }))
+    await userEvent.click(await screen.findByRole('button', { name: `Roll back to ${'b'.repeat(64)}` }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: `Roll back to ${'b'.repeat(64)}` }))
 
-    expect(await screen.findByText(/attempt counter/)).toBeTruthy()
+    expect(await screen.findByText(/running deployment is not confirmed/)).toBeTruthy()
   })
 
   it('surfaces a read failure as an error', async () => {

@@ -18,8 +18,7 @@
 
 set -u
 
-# The kernel-command-line service starts early. Dispatch the checks after mosd
-# acquires its bus name so the real key test can exercise a managed tunnel.
+# Dispatch after mosd owns its bus name when invoked outside the seeded test unit.
 if [ "${M7_AFTER_MOSD:-0}" != 1 ]; then
     exec systemd-run --no-block --unit=mos-e2e-net-smoke \
         --property=After=mosd.service --property=Requires=mosd.service \

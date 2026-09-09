@@ -21,7 +21,7 @@ pub fn now_unix() -> u64 {
 /// Same directory because `rename` is only atomic within one filesystem; the
 /// directory fsync is what makes the rename itself survive a power cut, and a
 /// power cut is exactly the event the guard state exists to survive.
-pub fn write_atomically(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
+pub fn write_atomically(path: &Path, contents: impl AsRef<[u8]>, mode: u32) -> anyhow::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -41,16 +41,14 @@ pub fn write_atomically(path: &Path, contents: &str, mode: u32) -> anyhow::Resul
         .mode(mode)
         .open(&temp)
         .with_context(|| format!("create {}", temp.display()))?;
-    file.write_all(contents.as_bytes())
+    // Reset the mode before syncing, including an interrupted temporary file.
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("set mode on {}", temp.display()))?;
+    file.write_all(contents.as_ref())
         .with_context(|| format!("write {}", temp.display()))?;
     file.sync_all()
         .with_context(|| format!("flush {}", temp.display()))?;
     drop(file);
-
-    // The mode above only takes effect when the temporary file is created; a
-    // leftover from an interrupted run would keep its old mode.
-    std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))
-        .with_context(|| format!("set mode on {}", temp.display()))?;
 
     std::fs::rename(&temp, path)
         .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;

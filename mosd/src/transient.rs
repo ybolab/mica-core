@@ -37,7 +37,7 @@ pub const SHADOW_ENV: &str = "MOSD_SHADOW_PATH";
 
 /// Name of the marker file, resolved beside the shadow file rather than at a
 /// fixed path: the shadow file is `/var/lib/mos/shadow` once `var-lib-mos.mount`
-/// is up and `/mnt/state/mos/shadow` before it, and both must name the same
+/// is up and `/mnt/data/state/mos/shadow` before it, and both must name the same
 /// STATE-backed marker.
 const MARKER_NAME: &str = "transient-root-password";
 /// Mode of the marker: owner read/write only. Its content is a password hash,
@@ -76,7 +76,7 @@ pub fn production_shadow_path() -> PathBuf {
 /// Marker recording the transient hash for the shadow file at `shadow_path`.
 ///
 /// Derived from the shadow path, never hardcoded, so a caller working on an
-/// alternate path — `mos-seed-state`'s `/mnt/state/mos/shadow`, or a test's
+/// alternate path — `mos-seed-state`'s `/mnt/data/state/mos/shadow`, or a test's
 /// temporary file — gets the marker that belongs to it.
 ///
 /// The symlink is resolved first, and that is why this is not one line.
@@ -305,8 +305,8 @@ mod tests {
         );
         // The early path mos-seed-state uses, before var-lib-mos.mount is up.
         assert_eq!(
-            transient_marker_path(Path::new("/mnt/state/mos/shadow")),
-            Path::new("/mnt/state/mos/transient-root-password")
+            transient_marker_path(Path::new("/mnt/data/state/mos/shadow")),
+            Path::new("/mnt/data/state/mos/transient-root-password")
         );
         // Derived, not hardcoded: an arbitrary directory follows the file.
         assert_eq!(

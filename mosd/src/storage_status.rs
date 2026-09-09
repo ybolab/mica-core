@@ -1,6 +1,5 @@
 //! Read-mostly observation of the fixed storage layout: tiers, the PLAN-063
-//! bind namespaces, media health, space pressure and the reserved update
-//! workspace (PLAN-049 / RFCT-285).
+//! bind namespaces, directory usage, project quotas, media health and pressure.
 //!
 //! The shape [`crate::network_state`] and [`crate::time_status`] take: a trait
 //! with an unavailable default so a dry-run daemon or a test never inspects
@@ -56,24 +55,12 @@ pub struct TierSpec {
     pub partition_label: &'static str,
     /// board.env `<TIER>_ROLE`.
     pub role: &'static str,
-    /// Where the tier is mounted when it is mounted at all. `None` for the
-    /// A/B rootfs slots: the booted one is the verity source of `/` and the
-    /// other is not mounted anywhere, so the mount is discovered, not
-    /// declared.
+    /// Fixed mountpoint, absent for the raw firmware partition.
     pub mount: Option<&'static str>,
 }
 
-/// Every tier either board defines, in disk order.
-///
-/// `esp` exists on x64 only and the `boot-a`/`boot-b` pair carries the ESP
-/// role on cx3576; a tier whose partition label names nothing on this board is
-/// reported absent rather than omitted, so the surface answers "this board has
-/// no separate ESP" instead of leaving the operator to infer it.
-///
-/// The `loader` and `uenv-a`/`uenv-b` partitions are deliberately NOT here:
-/// they are raw blobs with no filesystem, no mount and no space to account
-/// for, and listing them would invite a reader to expect capacity numbers
-/// that cannot exist.
+/// Three physical partitions per board. UEFI boards expose ESP; FIT boards
+/// expose FIRMWARE. Immutable deployments share SYSTEM; all writable data is DATA.
 pub const TIERS: &[TierSpec] = &[
     TierSpec {
         name: "esp",
@@ -82,46 +69,16 @@ pub const TIERS: &[TierSpec] = &[
         mount: Some("/boot"),
     },
     TierSpec {
-        name: "boot-a",
-        partition_label: "boot-a",
-        role: "esp",
+        name: "firmware",
+        partition_label: "firmware",
+        role: "firmware",
         mount: None,
     },
     TierSpec {
-        name: "boot-b",
-        partition_label: "boot-b",
-        role: "esp",
-        mount: None,
-    },
-    TierSpec {
-        name: "rootfs-a",
-        partition_label: "rootfs-a",
-        role: "verity-slot",
-        mount: None,
-    },
-    TierSpec {
-        name: "rootfs-b",
-        partition_label: "rootfs-b",
-        role: "verity-slot",
-        mount: None,
-    },
-    TierSpec {
-        name: "meta",
-        partition_label: "meta",
+        name: "system",
+        partition_label: "system",
         role: "ext4",
-        mount: Some("/mnt/meta"),
-    },
-    TierSpec {
-        name: "state",
-        partition_label: "state",
-        role: "ext4",
-        mount: Some("/mnt/state"),
-    },
-    TierSpec {
-        name: "ephemeral",
-        partition_label: "ephemeral",
-        role: "ext4",
-        mount: Some("/var"),
+        mount: Some("/mnt/system"),
     },
     TierSpec {
         name: "data",
@@ -174,30 +131,18 @@ pub struct BindSpec {
     pub owner: &'static str,
 }
 
-/// The update workspace root under `/mos` and its three subdirectories, the
-/// PLAN-061 taxonomy PLAN-063 keeps: `downloads` for resumable partial
-/// acquisition, `verified` for complete authenticated artifacts awaiting
-/// RAUC, `staging` for bounded transaction-local work.
-pub const UPDATE_WORKSPACE_ROOT: &str = "/mos/updates";
-
 /// The subtree the readiness probe writes into.
 ///
-/// `staging` and not `/mos` itself: PLAN-061 asks for a private probe file
-/// "in the owning subtree", and this is the subtree the reservation below is
-/// about. `mos-data-layout` creates it 0755 root-owned and mosd runs as root,
-/// so mosd may write here; see [`ProbeOutcome`] for what happens when it
-/// cannot.
+/// This directory is created by mos-data-layout inside the acquisition
+/// workspace; the probe never writes to an unrelated DATA namespace.
 pub const PROBE_SUBTREE: &str = "/mos/updates/staging";
 
-/// The tier the low-space policy and the update reservation are about.
+/// The tier observed by the low-space policy.
 ///
 /// One tier, one filesystem, one capacity pool -- and two namespaces on top of
 /// it. Reporting `/mos` and `/srv` as if each had its own capacity would give
 /// a reader two numbers that sum to twice the disk.
 pub const DATA_TIER: &str = "data";
-/// The other precious writable tier the policy watches.
-pub const STATE_TIER: &str = "state";
-
 /// Used-space percentage at or above which a watched tier is `warning`.
 pub const WARNING_ENTER_PERCENT: u8 = 80;
 /// Used-space percentage a `warning` tier must fall BELOW to clear.
@@ -207,21 +152,6 @@ pub const CRITICAL_ENTER_PERCENT: u8 = 90;
 /// Used-space percentage a `critical` tier must fall BELOW to drop back to
 /// `warning`.
 pub const CRITICAL_CLEAR_PERCENT: u8 = 85;
-
-/// DATA space held back for update work: 256 MiB.
-///
-/// The number is the reservation, not a quota. mos consumes DATA space for
-/// exactly one update purpose — the bundle staged there before
-/// `InstallUpdate` names it — and this is the floor that purpose is
-/// guaranteed. Nothing prevents an application from filling DATA afterwards;
-/// see [`install_refusal`] for the one seam where the reservation is
-/// ENFORCED, and `docs/design/storage.md` for why there is no quota system
-/// behind it.
-///
-/// 256 MiB is sized against the board budgets in board.env
-/// (`BOARD_SIZE_BUDGET_MB` is 400 on cx3576 and 520 on x64, and a bundle
-/// carries one compressed rootfs slot), rounded up to the next power of two.
-pub const UPDATE_WORKSPACE_RESERVED_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One tier's space accounting, in bytes.
 ///
@@ -265,6 +195,8 @@ pub struct MountEvidence {
     /// device, and reporting the mapper device would leave the tier that
     /// actually holds it looking unmounted.
     pub device: String,
+    /// The filesystem-relative source path from mountinfo, including bind roots.
+    pub root: String,
     /// Where it is mounted.
     pub mount: String,
     /// Filesystem type.
@@ -404,6 +336,13 @@ impl Readiness {
     }
 }
 
+fn mount_matches_namespace(mount: &MountEvidence) -> bool {
+    BINDS.iter().any(|spec| {
+        spec.mount == mount.mount
+            && spec.source.strip_prefix(DATA_MOUNT) == Some(mount.root.as_str())
+    })
+}
+
 /// Classify one bind namespace against the DATA tier it must live on.
 ///
 /// Pure, and the whole of the readiness decision. Order is meaning:
@@ -441,7 +380,7 @@ pub fn classify_readiness(
     };
     // The mount source must resolve to the DATA partition. A bind carrying
     // any other device is a different filesystem wearing the right path.
-    if &mount.device != device {
+    if &mount.device != device || !mount_matches_namespace(mount) {
         return Readiness::Unavailable;
     }
     if mount.read_only || data.mount.as_ref().is_some_and(|m| m.read_only) {
@@ -459,9 +398,55 @@ pub fn classify_readiness(
     Readiness::Ready
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUsage {
+    pub used_bytes: u64,
+    pub limit_bytes: u64,
+    pub used_inodes: u64,
+    pub limit_inodes: u64,
+}
+
+fn parse_project_quotas(csv: &str) -> Option<BTreeMap<u32, ProjectUsage>> {
+    let mut lines = csv.lines();
+    if lines.next()?
+        != "Project,BlockStatus,FileStatus,BlockUsed,BlockSoftLimit,BlockHardLimit,BlockGrace,FileUsed,FileSoftLimit,FileHardLimit,FileGrace"
+    {
+        return None;
+    }
+    let mut projects = BTreeMap::new();
+    for line in lines {
+        let fields: Vec<_> = line.split(',').collect();
+        if fields.len() != 11 {
+            return None;
+        }
+        let id: u32 = fields[0].strip_prefix('#')?.parse().ok()?;
+        if ![100, 101].contains(&id) {
+            continue;
+        }
+        if projects.contains_key(&id) {
+            return None;
+        }
+        projects.insert(
+            id,
+            ProjectUsage {
+                used_bytes: fields[3].parse::<u64>().ok()?.checked_mul(1024)?,
+                limit_bytes: fields[5].parse::<u64>().ok()?.checked_mul(1024)?,
+                used_inodes: fields[7].parse().ok()?,
+                limit_inodes: fields[9].parse().ok()?,
+            },
+        );
+    }
+    (projects.len() == 2).then_some(projects)
+}
+
+const DATA_DIRECTORIES: [&str; 6] = ["state", "meta", "mos", "srv", "cache", "tmp"];
+
 /// One observation of the whole storage surface.
 #[derive(Debug, Clone, Default)]
 pub struct StorageEvidence {
+    pub directory_bytes: BTreeMap<String, u64>,
+    pub project_quotas: Option<BTreeMap<u32, ProjectUsage>>,
     /// Per-tier evidence, keyed by [`TierSpec::name`]. A tier missing from
     /// the map is a tier whose partition label names nothing on this board.
     pub tiers: BTreeMap<String, TierEvidence>,
@@ -570,47 +555,6 @@ impl PressureTracker {
     }
 }
 
-/// Why an install must not start, or `None` when it may.
-///
-/// This is the ONE seam where the reserved update workspace is enforced, and
-/// what it enforces is an admission check, not a quota: mos consumes DATA
-/// space for updates only by placing a bundle under
-/// [`UPDATE_WORKSPACE_ROOT`], so the question asked here is whether
-/// [`UPDATE_WORKSPACE_RESERVED_BYTES`] is still available for that purpose.
-/// A bundle already sitting in the workspace is the reservation being USED
-/// rather than consumed by something else, so its own size counts back
-/// towards the floor.
-///
-/// The path tested is `/mos/updates`, not the DATA mount at large: under
-/// PLAN-063 the whole of `/mos` and `/srv` is one filesystem, so "the bundle
-/// is on DATA" would be true of an ISO an operator dropped in their home
-/// directory, and that byte count is not the update workspace.
-///
-/// Absent evidence never refuses. A daemon with no storage observer — a
-/// dry-run daemon, a container — has no basis on which to block an operator's
-/// update, and inventing one would be the "silently healthy" failure inverted
-/// into a silent denial.
-#[must_use]
-pub fn install_refusal(
-    data: Option<&TierEvidence>,
-    bundle: &Path,
-    bundle_bytes: u64,
-) -> Option<String> {
-    let space = data?.space?;
-    let staged = if bundle.starts_with(UPDATE_WORKSPACE_ROOT) {
-        bundle_bytes
-    } else {
-        0
-    };
-    let workspace = space.free.saturating_add(staged);
-    if workspace >= UPDATE_WORKSPACE_RESERVED_BYTES {
-        return None;
-    }
-    Some(format!(
-        "the reserved update workspace under {UPDATE_WORKSPACE_ROOT} is not available: {workspace} bytes free on the DATA filesystem where {UPDATE_WORKSPACE_RESERVED_BYTES} are reserved for updates. Free space under /mos or /srv and retry"
-    ))
-}
-
 /// The lifecycle decisions PLAN-049 requires to be EXPLICIT.
 ///
 /// Every one is a product decision, and every current answer is
@@ -664,6 +608,12 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
             "sharedCapacityTier": DATA_TIER,
             "detail": "/mos and /srv are bind namespaces of one DATA filesystem and share its single capacity pool; their space is reported once, on the `data` tier",
             "binds": binds,
+            "directories": DATA_DIRECTORIES.map(|name| json!({
+                "name": name,
+                "usedBytes": evidence.directory_bytes.get(name),
+                "project": match name { "mos" | "srv" => Some(100), "cache" | "tmp" => Some(101), _ => None },
+            })),
+            "projectQuotas": evidence.project_quotas,
         },
         "media": media,
         "policy": {
@@ -671,9 +621,7 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
             "warningClearPercent": WARNING_CLEAR_PERCENT,
             "criticalPercent": CRITICAL_ENTER_PERCENT,
             "criticalClearPercent": CRITICAL_CLEAR_PERCENT,
-            "updateWorkspaceReservedBytes": UPDATE_WORKSPACE_RESERVED_BYTES,
-            "updateWorkspaceRoot": UPDATE_WORKSPACE_ROOT,
-            "watchedTiers": [DATA_TIER, STATE_TIER],
+            "watchedTiers": [DATA_TIER],
         },
         "lifecycle": LIFECYCLE
             .iter()
@@ -725,20 +673,10 @@ fn tier_json(spec: &TierSpec, evidence: Option<&TierEvidence>, pressure: &Pressu
                 "usedPercent": space.used_percent(),
             }),
         );
-        if spec.name == DATA_TIER || spec.name == STATE_TIER {
+        if spec.name == DATA_TIER {
             root.insert(
                 "pressure".to_string(),
                 json!(pressure.observe(spec.name, space.used_percent()).as_str()),
-            );
-        }
-        if spec.name == DATA_TIER {
-            root.insert(
-                "updateWorkspace".to_string(),
-                json!({
-                    "root": UPDATE_WORKSPACE_ROOT,
-                    "reservedBytes": UPDATE_WORKSPACE_RESERVED_BYTES,
-                    "available": space.free >= UPDATE_WORKSPACE_RESERVED_BYTES,
-                }),
             );
         }
     }
@@ -798,6 +736,10 @@ fn bind_json(
             json!(data.and_then(|tier| tier.device.as_deref()) == Some(mount.device.as_str())),
         );
     }
+    root.insert(
+        "sourceMatchesNamespace".to_string(),
+        json!(evidence.mount.as_ref().is_some_and(mount_matches_namespace)),
+    );
     if let Some(is_directory) = evidence.source_is_directory {
         root.insert("sourceIsDirectory".to_string(), json!(is_directory));
     }
@@ -915,6 +857,7 @@ pub fn parse_mountinfo(text: &str) -> Vec<MountEvidence> {
             let right: Vec<&str> = right.split_whitespace().collect();
             Some(MountEvidence {
                 device: (*right.get(1)?).to_string(),
+                root: unescape_octal(left.get(3)?),
                 mount: unescape_octal(left.get(4)?),
                 fstype: (*right.first()?).to_string(),
                 read_only: left.get(5)?.split(',').any(|option| option == "ro"),
@@ -1196,43 +1139,11 @@ impl HostStorage {
         }
     }
 
-    /// The mount table, with device-mapper mounts resolved to the partition
-    /// underneath them.
     fn mounts(&self) -> Vec<MountEvidence> {
         let Ok(text) = std::fs::read_to_string(self.path("proc/self/mountinfo")) else {
             return Vec::new();
         };
         parse_mountinfo(&text)
-            .into_iter()
-            .map(|mut mount| {
-                if let Some(backing) = self.dm_backing(&mount.device) {
-                    mount.device = backing;
-                }
-                mount
-            })
-            .collect()
-    }
-
-    /// The single partition a device-mapper device is built from, if this is
-    /// one. `/` on the mos image is a verity device over a rootfs slot, and
-    /// without this the slot holding the running system reports unmounted.
-    fn dm_backing(&self, device: &str) -> Option<String> {
-        let name = device.strip_prefix("/dev/")?;
-        if !name.starts_with("dm-") {
-            return None;
-        }
-        let mut slaves: Vec<String> =
-            std::fs::read_dir(self.path(&format!("sys/block/{name}/slaves")))
-                .ok()?
-                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-                .collect();
-        slaves.sort();
-        // Exactly one backing device, or none of this is the verity slot
-        // pairing it claims to be.
-        match slaves.as_slice() {
-            [single] => Some(format!("/dev/{single}")),
-            _ => None,
-        }
     }
 
     /// Observe one PLAN-063 bind namespace.
@@ -1275,6 +1186,11 @@ impl HostStorage {
                 spec.mount
             )));
         };
+        if !mount_matches_namespace(mount) {
+            return Some(ProbeOutcome::NotAttempted(
+                "unexpected namespace source".to_string(),
+            ));
+        }
         if mount.read_only {
             return Some(ProbeOutcome::NotAttempted(format!(
                 "{} is mounted read-only",
@@ -1454,6 +1370,22 @@ fn df_space(mount: &str) -> Option<FsSpace> {
     parse_df(&String::from_utf8_lossy(&output.stdout))
 }
 
+async fn bounded_storage_output(mut command: tokio::process::Command) -> Option<String> {
+    command
+        .kill_on_drop(true)
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let output = tokio::time::timeout(std::time::Duration::from_secs(2), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() || output.stdout.len() > 16384 {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
 #[async_trait::async_trait]
 impl StorageStatusSource for HostStorage {
     async fn observe(&self) -> Result<StorageEvidence> {
@@ -1482,7 +1414,6 @@ impl StorageStatusSource for HostStorage {
                         .iter()
                         .find(|mount| mount.device == device && mount.mount == want)
                 })
-                .or_else(|| mounts.iter().find(|mount| mount.device == device))
                 .cloned();
             let space = mount.as_ref().and_then(|mount| (self.space)(&mount.mount));
             tiers.insert(
@@ -1497,11 +1428,45 @@ impl StorageStatusSource for HostStorage {
             );
         }
 
+        let data_path = self.path("mnt/data");
+        let directory_paths: Vec<_> = DATA_DIRECTORIES
+            .iter()
+            .map(|name| data_path.join(name))
+            .filter(|path| path.symlink_metadata().is_ok_and(|meta| meta.is_dir()))
+            .collect();
+        let mut directory_bytes = BTreeMap::new();
+        if !directory_paths.is_empty() {
+            let mut command = tokio::process::Command::new("/usr/bin/du");
+            command
+                .args(["-s", "-x", "-B1", "--"])
+                .args(&directory_paths);
+            if let Some(output) = bounded_storage_output(command).await {
+                for line in output.lines() {
+                    if let Some((size, path)) = line.split_once('\t') {
+                        for name in DATA_DIRECTORIES {
+                            if std::path::Path::new(path) == data_path.join(name)
+                                && let Ok(size) = size.parse::<u64>()
+                            {
+                                directory_bytes.insert(name.to_string(), size);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut command = tokio::process::Command::new("/usr/sbin/repquota");
+        command.args(["-P", "-n", "-O", "csv"]).arg(&data_path);
+        let project_quotas = bounded_storage_output(command)
+            .await
+            .and_then(|output| parse_project_quotas(&output));
+
         let binds = BINDS
             .iter()
             .map(|spec| (spec.name.to_string(), self.bind(spec, &mounts)))
             .collect();
         Ok(StorageEvidence {
+            directory_bytes,
+            project_quotas,
             tiers,
             media,
             binds,
@@ -1525,6 +1490,12 @@ mod tests {
     fn mounted(device: &str, mount: &str) -> MountEvidence {
         MountEvidence {
             device: device.to_string(),
+            root: BINDS
+                .iter()
+                .find(|spec| spec.mount == mount)
+                .and_then(|spec| spec.source.strip_prefix(DATA_MOUNT))
+                .unwrap_or("/")
+                .to_string(),
             mount: mount.to_string(),
             fstype: "ext4".to_string(),
             read_only: false,
@@ -1570,77 +1541,6 @@ mod tests {
         assert_eq!(next_pressure(Pressure::Warning, 77), Pressure::Warning);
         assert_eq!(next_pressure(Pressure::Critical, 87), Pressure::Critical);
         assert_eq!(next_pressure(Pressure::Warning, 87), Pressure::Warning);
-    }
-
-    /// The install admission check, at the one seam that has it.
-    #[test]
-    fn an_install_is_refused_only_when_the_reserved_workspace_is_gone() {
-        let reserved = UPDATE_WORKSPACE_RESERVED_BYTES;
-        let roomy = TierEvidence {
-            mount: Some(mounted("/dev/mmcblk0p11", DATA_MOUNT)),
-            space: Some(space(4 * reserved, reserved, 2 * reserved)),
-            ..TierEvidence::default()
-        };
-        assert_eq!(
-            install_refusal(
-                Some(&roomy),
-                Path::new("/mos/updates/verified/update.raucb"),
-                100
-            ),
-            None
-        );
-
-        let full = TierEvidence {
-            space: Some(space(4 * reserved, 4 * reserved, 0)),
-            ..roomy.clone()
-        };
-        let refusal = install_refusal(Some(&full), Path::new("/var/tmp/update.raucb"), 100)
-            .expect("a full DATA refuses");
-        assert!(refusal.contains(UPDATE_WORKSPACE_ROOT), "{refusal}");
-        assert!(refusal.contains(&reserved.to_string()), "{refusal}");
-
-        // The same full tier, with the bundle staged IN the workspace: the
-        // reservation is being used for the purpose it exists for, so the
-        // install proceeds. Without this the reservation would refuse every
-        // update it was created to make possible.
-        assert_eq!(
-            install_refusal(
-                Some(&full),
-                Path::new("/mos/updates/verified/update.raucb"),
-                reserved
-            ),
-            None
-        );
-        // A bundle elsewhere of the same size does not excuse it -- and under
-        // PLAN-063 "elsewhere" includes the rest of the very same filesystem,
-        // because /mos, /srv and /home are one pool and only /mos/updates is
-        // the workspace. Testing /srv and /home specifically is what stops
-        // this check from degrading into "is the bundle on DATA".
-        for elsewhere in [
-            "/home/mos/update.raucb",
-            "/srv/update.raucb",
-            "/mos/ui/update.raucb",
-        ] {
-            assert!(
-                install_refusal(Some(&full), Path::new(elsewhere), reserved).is_some(),
-                "{elsewhere} was treated as the update workspace"
-            );
-        }
-
-        // Absent evidence never refuses: a dry-run daemon has no basis on
-        // which to block an operator's update.
-        assert_eq!(
-            install_refusal(None, Path::new("/mos/updates/x.raucb"), 0),
-            None
-        );
-        let unmeasured = TierEvidence {
-            space: None,
-            ..roomy.clone()
-        };
-        assert_eq!(
-            install_refusal(Some(&unmeasured), Path::new("/mos/updates/x.raucb"), 0),
-            None
-        );
     }
 
     fn data_tier(device: &str) -> TierEvidence {
@@ -1973,20 +1873,23 @@ mod tests {
             },
         );
         tiers.insert(
-            "rootfs-a".to_string(),
+            "system".to_string(),
             TierEvidence {
                 device: Some("/dev/mmcblk0p6".to_string()),
                 partition_bytes: Some(268_435_456),
                 mount: Some(MountEvidence {
                     device: "/dev/mmcblk0p6".to_string(),
-                    mount: "/".to_string(),
-                    fstype: "squashfs".to_string(),
+                    root: "/".to_string(),
+                    mount: "/mnt/system".to_string(),
+                    fstype: "ext4".to_string(),
                     read_only: true,
                 }),
                 ..TierEvidence::default()
             },
         );
         let evidence = StorageEvidence {
+            directory_bytes: BTreeMap::new(),
+            project_quotas: None,
             tiers,
             binds: [("mos".to_string(), bound("/dev/mmcblk0p11"))]
                 .into_iter()
@@ -2026,12 +1929,6 @@ mod tests {
         assert_eq!(data["space"]["reservedBytes"], 50);
         assert_eq!(data["space"]["usedPercent"], 85);
         assert_eq!(data["pressure"], "warning");
-        assert_eq!(
-            data["updateWorkspace"]["reservedBytes"],
-            UPDATE_WORKSPACE_RESERVED_BYTES
-        );
-        assert_eq!(data["updateWorkspace"]["root"], UPDATE_WORKSPACE_ROOT);
-        assert_eq!(data["updateWorkspace"]["available"], false);
 
         // One filesystem, two namespaces. The binds carry no capacity of
         // their own -- a `space` object on either would be the DATA tier's
@@ -2056,16 +1953,15 @@ mod tests {
         assert_eq!(data["check"]["exitStatus"], 1);
         assert_eq!(data["check"]["result"], "success");
 
-        // The booted rootfs slot is mounted read-only at `/`, discovered
-        // through the verity device rather than declared.
-        let rootfs_a = by_name("rootfs-a");
-        assert_eq!(rootfs_a["mount"], "/");
-        assert_eq!(rootfs_a["readOnly"], true);
-        assert_eq!(rootfs_a["partitionBytes"], 268_435_456u64);
+        // SYSTEM holds immutable deployment objects and stays read-only.
+        let system = by_name("system");
+        assert_eq!(system["mount"], "/mnt/system");
+        assert_eq!(system["readOnly"], true);
+        assert_eq!(system["partitionBytes"], 268_435_456u64);
         // No mounted filesystem to measure, so no invented space object.
-        assert!(rootfs_a.get("space").is_none(), "{rootfs_a}");
+        assert!(system.get("space").is_none(), "{system}");
         // Never checked, and it says so rather than reading as clean.
-        assert_eq!(rootfs_a["check"]["recorded"], false);
+        assert_eq!(system["check"]["recorded"], false);
 
         // A tier this board does not have is present in the array and says
         // it is absent; omitting it would leave the reader to guess.
@@ -2075,14 +1971,35 @@ mod tests {
 
         // Only the watched tiers carry a pressure classification; the others
         // would need thresholds nobody has set.
-        assert!(by_name("ephemeral").get("pressure").is_none());
+        assert!(by_name("system").get("pressure").is_none());
 
         assert_eq!(value["media"][0]["kind"], "mmc");
         assert_eq!(value["media"][0]["health"]["supported"], true);
         assert_eq!(value["policy"]["warningPercent"], WARNING_ENTER_PERCENT);
-        assert_eq!(
-            value["policy"]["updateWorkspaceReservedBytes"],
-            UPDATE_WORKSPACE_RESERVED_BYTES
+    }
+
+    #[test]
+    fn storage_does_not_invent_an_update_space_reservation() {
+        let mut evidence = StorageEvidence::default();
+        evidence.tiers.insert(
+            "data".into(),
+            TierEvidence {
+                space: Some(space(1_000_000_000, 100_000_000, 900_000_000)),
+                ..TierEvidence::default()
+            },
+        );
+        let value = status_json(&evidence, &PressureTracker::default());
+        let data = value["tiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "data")
+            .unwrap();
+        assert!(data.get("updateWorkspace").is_none());
+        assert!(
+            value["policy"]
+                .get("updateWorkspaceReservedBytes")
+                .is_none()
         );
     }
 
@@ -2140,16 +2057,13 @@ mod tests {
         // A loop device, which is not a medium and must not be reported as one.
         write("sys/block/loop0/size", "1024\n");
         // The verity device the root is mounted from, and the slot under it.
-        write("sys/block/dm-0/slaves/mmcblk0p6/.keep", "");
+        write("sys/block/dm-0/slaves/loop0/.keep", "");
 
         std::fs::create_dir_all(path.join("dev/disk/by-partlabel")).expect("mkdir");
         std::os::unix::fs::symlink("../../mmcblk0p11", path.join("dev/disk/by-partlabel/data"))
             .expect("symlink");
-        std::os::unix::fs::symlink(
-            "../../mmcblk0p6",
-            path.join("dev/disk/by-partlabel/rootfs-a"),
-        )
-        .expect("symlink");
+        std::os::unix::fs::symlink("../../mmcblk0p6", path.join("dev/disk/by-partlabel/system"))
+            .expect("symlink");
 
         // The PLAN-063 layout: DATA at /mnt/data, and the same device bound
         // twice on top of it. The DATA row is listed LAST on purpose -- a
@@ -2159,6 +2073,7 @@ mod tests {
             "proc/self/mountinfo",
             concat!(
                 "25 1 254:0 / / ro,noatime shared:1 - squashfs /dev/dm-0 ro\n",
+                "32 25 179:6 / /mnt/system ro - ext4 /dev/mmcblk0p6 ro\n",
                 "33 25 179:11 /mos /mos rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
                 "34 25 179:11 /srv /srv rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
                 "35 25 179:11 / /mnt/data rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
@@ -2178,7 +2093,7 @@ mod tests {
         // status_json renders as `present: false`.
         let mut names: Vec<&str> = evidence.tiers.keys().map(String::as_str).collect();
         names.sort_unstable();
-        assert_eq!(names, ["data", "rootfs-a"]);
+        assert_eq!(names, ["data", "system"]);
 
         let data = &evidence.tiers["data"];
         assert_eq!(data.device.as_deref(), Some("/dev/mmcblk0p11"));
@@ -2223,13 +2138,11 @@ mod tests {
             Readiness::Ready
         );
 
-        // The booted slot is behind a verity mapper: without resolving the
-        // mapper's single slave, the slot holding the running system would
-        // report unmounted.
-        let rootfs = &evidence.tiers["rootfs-a"];
+        // SYSTEM is the physical filesystem containing immutable images.
+        let rootfs = &evidence.tiers["system"];
         assert_eq!(
             rootfs.mount.as_ref().map(|mount| mount.mount.as_str()),
-            Some("/")
+            Some("/mnt/system")
         );
         assert!(rootfs.mount.as_ref().is_some_and(|mount| mount.read_only));
         // No space reader answers for `/`, and none is invented.
@@ -2327,5 +2240,36 @@ mod tests {
     #[tokio::test]
     async fn the_unavailable_observer_answers_no_evidence() {
         assert!(UnavailableStorageStatus.observe().await.is_err());
+    }
+
+    #[test]
+    fn physical_tiers_follow_the_file_deployment_layout() {
+        assert_eq!(
+            TIERS.iter().map(|tier| tier.name).collect::<Vec<_>>(),
+            ["esp", "firmware", "system", "data"]
+        );
+        let status = status_json(&StorageEvidence::default(), &PressureTracker::default());
+        assert_eq!(status["policy"]["watchedTiers"], json!(["data"]));
+    }
+
+    #[test]
+    fn a_bind_of_another_data_directory_is_unavailable() {
+        let mut bind = bound("/dev/vda3");
+        bind.mount = parse_mountinfo("33 25 254:3 /state /mos rw - ext4 /dev/vda3 rw\n").pop();
+        assert_eq!(
+            classify_readiness(&bind, Some(&data_tier("/dev/vda3")), Pressure::Normal),
+            Readiness::Unavailable
+        );
+    }
+
+    #[test]
+    fn project_reports_use_bytes_and_inodes_without_duplicating_data_capacity() {
+        let csv = "Project,BlockStatus,FileStatus,BlockUsed,BlockSoftLimit,BlockHardLimit,BlockGrace,FileUsed,FileSoftLimit,FileHardLimit,FileGrace\n#0,ok,ok,732,0,0,,45,0,0,\n#100,ok,ok,92,0,1366132,,23,0,94208,\n#101,ok,ok,104,0,32768,,10,0,2048,\n";
+        let projects = parse_project_quotas(csv).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[&100].used_bytes, 92 * 1024);
+        assert_eq!(projects[&101].limit_bytes, 32 * 1024 * 1024);
+        assert_eq!(projects[&101].limit_inodes, 2048);
+        assert!(parse_project_quotas("Project\n#100,unknown").is_none());
     }
 }

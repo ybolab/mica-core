@@ -1,52 +1,7 @@
-//! The automatic update driver: what a device does on its own.
-//!
-//! One task, one tick, and a policy re-read every turn. Under
-//! [`UpdateMode::Check`] it is the check cadence that has always been here.
-//! Under [`UpdateMode::Auto`] it is PLAN-071 §2's four steps — check, fetch,
-//! re-check, install — followed by a reboot under [`RebootPolicy`].
-//!
-//! **Every step calls the function the manual route calls.** The check and
-//! the fetch are [`UpdateLifecycle::check_now`] and
-//! [`UpdateLifecycle::fetch_now`], which admit exactly as `CheckUpdate` and
-//! `FetchUpdate` do; the install and the reboot are the `InstallUpdate` and
-//! `Reboot` routes themselves, reached through [`AutoRoutes`]. So a gate an
-//! operator meets is a gate this driver meets: the policy refusals, the
-//! workspace readiness probe, the maintenance window, the storage
-//! reservation and the safe-to-reboot gate. There is no automatic bypass of
-//! anything, because there is no second implementation to bypass it in.
-//!
-//! Three things the automatic path adds, and one it refuses to add:
-//!
-//! - **The re-check before an install** (§5). A verified bundle sitting in
-//!   `verified/` may have been withdrawn since it was fetched, and TUF
-//!   offers no revocation signal beyond the target's absence from the
-//!   current metadata. So automation installs only what the current metadata
-//!   still names and deletes what it does not. A human is not stopped: a
-//!   manual install of a staged path stays available, because the human may
-//!   be installing it deliberately.
-//! - **The pending-slot guard.** A device whose other slot is installed and
-//!   waiting for its first boot has already been updated; installing again
-//!   would write over the slot the fallback needs.
-//! - **The suppression and the clock predicate** (§6, §7). A version whose
-//!   slot rolled back is not selected again — without that, `auto` is a
-//!   reboot loop, and PLAN-071 calls it the single most important safety
-//!   property in the plan — and an automatic install requires a clock the
-//!   device believes, because a maintenance window is UTC wall-clock and a
-//!   window verdict computed from a clock nobody vouches for is not a
-//!   verdict. Both refuse where a human is not refused: a manual install of
-//!   a suppressed version stays available, on the same reasoning as the
-//!   re-check above.
-//! - **It never arms the reboot-gate override** (§2 step 4). That is a
-//!   human's judgement that this reboot outranks what an application
-//!   declared it must not be interrupted for, and a machine cannot make it.
-//!   Enforced by construction: [`AutoRoutes`] has no method that arms it.
-//!
-//! **Every refusal is recorded, not logged and forgotten** (§2). Each
-//! `defer` call names a reason from the plan's vocabulary and lands in
-//! `update.lifecycle.deferred` with the refusing rule, when the reason first
-//! applied and how many attempts it has refused since. A permanently
-//! blocking application permanently defers the reboot, which is correct and
-//! is also indistinguishable from a stuck update unless the device says so.
+//! Automatic signed deployment acquisition and installation.
+//! Checks and downloads share the operator policy. Installation rechecks the
+//! catalog inside the maintenance window, and reboot uses the shared health gate.
+//! Native failed IDs and generation floors prevent reinstalling rejected releases.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -60,7 +15,6 @@ use crate::time_status::ClockTrust;
 use crate::update_codes;
 use crate::update_lifecycle::{Available, Refusal, Settled};
 use crate::update_policy::{self, LoadedPolicy, RebootPolicy, UpdateMode};
-use crate::update_suppress::Suppression;
 
 /// Who the driver's actions are attributed to, wherever an operator's bus
 /// name would be. One name, so an audit reading `requested_by` can tell a
@@ -75,10 +29,10 @@ pub const SENDER: &str = "auto-update";
 const TICK: Duration = Duration::from_secs(60);
 
 /// The daemon facts the driver reads that are not the lifecycle's own. One
-/// value because they come from one RAUC query.
+/// value because they come from one the native backend query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpdateFacts {
-    /// A slot is installed and activated and has not booted yet.
+    /// A deployment is installed and activated and has not booted yet.
     pub reboot_pending: bool,
     /// `update.install.status` as the install route records it: `running`,
     /// `done` or `failed`. `None` when nothing has installed anything.
@@ -108,32 +62,25 @@ pub trait AutoRoutes: Send + Sync {
     /// The candidate the last check selected.
     async fn available(&self) -> Option<Available>;
 
-    /// The verified bundle the last fetch staged.
+    /// The verified descriptor the last fetch staged.
     async fn staged(&self) -> Option<String>;
 
-    /// Delete a staged bundle the current metadata no longer names, and
+    /// Delete a staged descriptor the current metadata no longer names, and
     /// forget it.
     async fn discard_staged(&self, why: &str);
 
-    /// The pending-slot and last-install facts, from one RAUC query.
+    /// Candidate and installation facts from one native backend query.
     /// `None` when the query did not answer — which is not "nothing is
     /// pending", so the driver defers rather than proceeding on a guess.
     async fn facts(&self) -> Option<UpdateFacts>;
 
     /// `InstallUpdate`, with its own gates; the error is what it answers an
     /// operator.
-    async fn install(&self, sender: &str, bundle: &str) -> Result<(), String>;
+    async fn install(&self, sender: &str, descriptor: &str) -> Result<(), String>;
 
     /// `Reboot`, honouring the safe-to-reboot gate; the error is the gate's
     /// refusal, verbatim.
     async fn reboot(&self, sender: &str) -> Result<(), String>;
-
-    /// PLAN-071 §6's record for `version`, or the store's own error.
-    ///
-    /// The error is carried rather than swallowed: a suppression store that
-    /// exists and does not parse must not read as "nothing is suppressed",
-    /// because that reading is exactly the loop the store exists to break.
-    async fn suppression(&self, version: &str) -> Result<Option<Suppression>, String>;
 
     /// The two signals PLAN-071 §7's clock predicate reads.
     async fn clock(&self) -> ClockTrust;
@@ -166,7 +113,7 @@ pub trait AutoRoutes: Send + Sync {
 enum Stage {
     /// Nothing of the driver's is in flight.
     Idle,
-    /// The driver asked for an install and is waiting for RAUC to finish.
+    /// The driver asked for an install and is waiting for the native backend to finish.
     Installing,
     /// The driver's install finished; a reboot is owed under
     /// [`RebootPolicy::Window`] as soon as the window and the gate allow.
@@ -260,7 +207,7 @@ impl AutoDriver {
             UpdateMode::Off => {
                 // No timer arms, and an owed automatic reboot is dropped
                 // rather than carried: the operator has just said the device
-                // initiates nothing. A pending slot stays pending and a human
+                // initiates nothing. A pending deployment stays pending and a human
                 // reboots into it.
                 self.stage = Stage::Idle;
             }
@@ -353,28 +300,8 @@ impl AutoDriver {
         // and the window: the newer target is fetched, and the older staged
         // file is left where a human can still install it.
         if let Some(candidate) = self.routes.available().await {
-            // §6 again, one step earlier than the refusal that closes the
-            // loop: a version this device has already rolled back is not
-            // downloaded again either, which is what stops a metered link
-            // from paying for the same bad bundle once per window. The pass
-            // stops here rather than falling through to an install step that
-            // would refuse it anyway, so the recorded reason names the
-            // suppression instead of whatever happens to be staged.
-            match self.routes.suppression(&candidate.version).await {
-                Ok(Some(record)) => {
-                    self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
-                        .await;
-                    return;
-                }
-                Err(error) => {
-                    self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
-                        .await;
-                    return;
-                }
-                Ok(None) => {}
-            }
             let staged = self.routes.staged().await;
-            if staged.as_deref().and_then(bundle_name) != Some(candidate.name.as_str()) {
+            if staged.as_deref().and_then(descriptor_id) != Some(candidate.deployment_id.as_str()) {
                 self.routes.audit(UPDATE_FETCH_EVENT).await;
                 if let Err(refusal) = self.routes.fetch(SENDER).await {
                     tracing::debug!(reason = refusal.message(), "automatic fetch skipped");
@@ -385,14 +312,13 @@ impl AutoDriver {
             }
         }
         // Step 3 — install, in the window, only what the metadata still names.
-        if let Some(bundle) = self.routes.staged().await {
-            self.install_if_allowed(loaded, &bundle).await;
+        if let Some(descriptor) = self.routes.staged().await {
+            self.install_if_allowed(loaded, &descriptor).await;
         }
     }
 
-    /// Step 3: the clock, the window, the pending-slot guard, the re-check,
-    /// the suppression, the install.
-    async fn install_if_allowed(&mut self, loaded: &LoadedPolicy, bundle: &str) {
+    /// Recheck policy, native state and catalog selection before installation.
+    async fn install_if_allowed(&mut self, loaded: &LoadedPolicy, descriptor: &str) {
         // PLAN-071 §7, and FIRST in the list on purpose. Every other
         // precondition below is judged against a wall clock: the maintenance
         // window is UTC `HH:MM`, so a window verdict computed from a clock
@@ -416,8 +342,8 @@ impl AutoDriver {
         }
         let Some(facts) = self.routes.facts().await else {
             self.defer(
-                update_codes::DEFER_SLOT_STATUS_UNKNOWN,
-                "RAUC did not answer the slot query",
+                update_codes::DEFER_DEPLOYMENT_STATUS_UNKNOWN,
+                "the native backend did not answer the deployment query",
             )
             .await;
             return;
@@ -425,15 +351,12 @@ impl AutoDriver {
         if facts.reboot_pending {
             self.defer(
                 update_codes::DEFER_REBOOT_PENDING,
-                "a slot is already installed and waiting for its first boot",
+                "a deployment is already installed and waiting for its first boot",
             )
             .await;
             return;
         }
-        // The re-check of §5, and the version it answers with is what §6's
-        // suppression is consulted on immediately below. Audited like the
-        // cadence check above, because it IS a check: the trail records what
-        // the device did, not a summary of what a pass was for.
+        // Refresh the authenticated selection immediately before installation.
         self.routes.audit(UPDATE_CHECK_EVENT).await;
         let named = match self.routes.check(SENDER).await {
             Ok(Settled::Done(candidate)) => Some(candidate),
@@ -456,23 +379,25 @@ impl AutoDriver {
         };
         let version = match named {
             // The metadata still names it: this is the version to install.
-            Some(candidate) if Some(candidate.name.as_str()) == bundle_name(bundle) => {
+            Some(candidate)
+                if Some(candidate.deployment_id.as_str()) == descriptor_id(descriptor) =>
+            {
                 candidate.version
             }
-            // It names something else. The staged bundle is superseded rather
+            // It names something else. The staged descriptor is superseded rather
             // than provably withdrawn — a check reports the selection, not the
             // whole target list — so it is not deleted, and the next pass
             // fetches what was named.
             Some(candidate) => {
                 self.defer(
                     update_codes::DEFER_SUPERSEDED,
-                    &format!("the check now names {}", candidate.name),
+                    &format!("the check now names {}", candidate.deployment_id),
                 )
                 .await;
                 return;
             }
             // Nothing compatible is published at all, so the current metadata
-            // does not name the staged bundle: it was withdrawn.
+            // does not name the staged descriptor: it was withdrawn.
             None => {
                 self.routes
                     .discard_staged("the current metadata no longer names it")
@@ -480,34 +405,10 @@ impl AutoDriver {
                 return;
             }
         };
-        // PLAN-071 §6, HERE: between the re-check and the install, because
-        // this is the first point at which the version about to be written
-        // is known rather than guessed at. Without this refusal `auto` is a
-        // reboot loop — the fallback leaves the device on the older system,
-        // which makes the failed version newer again, and the next window
-        // installs it again. The refusal binds the AUTOMATIC path only: a
-        // manual install of this same bundle is still permitted, because the
-        // operator reading the record has been told and is choosing.
-        match self.routes.suppression(&version).await {
-            Ok(Some(record)) => {
-                self.defer(update_codes::DEFER_VERSION_SUPPRESSED, &record.detail)
-                    .await;
-                return;
-            }
-            // A store that exists and cannot be read is not an empty store.
-            // Reading it as one is precisely how the loop restarts, so the
-            // closed side here is refusing the install.
-            Err(error) => {
-                self.defer(update_codes::DEFER_SUPPRESSION_UNREADABLE, &error)
-                    .await;
-                return;
-            }
-            Ok(None) => {}
-        }
         self.routes.audit(UPDATE_INSTALL_EVENT).await;
-        match self.routes.install(SENDER, bundle).await {
+        match self.routes.install(SENDER, descriptor).await {
             Ok(()) => {
-                tracing::warn!(bundle, version, "automatic install started");
+                tracing::warn!(descriptor, version, "automatic install started");
                 self.stage = Stage::Installing;
                 // The pass ran to its end; every reason it was refused for
                 // before now is stale.
@@ -588,11 +489,13 @@ impl AutoDriver {
     }
 }
 
-/// The target name a staged bundle path carries. `rauc-update` stages a
-/// verified bundle under its target name and nothing else, so the file name
+/// The target name a staged descriptor path carries. `mos-deploy` stages a
+/// verified descriptor under its target name and nothing else, so the file name
 /// is what a check's selection is compared against.
-fn bundle_name(bundle: &str) -> Option<&str> {
-    Path::new(bundle).file_name().and_then(|name| name.to_str())
+fn descriptor_id(descriptor: &str) -> Option<&str> {
+    Path::new(descriptor)
+        .file_stem()
+        .and_then(|name| name.to_str())
 }
 
 /// A cadence a test moves by hand, and the reason [`Cadence`] exists.
@@ -645,7 +548,6 @@ mod tests {
     use crate::time_status::SyncStatus;
     use crate::update_lifecycle::Unready;
     use crate::update_policy::PolicyStore;
-    use crate::update_suppress::SuppressionStore;
 
     /// One thing the driver did, in the order it did it.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,20 +562,10 @@ mod tests {
         Resume(Option<String>),
     }
 
-    /// The daemon the driver talks to, scripted.
-    ///
-    /// Everything the driver may learn is a field a test sets; everything it
-    /// does lands in `log`. Three behaviours are *mirrored* from
-    /// [`crate::update_lifecycle::UpdateLifecycle`] rather than invented,
-    /// because the driver's next step depends on them: a check that selects a
-    /// candidate records it as `available`, a fetch that stages a bundle
-    /// records it as `staged`, and the suppression route is the real store
-    /// read through the same two lines `suppression_for` uses — so the refusal
-    /// that closes PLAN-071 §6's loop is tested against a file on disk and not
-    /// against a boolean this test set.
+    /// Scripted lifecycle: catalog selections and acquired descriptors follow
+    /// the same state transitions as the native service.
     struct FakeDaemon {
         policy: PolicyStore,
-        suppression: SuppressionStore,
         check: StdMutex<VecDeque<Result<Settled<Available>, Refusal>>>,
         fetch: StdMutex<VecDeque<Result<Settled<String>, Refusal>>>,
         available: StdMutex<Option<Available>>,
@@ -686,10 +578,9 @@ mod tests {
     }
 
     impl FakeDaemon {
-        fn new(policy: PolicyStore, suppression: SuppressionStore) -> Arc<Self> {
+        fn new(policy: PolicyStore) -> Arc<Self> {
             Arc::new(Self {
                 policy,
-                suppression,
                 check: StdMutex::new(VecDeque::new()),
                 fetch: StdMutex::new(VecDeque::new()),
                 available: StdMutex::new(None),
@@ -722,7 +613,7 @@ mod tests {
             self.calls()
                 .into_iter()
                 .filter_map(|call| match call {
-                    Call::Install(bundle) => Some(bundle),
+                    Call::Install(descriptor) => Some(descriptor),
                     _ => None,
                 })
                 .collect()
@@ -813,24 +704,14 @@ mod tests {
             self.facts.lock().expect("facts").clone()
         }
 
-        async fn install(&self, _sender: &str, bundle: &str) -> Result<(), String> {
-            self.log(Call::Install(bundle.to_string()));
+        async fn install(&self, _sender: &str, descriptor: &str) -> Result<(), String> {
+            self.log(Call::Install(descriptor.to_string()));
             self.install.lock().expect("install").clone()
         }
 
         async fn reboot(&self, _sender: &str) -> Result<(), String> {
             self.log(Call::Reboot);
             self.reboot.lock().expect("reboot").clone()
-        }
-
-        async fn suppression(&self, version: &str) -> Result<Option<Suppression>, String> {
-            // `UpdateLifecycle::suppression_for`, verbatim: an unreadable
-            // store is an error and never an empty one.
-            let loaded = self.suppression.load();
-            match loaded.error {
-                Some(error) => Err(error),
-                None => Ok(loaded.get(version).cloned()),
-            }
         }
 
         async fn clock(&self) -> ClockTrust {
@@ -902,11 +783,14 @@ mod tests {
         )
     }
 
-    const BUNDLE: &str = "/mos/updates/verified/mos-1.5.0.raucb";
+    const BUNDLE: &str = "/mos/updates/verified/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
 
     fn candidate(name: &str, version: &str) -> Available {
         Available {
-            name: name.to_string(),
+            deployment_id: name
+                .strip_suffix(".json")
+                .expect("descriptor name")
+                .to_string(),
             version: version.to_string(),
             channel: "stable".to_string(),
         }
@@ -914,18 +798,10 @@ mod tests {
 
     /// The release the staged [`BUNDLE`] carries.
     fn the_candidate() -> Available {
-        candidate("mos-1.5.0.raucb", "1.5.0")
-    }
-
-    /// What the state refresh writes when a slot rolls back (PLAN-071 §6).
-    fn rollback_record(version: &str) -> Suppression {
-        Suppression {
-            version: version.to_string(),
-            slot: "rootfs.1".to_string(),
-            at: "2026-09-05T02:11:00Z".to_string(),
-            boot_status: Some("bad".to_string()),
-            detail: format!("version {version} was installed into rootfs.1, which rolled back"),
-        }
+        candidate(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+            "1.5.0",
+        )
     }
 
     /// One device: its documents on disk, its daemon, its cadence and the
@@ -939,16 +815,13 @@ mod tests {
 
     impl Scene {
         /// An `auto` device with the window and reboot policy named, a
-        /// believed clock, an answering slot query and nothing staged.
+        /// believed clock, an answering deployment query and nothing staged.
         fn auto(window: &str, reboot_policy: &str) -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("updates.json");
             std::fs::write(&path, auto_document(window, reboot_policy))
                 .expect("seed the policy document");
-            let daemon = FakeDaemon::new(
-                PolicyStore::at(path),
-                SuppressionStore::at(dir.path().join("suppressed-versions.json")),
-            );
+            let daemon = FakeDaemon::new(PolicyStore::at(path));
             let cadence = TestCadence::new();
             let routes: Arc<dyn AutoRoutes> = daemon.clone();
             let clock: Arc<dyn Cadence> = cadence.clone();
@@ -974,25 +847,6 @@ mod tests {
         fn write_document(&self, body: &str) {
             std::fs::write(self.dir.path().join("updates.json"), body)
                 .expect("rewrite the policy document");
-        }
-
-        /// Suppress `version` through the real store's real write path.
-        fn suppress(&self, version: &str) {
-            assert!(
-                self.daemon
-                    .suppression
-                    .record(&rollback_record(version))
-                    .expect("record the rollback"),
-                "the first record of a version is a new one"
-            );
-        }
-
-        fn corrupt_the_suppression_store(&self) {
-            std::fs::write(
-                self.dir.path().join("suppressed-versions.json"),
-                "{not json",
-            )
-            .expect("corrupt the store");
         }
 
         async fn tick(&mut self) {
@@ -1101,26 +955,11 @@ mod tests {
             "network mode is offline",
         );
 
-        // 3. §6 one step before the install: a rolled-back version is not
-        //    downloaded again either.
-        let mut scene = Scene::auto(&open_window(), "window");
-        scene.suppress("1.5.0");
-        FakeDaemon::set(&scene.daemon.available, Some(the_candidate()));
-        scene.tick().await;
-        record(&scene, update_codes::DEFER_VERSION_SUPPRESSED, "rootfs.1");
-
-        // 4. A store that exists and does not parse is not an empty store.
-        let mut scene = Scene::auto(&open_window(), "window");
-        scene.corrupt_the_suppression_store();
-        FakeDaemon::set(&scene.daemon.available, Some(the_candidate()));
-        scene.tick().await;
-        record(&scene, update_codes::DEFER_SUPPRESSION_UNREADABLE, "parse ");
-
         // 5. The fetch, refused by the policy an operator would meet.
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.available, Some(the_candidate()));
         scene.daemon.will_fetch(Err(Refusal::Policy(
-            "network mode is metered: bundle downloads are refused".to_string(),
+            "network mode is metered: descriptor downloads are refused".to_string(),
         )));
         scene.tick().await;
         record(
@@ -1158,8 +997,8 @@ mod tests {
         scene.tick().await;
         record(
             &scene,
-            update_codes::DEFER_SLOT_STATUS_UNKNOWN,
-            "RAUC did not answer",
+            update_codes::DEFER_DEPLOYMENT_STATUS_UNKNOWN,
+            "the native backend did not answer",
         );
 
         // 9. A slot already installed and waiting for its first boot.
@@ -1184,14 +1023,14 @@ mod tests {
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         scene.daemon.will_check(Ok(Settled::Unready(Unready {
             status: "degraded".to_string(),
-            kind: update_codes::WORKSPACE_READ_ONLY,
+            kind: update_codes::WORKSPACE_PROBE_FAILED,
             detail: "/mos is mounted read-only".to_string(),
         })));
         scene.tick().await;
         record(
             &scene,
             update_codes::DEFER_WORKSPACE_UNREADY,
-            "degraded read-only",
+            "/mos is mounted read-only",
         );
 
         // 11. The re-check ran and failed.
@@ -1214,56 +1053,34 @@ mod tests {
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
         scene.daemon.will_check(Err(Refusal::Unavailable(
-            "/usr/bin/rauc-update is not present on this image".to_string(),
+            "/usr/bin/mos-deploy is not present on this image".to_string(),
         )));
         scene.tick().await;
         record(
             &scene,
             update_codes::DEFER_RECHECK_REFUSED,
-            "rauc-update is not present",
+            "mos-deploy is not present",
         );
 
-        // 13. §5: the metadata names something else. The staged bundle is
+        // 13. §5: the metadata names something else. The staged descriptor is
         //     superseded rather than provably withdrawn, so it is not deleted.
         let mut scene = Scene::auto(&open_window(), "window");
         FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
-        scene
-            .daemon
-            .will_check(Ok(Settled::Done(candidate("mos-1.6.0.raucb", "1.6.0"))));
+        scene.daemon.will_check(Ok(Settled::Done(candidate(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+            "1.6.0",
+        ))));
         scene.tick().await;
         record(
             &scene,
             update_codes::DEFER_SUPERSEDED,
-            "the check now names mos-1.6.0.raucb",
+            "the check now names bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         );
         assert_eq!(
             scene.daemon.staged.lock().expect("staged").as_deref(),
             Some(BUNDLE),
-            "a superseded bundle is left where a human can still install it"
+            "a superseded descriptor is left where a human can still install it"
         );
-
-        // 14. §6 at its load-bearing site: between the re-check, which is the
-        //     first point the version about to be written is known, and the
-        //     install.
-        let mut scene = Scene::auto(&open_window(), "window");
-        FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
-        scene.suppress("1.5.0");
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.tick().await;
-        record(&scene, update_codes::DEFER_VERSION_SUPPRESSED, "rootfs.1");
-        assert!(
-            scene.daemon.installs().is_empty(),
-            "the refusal that closes the loop must stop the install"
-        );
-
-        // 15. The same store error at the same site, which is the one whose
-        //     closed side is refusing the install.
-        let mut scene = Scene::auto(&open_window(), "window");
-        FakeDaemon::set(&scene.daemon.staged, Some(BUNDLE.to_string()));
-        scene.corrupt_the_suppression_store();
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.tick().await;
-        record(&scene, update_codes::DEFER_SUPPRESSION_UNREADABLE, "parse ");
 
         // 16. The install route's own refusal, verbatim.
         let mut scene = Scene::auto(&open_window(), "window");
@@ -1342,126 +1159,20 @@ mod tests {
         );
     }
 
-    /// PLAN-071 U4, and the plan's own acceptance for the slice: a bad bundle
-    /// installs **once**.
-    ///
-    /// The loop this refuses is the whole reason §6 exists. The fallback
-    /// leaves the device on the older system, which makes the failed version
-    /// strictly newer again, so the next check selects it and the next window
-    /// installs it — forever, once per window, unless the second pass selects
-    /// nothing.
     #[tokio::test]
-    async fn a_bad_bundle_cycle_ends_with_the_second_pass_selecting_nothing() {
+    async fn a_native_catalog_with_no_newer_generation_starts_no_download_or_install() {
         let mut scene = Scene::auto(&open_window(), "window");
-
-        // Pass one: check, fetch, re-check, install.
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene
-            .daemon
-            .will_fetch(Ok(Settled::Done(BUNDLE.to_string())));
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.cadence.advance_past_the_check_interval();
-        scene.tick().await;
-        assert_eq!(
-            scene.daemon.installs(),
-            vec![BUNDLE.to_string()],
-            "the pass installs what the current metadata still names"
-        );
-        assert_eq!(
-            scene.daemon.calls().last(),
-            Some(&Call::Resume(None)),
-            "a pass that ran to its end clears every reason it was refused for"
-        );
-
-        // The install finishes and the reboot is owed and taken.
-        FakeDaemon::set(
-            &scene.daemon.facts,
-            Some(UpdateFacts {
-                reboot_pending: false,
-                install_status: Some("done".to_string()),
-            }),
-        );
-        scene.tick().await;
-        assert!(
-            scene.daemon.calls().contains(&Call::Reboot),
-            "`rebootPolicy = window` reboots inside the same window"
-        );
-
-        // The device boots the new slot, the slot fails to confirm, the
-        // bootloader spends its credits and falls back. What the state
-        // refresh writes when it sees that is this record, through the real
-        // store.
-        scene.suppress("1.5.0");
-
-        // Pass two. The failed version is newer than the running system
-        // again, so the check selects it again — and this is where the loop
-        // either closes or does not.
-        let before = scene.daemon.installs().len();
-        let mark = scene.daemon.calls().len();
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.cadence.advance_past_the_check_interval();
-        scene.tick().await;
-
-        assert_eq!(
-            scene.daemon.installs().len(),
-            before,
-            "the second automatic pass must install nothing"
-        );
-        assert!(
-            !scene.daemon.calls()[mark..].contains(&Call::Fetch),
-            "nor pay a metered link for the same bad bundle again"
-        );
-        let (reason, detail) = scene
-            .daemon
-            .deferrals()
-            .pop()
-            .expect("the refusal is recorded, not silent");
-        assert_eq!(reason, update_codes::DEFER_VERSION_SUPPRESSED);
-        assert!(detail.contains("rolled back"), "got: {detail}");
-
-        // And it stays closed: an operator who has not cleared the record
-        // gets the same answer on the pass after that.
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.cadence.advance_past_the_check_interval();
-        scene.tick().await;
-        assert_eq!(scene.daemon.installs().len(), before);
-
-        // And closed at its load-bearing site too. With no check due, the
-        // candidate the fetch step consults is stale, so the only
-        // consultation between the current metadata and the slot is the one
-        // immediately before the install — the first point at which the
-        // version about to be written is known rather than guessed at.
-        FakeDaemon::set(&scene.daemon.available, None);
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.tick().await;
-        assert_eq!(
-            scene.daemon.installs().len(),
-            before,
-            "the refusal immediately before the install must hold on its own"
-        );
-        assert_eq!(
-            scene.daemon.deferrals().pop().expect("recorded").0.as_str(),
-            update_codes::DEFER_VERSION_SUPPRESSED
-        );
-
-        // Cleared explicitly by an operator — the one thing that lifts it —
-        // and the device installs it again, because the operator has been
-        // told and is choosing.
-        scene
-            .daemon
-            .suppression
-            .clear("1.5.0")
-            .expect("clear the suppression")
-            .expect("the version was suppressed");
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.daemon.will_check(Ok(Settled::Done(the_candidate())));
-        scene.cadence.advance_past_the_check_interval();
-        scene.tick().await;
-        assert_eq!(
-            scene.daemon.installs().len(),
-            before + 1,
-            "a cleared suppression is a refusal an operator lifted"
-        );
+        for _ in 0..2 {
+            scene.daemon.will_check(Ok(Settled::NoneCompatible));
+            scene.cadence.advance_past_the_check_interval();
+            scene.tick().await;
+            assert!(scene.daemon.installs().is_empty());
+            assert!(!scene.daemon.calls().contains(&Call::Fetch));
+            assert_eq!(
+                scene.daemon.deferrals().last().unwrap().0,
+                update_codes::DEFER_NO_NEWER_RELEASE
+            );
+        }
     }
 
     /// PLAN-071 §7: an automatic install requires a clock the device
@@ -1532,7 +1243,7 @@ mod tests {
         );
         assert!(
             scene.daemon.deferrals().is_empty(),
-            "a withdrawal is not a refusal to record; the state says the bundle is gone"
+            "a withdrawal is not a refusal to record; the state says the descriptor is gone"
         );
     }
 

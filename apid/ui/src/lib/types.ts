@@ -144,7 +144,6 @@ export interface StorageTier {
   readOnly?: boolean
   space?: StorageSpace
   pressure?: 'normal' | 'warning' | 'critical'
-  updateWorkspace?: { root: string; reservedBytes: number; available: boolean }
   check: {
     recorded?: false
     unit?: string
@@ -208,8 +207,6 @@ export interface StorageStatus {
     warningClearPercent: number
     criticalPercent: number
     criticalClearPercent: number
-    updateWorkspaceReservedBytes: number
-    updateWorkspaceRoot: string
     watchedTiers: string[]
   }
   lifecycle: Record<string, string>
@@ -252,12 +249,18 @@ export interface SystemInformation {
     truncated?: boolean
     entries?: { name: string; version: string; architecture: string; mos: boolean }[]
   }
-  slot: AvailableFact & {
-    booted?: string
-    bootname?: string
-    bundleVersion?: string
-    bootStatus?: string
-    primary?: boolean
+  deployment: AvailableFact & {
+    id?: string
+    version?: string
+    generation?: number
+    kernelId?: string
+    kernelRelease?: string
+    rootfsId?: string
+    confirmed?: boolean
+    contentVerified?: boolean
+    secureBoot?: boolean
+    backend?: 'uefi' | 'uboot-fit'
+    bootVerified?: boolean
   }
   uptime: AvailableFact & { seconds?: number }
 }

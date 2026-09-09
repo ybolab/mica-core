@@ -2846,11 +2846,11 @@
           "resources"
         ],
         "summary": "Read the storage status.",
-        "description": "Observed by mosd at request time: every fixed tier of the layout (the A/B\nrootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA at `/mnt/data`)\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; the reserved update workspace under\n`/mos/updates`; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
+        "description": "Observed by mosd at request time: the firmware/ESP, SYSTEM and DATA partitions\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; observed DATA directory usage and\nproject quotas; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
         "operationId": "api_v1_storage_status",
         "responses": {
           "200": {
-            "description": "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions",
+            "description": "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions",
             "content": {
               "application/json": {
                 "schema": {
@@ -2918,11 +2918,11 @@
           "resources"
         ],
         "summary": "Read the system-information surface.",
-        "description": "One read answers what this device is: the machine id, the board, the\nkernel, the distribution release, the image version with its git stamp\nand build date, every installed package with its version (from the\nshipped manifest), the booted slot and the uptime. mosd assembles it at\nrequest time from the seams that already carry each fact; nothing is\nrestated. Every member carries `available`, and an absent fact says why.",
+        "description": "One read answers what this device is: the machine id, the board, the\nkernel, the distribution release, the image version with its git stamp\nand build date, every installed package with its version (from the\nshipped manifest), the authenticated running deployment and the uptime. mosd assembles it at\nrequest time from the seams that already carry each fact; nothing is\nrestated. Every member carries `available`, and an absent fact says why.",
         "operationId": "api_v1_system_info",
         "responses": {
           "200": {
-            "description": "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`",
+            "description": "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `deployment`, `uptime`; each an object carrying `available`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3969,11 +3969,11 @@
           "update"
         ],
         "summary": "Read the complete update state.",
-        "description": "Asks mosd's `GetUpdateState`, which queries RAUC and re-derives the\nlifecycle first — this is the polling surface for a UI watching a check,\ndownload or install, and it is never answered from a stale record. The\n`rollback` object is derived from the same fresh slot list, so an operator\ndeciding whether to roll back reads the verdict and the slots it came from\nin one answer.",
+        "description": "Reads native deployment records and the current acquisition lifecycle from\nmosd. The same response binds the rollback verdict to its retained target\nand includes check, download and installation progress.",
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
-            "description": "The update state: `lifecycle` (state machine with reason strings — `update-unavailable` carries the `/mos/updates` workspace's `unavailable`/`degraded` verdict, mirrored under `lifecycle.workspace` —, effective policy, safe-to-reboot gate and override), per-slot status, `booted_slot`, `primary`, `pending_not_confirmed`, `rollback` (`target`, `permitted`, `reason`, `explanation` — the sentence a refusal carries only where it adds something the reason code does not already say, and `null` otherwise), `install`, `last_mark`.\n\n**Every failure in this document carries an enumerated code beside its sentence, and the sentence is never the code.** Match on the code; the reason/detail/error beside it is for a human reading one device and may be reworded at any time. A failure this device has no code for is reported as `unknown` — never as its text — and its words go to the journal.\n\n- `lifecycle.code`, present exactly for the two failing states. For `failed`: `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-bundle-path`, `no-source-configured`, `policy-not-loaded`. For `update-unavailable` it is the workspace verdict, equal to `lifecycle.workspace.kind`: `mount-missing`, `not-data`, `read-only`, `exhausted`, `probe-failed`, or `unknown`.\n- `lifecycle.last_refusal_code`, beside `lifecycle.last_refusal`: `policy-invalid`, `policy-not-loaded`, `network-offline`, `no-source-configured`, `network-metered`, `client-unavailable`, and the two notes that share the member, `bundle-discarded` and `suppression-cleared`.\n- `lifecycle.deferred.reason` is itself a code — the fifteen the automatic path mints (`check-refused`, `no-newer-release`, `version-suppressed`, `suppression-unreadable`, `fetch-refused`, `clock-untrusted`, `outside-window`, `slot-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`) or `unknown`.\n- `lifecycle.reboot_gate.codes`, one per entry of `reboot_gate.reasons` and in the same order: `install-in-flight`, `health-blocking`. Which component reported the block is in the reason beside it, because a component name is not a closed set.\n- `last_error_code` and `install.error_code` classify RAUC's own words. One class is claimed — `signature-invalid` — and every other RAUC failure is `unknown`; the set grows when a failure is measured, not when one is imagined.\n- `rollback.reason` is already a code: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`.\n\nThree failure facts carry no code because the member IS the enumeration: `client.available: false`, `policy_error` present, `suppressed_error` present.",
+            "description": "Authenticated native deployment state: `boot` (running deployment and kernel/root IDs, content verification and Secure Boot), `state` (current, fallback, candidate, failed deployment IDs and highestGeneration), `deployments` (version, generation, components and remaining trials), `rollback` (permitted, target and reason), `install`, `last_action`, and `lifecycle` (acquisition progress, workspace, policy and reboot gate). A failure carries a closed code beside its detail: `unknown`, `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-deployment-path`, `no-source-configured`, `policy-not-loaded`, `probe-failed`, `policy-invalid`, `network-offline`, `network-metered`, `client-unavailable`, `deployment-discarded`, `check-refused`, `no-newer-release`, `fetch-refused`, `clock-untrusted`, `outside-window`, `deployment-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`, `install-in-flight`, `health-blocking`. Rollback reasons: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`. Failed deployment IDs and the generation floor are enforced by the native backend for every install.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4003,7 +4003,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to answer, e.g. RAUC unreachable (`mosd_failed`)",
+            "description": "mosd could not read native deployment state (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4089,118 +4089,6 @@
           },
           "500": {
             "description": "The update client is absent or another operation is running (`mosd_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/update/clear-suppression": {
-      "post": {
-        "tags": [
-          "update"
-        ],
-        "summary": "Permit automatic installs of a version this device rolled back.",
-        "description": "A version is suppressed when the slot it was installed into exhausted its\nboot attempts and the bootloader fell back; the automatic path then\nrefuses to select it again, which is what stops `auto` from installing the\nsame bad bundle once per maintenance window forever. A **manual** install\nof that version is never refused, so this route lifts a restriction on the\nmachine and not on the operator.\n\nThe version is named explicitly and there is deliberately no route that\nempties the store: an operator who has diagnosed one bad release has not\nthereby diagnosed the others. Audited on both sides — this route records\nthe event, and mosd logs who cleared what.",
-        "operationId": "api_v1_update_clear_suppression",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClearSuppressionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The suppression that was cleared: `version`, `slot`, `at`, `bootStatus`, `detail`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClearedSuppression"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The body is not JSON or not this shape (`request_invalid`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "That version is not suppressed (`validation_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "mosd failed to clear it, e.g. the store could not be written (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4354,6 +4242,120 @@
         }
       }
     },
+    "/api/v1/update/confirm": {
+      "post": {
+        "tags": [
+          "update"
+        ],
+        "summary": "Confirm the authenticated running deployment explicitly.",
+        "operationId": "api_v1_update_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The deployment action was accepted"
+          },
+          "400": {
+            "description": "Invalid JSON or deployment identity (`request_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser CSRF token required (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "POST required (`method_not_allowed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Operator policy refused the action (`policy_refused`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Deployment identity or acquisition path is invalid (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The native backend refused or failed the action (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/update/fetch": {
       "post": {
         "tags": [
@@ -4444,14 +4446,13 @@
         "tags": [
           "update"
         ],
-        "summary": "Install a bundle through mosd.",
-        "description": "With a JSON body omitting `bundlePath` (`{}`), installs the bundle the lifecycle has\nstaged as `ready` — the path `rauc-update` verified. With `bundlePath`,\nforwards that explicit operator path to `InstallUpdate` unchanged, which\nis the manual/offline route after `rauc-update import`; mosd admits it\nonly when it is a regular file inside `/mos/updates/verified` and not a\n`.part`, so a partial or a file anywhere else is never handed to RAUC.\nAnswers **202**: the install runs on mosd's background task; poll the\nstate document.",
+        "summary": "Install an acquired signed deployment; poll update state for completion.",
         "operationId": "api_v1_update_install",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InstallRequest"
+                "$ref": "#/components/schemas/DeploymentRequest"
               }
             }
           },
@@ -4459,10 +4460,10 @@
         },
         "responses": {
           "202": {
-            "description": "The install was admitted and is running; poll `GET /api/v1/update`"
+            "description": "The deployment action was accepted"
           },
           "400": {
-            "description": "The body is not JSON or not this shape (`request_invalid`)",
+            "description": "Invalid JSON or deployment identity (`request_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4472,7 +4473,7 @@
             }
           },
           "401": {
-            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "description": "Authentication required (`not_authenticated`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4482,7 +4483,7 @@
             }
           },
           "403": {
-            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "description": "Browser CSRF token required (`csrf_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4492,7 +4493,7 @@
             }
           },
           "405": {
-            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "description": "POST required (`method_not_allowed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4502,7 +4503,7 @@
             }
           },
           "409": {
-            "description": "Outside the maintenance window or the policy file is unreadable (`policy_refused`); or nothing is staged and no path was given (`no_staged_bundle`)",
+            "description": "Operator policy refused the action (`policy_refused`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4512,7 +4513,7 @@
             }
           },
           "422": {
-            "description": "The bundle path is not an absolute existing regular file inside `/mos/updates/verified`, or is a `.part` partial (`validation_failed`)",
+            "description": "Deployment identity or acquisition path is invalid (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4522,7 +4523,7 @@
             }
           },
           "500": {
-            "description": "An install is already running, or mosd failed (`mosd_failed`)",
+            "description": "The native backend refused or failed the action (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4532,7 +4533,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "mosd is unreachable (`mosd_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4542,119 +4543,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/update/mark": {
-      "post": {
-        "tags": [
-          "update"
-        ],
-        "summary": "Manually mark a slot good or bad.",
-        "description": "The operator escape hatch over the boot health gate, forwarded to mosd's\n`MarkUpdate` (the gate owns the automatic confirm; mosd never marks on\nits own).",
-        "operationId": "api_v1_update_mark",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MarkRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The mark was applied; RAUC's resolved slot name and message",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MarkResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The body is not JSON or not this shape (`request_invalid`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "A state outside `good`/`bad` or a slot outside `booted`/`other` (`validation_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "RAUC refused or failed the mark (`mosd_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "mosd timed out (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4778,27 +4667,39 @@
         }
       }
     },
-    "/api/v1/update/rollback": {
+    "/api/v1/update/reject": {
       "post": {
         "tags": [
           "update"
         ],
-        "summary": "Roll back to the alternate slot, if the guard permits it.",
-        "description": "The guard is mosd's `rollback_eligibility`, read out of the same\n`GetUpdateState` document `GET /api/v1/update` serves — one derivation of\nthe slot state, not a second one here. It refuses when there is no\nalternate slot, when the alternate is the booted slot, when the alternate\nwas never written or is marked bad, when the alternate is NOT the older of\nthe two installs (a rollback goes backward; a newer or unorderable target\nis a pending update, not a rollback target), and when the booted slot is\nitself pending-not-confirmed (that window belongs to the bootloader's\nattempt counter, and a manual rollback inside it races the credit being\nspent).\n\nWhat it then does is ONE mark: `bad` on the **booted** slot. That is what\nmakes the bootloader pick the other one, and it is why this route cannot\nconfirm the slot it rolls back to — PLAN-048's \"cannot mark an unverified\nslot good\" holds structurally, not by review. The unguarded\n`POST /api/v1/update/mark` remains the operator escape hatch beside it;\nthis route is the guarded one.\n\nIt does NOT reboot. A rollback is a boot-order change, and the reboot that\nrealises it goes through the safe-to-reboot gate like every other\n(`docs/design/updates.md` §4) — folding it in here would either bypass\nthat gate or duplicate its override semantics. The answer names the next\nstep instead.",
-        "operationId": "api_v1_update_rollback",
+        "summary": "Reject a deployment while retaining a usable fallback.",
+        "operationId": "api_v1_update_reject",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "The booted slot was marked bad; the next boot comes from `target`. Reboot with `POST /api/v1/actions/reboot`",
+            "description": "The deployment action was accepted"
+          },
+          "400": {
+            "description": "Invalid JSON or deployment identity (`request_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RollbackResponse"
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
           },
           "401": {
-            "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
+            "description": "Authentication required (`not_authenticated`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4808,7 +4709,7 @@
             }
           },
           "403": {
-            "description": "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)",
+            "description": "Browser CSRF token required (`csrf_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4818,7 +4719,7 @@
             }
           },
           "405": {
-            "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "description": "POST required (`method_not_allowed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4828,7 +4729,17 @@
             }
           },
           "409": {
-            "description": "The device's slot state forbids it: `no_alternate_slot`, `alternate_is_booted_slot`, `alternate_never_installed`, `alternate_marked_bad`, `alternate_is_newer`, `install_order_unknown`, `booted_slot_not_confirmed`, or `rollback_refused` for a verdict this surface does not know",
+            "description": "Operator policy refused the action (`policy_refused`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Deployment identity or acquisition path is invalid (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4838,7 +4749,7 @@
             }
           },
           "500": {
-            "description": "RAUC refused or failed the mark, or mosd could not read the slot state (`mosd_failed`)",
+            "description": "The native backend refused or failed the action (`mosd_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4848,7 +4759,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "mosd is unreachable (`mosd_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4858,7 +4769,98 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "mosd timed out (`mosd_timeout`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/update/rollback": {
+      "post": {
+        "tags": [
+          "update"
+        ],
+        "summary": "Reject the confirmed running deployment and select its retained fallback.\nThe native backend revalidates this operation under its transaction lock.\nReboot remains a separate action governed by the shared reboot gate.",
+        "operationId": "api_v1_update_rollback",
+        "responses": {
+          "200": {
+            "description": "Rollback committed; reboot to run the retained fallback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required (`not_authenticated`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser CSRF token required (`csrf_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "POST required (`method_not_allowed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Native state refuses rollback: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`, or `rollback_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The native backend refused or failed rollback (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "mosd timed out (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5555,23 +5557,6 @@
           }
         }
       },
-      "ClearSuppressionRequest": {
-        "type": "object",
-        "description": "`POST /api/v1/update/clear-suppression` request body.",
-        "required": [
-          "version"
-        ],
-        "properties": {
-          "version": {
-            "type": "string",
-            "description": "The suppressed version to permit again, exactly as\n`lifecycle.suppressed[].version` spells it."
-          }
-        },
-        "additionalProperties": false
-      },
-      "ClearedSuppression": {
-        "description": "The suppression that was cleared, as mosd recorded it."
-      },
       "CredentialRecovered": {
         "type": "object",
         "description": "`POST /api/v1/recovery/credential` response body.\n\n**It carries no secret and there is no member it could carry one in.**\n§5.1 rule 2 returns the credential on the channel that proved presence,\nnever over the network, so the body says that a credential was minted and\nwhere it went — the operator standing at the console reads it there.",
@@ -5644,54 +5629,21 @@
           "incompatible"
         ]
       },
-      "InstallRequest": {
+      "DeploymentRequest": {
         "type": "object",
-        "description": "`POST /api/v1/update/install` request body.",
+        "description": "An exact signed deployment identity already verified in the acquisition workspace.",
+        "required": [
+          "deploymentId"
+        ],
         "properties": {
-          "bundlePath": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Absolute path of the bundle to install. Omitted = the staged bundle\nthe last fetch/import verified (the lifecycle's `bundle`)."
+          "deploymentId": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
           }
         },
         "additionalProperties": false
-      },
-      "MarkRequest": {
-        "type": "object",
-        "description": "`POST /api/v1/update/mark` request body: mosd's offered vocabulary,\nverbatim.",
-        "required": [
-          "state",
-          "slot"
-        ],
-        "properties": {
-          "slot": {
-            "type": "string",
-            "description": "`booted` or `other`. Concrete slot names and `active` are refused by\nmosd — activation is the installer's job."
-          },
-          "state": {
-            "type": "string",
-            "description": "`good` or `bad`."
-          }
-        },
-        "additionalProperties": false
-      },
-      "MarkResponse": {
-        "type": "object",
-        "description": "The mark's answer: RAUC's resolved slot name and message.",
-        "required": [
-          "slotName",
-          "message"
-        ],
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "slotName": {
-            "type": "string"
-          }
-        }
       },
       "MintTokenRequest": {
         "type": "object",
@@ -6053,29 +6005,20 @@
       },
       "RollbackResponse": {
         "type": "object",
-        "description": "What a rollback did: RAUC's answer to the mark, and the slot the next boot\nwill therefore come from.",
         "required": [
-          "slotName",
-          "message",
+          "deploymentId",
           "target",
           "nextStep"
         ],
         "properties": {
-          "message": {
-            "type": "string",
-            "description": "RAUC's own message for the mark."
+          "deploymentId": {
+            "type": "string"
           },
           "nextStep": {
-            "type": "string",
-            "description": "What the operator must still do; this route deliberately does not."
-          },
-          "slotName": {
-            "type": "string",
-            "description": "RAUC's resolved name for the slot that was marked bad — the one this\nsystem is running from."
+            "type": "string"
           },
           "target": {
-            "type": "string",
-            "description": "The slot the next boot comes from."
+            "type": "string"
           }
         }
       },

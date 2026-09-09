@@ -73,7 +73,7 @@ RUN set -eu; \
     pack.sh --root /stage/apid --control /in/control/mos-apid.control \
             --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out
 
-# The export stage, the shape pkgs/rauc/Dockerfile and
+# The export stage, the shape pkgs/mos-deploy/Dockerfile and
 # pkgs/podman/Dockerfile end in: `-o type=local` writes this stage's
 # filesystem into _out/debs/<arch>/pool/ and nothing here installs into a root.
 FROM scratch AS out

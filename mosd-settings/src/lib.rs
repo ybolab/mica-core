@@ -67,4 +67,4 @@ pub use recovery::{
     credential_recovery_event, declaration_path, intent_from_cmdline, presence_marker_path,
     recovery_action_event, refusal_outcome, reset_event,
 };
-pub use store::{DEFAULT_PATH, DocumentRefusal, LoadedStore, RollbackReport, Store};
+pub use store::{DEFAULT_PATH, DocumentRefusal, LoadedStore, Store};

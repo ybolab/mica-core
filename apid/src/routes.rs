@@ -678,8 +678,12 @@ fn api_router() -> Router<AppState> {
             post(crate::update_api::api_v1_update_install),
         )
         .route(
-            crate::update_api::V1_UPDATE_MARK_PATH,
-            post(crate::update_api::api_v1_update_mark),
+            crate::update_api::V1_UPDATE_CONFIRM_PATH,
+            post(crate::update_api::api_v1_update_confirm),
+        )
+        .route(
+            crate::update_api::V1_UPDATE_REJECT_PATH,
+            post(crate::update_api::api_v1_update_reject),
         )
         .route(
             crate::update_api::V1_UPDATE_ROLLBACK_PATH,
@@ -688,10 +692,6 @@ fn api_router() -> Router<AppState> {
         .route(
             crate::update_api::V1_UPDATE_REBOOT_OVERRIDE_PATH,
             post(crate::update_api::api_v1_update_reboot_override),
-        )
-        .route(
-            crate::update_api::V1_UPDATE_CLEAR_SUPPRESSION_PATH,
-            post(crate::update_api::api_v1_update_clear_suppression),
         )
         .route(
             crate::update_api::V1_UPDATE_CONFIG_PATH,
@@ -2459,16 +2459,15 @@ pub(crate) async fn api_v1_time_status(
 
 /// Read the storage status.
 ///
-/// Observed by mosd at request time: every fixed tier of the layout (the A/B
-/// rootfs slots, boot, META, STATE, EPHEMERAL/`var` and DATA at `/mnt/data`)
+/// Observed by mosd at request time: the firmware/ESP, SYSTEM and DATA partitions
 /// with its device, size, mount and read-only state, its space accounting
 /// including the filesystem's reserved pool, and whatever the system recorded
 /// about its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,
 /// each with its readiness against the DATA tier it must live on; every
 /// physical medium with normalized wear where the device exports it and an
 /// explicit `unsupported` with a reason where it does not; the low-space
-/// thresholds with their hysteresis band; the reserved update workspace under
-/// `/mos/updates`; and the explicit lifecycle decisions.
+/// thresholds with their hysteresis band; observed DATA directory usage and
+/// project quotas; and the explicit lifecycle decisions.
 ///
 /// `/mos` and `/srv` are two namespaces of ONE filesystem and share its
 /// capacity pool, so their bytes are reported once, on the `data` tier, and
@@ -2483,7 +2482,7 @@ pub(crate) async fn api_v1_time_status(
     context_path = API,
     tag = "resources",
     responses(
-        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy and reserved update workspace; and the explicit data-lifecycle decisions", body = ResourceValue),
+        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
@@ -2508,7 +2507,7 @@ pub(crate) async fn api_v1_storage_status(
 /// One read answers what this device is: the machine id, the board, the
 /// kernel, the distribution release, the image version with its git stamp
 /// and build date, every installed package with its version (from the
-/// shipped manifest), the booted slot and the uptime. mosd assembles it at
+/// shipped manifest), the authenticated running deployment and the uptime. mosd assembles it at
 /// request time from the seams that already carry each fact; nothing is
 /// restated. Every member carries `available`, and an absent fact says why.
 #[utoipa::path(
@@ -2517,7 +2516,7 @@ pub(crate) async fn api_v1_storage_status(
     context_path = API,
     tag = "resources",
     responses(
-        (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `slot`, `uptime`; each an object carrying `available`", body = ResourceValue),
+        (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `deployment`, `uptime`; each an object carrying `available`", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
         (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),

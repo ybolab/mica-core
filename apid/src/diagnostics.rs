@@ -37,38 +37,11 @@ use serde_json::{Map, Value, json};
 use crate::redact;
 use crate::settings_api::SettingsApi;
 
-/// The snapshot schema version; bumped when a member changes shape.
-///
-/// 1 named the shape with `system.system.buildEpoch` / `buildDate` /
-/// `buildDateDetail`. 2 replaced those with the `commitDate` and `fileEpoch`
-/// objects. 3 names the one shipped now, which adds `boot.update.install.time`
-/// -- the clock, the time-status document and a `clock_implicated` reading,
-/// recorded beside a failed install (PLAN-078 §S4). Nothing migrates a stored
-/// snapshot and nothing needs to: the number is what lets a reader holding
-/// two of them tell which shape each is. 4 is the one shipped now, which adds
-/// PLAN-076 B4's `boot.update.last_error_code` and
-/// `boot.update.install.error_code` -- the class of a RAUC failure beside the
-/// sentence, so a support case can group what it is reading without matching
-/// on RAUC's words.
-pub const SCHEMA_VERSION: u64 = 4;
-/// The redaction schema version; bumped when the allowlist changes.
-///
-/// 2 is the allowlist that followed the rename above, 3 the one that added
-/// the rtnetlink id members. Both changes are real; the second bump was made
-/// for the first change by mistake and is left standing, because the number's
-/// only job is that two different allowlists never share it. 4 is the one that
-/// added `system.trust` -- the grade of the signing material the image was
-/// built from, which a support case reads before it reads anything else about
-/// a refused update. 5 is the one that names `boot.update.install.time`, whose
-/// absence from the allowlist would have dropped it SILENTLY -- the snapshot
-/// would have carried a failed install's `certificate has expired` and not the
-/// clock that may have caused it. 6 is the one that names the two members of
-/// PLAN-076 B4 that sit beside an allowlisted sibling -- a code that is
-/// dropped here while its sentence is kept is the enumerated-failure gate
-/// answered on the API and not on the surface a support case actually reads.
-pub const REDACTION_SCHEMA_VERSION: u64 = 6;
-/// The shipped location of the store: the system-owned DATA namespace, so a
-/// snapshot survives a reboot (`/var` is disposable) and a rootfs update.
+/// Snapshot schema for signed deployment and component evidence.
+pub const SCHEMA_VERSION: u64 = 5;
+/// Redaction allowlist for the native deployment schema.
+pub const REDACTION_SCHEMA_VERSION: u64 = 7;
+/// Persistent snapshot store in the system-owned DATA namespace.
 pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
 /// The most snapshots retained; publishing one more removes the oldest.
 pub const MAX_SNAPSHOTS: usize = 8;
@@ -188,13 +161,19 @@ fn schema() -> Rule {
             ("imageVersion", S),
         ])
     };
-    let slot = || {
+    let deployment = || {
         obj(vec![
-            ("booted", S),
-            ("bootname", S),
-            ("bundleVersion", S),
-            ("bootStatus", S),
-            ("primary", S),
+            ("id", S),
+            ("version", S),
+            ("generation", S),
+            ("kernelId", S),
+            ("kernelRelease", S),
+            ("rootfsId", S),
+            ("confirmed", S),
+            ("contentVerified", S),
+            ("secureBoot", S),
+            ("backend", S),
+            ("bootVerified", S),
         ])
     };
     let uptime = || obj(vec![("seconds", S)]);
@@ -255,7 +234,7 @@ fn schema() -> Rule {
             obj(vec![("name", S), ("version", S), ("commit", S)]),
         ),
         ("packages", packages),
-        ("slot", slot()),
+        ("deployment", deployment()),
         ("uptime", uptime()),
     ]);
 
@@ -286,12 +265,6 @@ fn schema() -> Rule {
             ]),
         ),
     ]);
-    // A CLOSURE rather than a value, because two members carry this document:
-    // the top-level `time` section, and the time facts recorded beside a
-    // failed install (PLAN-078 §S4). One rule, used twice -- a second copy
-    // would let the allowlist drift into accepting different fields on the two
-    // surfaces, and the second is exactly the one a wrong-clock incident is
-    // read from.
     let time = || {
         obj(vec![
             ("status", S),
@@ -312,72 +285,80 @@ fn schema() -> Rule {
     };
 
     let update = obj(vec![
-        ("operation", S),
-        ("last_error", S),
-        // PLAN-076 B4's classification of the sentence above. `lifecycle` is
-        // deliberately NOT added beside it: that subtree carries
-        // `policy.sourceUrl`, an operator-typed URL whose userinfo can hold a
-        // credential -- which is why mosd refuses to log the document either
-        // -- so admitting it needs a redaction decision of its own rather than
-        // arriving as a side effect of this gate.
-        ("last_error_code", S),
         (
-            "progress",
-            obj(vec![("percentage", S), ("message", S), ("depth", S)]),
+            "boot",
+            obj(vec![
+                ("deploymentId", S),
+                ("entry", S),
+                ("kernelId", S),
+                ("rootfsId", S),
+                ("contentVerified", S),
+                ("secureBoot", S),
+                ("backend", S),
+                ("bootVerified", S),
+            ]),
         ),
         (
-            "slots",
-            map(obj(vec![
-                ("state", S),
-                ("bootname", S),
-                ("boot_status", S),
-                ("bundle_version", S),
-                ("installed_timestamp", S),
-                ("status", S),
+            "state",
+            obj(vec![
+                ("highestGeneration", S),
+                ("current", S),
+                ("fallback", S),
+                ("candidate", S),
+                ("failed", arr(S)),
+            ]),
+        ),
+        (
+            "deployments",
+            arr(obj(vec![
+                ("id", S),
+                ("file", S),
+                ("generation", S),
+                ("triesLeft", S),
+                ("version", S),
+                ("kernelId", S),
+                ("kernelRelease", S),
+                ("rootfsId", S),
             ])),
         ),
-        ("booted_slot", S),
-        ("primary", S),
-        ("pending_not_confirmed", S),
+        (
+            "rollback",
+            obj(vec![("permitted", S), ("target", S), ("reason", S)]),
+        ),
         (
             "install",
             obj(vec![
                 ("status", S),
-                ("bundle", S),
+                ("deploymentId", S),
                 ("requested_by", S),
                 ("error", S),
                 ("error_code", S),
-                // PLAN-078 §S4: the clock and the synchronization state,
-                // recorded BESIDE a failed install because RAUC's
-                // "certificate has expired" is the same sentence whether the
-                // signer really expired or this device's RTC read garbage.
-                // Named here or the allowlist drops it -- and a redaction that
-                // fails closed drops it silently, which would leave the
-                // snapshot carrying the ambiguous line and not its resolution.
-                (
-                    "time",
-                    obj(vec![
-                        ("clock", S),
-                        ("clock_implicated", S),
-                        ("detail", S),
-                        ("status", time()),
-                    ]),
-                ),
             ]),
         ),
         (
-            "last_mark",
+            "last_action",
+            obj(vec![
+                ("action", S),
+                ("deploymentId", S),
+                ("requested_by", S),
+            ]),
+        ),
+        // Policy source URLs may contain credentials; admit only these facts.
+        (
+            "lifecycle",
             obj(vec![
                 ("state", S),
-                ("slot", S),
-                ("message", S),
-                ("requested_by", S),
+                ("deploymentId", S),
+                (
+                    "available",
+                    obj(vec![("deploymentId", S), ("version", S), ("channel", S)]),
+                ),
             ]),
         ),
         ("error", S),
     ]);
     let boot = obj(vec![
-        ("slot", slot()),
+        ("deployment", deployment()),
         ("uptime", uptime()),
         ("reset", reset),
         ("update", update),
@@ -453,10 +434,6 @@ fn schema() -> Rule {
         ("space", space.clone()),
         ("pressure", S),
         (
-            "updateWorkspace",
-            obj(vec![("root", S), ("reservedBytes", S), ("available", S)]),
-        ),
-        (
             "check",
             obj(vec![
                 ("recorded", S),
@@ -510,7 +487,37 @@ fn schema() -> Rule {
         ("tiers", arr(tier)),
         (
             "namespaces",
-            obj(vec![("sharedCapacityTier", S), ("binds", arr(bind))]),
+            obj(vec![
+                ("sharedCapacityTier", S),
+                ("binds", arr(bind)),
+                (
+                    "directories",
+                    arr(obj(vec![("name", S), ("usedBytes", S), ("project", S)])),
+                ),
+                (
+                    "projectQuotas",
+                    obj(vec![
+                        (
+                            "100",
+                            obj(vec![
+                                ("usedBytes", S),
+                                ("limitBytes", S),
+                                ("usedInodes", S),
+                                ("limitInodes", S),
+                            ]),
+                        ),
+                        (
+                            "101",
+                            obj(vec![
+                                ("usedBytes", S),
+                                ("limitBytes", S),
+                                ("usedInodes", S),
+                                ("limitInodes", S),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ]),
         ),
         (
             "media",
@@ -530,8 +537,6 @@ fn schema() -> Rule {
                 ("warningClearPercent", S),
                 ("criticalPercent", S),
                 ("criticalClearPercent", S),
-                ("updateWorkspaceReservedBytes", S),
-                ("updateWorkspaceRoot", S),
                 ("watchedTiers", arr(S)),
             ]),
         ),
@@ -1013,7 +1018,7 @@ impl<'a> Collector<'a> {
             },
             "system": system,
             "boot": {
-                "slot": pick(&system, "slot"),
+                "deployment": pick(&system, "deployment"),
                 "uptime": pick(&system, "uptime"),
                 "reset": pick(&telemetry, "reset"),
                 "update": pick(&state, "update"),
@@ -1343,7 +1348,7 @@ mod tests {
     /// planted at every kind of place a secret could land.
     fn fixture() -> Value {
         json!({
-            "schemaVersion": 2,
+            "schemaVersion": SCHEMA_VERSION,
             "collectedAt": "2026-09-02T00:00:00Z",
             "release": {
                 "board": { "available": true, "model": "Vendor CX3576", "source": "devicetree" },
@@ -1365,22 +1370,20 @@ mod tests {
                 "packages": { "available": true, "count": 2, "mosCount": 1, "malformedRows": 0, "truncated": false,
                     "entries": [{ "name": "mosd", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true },
                                 { "name": "systemd", "version": "257.7-1", "architecture": "arm64", "mos": false }] },
-                "slot": { "available": true, "booted": "rootfs.0", "bootname": "A", "primary": "rootfs.0" },
+                "deployment": { "available": true, "id": "a".repeat(64), "confirmed": true },
                 "uptime": { "available": true, "seconds": 4242 },
                 // Unclassified: a member no schema names must not ship.
                 "wifiPassphraseCache": "hunter2-marker",
             },
             "boot": {
-                "slot": { "available": true, "booted": "rootfs.0" },
+                "deployment": { "available": true, "id": "a".repeat(64) },
                 "uptime": { "available": true, "seconds": 4242 },
                 "reset": { "available": true, "reason": "watchdog", "detail": "d",
                     "evidence": { "watchdogBootstatus": [{ "device": "watchdog0", "flags": ["cardReset"] }], "pstore": { "available": false, "detail": "no pstore" } } },
-                "update": { "operation": "idle", "last_error": "", "progress": { "percentage": 0, "message": "", "depth": 0 },
-                    "slots": { "rootfs.0": { "state": "booted", "bootname": "A", "boot_status": "good", "bundle_version": "0.1.0" },
-                               "rootfs.1": { "state": "inactive" } },
-                    "booted_slot": "rootfs.0", "primary": "rootfs.0", "pending_not_confirmed": false,
-                    "install": { "status": "done", "bundle": "/mos/updates/x.raucb", "requested_by": ":1.7" },
-                    "last_mark": { "state": "good", "slot": "booted", "message": "ok", "requested_by": ":1.7" } },
+                "update": { "boot": {"deploymentId":"a".repeat(64),"contentVerified":true},
+                    "state":{"current":"a".repeat(64),"highestGeneration":7,"failed":[]},
+                    "install": {"status":"done","deploymentId":"b".repeat(64),"requested_by":":1.7"},
+                    "last_action":{"action":"confirm","deploymentId":"a".repeat(64),"requested_by":":1.7"} },
             },
             "journal": { "available": true, "scope": "current boot", "priority": "warning", "lineCount": 4, "sourceLines": 4, "sourceBytes": 100, "truncated": false,
                 "bounds": { "maxLines": 400, "maxBytes": 131072, "maxLineBytes": 1024 },
@@ -1401,13 +1404,12 @@ mod tests {
             "storage": {
                 "tiers": [{ "name": "data", "role": "ext4", "partitionLabel": "data", "present": true, "device": "/dev/mmcblk0p11", "mounted": true, "mount": "/mnt/data", "filesystem": "ext4", "readOnly": false,
                             "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 }, "pressure": "warning",
-                            "updateWorkspace": { "root": "/mos/updates", "reservedBytes": 268435456, "available": false },
                             "check": { "recorded": true, "unit": "systemd-fsck@dev-mmcblk0p11.service", "activeState": "inactive", "result": "success", "exitStatus": 0 } }],
                 "namespaces": { "sharedCapacityTier": "data", "detail": "one pool",
                     "binds": [{ "name": "mos", "mount": "/mos", "source": "/mnt/data/mos", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
                 "media": [{ "name": "mmcblk0", "kind": "emmc", "sizeBytes": 32000000000u64, "model": "DG4032", "rotational": false,
                             "health": { "supported": true, "source": "sysfs", "raw": { "lifeTime": "0x01 0x01", "preEolInfo": "0x01" }, "lifetimeEstimates": [{ "raw": "0x01", "usedPercentMin": 0, "usedPercentMax": 10 }], "preEol": "normal" } }],
-                "policy": { "warningPercent": 80, "warningClearPercent": 75, "criticalPercent": 90, "criticalClearPercent": 85, "updateWorkspaceReservedBytes": 268435456, "updateWorkspaceRoot": "/mos/updates", "watchedTiers": ["data", "state"] },
+                "policy": { "warningPercent": 80, "warningClearPercent": 75, "criticalPercent": 90, "criticalClearPercent": 85, "watchedTiers": ["data"] },
                 "lifecycle": { "encryption": "unsupported", "factoryReset": "unsupported" },
             },
             "time": { "status": "synchronized", "synchronized": true, "server": { "name": "0.pool.ntp.org", "address": "192.0.2.7" },
@@ -1506,7 +1508,7 @@ mod tests {
     fn every_benign_member_survives_the_pass() {
         let (redacted, _) = redact_snapshot(fixture());
         for (pointer, expected) in [
-            ("/schemaVersion", json!(2)),
+            ("/schemaVersion", json!(5)),
             ("/collectedAt", json!("2026-09-02T00:00:00Z")),
             ("/release/board/model", json!("Vendor CX3576")),
             ("/release/kernel/release", json!("6.1.115-mos")),
@@ -1524,14 +1526,14 @@ mod tests {
                 "/system/packages/entries/0/version",
                 json!("0.1.0+git00b674ec0ffe-1"),
             ),
-            ("/system/slot/booted", json!("rootfs.0")),
+            ("/system/deployment/id", json!("a".repeat(64))),
             ("/boot/reset/reason", json!("watchdog")),
             (
                 "/boot/reset/evidence/watchdogBootstatus/0/flags/0",
                 json!("cardReset"),
             ),
-            ("/boot/update/slots/rootfs.0/boot_status", json!("good")),
-            ("/boot/update/install/bundle", json!("/mos/updates/x.raucb")),
+            ("/boot/update/boot/contentVerified", json!(true)),
+            ("/boot/update/install/deploymentId", json!("b".repeat(64))),
             (
                 "/journal/lines/0",
                 json!("2026-09-02T00:00:00+0000 systemd[1]: Failed to start x.service."),
@@ -1552,7 +1554,7 @@ mod tests {
                 "/storage/media/0/health/lifetimeEstimates/0/usedPercentMax",
                 json!(10),
             ),
-            ("/storage/policy/watchedTiers/1", json!("state")),
+            ("/storage/policy/watchedTiers/0", json!("data")),
             ("/storage/lifecycle/encryption", json!("unsupported")),
             ("/time/status", json!("synchronized")),
             ("/time/sample/correction", json!("slew")),
@@ -1729,10 +1731,7 @@ mod tests {
     #[tokio::test]
     async fn a_collection_over_answering_sources_is_complete() {
         let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
-        fake.set_state_entry(
-            "update",
-            json!({ "operation": "idle", "booted_slot": "rootfs.0" }),
-        );
+        fake.set_state_entry("update", json!({ "boot": {"deploymentId":"a".repeat(64)} }));
         fake.set_state_entry("health", json!({ "var": { "status": "ok", "detail": "" } }));
         let collected = Collector::new(&fake).collect().await;
         let snapshot = &collected.snapshot;
@@ -1746,7 +1745,10 @@ mod tests {
             snapshot["system"]["machineId"]["id"],
             "0123456789abcdef0123456789abcdef"
         );
-        assert_eq!(snapshot["boot"]["update"]["booted_slot"], "rootfs.0");
+        assert_eq!(
+            snapshot["boot"]["update"]["boot"]["deploymentId"],
+            "a".repeat(64)
+        );
         assert_eq!(snapshot["boot"]["uptime"]["seconds"], 7);
         assert_eq!(snapshot["failures"]["health"]["var"]["status"], "ok");
         assert_eq!(snapshot["failures"]["tasks"], json!([]));
@@ -1762,81 +1764,45 @@ mod tests {
         assert_eq!(collected.report.sections.len(), 7);
     }
 
-    /// The version names THIS shape, and the number is a literal rather than
-    /// the constant it came from.
-    ///
-    /// Under version 1 `system.system` carried `buildEpoch`, `buildDate` and
-    /// `buildDateDetail`. 7d759112 replaced them with the `commitDate` and
-    /// `fileEpoch` objects and left the version at 1, so two documents of
-    /// different shapes both claimed it -- the one thing a schema version
-    /// exists to make impossible. Version 2 named that shape; version 3 adds
-    /// the time facts recorded beside a failed install (PLAN-078 §S4), and
-    /// both are asserted below.
-    ///
-    /// Asserting against [`SCHEMA_VERSION`] cannot catch that: it puts the
-    /// same value on both sides. The number is written out here beside the
-    /// members that define it, so a rename that leaves the number alone --
-    /// which is exactly what happened -- fails.
     #[tokio::test]
-    async fn the_snapshot_version_names_the_shape_it_ships() {
+    async fn the_snapshot_keeps_native_deployment_evidence_and_drops_source_credentials() {
         let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
+        let id = "a".repeat(64);
         fake.set_system_info(json!({
-            "machineId": { "available": true, "id": "0123456789abcdef0123456789abcdef" },
-            "system": {
-                "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "mosd",
-                "commitDate": { "available": true, "date": "2026-09-02T00:00:00Z" },
-                "fileEpoch": {
-                    "available": true, "epoch": 1_577_836_800,
-                    "date": "2020-01-01T00:00:00Z",
-                },
-            },
-            "uptime": { "available": true, "seconds": 7 },
+            "deployment": {"available":true,"id":id,"generation":7,"kernelId":"b".repeat(64),
+                "rootfsId":"c".repeat(64),"confirmed":true,"contentVerified":true,"secureBoot":false,"bootVerified":true,"backend":"uboot-fit"}
         }));
-        fake.set_state_entry(
-            "update",
-            json!({
-                "operation": "idle",
-                "install": {
-                    "status": "failed",
-                    "bundle": "/mos/updates/verified/x.raucb",
-                    "requested_by": ":1.7",
-                    "error": "signature verification failed",
-                    "error_code": "signature-invalid",
-                    "time": {
-                        "clock": "2075-01-01T00:00:00Z",
-                        "clock_implicated": true,
-                        "detail": "the certificate window was rejected against a clock this device cannot vouch for",
-                        "status": { "status": "offline-degraded", "synchronized": false },
-                    },
-                },
-            }),
-        );
+        fake.set_state_entry("update", json!({
+            "boot":{"deploymentId":id,"entry":format!("mos-{id}.conf"),"kernelId":"b".repeat(64),
+                "rootfsId":"c".repeat(64),"contentVerified":true,"secureBoot":false,"bootVerified":true,"backend":"uboot-fit"},
+            "state":{"highestGeneration":8,"current":id,"fallback":"d".repeat(64),
+                "candidate":null,"failed":["e".repeat(64)]},
+            "deployments":[{"id":id,"file":format!("mos-{id}.conf"),"generation":7,
+                "triesLeft":null,"version":"1.7.0","kernelId":"b".repeat(64),
+                "kernelRelease":"6.12.107","rootfsId":"c".repeat(64)}],
+            "rollback":{"permitted":true,"target":"d".repeat(64)},
+            "install":{"status":"failed","deploymentId":"e".repeat(64),
+                "error":"signature verification failed","error_code":"signature-invalid"},
+            "last_action":{"action":"confirm","deploymentId":id,"requested_by":":1.7"},
+            "lifecycle":{"state":"succeeded","deploymentId":null,
+                "policy":{"sourceUrl":"https://user:credential-marker@example.test/catalog"}},
+            "slots":{"rootfs.0":{"boot_status":"good"}}
+        }));
         let snapshot = Collector::new(&fake).collect().await.snapshot;
-
-        assert_eq!(
-            snapshot["schemaVersion"], 4,
-            "the shipped version does not name the shape below"
-        );
-        let system = &snapshot["system"]["system"];
-        assert_eq!(system["commitDate"]["date"], "2026-09-02T00:00:00Z");
-        assert_eq!(system["fileEpoch"]["epoch"], 1_577_836_800);
-        assert!(
-            system.get("buildDate").is_none() && system.get("buildEpoch").is_none(),
-            "version 1's members are still shipped, so 2 is the wrong number: {system}"
-        );
-        // Version 3's addition, asserted through the REAL redaction pass: a
-        // member the allowlist does not name is dropped silently, so a schema
-        // that forgot this one would ship a snapshot carrying `certificate has
-        // expired` and not the clock that may have caused it.
-        let install = &snapshot["boot"]["update"]["install"];
-        assert_eq!(install["error"], "signature verification failed");
-        // PLAN-076 B4, through the same real redaction pass: a code the
-        // allowlist did not name would be dropped silently, leaving a support
-        // bundle that carries RAUC's sentence and not its class.
-        assert_eq!(install["error_code"], "signature-invalid");
-        assert_eq!(install["time"]["clock"], "2075-01-01T00:00:00Z");
-        assert_eq!(install["time"]["clock_implicated"], true);
-        assert_eq!(install["time"]["status"]["status"], "offline-degraded");
+        assert_eq!(snapshot["schemaVersion"], 5);
+        assert_eq!(snapshot["system"]["deployment"]["id"], id);
+        assert_eq!(snapshot["boot"]["deployment"]["confirmed"], true);
+        let update = &snapshot["boot"]["update"];
+        assert_eq!(update["boot"]["deploymentId"], id);
+        assert_eq!(update["state"]["highestGeneration"], 8);
+        assert_eq!(update["state"]["failed"], json!(["e".repeat(64)]));
+        assert_eq!(update["deployments"][0]["rootfsId"], "c".repeat(64));
+        assert_eq!(update["rollback"]["target"], "d".repeat(64));
+        assert_eq!(update["install"]["error_code"], "signature-invalid");
+        assert_eq!(update["last_action"]["action"], "confirm");
+        assert!(update.get("slots").is_none());
+        assert!(!snapshot.to_string().contains("credential-marker"));
+        assert!(!snapshot.to_string().contains("sourceUrl"));
     }
 
     /// The time bound, enforced: sources that answer too slowly are
@@ -1869,9 +1835,9 @@ mod tests {
                 .as_str()
                 .is_some_and(|d| d.contains("no answer within"))
         );
-        assert_eq!(snapshot["boot"]["slot"]["available"], false);
+        assert_eq!(snapshot["boot"]["deployment"]["available"], false);
         assert!(
-            snapshot["boot"]["slot"]["detail"]
+            snapshot["boot"]["deployment"]["detail"]
                 .as_str()
                 .is_some_and(|d| d.starts_with("not collected"))
         );
@@ -1945,19 +1911,19 @@ mod tests {
             async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
                 self.0.install_update(bundle).await
             }
-            async fn mark_update(
-                &self,
-                state: &str,
-                slot: &str,
-            ) -> anyhow::Result<(String, String)> {
-                self.0.mark_update(state, slot).await
+            async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+                self.0.confirm_deployment(deployment_id).await
+            }
+
+            async fn reject_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+                self.0.reject_deployment(deployment_id).await
+            }
+
+            async fn rollback_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+                self.0.rollback_deployment(deployment_id).await
             }
             async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
                 self.0.set_reboot_override(seconds).await
-            }
-
-            async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
-                self.0.clear_update_suppression(version).await
             }
 
             async fn set_update_config(&self, patch: &Value) -> anyhow::Result<Value> {

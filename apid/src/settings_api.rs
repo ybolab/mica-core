@@ -102,25 +102,23 @@ pub trait SettingsApi: Send + Sync {
     /// private half never leaves mosd and there is no accessor that returns
     /// one, so the only thing this call can hand back is the public half.
     async fn rotate_wireguard_key(&self, iface: &str) -> anyhow::Result<String>;
-    /// The complete update state (`GetUpdateState`): mosd queries RAUC and
+    /// The complete update state (`GetUpdateState`): mosd reads native deployment records and
     /// re-derives the lifecycle before answering, so this is never stale.
     async fn get_update_state(&self) -> anyhow::Result<Value>;
     /// Ask mosd to run an update metadata check on a background task.
     async fn check_update(&self) -> anyhow::Result<()>;
-    /// Ask mosd to download the selected bundle on a background task.
+    /// Ask mosd to download the selected deployment objects on a background task.
     async fn fetch_update(&self) -> anyhow::Result<()>;
-    /// Ask mosd to install the bundle at absolute path `bundle` (RAUC's
-    /// background install; progress lands in the update state).
-    async fn install_update(&self, bundle: &str) -> anyhow::Result<()>;
-    /// Manually mark a slot (`good`/`bad` on `booted`/`other`); answers
-    /// RAUC's `(slot_name, message)`.
-    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)>;
+    /// Ask mosd to install a verified deployment by its authenticated ID.
+    /// Background progress lands in the update state.
+    async fn install_update(&self, deployment_id: &str) -> anyhow::Result<()>;
+    async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()>;
+    async fn reject_deployment(&self, deployment_id: &str) -> anyhow::Result<()>;
+    async fn rollback_deployment(&self, deployment_id: &str) -> anyhow::Result<()>;
     /// Arm the bounded safe-to-reboot override for `seconds`; answers the
     /// recorded override.
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
-    /// Clear the automatic-update suppression on `version`; answers the
-    /// record that was removed.
-    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value>;
+
     /// Ask mosd to merge `patch` into `/mos/config/updates.json` and write
     /// it; answers the document as saved.
     ///
@@ -627,13 +625,20 @@ impl SettingsApi for FakeSettings {
         self.update_call("fetch")
     }
 
-    async fn install_update(&self, bundle: &str) -> anyhow::Result<()> {
-        self.update_call(&format!("install {bundle}"))
+    async fn install_update(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.update_call(&format!("install {deployment_id}"))
     }
 
-    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
-        self.update_call(&format!("mark {state} {slot}"))?;
-        Ok(("rootfs.0".to_string(), format!("marked {slot} as {state}")))
+    async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.update_call(&format!("confirm {deployment_id}"))
+    }
+
+    async fn reject_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.update_call(&format!("reject {deployment_id}"))
+    }
+
+    async fn rollback_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.update_call(&format!("rollback {deployment_id}"))
     }
 
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value> {
@@ -641,17 +646,6 @@ impl SettingsApi for FakeSettings {
         Ok(serde_json::json!({
             "until": "2026-09-02T00:10:00Z",
             "requestedBy": ":1.9",
-        }))
-    }
-
-    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<Value> {
-        self.update_call(&format!("clear-suppression {version}"))?;
-        Ok(serde_json::json!({
-            "version": version,
-            "slot": "rootfs.1",
-            "at": "2026-09-02T00:00:00Z",
-            "bootStatus": "bad",
-            "detail": format!("version {version} was installed into slot rootfs.1"),
         }))
     }
 

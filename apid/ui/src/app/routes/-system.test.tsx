@@ -149,17 +149,15 @@ describe('update status panel', () => {
       lifecycle: {
         state: 'ready',
         reason: 'a verified bundle is staged for install',
-        bundle: '/mos/updates/verified/abc.update-1.1.0.raucb',
+        deploymentId: 'a'.repeat(64),
         client: { available: true },
         reboot_gate: { safe: false, reasons: ['health.exporter reports `blocking`: mid-transaction'] },
       },
-      booted_slot: 'rootfs.0',
-      pending_not_confirmed: false,
     })))
     renderUpdatePanel()
 
     expect(await screen.findByText('ready')).toBeTruthy()
-    expect(screen.getByText('/mos/updates/verified/abc.update-1.1.0.raucb')).toBeTruthy()
+    expect(screen.getByText('a'.repeat(64))).toBeTruthy()
     expect(screen.getByText('Safe to reboot')).toBeTruthy()
     expect(screen.getByText('Blocked')).toBeTruthy()
     expect(screen.getByText(/mid-transaction/)).toBeTruthy()
@@ -185,7 +183,7 @@ describe('update status panel', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
       lifecycle: {
         state: 'idle',
-        client: { available: false, reason: '/usr/bin/rauc-update is not present on this image' },
+        client: { available: false, reason: '/usr/bin/mos-deploy is not present on this image' },
         reboot_gate: { safe: true, reasons: [] },
       },
     })))

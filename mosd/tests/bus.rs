@@ -98,9 +98,11 @@ trait Mosd {
     fn reboot(&self) -> zbus::Result<()>;
     fn power_off(&self) -> zbus::Result<()>;
     fn set_transient_root_password(&self, password: &str) -> zbus::Result<String>;
-    fn install_update(&self, bundle_path: &str) -> zbus::Result<()>;
+    fn install_update(&self, deployment_id: &str) -> zbus::Result<()>;
     fn get_update_state(&self) -> zbus::Result<String>;
-    fn mark_update(&self, state: &str, slot: &str) -> zbus::Result<(String, String)>;
+    fn confirm_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
+    fn reject_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
+    fn rollback_deployment(&self, deployment_id: &str) -> zbus::Result<()>;
     #[zbus(signal)]
     fn settings_changed(&self, path: &str, value_json: &str) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -137,11 +139,6 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let shadow_path = dir.path().join("shadow");
     let marker_path = dir.path().join("transient-root-password");
     std::fs::write(&shadow_path, SHADOW)?;
-    // The update workspace: installs are admitted only from its verified/,
-    // so the daemon is pointed at one inside the tempdir (the client's own
-    // override variable, which mosd forwards to it).
-    let update_root = dir.path().join("updates");
-    std::fs::create_dir_all(update_root.join("verified"))?;
     // MOSD_DRY_RUN=1 is a hard safety requirement: production reconcilers
     // must never be constructed in tests.
     let _mosd_guard = ChildGuard(
@@ -152,7 +149,6 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
             .env("MOSD_SETTINGS_PATH", &settings_path)
             .env("MOSD_CONFIG_DIR", &config_dir)
             .env("MOSD_SHADOW_PATH", &shadow_path)
-            .env("RAUC_UPDATE_ROOT", &update_root)
             .spawn()?,
     );
 
@@ -438,23 +434,26 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     assert_eq!(error_name(&err), "org.freedesktop.DBus.Error.InvalidArgs");
     assert!(proxy.set_settings("hostname", "not json").await.is_err());
 
-    // Update orchestration, against the dry-run RAUC client — the
-    // same guarantee as the power methods above: MOSD_DRY_RUN=1 means the
-    // production client was never constructed, so nothing here can install a
-    // bundle on, or mark a slot of, the build host.
-    //
-    // The MEMBER NAMES first, read back out of the daemon for the same reason
-    // SetTransientRootPassword's was: zbus renames snake_case to PascalCase,
-    // and a client that guesses wrong gets UnknownMethod at runtime, not a
-    // compile error.
+    // Inspect the actual exported native contract; dry-run never constructs a command client.
     let xml = introspectable.introspect().await?;
-    for member in ["InstallUpdate", "GetUpdateState", "MarkUpdate"] {
+    for member in [
+        "InstallUpdate",
+        "GetUpdateState",
+        "ConfirmDeployment",
+        "RejectDeployment",
+        "RollbackDeployment",
+    ] {
         assert!(
             xml.contains(&format!("<method name=\"{member}\">")),
             "no {member} on com.mos.mosd1:\n{xml}"
         );
     }
-    for leaked in ["install_update", "get_update_state", "mark_update"] {
+    for leaked in [
+        "install_update",
+        "get_update_state",
+        "MarkUpdate",
+        "ClearUpdateSuppression",
+    ] {
         assert!(
             !xml.contains(leaked),
             "the snake_case name must NOT be what a client sees:\n{xml}"
@@ -494,81 +493,29 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
         );
     }
 
-    // GetUpdateState queries and records: the dry-run client reports an idle
-    // installer with no slots, and the same entry lands in the state tree.
-    let update = proxy.get_update_state().await?;
-    let update: serde_json::Value = serde_json::from_str(&update)?;
-    assert_eq!(update["operation"], "idle");
-    assert_eq!(update["pending_not_confirmed"], false);
-    assert_eq!(update["slots"], serde_json::json!({}));
-    let recorded = proxy.get_state("update").await?;
-    let recorded: serde_json::Value = serde_json::from_str(&recorded)?;
-    assert_eq!(recorded, update);
-
-    // InstallUpdate validates the path over the bus...
-    assert!(
-        proxy.install_update("relative.raucb").await.is_err(),
-        "a relative bundle path must be refused"
-    );
-    assert!(
-        proxy
-            .install_update(dir.path().join("gone.raucb").to_str().expect("utf-8"))
-            .await
-            .is_err(),
-        "a missing bundle must be refused"
-    );
-    // ...refuses a regular file that is not inside the workspace's verified/
-    // (only a verified bundle is handed to RAUC, whoever names the path)...
-    let outside = dir.path().join("outside.raucb");
-    std::fs::write(&outside, b"bundle bytes")?;
-    let err = proxy
-        .install_update(outside.to_str().expect("utf-8"))
+    let error = proxy
+        .get_update_state()
         .await
-        .expect_err("a bundle outside verified/ must be refused");
-    assert_eq!(error_name(&err), "org.freedesktop.DBus.Error.InvalidArgs");
-    // ...and a valid request is admitted, runs in the background, and records
-    // its outcome where GetState can see it.
-    let bundle_path = update_root.join("verified").join("ok.raucb");
-    std::fs::write(&bundle_path, b"bundle bytes")?;
-    proxy
-        .install_update(bundle_path.to_str().expect("utf-8"))
-        .await?;
-    let install = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(install) = proxy.get_state("update.install").await {
-                let install: serde_json::Value =
-                    serde_json::from_str(&install).expect("install entry is JSON");
-                if install["status"] == "done" {
-                    break install;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await?;
-    assert_eq!(install["bundle"], bundle_path.to_str().expect("utf-8"));
-    assert!(
-        install["requested_by"]
-            .as_str()
-            .is_some_and(|sender| sender.starts_with(':')),
-        "requested_by should be the caller's unique bus name, got {install}"
-    );
-
-    // MarkUpdate: the offered vocabulary only, validated before RAUC.
-    assert!(
-        proxy.mark_update("active", "other").await.is_err(),
-        "activation is not offered on this surface"
-    );
-    assert!(
-        proxy.mark_update("good", "rootfs.0").await.is_err(),
-        "slots are addressed as booted/other only"
-    );
-    let (_slot_name, message) = proxy.mark_update("good", "booted").await?;
-    assert!(message.contains("good"), "message: {message}");
-    let last_mark = proxy.get_state("update.last_mark").await?;
-    let last_mark: serde_json::Value = serde_json::from_str(&last_mark)?;
-    assert_eq!(last_mark["state"], "good");
-    assert_eq!(last_mark["slot"], "booted");
+        .expect_err("dry-run has no native backend");
+    assert_eq!(error_name(&error), "org.freedesktop.DBus.Error.Failed");
+    for id in ["relative.json", "rootfs.0", &"a".repeat(63)] {
+        let error = proxy
+            .install_update(id)
+            .await
+            .expect_err("an install requires a deployment ID");
+        assert_eq!(error_name(&error), "org.freedesktop.DBus.Error.InvalidArgs");
+    }
+    let id = "a".repeat(64);
+    for result in [
+        proxy.confirm_deployment(&id).await,
+        proxy.reject_deployment(&id).await,
+        proxy.rollback_deployment(&id).await,
+    ] {
+        assert_eq!(
+            error_name(&result.expect_err("dry-run may not mutate deployments")),
+            "org.freedesktop.DBus.Error.Failed"
+        );
+    }
 
     Ok(())
 }

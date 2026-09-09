@@ -237,16 +237,20 @@ impl SettingsApi for InterruptOnce {
         self.inner.install_update(bundle).await
     }
 
-    async fn mark_update(&self, state: &str, slot: &str) -> anyhow::Result<(String, String)> {
-        self.inner.mark_update(state, slot).await
+    async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.inner.confirm_deployment(deployment_id).await
+    }
+
+    async fn reject_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.inner.reject_deployment(deployment_id).await
+    }
+
+    async fn rollback_deployment(&self, deployment_id: &str) -> anyhow::Result<()> {
+        self.inner.rollback_deployment(deployment_id).await
     }
 
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<serde_json::Value> {
         self.inner.set_reboot_override(seconds).await
-    }
-
-    async fn clear_update_suppression(&self, version: &str) -> anyhow::Result<serde_json::Value> {
-        self.inner.clear_update_suppression(version).await
     }
 
     async fn set_update_config(

@@ -1,5 +1,5 @@
 //! Route tests for the update cluster (`update_api.rs`): transport,
-//! authentication, the 409/422 mappings and the staged-bundle resolution.
+//! authentication, the 409/422 mappings and the verified-deployment resolution.
 //! What the states and policies MEAN is mosd's contract, tested in mosd.
 
 use axum::http::StatusCode;
@@ -11,7 +11,8 @@ const UPDATE_PATH: &str = "/api/v1/update";
 const CHECK_PATH: &str = "/api/v1/update/check";
 const FETCH_PATH: &str = "/api/v1/update/fetch";
 const INSTALL_PATH: &str = "/api/v1/update/install";
-const MARK_PATH: &str = "/api/v1/update/mark";
+const CONFIRM_PATH: &str = "/api/v1/update/confirm";
+const REJECT_PATH: &str = "/api/v1/update/reject";
 const ROLLBACK_PATH: &str = "/api/v1/update/rollback";
 const OVERRIDE_PATH: &str = "/api/v1/update/reboot-override";
 
@@ -29,9 +30,9 @@ fn update_app(update: serde_json::Value) -> (axum::Router, Arc<FakeSettings>, St
 #[tokio::test]
 async fn the_state_read_answers_mosd_verbatim_and_requires_a_credential() {
     let seeded = json!({
-        "lifecycle": { "state": "ready", "bundle": "/data/u.raucb" },
-        "booted_slot": "rootfs.0",
-        "pending_not_confirmed": false,
+        "lifecycle": { "state": "ready", "deploymentId": "a".repeat(64) },
+        "boot": { "deploymentId": "b".repeat(64), "contentVerified": true },
+        "state": { "current": "b".repeat(64), "candidate": null },
     });
     let (router, fake, token) = update_app(seeded.clone());
 
@@ -96,98 +97,50 @@ async fn a_policy_refusal_is_answered_409_with_mosds_reason() {
 }
 
 #[tokio::test]
-async fn an_install_uses_the_staged_bundle_and_refuses_when_none_is() {
-    // Nothing staged, no explicit path: 409 before any bus call.
-    let (router, fake, token) = update_app(json!({ "lifecycle": { "state": "idle" } }));
-    let response = bearer_json(&router, "POST", INSTALL_PATH, &token, "{}").await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = body_json(response).await;
-    assert_eq!(body["error"]["code"], "no_staged_bundle");
-    assert!(
-        fake.update_calls().is_empty(),
-        "a refused install must not reach mosd: {:?}",
-        fake.update_calls()
-    );
-
-    // A staged bundle is what an empty body installs — the verified path,
-    // not a guess.
-    let (router, fake, token) = update_app(json!({
-        "lifecycle": { "state": "ready", "bundle": "/data/staged.raucb" }
-    }));
-    let response = bearer_json(&router, "POST", INSTALL_PATH, &token, "{}").await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert_eq!(fake.update_calls(), vec!["install /data/staged.raucb"]);
-
-    // An explicit operator path outranks the staged one (the manual/offline
-    // escape hatch) and an unparseable body is 400, not a guessed install.
-    let (router, fake, token) = update_app(json!({
-        "lifecycle": { "state": "ready", "bundle": "/data/staged.raucb" }
-    }));
-    let response = bearer_json(
-        &router,
-        "POST",
-        INSTALL_PATH,
-        &token,
-        &json!({ "bundlePath": "/media/usb/manual.raucb" }).to_string(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert_eq!(fake.update_calls(), vec!["install /media/usb/manual.raucb"]);
-
-    let response = bearer_json(&router, "POST", INSTALL_PATH, &token, "{not json").await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+async fn deployment_actions_refuse_missing_malformed_and_path_based_requests() {
+    let (router, fake, token) =
+        update_app(json!({"lifecycle":{"state":"ready","deploymentId":"a".repeat(64)}}));
+    for path in [INSTALL_PATH, CONFIRM_PATH, REJECT_PATH] {
+        for body in [
+            json!({}),
+            json!({"deploymentId":"a".repeat(63)}),
+            json!({"deploymentId":"A".repeat(64)}),
+            json!({"deploymentId":"../candidate.json"}),
+            json!({"bundlePath":"/media/usb/update.raucb"}),
+            json!({"deploymentId":"a".repeat(64),"extra":true}),
+        ] {
+            let response = bearer_json(&router, "POST", path, &token, &body.to_string()).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}: {body}");
+        }
+    }
+    assert!(fake.update_calls().is_empty());
 }
 
 #[tokio::test]
-async fn a_mark_answers_raucs_slot_and_message_and_bad_vocabulary_is_422() {
+async fn native_identity_refusals_keep_the_bus_validation_code() {
     let (router, fake, token) = update_app(json!({}));
+    fake.refuse_updates(INVALID_ARGS, "action must name the running deployment");
     let response = bearer_json(
         &router,
         "POST",
-        MARK_PATH,
+        CONFIRM_PATH,
         &token,
-        &json!({ "state": "good", "slot": "booted" }).to_string(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body["slotName"], "rootfs.0");
-    assert!(
-        body["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("good"))
-    );
-    assert_eq!(fake.update_calls(), vec!["mark good booted"]);
-
-    // mosd's InvalidArgs (a state or slot outside the offered vocabulary)
-    // is 422 `validation_failed`, not the settings-flavoured code.
-    let (router, fake, token) = update_app(json!({}));
-    fake.refuse_updates(
-        INVALID_ARGS,
-        "mark state must be `good` or `bad`, got `active`",
-    );
-    let response = bearer_json(
-        &router,
-        "POST",
-        MARK_PATH,
-        &token,
-        &json!({ "state": "active", "slot": "other" }).to_string(),
+        &json!({"deploymentId":"b".repeat(64)}).to_string(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let body = body_json(response).await;
-    assert_eq!(body["error"]["code"], "validation_failed");
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "validation_failed"
+    );
 }
 
 /// A seeded state document whose `rollback` object is what mosd's
 /// `rollback_eligibility` would have written for a permitted rollback.
 fn permitted_rollback() -> serde_json::Value {
-    json!({
-        "booted_slot": "rootfs.0",
-        "primary": "rootfs.0",
-        "pending_not_confirmed": false,
-        "rollback": { "target": "rootfs.1", "permitted": true, "reason": null },
-    })
+    json!({"boot":{"deploymentId":"a".repeat(64)},
+        "state":{"current":"a".repeat(64),"fallback":"b".repeat(64),"candidate":null,"failed":[],"highestGeneration":2},
+        "rollback":{"target":"b".repeat(64),"permitted":true,"reason":null}})
 }
 
 #[tokio::test]
@@ -196,7 +149,7 @@ async fn the_state_read_carries_the_rollback_verdict_and_no_second_route_serves_
     let response = bearer(&router, "GET", UPDATE_PATH, &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["rollback"]["target"], "rootfs.1");
+    assert_eq!(body["rollback"]["target"], "b".repeat(64));
     assert_eq!(body["rollback"]["permitted"], true);
     assert!(body["rollback"]["reason"].is_null());
 
@@ -208,7 +161,7 @@ async fn the_state_read_carries_the_rollback_verdict_and_no_second_route_serves_
 }
 
 #[tokio::test]
-async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step() {
+async fn a_permitted_rollback_uses_the_native_atomic_action_and_names_the_next_step() {
     let (router, fake, token) = update_app(permitted_rollback());
 
     let anonymous = json_request(&router, "POST", ROLLBACK_PATH, json!({}), None, None).await;
@@ -221,8 +174,8 @@ async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step(
     let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["target"], "rootfs.1");
-    assert_eq!(body["slotName"], "rootfs.0");
+    assert_eq!(body["target"], "b".repeat(64));
+    assert_eq!(body["deploymentId"], "a".repeat(64));
     assert_eq!(body["nextStep"], "POST /api/v1/actions/reboot");
     // The guard is read first, then exactly one mark is emitted: `bad` on the
     // BOOTED slot. Nothing here marks the target good, and nothing reboots.
@@ -230,7 +183,7 @@ async fn a_permitted_rollback_marks_the_booted_slot_bad_and_names_the_next_step(
         fake.update_calls(),
         vec![
             "get_update_state".to_string(),
-            "mark bad booted".to_string()
+            format!("rollback {}", "a".repeat(64))
         ],
     );
 }
@@ -240,13 +193,9 @@ async fn every_guard_refusal_is_a_409_carrying_its_own_reason() {
     // Every reason `rollback_eligibility` produces, each with the state
     // document mosd writes for it.
     let cases = [
-        ("no_alternate_slot", json!(null)),
-        ("alternate_is_booted_slot", json!(null)),
-        ("alternate_never_installed", json!("rootfs.1")),
-        ("alternate_marked_bad", json!("rootfs.1")),
-        ("alternate_is_newer", json!("rootfs.1")),
-        ("install_order_unknown", json!("rootfs.1")),
-        ("booted_slot_not_confirmed", json!("rootfs.1")),
+        ("candidate_pending", json!(null)),
+        ("running_not_confirmed", json!(null)),
+        ("no_usable_fallback", json!(null)),
     ];
     for (reason, target) in cases {
         let (router, fake, token) = update_app(json!({
@@ -294,11 +243,14 @@ async fn a_verdict_this_surface_does_not_know_is_refused_rather_than_renamed() {
 }
 
 #[tokio::test]
-async fn a_rauc_failure_on_the_rollback_mark_is_500_like_the_mark_route() {
+async fn a_native_rollback_failure_after_precheck_is_reported_without_claiming_success() {
     let (router, fake, token) = update_app(permitted_rollback());
     // The guard read succeeds (the fake answers it from the seeded tree);
-    // the mark that follows is what RAUC refuses.
-    fake.refuse_updates("org.freedesktop.DBus.Error.Failed", "rauc mark: no primary");
+    // the native rollback action then refuses.
+    fake.refuse_updates(
+        "org.freedesktop.DBus.Error.Failed",
+        "rollback refused: candidate is pending",
+    );
     let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body_json(response).await["error"]["code"], "mosd_failed");
@@ -369,6 +321,38 @@ async fn a_session_mutation_without_csrf_is_403() {
         fake.update_calls().is_empty(),
         "a CSRF-refused mutation must not reach mosd"
     );
+}
+
+#[tokio::test]
+async fn every_native_deployment_mutation_requires_a_credential_and_browser_csrf() {
+    let (router, fake, token) = update_app(json!({}));
+    let cookie = login(&router, "hunter2secret").await;
+    for path in [INSTALL_PATH, CONFIRM_PATH, REJECT_PATH] {
+        let body = json!({"deploymentId":"a".repeat(64)});
+        assert_eq!(
+            json_request(&router, "POST", path, body.clone(), None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            json_request(&router, "POST", path, body, Some(&cookie), None)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            bearer(&router, "GET", path, &token).await.status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    assert!(fake.update_calls().is_empty());
+    for removed in ["/api/v1/update/mark", "/api/v1/update/clear-suppression"] {
+        assert_eq!(
+            bearer(&router, "POST", removed, &token).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
 
 const CONFIG_PATH: &str = "/api/v1/update/config";
@@ -453,4 +437,33 @@ async fn the_config_write_refuses_a_body_that_is_not_json() {
         "request_invalid"
     );
     assert!(fake.update_calls().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_native_deployment_actions_require_ids_and_reach_their_own_bus_commands() {
+    let (router, fake, token) = update_app(json!({}));
+    let id = "a".repeat(64);
+    for action in ["confirm", "reject"] {
+        let path = format!("/api/v1/update/{action}");
+        let response = bearer_json(
+            &router,
+            "POST",
+            &path,
+            &token,
+            &json!({"deploymentId":id}).to_string(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{action}");
+        assert!(fake.update_calls().contains(&format!("{action} {id}")));
+    }
+    let response = bearer_json(
+        &router,
+        "POST",
+        INSTALL_PATH,
+        &token,
+        &json!({"deploymentId":id}).to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(fake.update_calls().contains(&format!("install {id}")));
 }

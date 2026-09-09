@@ -6,7 +6,7 @@
 #   bash pkgs/mosd/tests/apid-api/run.sh --dry-run
 #
 # This is the only check here that talks to apid over a real socket, on a
-# machine that came up through OVMF, GRUB and its own unit ordering, so a route
+# machine that came up through enrolled UEFI, signed UKIs and its own unit ordering, so a route
 # that exists in routes.rs but is unreachable in the running daemon looks
 # different from one that works. It builds nothing: the image is an input, and a
 # missing one is refused by name with the two commands that make it.
@@ -39,12 +39,15 @@ fi
 . "${BOARD_ENV}"
 
 OUT_DIR="${REPO_ROOT}/_out/${MOS_BOARD}"
-IMG="${OUT_DIR}/${IMAGE_LATEST_NAME:?${BOARD_ENV} did not define IMAGE_LATEST_NAME}"
+IMG="${MOS_QEMU_IMAGE:?explicit complete factory image required}"
+BOOT_CERT="${MOS_QEMU_BOOT_CERT:?explicit public boot certificate required}"
+IMG="$(readlink -f "$IMG")"
+BOOT_CERT="$(readlink -f "$BOOT_CERT")"
 RUN_DIR="${OUT_DIR}/.qemu"
 ART_DIR="${OUT_DIR}/apid-api"
 
 # `RUN_DIR` is the boot engine's single fixed path -- src/qemu.ts prepares the
-# disk there and tools/qemu-seed-state.sh writes into that same disk by name
+# disk there and the DATA seeder writes into that same disk by name
 # -- so two runs at once clobber each other's disk.img and this script refuses
 # to start while another container holds it. Two runs at once is not a
 # hypothetical: `_out` is per-checkout and gitignored, so a worktree points it
@@ -62,7 +65,7 @@ ART_DIR="${OUT_DIR}/apid-api"
 # assignment under `set -e`, as a bare exit 1 with no output. Refuse with a
 # sentence instead; the image check further down never gets a chance to.
 if ! RUN_DIR_REAL="$(readlink -f "${RUN_DIR}")"; then
-    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build it: MOS_BOARD=${MOS_BOARD} bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board ${MOS_BOARD}" >&2
+    echo "FAIL: ${OUT_DIR} does not exist, so there is no image to boot; this harness builds nothing. Build a complete image with build/run.sh --components image" >&2
     exit 1
 fi
 OUT_REAL="$(readlink -f "${REPO_ROOT}/_out")"
@@ -221,21 +224,8 @@ address_on_network() {
 }
 
 # --- the boot engine --------------------------------------------------------
-# `src/qemu.ts` copies the image, grows the disk, writes MOS_QEMU_APPEND into
-# the copy's ESP grub.cfg and runs QEMU in a container. It was a shell tool
-# under tools/ that this harness was the only caller of and was told not to
-# edit; it is TypeScript now, beside the suite that drives it, and the four
-# defects recorded in the retired implementation are negative fixtures in
-# src/selftest.ts rather than a comment saying they were fixed.
-#
-# It needs bun AND a docker client in ONE place, and the pinned bun image
-# carries no client -- verify/Dockerfile is two digest FROMs and one COPY of
-# the static one, written for exactly that gap, so it is reused rather than
-# copied into a second file that would have to be kept in step. The tag carries
-# both input digests: bump either pin and the tag names something that was never
-# built, so there is no stale parent to find. Under the default pins it is byte
-# for byte the image verify builds, and whichever of the two runs first pays
-# for it.
+# The TypeScript boot engine drives sibling containers from the pinned Bun
+# and Docker CLI runner. Each boot reads a current signed factory disk.
 #
 # The repository is mounted at ITS OWN PATH and not at /w. Every `docker run`
 # src/qemu.ts makes hands the daemon a path -- the disk directory, the console
@@ -256,7 +246,7 @@ PORT_IMAGE=""
 resolve_port_image() {
     local cli
     cli="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_DOCKER_CLI_28)" || return 1
-    PORT_IMAGE="localhost/mos-verify-bun:$(printf '%s\n%s\n' "${BUN_IMAGE}" "${cli}" | sha256sum | cut -c1-16)"
+    PORT_IMAGE="ai-agent/mos-verify-bun:$(printf '%s\n%s\n' "${BUN_IMAGE}" "${cli}" | sha256sum | cut -c1-16)"
     PORT_CLI_IMAGE="${cli}"
     return 0
 }
@@ -267,7 +257,7 @@ resolve_port_image() {
 build_port_image() {
     docker image inspect "${PORT_IMAGE}" >/dev/null 2>&1 && return 0
     note "building ${PORT_IMAGE} (the pinned bun plus the pinned docker client)"
-    docker build -q \
+    docker build -q --label ai-agent=true \
         --build-arg "MOS_BUN_IMAGE=${BUN_IMAGE}" \
         --build-arg "MOS_DOCKER_CLI_IMAGE=${PORT_CLI_IMAGE}" \
         -t "${PORT_IMAGE}" -f "${REPO_ROOT}/verify/Dockerfile" "${REPO_ROOT}/verify" >/dev/null
@@ -300,7 +290,7 @@ qemu_port() {
     # which is nobody's machine.
     devargs=()
     if [ -e /dev/kvm ]; then devargs+=(--device /dev/kvm); fi
-    docker run --rm \
+    docker run --rm --label ai-agent=true --network traefik \
         -v "${REPO_ROOT}:${REPO_ROOT}" -v "${OUT_REAL}:${OUT_REAL}" \
         -v "${DOCKER_SOCK}:/var/run/docker.sock" \
         -w "${SCRIPT_DIR}" \
@@ -361,7 +351,7 @@ finish() {
 note "repository ${REPO_ROOT}"
 
 if [ ! -e "${IMG}" ]; then
-    fail "image ${IMG##*/} is missing; this harness builds nothing. Build it: MOS_BOARD=${MOS_BOARD} bash rootfs/build.sh && bash build/run.sh --mkimage-uefi --board ${MOS_BOARD}"
+    fail "image ${IMG##*/} is missing; this harness builds nothing. Build a complete image with build/run.sh --components image"
     finish
 fi
 pass "image present: ${IMG##*/} -> $(basename "$(readlink -f "${IMG}")")"
@@ -432,13 +422,7 @@ fi
 pass "docker network discovered by observation: ${NET} (this container is ${MY_IP})"
 
 mkdir -p "${ART_DIR}"
-# The console is the only journal. mos keeps journald at Storage=volatile
-# because /var is the ephemeral partition, so a guest's log dies with the guest,
-# so no journal-reading tool can work post-mortem. Instead every
-# boot is captured to a file here,
-# MOS_QEMU_APPEND puts journald on the serial line, and apid's own
-# `APID_LISTENING` line becomes a readiness signal that can be waited on.
-# Dropping that append deletes the signal the wait depends on.
+# A DATA-seeded service forwards the volatile journal to the captured console.
 CONSOLE1="${ART_DIR}/console-boot1.log"
 # The path the suite is given has to resolve inside the bun container, which
 # mounts the repository root at /w. _out is bound over the top of it a second
@@ -449,18 +433,15 @@ CONSOLE1="${ART_DIR}/console-boot1.log"
 # and costs nothing.
 ART_IN_CONTAINER="/w/_out/${MOS_BOARD}/apid-api"
 
-# Where phase 05c's guest script lands inside the STATE partition. Named here,
-# beside the other paths, because both the dry-run summary and the seed step
-# below quote it and a second spelling is how the two come to disagree.
-SMOKE_IN_GUEST=/m7-net-smoke.sh
+SMOKE_IN_GUEST=/state/m7-net-smoke.sh
 
 if [ "${DRY_RUN}" -eq 1 ]; then
     note "--dry-run: nothing will be booted"
     note "would prepare  ${RUN_DIR}/disk.img from ${IMG##*/} (src/qemu.ts --prepare-only, in ${PORT_IMAGE})"
     note "would boot     src/qemu.ts --capture ${CONSOLE1}"
     note "               MOS_QEMU_FORWARD=1 MOS_QEMU_NETWORK=${NET}"
-    note "               MOS_QEMU_APPEND=systemd.journald.forward_to_console=1 systemd.run=..."
-    note "would seed     pkgs/mosd/tests/apid-api/guest/m7-net-smoke.sh -> STATE:${SMOKE_IN_GUEST} (phase 05c)"
+    note "               MOS_QEMU_IMAGE=${IMG} MOS_QEMU_BOOT_CERT=${BOOT_CERT}"
+    note "would seed     pkgs/mosd/tests/apid-api/guest/m7-net-smoke.sh -> DATA:${SMOKE_IN_GUEST} (phase 05c)"
     note "               MOS_QEMU_RUN_SECONDS=${RUN_SECONDS} MOS_QEMU_TIMEOUT=${QEMU_TIMEOUT}"
     note "would find     the container binding ${RUN_DIR_REAL} and read its address on ${NET}"
     note "would wait     up to ${READY_TIMEOUT}s for APID_LISTENING on the console AND for"
@@ -476,58 +457,22 @@ fi
 
 trap 'teardown' EXIT
 
-# --- 3. boot ----------------------------------------------------------------
-# --prepare-only makes the disk copy, grows it so systemd-repart has somewhere
-# to extend into, and applies MOS_QEMU_APPEND to the copy's grub.cfg. It boots
-# nothing. The one test boot reuses that prepared disk.
-#
-# The append is passed on every invocation, not only on the prepare. src/qemu.ts
-# adds it to the linux line once and skips it when it is already there, so over
-# a run it lands exactly once; passing it every time is what makes a boot that
-# reuses a disk somebody else prepared still carry it, and one boot that
-# silently lacks it deletes the readiness signal this entire script waits on.
-#
-# The second append starts phase 05c's guest script. `systemd.run=` is read by
-# systemd's own kernel-command-line generator, which builds the unit in /run
-# from the command line itself -- the reason it is used instead of dropping a
-# .service onto STATE. /mnt/state/systemd-units binds onto the unit search path
-# only at local-fs.target, which is LATER than the boot transaction that would
-# have to load such a unit, so a unit seeded there is simply not found. The
-# script is what lives on STATE; the value names an interpreter and a path, so
-# it needs no execute bit that debugfs would have to set.
-#
-# FOUR ARGUMENTS, AND EACH ONE IS LOAD-BEARING. `systemd.run=` alone does not
-# mean "also run this"; it means "boot into this", and all three corrections
-# below were measured on this image rather than reasoned about:
-#
-#   run_success_action / run_failure_action -- the generator defaults BOTH to
-#     `exit-force`, which in PID 1's context is POWER THE MACHINE OFF the moment
-#     the command returns. The smoke finished at 56.7s and the guest printed
-#     `reboot: Power down` at 62.1s.
-#   systemd.unit=multi-user.target -- the generator also points `default.target`
-#     at its own `kernel-command-line.target`, so the guest reached that,
-#     printed `Startup finished`, and stopped. mosd, apid and networkd never
-#     started and the suite waited out its readiness deadline on a booted guest
-#     that was simply never going to serve anything.
-#   systemd.wants=kernel-command-line.target -- which then has to pull the
-#     generated target back in, because it is no longer the default. It is
-#     reachable by name here where a unit seeded onto STATE is not: generators
-#     run BEFORE the boot transaction is built, whereas
-#     /mnt/state/systemd-units joins the unit search path at local-fs.target,
-#     which is after it. Measured: a `systemd.wants=` naming a STATE-seeded
-#     unit produced no output at all and no error -- systemd drops a Wants= it
-#     cannot resolve.
-#
-# With all four, the guest reaches multi-user.target AND prints the smoke.
+# Prepare a disposable disk and seed services through the persistent unit path.
 QEMU_ENV=(
+    MOS_QEMU_IMAGE="$IMG"
+    MOS_QEMU_BOOT_CERT="$BOOT_CERT"
     MOS_QEMU_FORWARD=1
     MOS_QEMU_NETWORK="${NET}"
-    MOS_QEMU_APPEND="systemd.journald.forward_to_console=1 systemd.run=\"/bin/bash /mnt/state${SMOKE_IN_GUEST}\" systemd.run_success_action=none systemd.run_failure_action=none systemd.unit=multi-user.target systemd.wants=kernel-command-line.target"
     MOS_QEMU_HTTPS_PORT="${HTTPS_PORT}"
     MOS_QEMU_HTTP_PORT="${HTTP_PORT}"
     MOS_QEMU_RUN_SECONDS="${RUN_SECONDS}"
     MOS_QEMU_TIMEOUT="${QEMU_TIMEOUT}"
 )
+
+if ! bash "$REPO_ROOT/tests/signed-boot-lab/images.sh" --lifecycle > "$ART_DIR/qemu-image.log" 2>&1; then
+    fail "could not build the pinned Secure Boot QEMU runner"
+    finish
+fi
 
 if ! build_port_image; then
     fail "could not build ${PORT_IMAGE} from verify/Dockerfile; it is two pinned FROMs and one COPY, and nothing is fetched beyond those two images"
@@ -544,26 +489,44 @@ fi
 PREPARED=1
 pass "disk prepared at ${RUN_DIR}/disk.img"
 
-# The guest half of phase 05c, written into the disk copy's STATE partition.
-# AFTER --prepare-only, which is what makes the copy: seeding before it would
-# write into a disk the prepare then overwrites. The image itself is never
-# touched -- tools/qemu-seed-state.sh edits _out/<board>/.qemu/disk.img.
-#
-# A failure here is fatal rather than a warning. Booting on without the script
-# would leave phase 05c reporting that the smoke never ran, which is true and
-# uninformative; the reason is known HERE.
 SMOKE_SRC="${SCRIPT_DIR}/guest/m7-net-smoke.sh"
-if [ ! -f "${SMOKE_SRC}" ]; then
-    fail "${SMOKE_SRC} not found; phase 05c has no guest script to seed"
+cat > "$ART_DIR/mos-api-console.service" <<'UNIT'
+[Unit]
+Description=API acceptance console journal
+After=mosd.service
+[Service]
+ExecStart=/usr/bin/journalctl --no-pager -b -n all -f -o cat
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > "$ART_DIR/mos-api-network.service" <<'UNIT'
+[Unit]
+Description=API acceptance network checks
+Requires=mosd.service
+After=mosd.service
+[Service]
+Type=oneshot
+Environment=M7_AFTER_MOSD=1
+ExecStart=/bin/bash /mnt/data/state/m7-net-smoke.sh
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+if ! qemu_port --seed \
+    "$SMOKE_SRC" "$SMOKE_IN_GUEST" \
+    "$ART_DIR/mos-api-console.service" /state/systemd-units/mos-api-console.service \
+    "$ART_DIR/mos-api-network.service" /state/systemd-units/mos-api-network.service \
+    --enable mos-api-console.service --enable mos-api-network.service > "$ART_DIR/seed.log" 2>&1; then
+    fail "current DATA seeding failed; see $ART_DIR/seed.log"
+    tail -n 20 "$ART_DIR/seed.log" >&2
     finish
 fi
-if ! bash "${REPO_ROOT}/tools/qemu-seed-state.sh" \
-    "${SMOKE_SRC}" "${SMOKE_IN_GUEST}" >"${ART_DIR}/seed.log" 2>&1; then
-    fail "tools/qemu-seed-state.sh failed; see ${ART_DIR}/seed.log"
-    tail -n 20 "${ART_DIR}/seed.log" >&2 || true
-    finish
-fi
-pass "seeded ${SMOKE_IN_GUEST} into the disk copy's STATE partition for phase 05c"
+pass "seeded API console and network test units into DATA"
 
 launch_boot() {
     local label="$1" console="$2"
@@ -659,7 +622,7 @@ process.exit(out.status === 200 ? 0 : 1);
 # "self signed certificate", which is the right default and the reason the
 # opt-out is written down rather than inherited from an environment variable.
 probe_healthz() {
-    docker run --rm --network "${NET}" \
+    docker run --rm --label ai-agent=true --network "${NET}" \
         -e H="$1" -e P="${HTTPS_PORT}" \
         "${BUN_IMAGE}" bun -e "${HEALTHZ_JS}" >"${ART_DIR}/healthz.last" 2>&1
 }
@@ -763,7 +726,7 @@ run_suite() {
     fi
     note "[${label}] running the suite against ${ip}:${HTTPS_PORT}${phases:+ (phases: ${phases})}"
     set +e
-    docker run --rm --network "${NET}" \
+    docker run --rm --label ai-agent=true --network "${NET}" \
         -v "${REPO_ROOT}:/w" -v "${OUT_REAL}:/w/_out" -w /w/pkgs/mosd/tests/apid-api \
         -e APID_HOST="${ip}" \
         -e APID_HTTPS_PORT="${HTTPS_PORT}" \

@@ -1,154 +1,69 @@
-/**
- * Phase 07 -- the rollback verdict a real device computes, and the refusal it
- * answers a rollback request with.
- *
- * WHAT ONLY A BOOT CAN SHOW. `rollback_eligibility` in
- * `pkgs/mosd/mosd/src/rauc.rs` is exhaustively unit-tested over synthesised
- * slot lists. What no unit test reaches is the chain that produces those
- * lists on a device: RAUC's daemon answering `GetSlotStatus` over the system
- * bus, mosd folding it into the live-state `update` document, and apid serving
- * the `rollback` object out of the same read that carries `slots`,
- * `booted_slot` and `primary`. A break anywhere in that chain looks, from a
- * unit test, exactly like a working system.
- *
- * THE REFUSAL IS THE REACHABLE CASE, AND THAT IS THE POINT. A factory image
- * has written slot A only, so the alternate rootfs carries no bundle version
- * and no install timestamp -- `alternate_never_installed`, the guard's
- * fail-closed answer to a slot there is no system in. This phase therefore
- * asserts the CODE of a 409 rather than the success of a rollback. Driving a
- * permitted rollback would take a real install into the alternate slot and a
- * second boot, which this one-boot harness cannot afford; it stays a bench
- * item, named in the workstream's report.
- *
- * AND IT DOES NOT GUESS WHICH REFUSAL. The reason is read out of
- * `GET /api/v1/update` first and the refusal's error code is required to be
- * exactly what apid's `rollback_reason_code` maps that reason to. So this
- * passes for whichever verdict the guest's slot state produces, and still goes
- * red if mosd's word and apid's code stop agreeing -- which is the seam
- * between the two that nothing else here crosses.
- */
-
+/** Native deployment identity, confirmation and manual rollback on a fresh signed image. */
 import type { JsonValue } from "../report.ts";
 import type { Phase, PhaseContext } from "../runner.ts";
 import { CSRF_STATE } from "./02-session.ts";
 
-/**
- * The refusal vocabulary apid serves, transcribed from `ROLLBACK_REASONS` in
- * `pkgs/mosd/apid/src/update_api.rs`.
- *
- * A second copy on purpose, and never imported: a reason outside this list is
- * answered as the generic `rollback_refused`, so the mapping this phase
- * asserts is only a real assertion while the list it compares against comes
- * from somewhere other than the code under test.
- */
-const KNOWN_REASONS = [
-  "no_alternate_slot",
-  "alternate_is_booted_slot",
-  "alternate_never_installed",
-  "alternate_marked_bad",
-  "alternate_is_newer",
-  "install_order_unknown",
-  "booted_slot_not_confirmed",
-] as const;
-
-function parseObject(body: string): Record<string, JsonValue> | undefined {
-  try {
-    const value = JSON.parse(body) as JsonValue;
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
+function object(value: unknown): Record<string, JsonValue> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, JsonValue> : undefined;
 }
-
-function asObject(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+function body(text: string): Record<string, JsonValue> | undefined {
+  try { return object(JSON.parse(text)); } catch { return undefined; }
 }
+const isId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 
 const phase: Phase = {
   id: "07-update-rollback",
-  title: "the update state carries a rollback verdict, and a rollback is refused by name",
-  assumes:
-    "02 left an authenticated browser session and its CSRF token in phase state, and this guest " +
-    "has taken no update, so its alternate rootfs slot has never been installed into",
-
+  title: "native deployment confirmation and retained-fallback rollback",
+  assumes: "02 left an authenticated browser session; the fresh complete image has two signed factory deployments and no installed update",
   async run({ client, report, state }: PhaseContext): Promise<void> {
     const csrf = state.get(CSRF_STATE);
     if (typeof csrf !== "string") {
-      report.fail("the rollback phase received the browser CSRF token", `csrf=${typeof csrf}`);
+      report.fail("the update phase received its CSRF token", `csrf=${typeof csrf}`);
       return;
     }
-
-    const update = await client.get("/api/v1/update");
-    report.expectStatus(update, 200, "GET /api/v1/update returns the device's update state");
-    const rollback = asObject(parseObject(update.body)?.["rollback"]);
-    if (rollback === undefined) {
-      report.fail(
-        "GET /api/v1/update carries the `rollback` object beside the slot state",
-        `actual body: ${update.body}`,
-      );
-      return;
+    let update = await client.get("/api/v1/update");
+    for (let attempt = 0; attempt < 30 && object(body(update.body)?.rollback)?.permitted !== true; attempt++) {
+      await Bun.sleep(2000);
+      update = await client.get("/api/v1/update");
     }
-    // Three members and no fourth: `RollbackEligibility::permitted` is derived
-    // from `reason`, so a body offering a fourth would be offering a second
-    // place for the two to disagree.
-    // Four members since RFCT-321 added `explanation` -- the sentence a
-    // refusal carries only where it adds something the reason code does not
-    // already say, which is null for the reasons a factory guest produces.
-    // It is asserted here rather than left to the subset above because the
-    // route's own description in `openapi.json` names the members, and a
-    // document that names three while the daemon serves four is published API
-    // text that is wrong.
-    report.check(
-      ["target", "permitted", "reason", "explanation"].every((name) => Object.hasOwn(rollback, name)) &&
-        Object.keys(rollback).length === 4,
-      "the rollback verdict is `target`, `permitted`, `reason` and `explanation`, and nothing else",
-      `actual rollback: ${JSON.stringify(rollback)}`,
-    );
-
-    const permitted = rollback["permitted"];
-    const reason = rollback["reason"];
-    report.check(
-      permitted === false,
-      "a guest that has never taken an update does not permit a rollback",
-      `actual rollback: ${JSON.stringify(rollback)}`,
-    );
-    report.check(
-      typeof reason === "string" && reason.length > 0,
-      "the refused verdict names its reason rather than refusing silently",
-      `actual rollback: ${JSON.stringify(rollback)}`,
-    );
-
-    if (permitted !== false || typeof reason !== "string") {
-      // Not a fail: the two checks above already recorded what is wrong. This
-      // is the guard against the one destructive thing this suite could do --
-      // condemning the slot the guest is running from -- and it must not
-      // happen on a device whose state was not what this phase read.
-      report.skip(
-        "POST /api/v1/update/rollback is refused with the reason the state document carries",
-        `the update state does not describe a refused rollback (${JSON.stringify(rollback)}), so ` +
-          "requesting one could mark the booted slot bad",
-      );
-      return;
-    }
-
-    const refused = await client.request("POST", "/api/v1/update/rollback", {
-      headers: { "X-CSRF-Token": csrf },
+    report.expectStatus(update, 200, "native update state is available over the real API and D-Bus");
+    const document = body(update.body);
+    const boot = object(document?.boot);
+    const native = object(document?.state);
+    const rollback = object(document?.rollback);
+    const running = boot?.deploymentId;
+    const target = rollback?.target;
+    report.check(isId(running) && isId(boot?.kernelId) && isId(boot?.rootfsId)
+      && boot?.contentVerified === true && boot?.secureBoot === true && boot?.bootVerified === true,
+    "the API reports authenticated current boot and component identities", JSON.stringify(boot));
+    report.check(native?.current === running && native?.candidate === null && isId(native?.fallback)
+      && native.fallback !== running && rollback?.permitted === true && rollback.reason === null && target === native.fallback,
+    "health confirmed the running deployment and retained the second factory deployment", JSON.stringify({ native, rollback }));
+    if (!isId(running) || !isId(target) || rollback?.permitted !== true) return;
+    const headers = { "X-CSRF-Token": csrf };
+    const malformed = await client.request("POST", "/api/v1/update/confirm", {
+      headers, contentType: "application/json", body: JSON.stringify({ deploymentId: "invalid" }),
     });
-    report.expectStatus(
-      refused,
-      409,
-      "POST /api/v1/update/rollback is a conflict, not a validation failure",
-    );
-    const expectedCode = (KNOWN_REASONS as readonly string[]).includes(reason)
-      ? reason
-      : "rollback_refused";
-    report.expectJson(
-      refused,
-      { error: { code: expectedCode, source: "apid" } },
-      "the refusal's error code is mosd's own verdict, mapped through apid's vocabulary",
-      { subset: true },
-    );
+    report.expectStatus(malformed, 400, "confirmation refuses a malformed deployment ID");
+    const csrfRefused = await client.request("POST", "/api/v1/update/rollback");
+    report.expectStatus(csrfRefused, 403, "rollback requires browser CSRF authorization");
+    const confirm = await client.request("POST", "/api/v1/update/confirm", { headers, contentType: "application/json", body: JSON.stringify({ deploymentId: running }) });
+    report.expectStatus(confirm, 200, "reconfirmation reaches the native backend and succeeds idempotently");
+    const rolled = await client.request("POST", "/api/v1/update/rollback", { headers });
+    report.expectStatus(rolled, 200, "manual rollback commits the retained fallback without rebooting the guest");
+    report.expectJson(rolled, { deploymentId: running, target, nextStep: "POST /api/v1/actions/reboot" },
+      "rollback reports the exact rejected deployment and retained target");
+    const after = await client.get("/api/v1/update");
+    const result = body(after.body);
+    const failed = object(result?.state)?.failed;
+    const verdict = object(result?.rollback);
+    report.check(Array.isArray(failed) && failed.includes(running) && verdict?.permitted === false,
+      "native status records the failed deployment and refuses a second rollback", JSON.stringify(result));
+    const repeated = await client.request("POST", "/api/v1/update/rollback", { headers });
+    report.expectStatus(repeated, 409, "repeating rollback is refused by the current backend state");
+    report.expectJson(repeated, { error: { code: verdict?.reason ?? null, source: "apid" } },
+      "the repeated request carries the backend refusal reason", { subset: true });
   },
 };
-
 export default phase;

@@ -13,31 +13,10 @@
 //! the set that lives in `/mos/config/`, and `reset.rs` is the second reader
 //! of the same line.
 //!
-//! **One version per document, each starting at v1** (§5.2.3). A
-//! namespace-wide version is refused because a bump would rewrite every
-//! document and there is no transaction across the renames, so a power loss
-//! would leave a store caught mid-migration — a third state. Per document,
-//! each is either old or new. The rules that come with that:
-//!
-//! - a bump is **additive**, and `skip_serializing_if` keeps a new optional
-//!   table out of a document that does not use it, so two adjacent versions of
-//!   one document differ by the version integer alone;
-//! - every migration has a `down` as well as an `up`, and the `down` states
-//!   what it discards;
-//! - the reason for both is **A/B rollback survivability**: the system slot
-//!   can go backwards and the configuration on DATA does not, so an older
-//!   binary must be able to read a newer document. [`crate::Store`]'s tolerant
-//!   load is what carries that at runtime;
-//! - **no migration may move a key from one document to another**, because
-//!   that is the migration with no transaction. A key that has to move is a
-//!   new key in the destination and a deprecation in the source.
-//!
-//! The `V0→V12` chain that used to migrate the single `settings.toml` is not
-//! ported: it is deleted with the document it migrated. This tree is in system
-//! development and carries no compatibility obligation, so a split migration
-//! would be code written to convert a document that does not exist. The four
-//! rules above are the extract of the twelve arguments that chain carried, and
-//! they are the part that was ever load-bearing.
+//! Each document declares the exact schema this build reads and writes.
+//! Unknown keys and different versions are refused without conversion or
+//! destructive defaulting. Trial deployments keep persistent schemas unchanged;
+//! a release that changes them requires a complete fresh-image deployment.
 
 use std::collections::BTreeMap;
 

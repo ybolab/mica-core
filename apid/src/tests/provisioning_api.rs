@@ -25,7 +25,6 @@ const BAKED_MANIFEST: &str = r#"{
     "policy": "check",
     "checkIntervalMinutes": 1440
   },
-  "trust": { "signingKeys": [], "signingKeyIds": [] },
   "http": { "credentialHosts": [] },
   "fleet": { "enabled": false, "url": null }
 }

@@ -34,9 +34,9 @@ pub enum SettingsError {
     /// The document could not be parsed or serialized.
     #[error("settings parse error: {0}")]
     Parse(String),
-    /// A schema migration failed or is unavailable.
-    #[error("settings migration error: {0}")]
-    Migration(String),
+    /// The document is not at this build's exact schema version.
+    #[error("settings schema version error: {0}")]
+    SchemaVersion(String),
     /// The medium carrying the configuration namespace is not mounted.
     ///
     /// Deliberately not an [`SettingsError::Io`] `NotFound`: an absent

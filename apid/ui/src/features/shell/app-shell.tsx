@@ -45,8 +45,8 @@ export function AppShell() {
   const freshness = fetching ? t('shell.refreshing') : freshnessLabel(health.dataUpdatedAt, t)
   const release = information.data?.release
   const releaseLabel = release?.available ? release.imageVersion ?? release.versionId ?? release.name ?? '—' : '—'
-  const slot = information.data?.slot
-  const slotLabel = slot?.available ? slot.booted ?? '—' : '—'
+  const deployment = information.data?.deployment
+  const deploymentLabel = deployment?.available ? deployment.id?.slice(0, 12) ?? '—' : '—'
 
   return (
     <div className="app-shell">
@@ -117,7 +117,7 @@ export function AppShell() {
           </div>
           <div className="release-state">
             <span>{t('shell.release')} <code>{releaseLabel}</code></span>
-            <span>{t('shell.slot')} <code>{slotLabel}</code></span>
+            <span>{t('shell.deployment')} <code>{deploymentLabel}</code></span>
           </div>
         </div>
       </footer>

@@ -80,10 +80,10 @@ use utoipa::OpenApi;
         crate::update_api::api_v1_update_check,
         crate::update_api::api_v1_update_fetch,
         crate::update_api::api_v1_update_install,
-        crate::update_api::api_v1_update_mark,
+        crate::update_api::api_v1_update_confirm,
+        crate::update_api::api_v1_update_reject,
         crate::update_api::api_v1_update_rollback,
         crate::update_api::api_v1_update_reboot_override,
-        crate::update_api::api_v1_update_clear_suppression,
         crate::update_api::api_v1_update_config
     )
 )]

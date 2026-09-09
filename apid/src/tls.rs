@@ -2,7 +2,7 @@
 //! cookie signing key, generated on first start and reused afterwards.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use anyhow::Context;
@@ -10,9 +10,9 @@ use rand::RngCore;
 
 /// PEM-encoded server certificate and private key.
 pub struct Certificate {
-    /// Certificate chain PEM (`cert.pem`).
+    /// PEM identity containing the certificate chain.
     pub cert_pem: String,
-    /// Private key PEM (`key.pem`).
+    /// The same PEM identity containing the private key.
     pub key_pem: String,
 }
 
@@ -23,36 +23,26 @@ pub fn ensure_state_dir(dir: &Path) -> anyhow::Result<()> {
             .recursive(true)
             .mode(0o700)
             .create(dir)?;
+        std::fs::File::open(dir)?.sync_all()?;
+        if let Some(parent) = dir.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
     }
     Ok(())
 }
 
-/// Write `bytes` to `path` with mode 0600, replacing any existing file.
-fn write_secret(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("open {} for writing", path.display()))?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
-/// Load `cert.pem`/`key.pem` from `dir`, generating a self-signed pair on
+/// Load the atomic `identity.pem` from `dir`, generating a self-signed pair on
 /// first start: CN `mos`, SANs `DNS:mos`, `DNS:localhost`, `IP:127.0.0.1`,
-/// with rcgen's default long validity. The key is written with mode 0600.
+/// with rcgen's default long validity. The complete pair is synced and published
+/// with mode 0600 in one rename, so interruption cannot leave mismatched halves.
 pub fn load_or_generate_certificate(dir: &Path) -> anyhow::Result<Certificate> {
-    let cert_path = dir.join("cert.pem");
-    let key_path = dir.join("key.pem");
-    if cert_path.exists() && key_path.exists() {
+    let identity_path = dir.join("identity.pem");
+    if identity_path.exists() {
+        let identity = std::fs::read_to_string(&identity_path)
+            .with_context(|| format!("read {}", identity_path.display()))?;
         return Ok(Certificate {
-            cert_pem: std::fs::read_to_string(&cert_path)
-                .with_context(|| format!("read {}", cert_path.display()))?,
-            key_pem: std::fs::read_to_string(&key_path)
-                .with_context(|| format!("read {}", key_path.display()))?,
+            cert_pem: identity.clone(),
+            key_pem: identity,
         });
     }
 
@@ -69,15 +59,13 @@ pub fn load_or_generate_certificate(dir: &Path) -> anyhow::Result<Certificate> {
     let cert = params
         .self_signed(&key_pair)
         .context("self-sign certificate")?;
-    let certificate = Certificate {
-        cert_pem: cert.pem(),
-        key_pem: key_pair.serialize_pem(),
-    };
-    std::fs::write(&cert_path, &certificate.cert_pem)
-        .with_context(|| format!("write {}", cert_path.display()))?;
-    write_secret(&key_path, certificate.key_pem.as_bytes())?;
-    tracing::info!(cert = %cert_path.display(), "generated self-signed certificate");
-    Ok(certificate)
+    let identity = format!("{}{}", cert.pem(), key_pair.serialize_pem());
+    crate::persist::write_atomically(&identity_path, &identity, 0o600)?;
+    tracing::info!(identity = %identity_path.display(), "generated self-signed identity");
+    Ok(Certificate {
+        cert_pem: identity.clone(),
+        key_pem: identity,
+    })
 }
 
 /// Load the 32-byte session signing key from `session.key` in `dir`,
@@ -97,7 +85,7 @@ pub fn load_or_generate_session_key(dir: &Path) -> anyhow::Result<[u8; 32]> {
     }
     let mut key = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut key);
-    write_secret(&key_path, &key)?;
+    crate::persist::write_atomically(&key_path, key, 0o600)?;
     tracing::info!(key = %key_path.display(), "generated session signing key");
     Ok(key)
 }
@@ -120,7 +108,12 @@ mod tests {
 
         let generated = load_or_generate_certificate(&state).unwrap();
         assert!(generated.cert_pem.contains("BEGIN CERTIFICATE"));
-        let key_mode = std::fs::metadata(state.join("key.pem"))
+        let identity = std::fs::read_to_string(state.join("identity.pem")).unwrap();
+        assert!(identity.contains("BEGIN CERTIFICATE"));
+        assert!(identity.contains("BEGIN PRIVATE KEY"));
+        assert!(!state.join("cert.pem").exists());
+        assert!(!state.join("key.pem").exists());
+        let key_mode = std::fs::metadata(state.join("identity.pem"))
             .unwrap()
             .permissions()
             .mode();
@@ -131,5 +124,32 @@ mod tests {
 
         let key = load_or_generate_session_key(&state).unwrap();
         assert_eq!(load_or_generate_session_key(&state).unwrap(), key);
+    }
+
+    #[test]
+    fn unpublished_identity_is_replaced_as_one_complete_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".identity.pem.apid-tmp"),
+            "partial identity",
+        )
+        .unwrap();
+        let generated = load_or_generate_certificate(dir.path()).unwrap();
+        let reloaded = load_or_generate_certificate(dir.path()).unwrap();
+        assert_eq!(generated.cert_pem, reloaded.cert_pem);
+        assert_eq!(generated.key_pem, reloaded.key_pem);
+        assert!(!dir.path().join(".identity.pem.apid-tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn published_identity_loads_into_the_actual_tls_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = load_or_generate_certificate(dir.path()).unwrap();
+        axum_server::tls_rustls::RustlsConfig::from_pem(
+            identity.cert_pem.into_bytes(),
+            identity.key_pem.into_bytes(),
+        )
+        .await
+        .unwrap();
     }
 }

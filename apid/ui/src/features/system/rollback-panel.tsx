@@ -30,8 +30,7 @@ interface RollbackStateDoc {
 
 /// `POST /api/v1/update/rollback`, 200.
 interface RollbackResponse {
-  slotName: string
-  message: string
+  deploymentId: string
   target: string
   nextStep: string
 }
@@ -47,7 +46,7 @@ export function RollbackPanel() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }),
   })
   const decision = status.data?.rollback
-  const permitted = decision?.permitted === true
+  const permitted = decision?.permitted === true && !!decision.target
   const target = decision?.target ?? undefined
   return (
     <Card>
@@ -79,9 +78,8 @@ export function RollbackPanel() {
       {decision && !permitted ? <p className="callout warning" role="status">{refusalMessage(decision.reason, t)}</p> : null}
       {rollback.data ? (
         <div className="callout success grid gap-2" role="status">
-          <p>{t('system.update.rollback.marked', { slot: rollback.data.slotName, target: rollback.data.target })}</p>
+          <p>{t('system.update.rollback.rejected', { deploymentId: rollback.data.deploymentId, target: rollback.data.target })}</p>
           <p>{t('system.update.rollback.rebootToApply')}</p>
-          <p>{rollback.data.message}</p>
         </div>
       ) : null}
       {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
@@ -95,13 +93,9 @@ export function RollbackPanel() {
 /// the generic sentence rather than being reported as one of the known ones.
 function refusalMessage(reason: string | null | undefined, t: ReturnType<typeof useTranslation>['t']) {
   switch (reason) {
-    case 'no_alternate_slot': return t('system.update.rollback.reasons.noAlternateSlot')
-    case 'alternate_is_booted_slot': return t('system.update.rollback.reasons.alternateIsBootedSlot')
-    case 'alternate_never_installed': return t('system.update.rollback.reasons.alternateNeverInstalled')
-    case 'alternate_marked_bad': return t('system.update.rollback.reasons.alternateMarkedBad')
-    case 'alternate_is_newer': return t('system.update.rollback.reasons.alternateIsNewer')
-    case 'install_order_unknown': return t('system.update.rollback.reasons.installOrderUnknown')
-    case 'booted_slot_not_confirmed': return t('system.update.rollback.reasons.bootedSlotNotConfirmed')
+    case 'candidate_pending': return t('system.update.rollback.reasons.candidatePending')
+    case 'running_not_confirmed': return t('system.update.rollback.reasons.runningNotConfirmed')
+    case 'no_usable_fallback': return t('system.update.rollback.reasons.noUsableFallback')
     default: return t('system.update.rollback.reasons.refused')
   }
 }

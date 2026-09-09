@@ -260,7 +260,7 @@ impl GateVerdict {
 ///
 /// Two classes of block, deliberately unequal:
 ///
-/// - **An install in flight** blocks and no override lifts it. RAUC is
+/// - **An install in flight** blocks and no override lifts it. The native installer is
 ///   mid-write; the A/B design survives the power cut, but nothing is gained
 ///   by inviting it, and the install finishes in minutes.
 /// - **A blocking health report** blocks until the reporter clears it or an
