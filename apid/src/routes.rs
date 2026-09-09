@@ -6987,57 +6987,35 @@ impl PowerAction {
     }
 }
 
-/// Audit the request and hand the action to mosd on a detached task.
+/// Return acceptance only after mosd admits the power request.
 ///
-/// Both surfaces call this and neither has its own copy, because the detached
-/// spawn is the reason both answer **202**: the response is built and returned
-/// without awaiting the D-Bus call, so whether the action completed is not
-/// knowable over the connection that asked for it. A second copy here could
-/// drift into awaiting the call on one surface and not the other, and the
-/// status code would then be a lie on one of them.
-///
-/// Recorded before the request is dispatched, and the sink fsyncs each line:
-/// the two audited actions here are the ones immediately followed by the
-/// machine going down, so a line written after the call could be the line that
-/// never reaches the disk.
-fn dispatch_power_action(state: &AppState, action: PowerAction, source: &str) {
+/// The bounded bus call reports policy refusals and dispatch failures. Its
+/// success means shutdown was requested, not that the machine has restarted.
+/// Audit before dispatch because the connection may disappear during shutdown.
+async fn power_accepted(state: &AppState, action: PowerAction, source: &str) -> Response {
     state
         .audit
         .record(action.confirm_token(), "requested", source);
-    let api = state.api.clone();
-    tokio::spawn(async move {
-        let result = match action {
-            PowerAction::Reboot => api.reboot().await,
-            PowerAction::PowerOff => api.power_off().await,
-        };
-        if let Err(err) = result {
-            tracing::error!(action = action.confirm_token(), error = %err, "power action failed");
+    let result = match action {
+        PowerAction::Reboot => state.api.reboot().await,
+        PowerAction::PowerOff => state.api.power_off().await,
+    };
+    if let Err(err) = result {
+        state.audit.record(action.confirm_token(), "failed", source);
+        if let Some(zbus::Error::MethodError(name, message, _)) = err.downcast_ref::<zbus::Error>()
+            && name.as_str() == "org.freedesktop.DBus.Error.AccessDenied"
+        {
+            tracing::warn!(action = action.confirm_token(), error = %err, "power action refused");
+            return api_response(
+                StatusCode::CONFLICT,
+                ApiError::mosd(
+                    "power_refused",
+                    message.clone().unwrap_or_else(|| name.to_string()),
+                ),
+            );
         }
-    });
-}
-
-/// The 202 both power verbs answer, and the reason it is 202.
-///
-/// **Not 204.** The bus call is spawned on a detached task by
-/// [`dispatch_power_action`], so the response leaves before the machine goes
-/// down. 202 is the honest code: the request was accepted, and whether it
-/// completed is not knowable over the connection that asked. A 204 would claim
-/// the action had finished, which this route cannot know and, on a real
-/// appliance, will usually be answering from a machine that is about to stop
-/// existing. It is also what the form path already answers, measured rather
-/// than assumed.
-///
-/// **No confirmation token.** The two form posts demand one, and this does
-/// not. `TRANSIENT_CONFIRM_TOKEN` and [`PowerAction::confirm_token`] are
-/// compile-time constants, not secrets and not per-session; they exist to stop
-/// a mis-click on a rendered page. There is no mis-click on a `POST` a script
-/// constructed, so the bearer token is the authorisation and the constant would
-/// be friction that protects nothing. Ratified in the M1 design.
-///
-/// The body is empty: the outcome is the machine going down, and there is
-/// nothing to say about it that the status does not.
-fn power_accepted(state: &AppState, action: PowerAction, source: &str) -> Response {
-    dispatch_power_action(state, action, source);
+        return bus_api_error(&err, None);
+    }
     (
         StatusCode::ACCEPTED,
         [(CACHE_CONTROL, CacheClass::NoStore.header_value())],
@@ -7055,9 +7033,13 @@ fn power_accepted(state: &AppState, action: PowerAction, source: &str) -> Respon
     context_path = API,
     tag = "actions",
     responses(
-        (status = 202, description = "The reboot was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"),
+        (status = 202, description = "mosd admitted the reboot request; completion is not reported over this connection"),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "mosd refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
+        (status = 500, description = "mosd failed to dispatch the power action (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -7066,7 +7048,7 @@ pub(crate) async fn api_v1_reboot(
     State(state): State<AppState>,
     Source(source): Source,
 ) -> Response {
-    power_accepted(&state, PowerAction::Reboot, &source)
+    power_accepted(&state, PowerAction::Reboot, &source).await
 }
 
 /// Power the appliance off.
@@ -7079,9 +7061,13 @@ pub(crate) async fn api_v1_reboot(
     context_path = API,
     tag = "actions",
     responses(
-        (status = 202, description = "The power-off was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"),
+        (status = 202, description = "mosd admitted the power-off request; completion is not reported over this connection"),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
+        (status = 409, description = "mosd refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
+        (status = 500, description = "mosd failed to dispatch the power action (`mosd_failed`)", body = ApiError),
+        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
+        (status = 504, description = "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -7090,7 +7076,7 @@ pub(crate) async fn api_v1_poweroff(
     State(state): State<AppState>,
     Source(source): Source,
 ) -> Response {
-    power_accepted(&state, PowerAction::PowerOff, &source)
+    power_accepted(&state, PowerAction::PowerOff, &source).await
 }
 
 // Hostname submit

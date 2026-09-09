@@ -439,24 +439,6 @@ impl FakeSettings {
     pub fn transient_password_calls(&self) -> usize {
         *self.transient_password_calls.lock().unwrap()
     }
-
-    /// Poll [`Self::power_calls`] until it holds at least `count` entries or a
-    /// short deadline passes, then return it.
-    ///
-    /// The routes fire power actions on a detached task so the HTTP response
-    /// can go out first, so a positive assertion has to wait for the task; a
-    /// negative assertion passes `count` one higher than it expects and gets
-    /// the full deadline as its quiet period.
-    pub async fn await_power_calls(&self, count: usize) -> Vec<String> {
-        for _ in 0..150 {
-            let calls = self.power_calls();
-            if calls.len() >= count {
-                return calls;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        self.power_calls()
-    }
 }
 
 /// Split `path` the way the real store splits it.

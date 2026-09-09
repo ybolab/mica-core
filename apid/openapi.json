@@ -121,7 +121,7 @@
         "operationId": "api_v1_poweroff",
         "responses": {
           "202": {
-            "description": "The power-off was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"
+            "description": "mosd admitted the power-off request; completion is not reported over this connection"
           },
           "401": {
             "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
@@ -145,6 +145,46 @@
           },
           "405": {
             "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "mosd refused the power action (`power_refused`); the message states the policy or permission reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to dispatch the power action (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -166,7 +206,7 @@
         "operationId": "api_v1_reboot",
         "responses": {
           "202": {
-            "description": "The reboot was accepted and dispatched; the call to mosd is not awaited, so completion is not reported over this connection"
+            "description": "mosd admitted the reboot request; completion is not reported over this connection"
           },
           "401": {
             "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
@@ -190,6 +230,46 @@
           },
           "405": {
             "description": "A method this route does not serve (`method_not_allowed`); carries `Allow`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "mosd refused the power action (`power_refused`); the message states the policy or permission reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "mosd failed to dispatch the power action (`mosd_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)",
             "content": {
               "application/json": {
                 "schema": {

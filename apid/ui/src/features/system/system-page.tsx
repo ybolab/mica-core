@@ -336,7 +336,7 @@ function unavailableMessage(
   }
 }
 
-function PowerPanel() {
+export function PowerPanel() {
   const { t } = useTranslation()
   const action = useMutation({ mutationFn: (name: 'reboot' | 'poweroff') => api<void>(`/api/v1/actions/${name}`, { method: 'POST' }) })
   return (
@@ -350,7 +350,8 @@ function PowerPanel() {
 
 function PowerAction({ name, pending, onConfirm }: { name: 'reboot' | 'poweroff'; pending: boolean; onConfirm: () => void }) {
   const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
   const label = name === 'reboot' ? t('system.power.reboot') : t('system.power.powerOff')
   const description = name === 'reboot' ? t('system.power.confirmReboot') : t('system.power.confirmPowerOff')
-  return <AlertDialog><AlertDialogTrigger render={<Button variant={name === 'reboot' ? 'secondary' : 'destructive'} disabled={pending} />}>{name === 'reboot' ? <RefreshCcw className="size-4" /> : <Power className="size-4" />}{label}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{label}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={onConfirm}>{label}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  return <AlertDialog open={open} onOpenChange={setOpen}><AlertDialogTrigger render={<Button variant={name === 'reboot' ? 'secondary' : 'destructive'} disabled={pending} />}>{name === 'reboot' ? <RefreshCcw className="size-4" /> : <Power className="size-4" />}{label}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{label}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={pending} onClick={() => { setOpen(false); onConfirm() }}>{label}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
 }

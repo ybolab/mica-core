@@ -2744,12 +2744,7 @@ impl SettingsApi for FailingSettings {
         Err(self.error())
     }
 
-    /// The API gave these three a route each, so they answer the failure
-    /// rather than panicking. `reboot` and `power_off` are called from a
-    /// detached task whose result only reaches a log, so what they return
-    /// changes no response; an `unreachable!` in them would abort that task
-    /// instead, which is a panic in a fixture rather than a failed assertion in
-    /// a test.
+    /// Power routes must propagate the same dispatch failures as other actions.
     async fn reboot(&self) -> anyhow::Result<()> {
         Err(self.error())
     }
@@ -6797,29 +6792,58 @@ const REBOOT_PATH: &str = "/api/v1/actions/reboot";
 const POWEROFF_PATH: &str = "/api/v1/actions/poweroff";
 const TRANSIENT_PATH: &str = "/api/v1/actions/transient-root-password";
 
-// **202 and not 204**, on both verbs, with the bus call reaching mosd after
-// the response was built.
-//
-// The status is the milestone's first acceptance criterion: the call is
-// spawned on a detached task, so the response goes out before the machine goes
-// down and whether the action completed is not knowable over the connection
-// that asked. `await_power_calls` is what proves the dispatch is detached
-// rather than awaited — a handler that awaited the call would already have the
-// entry when the response arrived, and would have no reason to answer 202.
-//
-// Asserted against the form path in the same test rather than trusted from the
-// design: both surfaces answer the same code because both go through one
-// dispatch, and a change to one of them fails here.
+#[tokio::test]
+async fn power_actions_report_admission_failures() {
+    for (name, status, code) in [
+        (
+            Some("org.freedesktop.DBus.Error.AccessDenied"),
+            StatusCode::CONFLICT,
+            "power_refused",
+        ),
+        (
+            Some("org.freedesktop.DBus.Error.Failed"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "mosd_failed",
+        ),
+        (None, StatusCode::SERVICE_UNAVAILABLE, "mosd_unreachable"),
+    ] {
+        let (router, token) = failing_app(name).await;
+        for path in [REBOOT_PATH, POWEROFF_PATH] {
+            let response = bearer(&router, "POST", path, &token).await;
+            assert_eq!(response.status(), status, "{path}: {name:?}");
+            let error = envelope(response).await;
+            assert_eq!(error["code"], code);
+            if name.is_some() {
+                assert_eq!(error["message"], MOSD_MESSAGE);
+            }
+        }
+    }
+}
 
-// **The confirmation token is not carried over, and the form still demands
-// it.**
-//
-// `PowerAction::confirm_token` and `TRANSIENT_CONFIRM_TOKEN` are compile-time
-// constants, not secrets and not per-session; they stop a mis-click on a
-// rendered page, and there is no mis-click on a `POST` a script constructed.
-// So the API takes none — an empty body is enough — while the form path is
-// unchanged. The asymmetry is deliberate, and this test is what stops a later
-// reading from "harmonising" either half into the other.
+#[tokio::test]
+async fn power_actions_report_unconfirmed_timeouts() {
+    let (router, token) = timing_out_app().await;
+    for path in [REBOOT_PATH, POWEROFF_PATH] {
+        let response = bearer(&router, "POST", path, &token).await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(envelope(response).await["code"], "mosd_timeout");
+    }
+}
+
+#[tokio::test]
+async fn power_actions_accept_only_after_mosd_dispatch() {
+    let (tree, token) = with_token(configured_tree("hunter2secret"));
+    let (router, fake) = test_app(tree);
+    for (path, expected) in [(REBOOT_PATH, "reboot"), (POWEROFF_PATH, "power_off")] {
+        let response = bearer(&router, "POST", path, &token).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            fake.power_calls().last().map(String::as_str),
+            Some(expected)
+        );
+        assert!(body_string(response).await.is_empty());
+    }
+}
 
 // The transient password reaches mosd, is written into no setting, and is
 // nowhere in the tree afterwards — the API half of the property the form path
@@ -6970,7 +6994,7 @@ async fn an_unauthenticated_action_post_is_refused_and_does_not_act() {
         );
         // Two calls' worth of deadline, then assert nothing arrived.
         assert!(
-            fake.await_power_calls(1).await.is_empty(),
+            fake.power_calls().is_empty(),
             "{path} acted without a credential"
         );
         assert_eq!(fake.transient_password_calls(), 0, "{path}");
