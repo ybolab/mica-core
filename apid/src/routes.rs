@@ -98,6 +98,9 @@ pub struct AppState {
     /// test-only builder below can replace it, so no shipped caller can
     /// redirect this configuration input.
     pub(crate) updates_path: Arc<std::path::PathBuf>,
+    /// The desired fleet document: `/mos/config/fleet.json` on a device, an
+    /// isolated path in route tests.
+    pub(crate) fleet_path: Arc<std::path::PathBuf>,
     /// The diagnostic snapshot store (PLAN-052): `/mos/diagnostics` on a
     /// device, a temporary directory in tests. A path and no syscall until
     /// the first publish.
@@ -143,6 +146,9 @@ impl AppState {
             )),
             updates_path: Arc::new(std::path::PathBuf::from(
                 mosd_settings::configuration::DEFAULT_UPDATES_PATH,
+            )),
+            fleet_path: Arc::new(std::path::PathBuf::from(
+                mosd_settings::configuration::DEFAULT_FLEET_PATH,
             )),
             diagnostics: Arc::new(SnapshotStore::at_default()),
             collecting: Arc::new(tokio::sync::Mutex::new(())),
@@ -273,6 +279,13 @@ impl AppState {
     #[cfg(test)]
     pub fn with_updates_path(mut self, updates: impl Into<std::path::PathBuf>) -> Self {
         self.updates_path = Arc::new(updates.into());
+        self
+    }
+
+    /// Point the desired fleet document at an isolated test fixture.
+    #[cfg(test)]
+    pub fn with_fleet_path(mut self, fleet: impl Into<std::path::PathBuf>) -> Self {
+        self.fleet_path = Arc::new(fleet.into());
         self
     }
 

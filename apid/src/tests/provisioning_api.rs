@@ -52,21 +52,272 @@ fn provisioning_app_with_updates(
     tree: serde_json::Value,
     updates_document: Option<&str>,
 ) -> (Router, TempDir) {
+    provisioning_app_with_documents(tree, updates_document, None)
+}
+
+/// A route fixture carrying isolated operator update and fleet documents.
+fn provisioning_app_with_documents(
+    tree: serde_json::Value,
+    updates_document: Option<&str>,
+    fleet_document: Option<&str>,
+) -> (Router, TempDir) {
+    provisioning_app_with_manifest_and_documents(
+        tree,
+        BAKED_MANIFEST,
+        updates_document,
+        fleet_document,
+    )
+}
+
+fn provisioning_app_with_manifest_and_documents(
+    tree: serde_json::Value,
+    manifest: &str,
+    updates_document: Option<&str>,
+    fleet_document: Option<&str>,
+) -> (Router, TempDir) {
     let dir = TempDir::new().expect("temp baked metadata");
     let updates = dir.path().join("meta/updates");
     std::fs::create_dir_all(&updates).expect("meta/updates");
-    std::fs::write(updates.join("manifest.json"), BAKED_MANIFEST).expect("baked manifest");
+    std::fs::write(updates.join("manifest.json"), manifest).expect("baked manifest");
     let updates_path = dir.path().join("config/updates.json");
     if let Some(document) = updates_document {
         std::fs::create_dir(updates_path.parent().expect("operator config parent"))
             .expect("operator config directory");
         std::fs::write(&updates_path, document).expect("operator updates document");
     }
+    let fleet_path = dir.path().join("config/fleet.json");
+    if let Some(document) = fleet_document {
+        std::fs::create_dir_all(fleet_path.parent().expect("fleet config parent"))
+            .expect("fleet config directory");
+        std::fs::write(&fleet_path, document).expect("operator fleet document");
+    }
     let fake = Arc::new(FakeSettings::new(tree));
     let router = app(AppState::new(fake, SIGNING_KEY)
         .with_meta_manifest(updates.join("manifest.json"))
-        .with_updates_path(updates_path));
+        .with_updates_path(updates_path)
+        .with_fleet_path(fleet_path));
     (router, dir)
+}
+
+#[tokio::test]
+async fn the_status_resolves_an_isolated_fleet_document_without_activity_state() {
+    let (tree, token) = with_token(applied_tree());
+    let (router, _meta) = provisioning_app_with_documents(
+        tree,
+        None,
+        Some(
+            r#"{
+              "schema": "mos/fleet-config/v1",
+              "enabled": true,
+              "reporting": false,
+              "url": "https://fleet.example.invalid"
+            }"#,
+        ),
+    );
+
+    let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let status = body_json(response).await;
+    assert_eq!(
+        status["operator"],
+        json!({
+            "fleet": {
+                "enabled": true,
+                "reporting": false,
+                "url": "https://fleet.example.invalid",
+            },
+        })
+    );
+    assert_eq!(
+        status["effective"]["fleet"],
+        json!({
+            "enabled": true,
+            "reporting": false,
+            "url": "https://fleet.example.invalid",
+        })
+    );
+    for activity in ["registered", "connected", "lastReport", "credential"] {
+        assert!(status["operator"]["fleet"].get(activity).is_none());
+        assert!(status["effective"]["fleet"].get(activity).is_none());
+    }
+}
+
+#[tokio::test]
+async fn fleet_url_absence_and_null_stay_distinct_while_both_use_baked() {
+    let baked = BAKED_MANIFEST.replace(
+        r#""fleet": { "enabled": false, "url": null }"#,
+        r#""fleet": { "enabled": true, "url": "https://baked.example/fleet" }"#,
+    );
+    let cases = [
+        (
+            None,
+            json!({}),
+            json!({
+                "enabled": true,
+                "reporting": true,
+                "url": "https://baked.example/fleet",
+            }),
+        ),
+        (
+            Some(r#"{ "schema": "mos/fleet-config/v1", "reporting": false }"#),
+            json!({ "fleet": { "reporting": false } }),
+            json!({
+                "enabled": true,
+                "reporting": false,
+                "url": "https://baked.example/fleet",
+            }),
+        ),
+        (
+            Some(r#"{ "schema": "mos/fleet-config/v1", "reporting": false, "url": null }"#),
+            json!({ "fleet": { "reporting": false, "url": null } }),
+            json!({
+                "enabled": true,
+                "reporting": false,
+                "url": "https://baked.example/fleet",
+            }),
+        ),
+    ];
+
+    for (document, expected_operator, expected_fleet) in cases {
+        let (tree, token) = with_token(applied_tree());
+        let (router, _meta) =
+            provisioning_app_with_manifest_and_documents(tree, &baked, None, document);
+        let status = body_json(bearer(&router, "GET", STATUS_PATH, &token).await).await;
+        assert_eq!(status["operator"], expected_operator);
+        assert_eq!(status["effective"]["fleet"], expected_fleet);
+    }
+}
+
+#[tokio::test]
+async fn fleet_enabled_and_reporting_overrides_resolve_without_activity() {
+    let cases = [
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "enabled": true }"#,
+            json!({ "fleet": { "enabled": true } }),
+            json!({ "enabled": true, "reporting": true, "url": null }),
+        ),
+        (
+            r#"{
+              "schema": "mos/fleet-config/v1",
+              "enabled": false,
+              "reporting": true,
+              "url": "https://fleet.example.invalid"
+            }"#,
+            json!({
+                "fleet": {
+                    "enabled": false,
+                    "reporting": true,
+                    "url": "https://fleet.example.invalid",
+                },
+            }),
+            json!({
+                "enabled": false,
+                "reporting": false,
+                "url": "https://fleet.example.invalid",
+            }),
+        ),
+    ];
+
+    for (document, expected_operator, expected_fleet) in cases {
+        let (tree, token) = with_token(applied_tree());
+        let (router, _meta) = provisioning_app_with_documents(tree, None, Some(document));
+        let status = body_json(bearer(&router, "GET", STATUS_PATH, &token).await).await;
+        assert_eq!(status["operator"], expected_operator);
+        assert_eq!(status["effective"]["fleet"], expected_fleet);
+        for activity in ["registered", "connected", "lastReport", "credential"] {
+            assert!(status["operator"]["fleet"].get(activity).is_none());
+            assert!(status["effective"]["fleet"].get(activity).is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_fleet_documents_fail_closed_without_disclosing_rejected_values() {
+    const REJECTED: &str = "REJECTED-FLEET-SENTINEL";
+    let documents = [
+        (r#"[]"#, "non-object root"),
+        (r#"{ "enabled": true }"#, "missing schema"),
+        (
+            r#"{ "schema": "REJECTED-FLEET-SENTINEL" }"#,
+            "unsupported schema",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "enabled": "REJECTED-FLEET-SENTINEL" }"#,
+            "incorrect enabled type",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "reporting": 7 }"#,
+            "incorrect reporting type",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "url": true }"#,
+            "incorrect URL type",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "url": "http://REJECTED-FLEET-SENTINEL" }"#,
+            "non-HTTPS URL",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "unknown": "REJECTED-FLEET-SENTINEL" }"#,
+            "unknown field",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "signingKeys": ["REJECTED-FLEET-SENTINEL"] }"#,
+            "anchor field",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "enabled": false, "enabled": true }"#,
+            "duplicate field",
+        ),
+        (
+            r#"{ "schema": "mos/fleet-config/v1", "url": "REJECTED-FLEET-SENTINEL" "#,
+            "malformed JSON",
+        ),
+    ];
+
+    for (document, case) in documents {
+        let (tree, token) = with_token(applied_tree());
+        let (router, _meta) = provisioning_app_with_documents(tree, None, Some(document));
+        let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{case}"
+        );
+        let body = body_string(response).await;
+        let error: serde_json::Value = serde_json::from_str(&body).expect("API error envelope");
+        assert_eq!(
+            error["error"]["code"], "configuration_unavailable",
+            "{case}"
+        );
+        assert!(!body.contains(REJECTED), "{case} disclosed input: {body}");
+    }
+}
+
+#[tokio::test]
+async fn unreadable_and_invalid_utf8_fleet_documents_fail_closed() {
+    let (tree, token) = with_token(applied_tree());
+    let (router, meta) = provisioning_app(tree);
+    std::fs::create_dir_all(meta.path().join("config/fleet.json"))
+        .expect("directory in place of fleet document");
+    let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        envelope(response).await["code"],
+        "configuration_unavailable"
+    );
+
+    let (tree, token) = with_token(applied_tree());
+    let (router, meta) = provisioning_app(tree);
+    std::fs::create_dir_all(meta.path().join("config")).expect("fleet config directory");
+    std::fs::write(meta.path().join("config/fleet.json"), [0xff])
+        .expect("invalid UTF-8 fleet document");
+    let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        envelope(response).await["code"],
+        "configuration_unavailable"
+    );
 }
 
 /// A device that applied a document from the boot medium, and was claimed by
@@ -202,7 +453,7 @@ async fn the_status_resolves_the_isolated_operator_document_over_its_baked_fixtu
                 "channel": "edge",
                 "policy": "off",
             },
-            "fleet": { "url": null, "enabled": false },
+            "fleet": { "url": null, "enabled": false, "reporting": false },
         })
     );
     assert_eq!(
@@ -248,7 +499,7 @@ async fn the_status_resolves_the_isolated_operator_document_over_its_baked_fixtu
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["enabled", "url"])
+        BTreeSet::from(["enabled", "reporting", "url"])
     );
 }
 
