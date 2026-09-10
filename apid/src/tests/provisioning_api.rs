@@ -232,6 +232,100 @@ async fn fleet_enabled_and_reporting_overrides_resolve_without_activity() {
 }
 
 #[tokio::test]
+async fn valid_https_fleet_urls_preserve_the_complete_location() {
+    for url in [
+        "https://fleet.example.invalid/path?mode=test#fragment",
+        "https://192.0.2.1:8443/report",
+        "https://[2001:db8::1]/report?device=1",
+    ] {
+        let document = json!({ "schema": "mos/fleet-config/v1", "url": url }).to_string();
+        let (tree, token) = with_token(applied_tree());
+        let (router, _meta) = provisioning_app_with_documents(tree, None, Some(&document));
+        let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+        assert_eq!(response.status(), StatusCode::OK, "{url}");
+        let status = body_json(response).await;
+        assert_eq!(status["operator"], json!({ "fleet": { "url": url } }));
+        assert_eq!(
+            status["effective"]["fleet"],
+            json!({ "enabled": false, "reporting": false, "url": url })
+        );
+    }
+}
+
+async fn assert_fleet_document_rejected(document: &str, case: &str, hidden: &[&str]) {
+    let (tree, token) = with_token(applied_tree());
+    let (router, _meta) = provisioning_app_with_documents(tree, None, Some(document));
+    let response = bearer(&router, "GET", STATUS_PATH, &token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{case}"
+    );
+    let body = body_string(response).await;
+    let error: serde_json::Value = serde_json::from_str(&body).expect("API error envelope");
+    assert_eq!(
+        error["error"]["code"], "configuration_unavailable",
+        "{case}"
+    );
+    for rejected in hidden {
+        assert!(
+            !body.contains(rejected),
+            "{case} disclosed rejected input: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repair1_null_fleet_enabled_fails_closed_without_disclosure() {
+    assert_fleet_document_rejected(
+        r#"{ "schema": "mos/fleet-config/v1", "enabled": null }"#,
+        "null enabled",
+        &["enabled", "null"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn repair1_null_fleet_reporting_fails_closed_without_disclosure() {
+    assert_fleet_document_rejected(
+        r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
+        "null reporting",
+        &["reporting", "null"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn repair1_space_in_fleet_url_host_fails_closed_without_disclosure() {
+    assert_fleet_document_rejected(
+        r#"{ "schema": "mos/fleet-config/v1", "url": "https://bad host/REJECTED-FLEET-SENTINEL" }"#,
+        "space in host",
+        &["REJECTED-FLEET-SENTINEL"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn repair1_invalid_bracketed_fleet_url_host_fails_closed_without_disclosure() {
+    assert_fleet_document_rejected(
+        r#"{ "schema": "mos/fleet-config/v1", "url": "https://[]/REJECTED-FLEET-SENTINEL" }"#,
+        "invalid bracketed host",
+        &["REJECTED-FLEET-SENTINEL"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn repair1_fleet_url_userinfo_fails_closed_without_disclosure() {
+    assert_fleet_document_rejected(
+        r#"{ "schema": "mos/fleet-config/v1", "url": "https://REJECTED-FLEET-SENTINEL@fleet.example/path" }"#,
+        "userinfo",
+        &["REJECTED-FLEET-SENTINEL"],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn invalid_fleet_documents_fail_closed_without_disclosing_rejected_values() {
     const REJECTED: &str = "REJECTED-FLEET-SENTINEL";
     let documents = [
@@ -276,21 +370,7 @@ async fn invalid_fleet_documents_fail_closed_without_disclosing_rejected_values(
     ];
 
     for (document, case) in documents {
-        let (tree, token) = with_token(applied_tree());
-        let (router, _meta) = provisioning_app_with_documents(tree, None, Some(document));
-        let response = bearer(&router, "GET", STATUS_PATH, &token).await;
-        assert_eq!(
-            response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "{case}"
-        );
-        let body = body_string(response).await;
-        let error: serde_json::Value = serde_json::from_str(&body).expect("API error envelope");
-        assert_eq!(
-            error["error"]["code"], "configuration_unavailable",
-            "{case}"
-        );
-        assert!(!body.contains(REJECTED), "{case} disclosed input: {body}");
+        assert_fleet_document_rejected(document, case, &[REJECTED]).await;
     }
 }
 

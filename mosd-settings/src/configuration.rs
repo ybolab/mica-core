@@ -1196,12 +1196,20 @@ const FLEET_SCHEMA_TAG: &str = "mos/fleet-config/v1";
 #[serde(deny_unknown_fields)]
 struct FleetDocument {
     schema: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_boolean")]
     enabled: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_boolean")]
     reporting: Option<bool>,
     #[serde(default, deserialize_with = "present")]
     url: Override<String>,
+}
+
+/// Keep an omitted boolean optional while rejecting explicit `null`.
+fn present_boolean<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1389,6 +1397,16 @@ pub fn provisioning_status_at(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fleet_document_rejects_explicit_null_booleans() {
+        for document in [
+            r#"{ "schema": "mos/fleet-config/v1", "enabled": null }"#,
+            r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
+        ] {
+            assert!(serde_json::from_str::<super::FleetDocument>(document).is_err());
+        }
+    }
+
     #[test]
     fn fleet_resolution_applies_baked_fallbacks_and_the_reporting_gate() {
         let baked = super::BakedFleet {
