@@ -366,18 +366,16 @@ fn execute() -> Result<()> {
         Action::Install {
             descriptor,
             objects,
-        } => {
-            store.collect(&receipt, &keys)?;
-            store
-                .install(
-                    &read_bounded(&descriptor, 24576)?,
-                    &keys,
-                    &policy.identity.board,
-                    &policy.identity.arch,
-                    &objects,
-                )
-                .map(|value| json!(value))
-        }
+        } => store
+            .install(
+                &read_bounded(&descriptor, 24576)?,
+                &keys,
+                &policy.identity.board,
+                &policy.identity.arch,
+                &objects,
+                &receipt,
+            )
+            .map(|value| json!(value)),
         Action::Gc => store
             .collect(&receipt, &keys)
             .map(|count| json!({"removedFiles":count})),

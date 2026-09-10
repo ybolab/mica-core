@@ -7,6 +7,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -162,6 +163,40 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     sync_directory(parent)
 }
 
+struct Collection {
+    files: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+}
+
+impl Collection {
+    fn reclaimed_bytes(&self, destination: &Path) -> Result<u64> {
+        let device = destination.metadata()?.dev();
+        self.files.iter().try_fold(0_u64, |bytes, file| {
+            let metadata = file.symlink_metadata()?;
+            // Hard-linked objects may still occupy blocks after unlinking.
+            Ok(bytes
+                + if metadata.dev() == device && metadata.nlink() == 1 {
+                    metadata.blocks() * 512
+                } else {
+                    0
+                })
+        })
+    }
+
+    fn apply(self) -> Result<usize> {
+        let count = self.files.len();
+        for file in self.files {
+            fs::remove_file(&file)?;
+            sync_directory(file.parent().context("missing collection parent")?)?;
+        }
+        for directory in self.directories {
+            fs::remove_dir(&directory)?;
+            sync_directory(directory.parent().context("missing collection parent")?)?;
+        }
+        Ok(count)
+    }
+}
+
 impl DeploymentStore {
     pub fn new(system: PathBuf, boot: BootBackend, meta: PathBuf) -> Self {
         Self { system, boot, meta }
@@ -255,6 +290,11 @@ impl DeploymentStore {
                 .or_else(|| state.fallback.clone().filter(usable));
             state.current = Some(confirmed.id.clone());
         }
+        // Retirement commits in the native records before DATA. An absent
+        // fallback must never protect objects after that commit.
+        state.fallback = state
+            .fallback
+            .filter(|id| entries.iter().any(|e| &e.id == id));
         if let Some(current) = &state.current {
             let generation = entries
                 .iter()
@@ -332,7 +372,7 @@ impl DeploymentStore {
                 generation,
                 tries_left,
             });
-            ensure!(entries.len() <= 16, "too many deployment entries");
+            ensure!(entries.len() <= 2, "too many deployment entries");
         }
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.generation));
         Ok(entries)
@@ -450,12 +490,11 @@ impl DeploymentStore {
             }
             BootBackend::Fit { firmware } => {
                 let mut env = Environment::load(firmware)?;
-                let count = env.records.len();
                 env.records.retain(|r| keep.contains(&Some(r.id.as_str())));
-                if env.records.len() != count {
-                    env.save(firmware)?;
-                }
-                Ok(())
+                env.save(firmware)?;
+                // Both redundant copies must forget retired records before
+                // collection can remove their objects, including after retry.
+                Environment::load(firmware)?.save(firmware)
             }
         }
     }
@@ -575,9 +614,7 @@ impl DeploymentStore {
     /// Collect unreachable immutable objects after validating every retained
     /// descriptor. The caller holds the transaction lock and writable mounts.
     pub fn collect(&self, receipt: &BootReceipt, keys: &[[u8; 32]]) -> Result<usize> {
-        use crate::components::{authenticate_deployment, component_id};
-        self.validate_receipt(receipt)?;
-        let state = self.state()?;
+        let state = self.effective_state()?;
         let mut retained = BTreeSet::from([receipt.deployment_id.clone()]);
         for id in [state.current, state.fallback, state.candidate]
             .into_iter()
@@ -585,9 +622,28 @@ impl DeploymentStore {
         {
             retained.insert(id);
         }
-        // Native entries also protect activation that preceded a DATA-state
-        // write at power loss. Exhausted entries remain until confirmation.
         retained.extend(self.entries()?.into_iter().map(|entry| entry.id));
+        let collection = self.collection(receipt, keys, retained, None)?;
+        let entries = self.entries()?;
+        self.retain_entries(
+            &entries,
+            &entries
+                .iter()
+                .map(|e| Some(e.id.as_str()))
+                .collect::<Vec<_>>(),
+        )?;
+        collection.apply()
+    }
+
+    fn collection(
+        &self,
+        receipt: &BootReceipt,
+        keys: &[[u8; 32]],
+        retained: BTreeSet<String>,
+        incoming: Option<&crate::components::Deployment>,
+    ) -> Result<Collection> {
+        use crate::components::{authenticate_deployment, component_id};
+        self.validate_receipt(receipt)?;
         let mut roots = BTreeSet::new();
         let mut kernels = BTreeSet::new();
         let mut target = None;
@@ -613,6 +669,16 @@ impl DeploymentStore {
             }
             roots.insert(d.rootfs.id);
             kernels.insert(d.kernel.id);
+        }
+        if let Some(deployment) = incoming {
+            ensure!(
+                target.as_ref() == Some(&(deployment.board.clone(), deployment.arch.clone())),
+                "incoming deployment target mismatch"
+            );
+            // A new deployment can reuse components belonging only to old B.
+            // Keep those verified objects while retiring B's descriptor.
+            roots.insert(deployment.rootfs.id.clone());
+            kernels.insert(deployment.kernel.id.clone());
         }
         let mut files = Vec::new();
         let mut directories = Vec::new();
@@ -704,20 +770,11 @@ impl DeploymentStore {
                 pending.symlink_metadata()?.is_file(),
                 "pending state is not regular"
             );
-            files.push(pending);
+            if incoming.is_none() {
+                files.push(pending);
+            }
         }
-        let count = files.len();
-        // Preflight is complete before the first deletion. Parent fsync makes
-        // repeated collection safe after any interruption in this sequence.
-        for file in files {
-            fs::remove_file(&file)?;
-            sync_directory(file.parent().context("missing collection parent")?)?;
-        }
-        for directory in directories {
-            fs::remove_dir(&directory)?;
-            sync_directory(directory.parent().context("missing collection parent")?)?;
-        }
-        Ok(count)
+        Ok(Collection { files, directories })
     }
 
     pub fn rollback(&self, receipt: &BootReceipt) -> Result<State> {
@@ -909,6 +966,7 @@ impl DeploymentStore {
         board: &str,
         arch: &str,
         objects: &Path,
+        receipt: &BootReceipt,
     ) -> Result<State> {
         use crate::components::{authenticate_deployment, component_id};
         let deployment = authenticate_deployment(envelope, keys)?;
@@ -932,9 +990,14 @@ impl DeploymentStore {
             "deployment is installed or rejected"
         );
         ensure!(state.candidate.is_none(), "another deployment is pending");
+        self.validate_receipt(receipt)?;
         ensure!(
-            state.current.is_some(),
-            "confirm the factory deployment before installation"
+            state.current.as_deref() == Some(receipt.deployment_id.as_str())
+                && entries
+                    .iter()
+                    .any(|e| e.id == receipt.deployment_id && e.tries_left.is_none())
+                && !state.failed.contains(&receipt.deployment_id),
+            "confirm the running deployment before installation"
         );
         ensure!(
             deployment.generation > state.highest_generation
@@ -959,21 +1022,43 @@ impl DeploymentStore {
                 esp_bytes += artifact.bytes;
             }
         }
+        let collection = self.collection(
+            receipt,
+            keys,
+            BTreeSet::from([receipt.deployment_id.clone()]),
+            Some(&deployment),
+        )?;
         let mut destinations = vec![(&self.system, system_bytes, 128 * 1024 * 1024)];
         if let BootBackend::Uefi { esp } = &self.boot {
             destinations.push((esp, esp_bytes, 64 * 1024 * 1024));
         }
-        for (path, bytes, reserve) in destinations {
+        for &(path, bytes, reserve) in &destinations {
             directory(path)?;
             let space = rustix::fs::statvfs(path)?;
             ensure!(
-                space.f_bavail * space.f_frsize >= bytes + reserve,
+                space.f_bavail * space.f_frsize + collection.reclaimed_bytes(path)?
+                    >= bytes + reserve,
                 "insufficient destination space: {}",
                 path.display()
             );
             ensure!(
                 space.f_files == 0 || space.f_favail >= 32,
                 "insufficient destination inodes"
+            );
+        }
+        // No new object is written until old B is durably unbootable. Native
+        // records are authoritative if DATA reconciliation is interrupted.
+        self.retain_entries(&entries, &[Some(&receipt.deployment_id)])?;
+        state.fallback = None;
+        state.candidate = None;
+        self.save_state(&state)?;
+        collection.apply()?;
+        for &(path, bytes, reserve) in &destinations {
+            let space = rustix::fs::statvfs(path)?;
+            ensure!(
+                space.f_bavail * space.f_frsize >= bytes + reserve,
+                "insufficient reclaimed destination space: {}",
+                path.display()
             );
         }
         for (target, artifact) in &files {

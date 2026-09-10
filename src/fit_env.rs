@@ -30,7 +30,7 @@ pub fn parse_records(text: &str) -> Result<Vec<Record>> {
     {
         let fields: Vec<_> = row.split(',').collect();
         ensure!(
-            fields.len() == 4 && records.len() < 3,
+            fields.len() == 4 && records.len() < 2,
             "invalid boot record count or fields"
         );
         crate::deployments::valid_id(fields[0])?;

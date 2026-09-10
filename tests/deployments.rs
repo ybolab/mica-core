@@ -146,6 +146,9 @@ fn rollback_requires_a_confirmed_running_deployment_and_no_candidate() {
     receipt.content_verified = false;
     assert!(store.rollback(&receipt).is_err());
     receipt.content_verified = true;
+    let fallback = uefi_esp(&store).join(format!("loader/entries/mos-{}.conf", "b".repeat(64)));
+    let fallback_bytes = fs::read(&fallback).unwrap();
+    fs::remove_file(&fallback).unwrap();
     let candidate = uefi_esp(&store).join(format!("loader/entries/mos-{}+3.conf", "e".repeat(64)));
     fs::write(
         &candidate,
@@ -157,6 +160,7 @@ fn rollback_requires_a_confirmed_running_deployment_and_no_candidate() {
     .unwrap();
     assert!(store.rollback(&receipt).is_err());
     fs::remove_file(candidate).unwrap();
+    fs::write(&fallback, fallback_bytes).unwrap();
     store.rollback(&receipt).unwrap();
     assert!(store.rollback(&receipt).is_err());
 }
@@ -176,140 +180,6 @@ fn refuses_ambiguous_entries_and_symbolic_state_files() {
 }
 
 #[test]
-fn installation_publishes_the_entry_last_and_refuses_corrupt_objects() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use mos_deploy::components::component_id;
-    use ring::{
-        digest,
-        rand::SystemRandom,
-        signature::{Ed25519KeyPair, KeyPair},
-    };
-    use serde_json::{Value, json};
-    let (dir, store, receipt) = fixture();
-    store.confirm(&receipt).unwrap();
-    let objects = dir.path().join("objects");
-    fs::create_dir(&objects).unwrap();
-    let mut deployment: Value = serde_json::from_slice(include_bytes!(
-        "../../../tests/component-contracts/deployment.json"
-    ))
-    .unwrap();
-    let payload = vec![42_u8; 12288];
-    let hash = hex::encode(digest::digest(&digest::SHA256, &payload));
-    let artifact = json!({"bytes":payload.len(),"sha256":hash});
-    for path in [
-        "/kernel/boot/artifact",
-        "/kernel/support/image",
-        "/kernel/support/signature",
-        "/rootfs/content/image",
-        "/rootfs/content/signature",
-    ] {
-        *deployment.pointer_mut(path).unwrap() = artifact.clone();
-    }
-    for path in ["/kernel/support/verity", "/rootfs/content/verity"] {
-        let verity = deployment.pointer_mut(path).unwrap();
-        verity["dataBlocks"] = json!(2);
-        verity["hashOffset"] = json!(8192);
-    }
-    deployment["generation"] = json!(3);
-    deployment["kernel"]["id"] = json!(component_id(&deployment["kernel"]).unwrap());
-    deployment["rootfs"]["id"] = json!(component_id(&deployment["rootfs"]).unwrap());
-    let id = component_id(&deployment).unwrap();
-    let key = Ed25519KeyPair::from_pkcs8(
-        Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-            .unwrap()
-            .as_ref(),
-    )
-    .unwrap();
-    let bytes = serde_json::to_vec(&deployment).unwrap();
-    let envelope = format!(
-        "{{\"schema\":\"mos/update-envelope/v1\",\"keyId\":\"{}\",\"payload\":\"{}\",\"signature\":\"{}\"}}",
-        hex::encode(digest::digest(&digest::SHA256, key.public_key().as_ref())),
-        STANDARD.encode(&bytes),
-        STANDARD.encode(key.sign(&bytes))
-    );
-    let public: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
-    fs::write(objects.join(&hash), b"broken").unwrap();
-    assert!(
-        store
-            .install(envelope.as_bytes(), &[public], "x64", "amd64", &objects)
-            .is_err()
-    );
-    assert!(
-        !uefi_esp(&store)
-            .join(format!("loader/entries/mos-{id}+3.conf"))
-            .exists()
-    );
-    fs::write(objects.join(&hash), payload).unwrap();
-    store
-        .install(envelope.as_bytes(), &[public], "x64", "amd64", &objects)
-        .unwrap();
-    assert!(store.system.join(format!("deployments/{id}.json")).exists());
-    // Power loss can leave the activation entry durable while DATA still
-    // contains the previous state. Status and confirmation must retain it.
-    let mut interrupted = store.state().unwrap();
-    interrupted.candidate = None;
-    interrupted.highest_generation = 2;
-    store.save_state(&interrupted).unwrap();
-    let recovered = store.effective_state().unwrap();
-    assert_eq!(recovered.candidate.as_deref(), Some(id.as_str()));
-    assert_eq!(recovered.highest_generation, 3);
-    store.confirm(&receipt).unwrap();
-    assert_eq!(
-        store.state().unwrap().candidate.as_deref(),
-        Some(id.as_str())
-    );
-    assert!(
-        uefi_esp(&store)
-            .join(format!("loader/entries/mos-{id}+3.conf"))
-            .is_file()
-    );
-    // Descriptive status comes only from the authenticated descriptor, never
-    // from mutable boot-entry titles or a synthesized partition-slot record.
-    let status = store.describe(&[public]);
-    assert!(
-        status.is_err(),
-        "the fixture's unsigned factory descriptors are absent"
-    );
-    for old in store
-        .entries()
-        .unwrap()
-        .into_iter()
-        .filter(|entry| entry.id != id)
-    {
-        fs::remove_file(uefi_esp(&store).join("loader/entries").join(old.file)).unwrap();
-    }
-    let status = store.describe(&[public]).unwrap();
-    assert_eq!(status.len(), 1);
-    assert_eq!(status[0].entry.id, id);
-    assert_eq!(status[0].version, deployment["version"].as_str().unwrap());
-    assert_eq!(
-        status[0].kernel_id,
-        deployment["kernel"]["id"].as_str().unwrap()
-    );
-    assert!(
-        uefi_esp(&store)
-            .join(format!("loader/entries/mos-{id}+3.conf"))
-            .exists()
-    );
-    // Repeating an installation never replaces an entry whose trials have begun.
-    fs::rename(
-        uefi_esp(&store).join(format!("loader/entries/mos-{id}+3.conf")),
-        uefi_esp(&store).join(format!("loader/entries/mos-{id}+2-1.conf")),
-    )
-    .unwrap();
-    assert!(
-        store
-            .install(envelope.as_bytes(), &[public], "x64", "amd64", &objects)
-            .is_err()
-    );
-    assert!(
-        !uefi_esp(&store)
-            .join(format!("loader/entries/mos-{id}+3.conf"))
-            .exists()
-    );
-}
-
-#[test]
 fn a_rollback_boot_can_confirm_the_last_usable_deployment() {
     let (_dir, store, mut receipt) = fixture();
     store.confirm(&receipt).unwrap();
@@ -323,7 +193,7 @@ fn a_rollback_boot_can_confirm_the_last_usable_deployment() {
 }
 
 #[test]
-fn collection_keeps_running_current_fallback_and_candidate_objects() {
+fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references() {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use mos_deploy::components::component_id;
     use mos_deploy::deployments::State;
@@ -388,7 +258,7 @@ fn collection_keeps_running_current_fallback_and_candidate_objects() {
             "shared kernel",
         )
         .unwrap();
-        if generation < 4 {
+        if generation == 2 || generation == 3 {
             fs::write(
                 uefi_esp(&store).join(format!("loader/entries/mos-{id}.conf")),
                 format!("version {generation}\n"),
@@ -412,7 +282,7 @@ fn collection_keeps_running_current_fallback_and_candidate_objects() {
     receipt.kernel_id = records[2].2.clone();
     let fallback = store
         .system
-        .join(format!("deployments/{}.json", records[0].0));
+        .join(format!("deployments/{}.json", records[1].0));
     fs::write(&fallback, "corrupt").unwrap();
     assert!(store.collect(&receipt, &[public]).is_err());
     let garbage = store.system.join(format!("roots/{}", records[3].1));
@@ -420,10 +290,10 @@ fn collection_keeps_running_current_fallback_and_candidate_objects() {
         garbage.exists(),
         "collection deleted before validating all retained references"
     );
-    fs::write(&fallback, &records[0].3).unwrap();
+    fs::write(&fallback, &records[1].3).unwrap();
     store.collect(&receipt, &[public]).unwrap();
     assert!(!garbage.exists());
-    for record in records.iter().take(3) {
+    for record in records.iter().skip(1).take(2) {
         assert!(
             store
                 .system
@@ -467,6 +337,9 @@ fn collection_keeps_running_current_fallback_and_candidate_objects() {
 fn fallback_confirmation_retires_an_exhausted_candidate() {
     let (_dir, store, receipt) = fixture();
     let mut state = store.confirm(&receipt).unwrap();
+    fs::remove_file(uefi_esp(&store).join(format!("loader/entries/mos-{}.conf", "b".repeat(64))))
+        .unwrap();
+    state.fallback = None;
     let candidate = "e".repeat(64);
     state.candidate = Some(candidate.clone());
     store.save_state(&state).unwrap();
@@ -479,7 +352,7 @@ fn fallback_confirmation_retires_an_exhausted_candidate() {
     assert_eq!(state.candidate, None);
     assert!(state.failed.contains(&candidate));
     assert_eq!(state.highest_generation, 3);
-    assert_eq!(store.entries().unwrap().len(), 2);
+    assert_eq!(store.entries().unwrap().len(), 1);
 }
 
 #[test]

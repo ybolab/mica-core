@@ -92,7 +92,14 @@ fn seed(root: &Path, fit: bool, operation: &str) {
     let mut deployments = Vec::new();
     let mut envelopes = Vec::new();
     for generation in 1..=3 {
-        let payload = vec![if generation == 3 { 42 } else { 41 }; 12288];
+        let payload = vec![
+            if generation == 3 && operation == "reuse" {
+                40
+            } else {
+                39 + generation as u8
+            };
+            12288
+        ];
         let artifact = json!({"bytes":payload.len(),"sha256":hash(&payload)});
         let mut d: Value = serde_json::from_slice(include_bytes!(
             "../../../tests/component-contracts/deployment.json"
@@ -195,7 +202,12 @@ fn seed(root: &Path, fit: bool, operation: &str) {
         &serde_json::to_vec(&receipt(&deployments[2], fit)).unwrap(),
     );
     write(&root.join("retained-id"), records[0].id.as_bytes());
-    if operation != "install" {
+    write(&root.join("retired-id"), records[1].id.as_bytes());
+    write(
+        &root.join("current-receipt.json"),
+        &serde_json::to_vec(&receipt(&deployments[1], fit)).unwrap(),
+    );
+    if !["install", "reuse"].contains(&operation) {
         store
             .install(
                 &envelopes[2],
@@ -203,10 +215,12 @@ fn seed(root: &Path, fit: bool, operation: &str) {
                 if fit { "cx3576" } else { "x64" },
                 if fit { "arm64" } else { "amd64" },
                 &root.join("objects"),
+                &serde_json::from_slice(&fs::read(root.join("current-receipt.json")).unwrap())
+                    .unwrap(),
             )
             .unwrap();
     }
-    if operation != "install" {
+    if !["install", "reuse"].contains(&operation) {
         if let BootBackend::Fit { firmware } = &store.boot {
             let mut environment = mos_deploy::fit_env::Environment::load(firmware).unwrap();
             environment.records[0].tries_left = Some(2);
@@ -244,6 +258,8 @@ fn run_operation(root: &Path, fit: bool, operation: &str) {
                     if fit { "cx3576" } else { "x64" },
                     if fit { "arm64" } else { "amd64" },
                     &root.join("objects"),
+                    &serde_json::from_slice(&fs::read(root.join("current-receipt.json")).unwrap())
+                        .unwrap(),
                 )
                 .unwrap();
         }
@@ -259,13 +275,40 @@ fn run_operation(root: &Path, fit: bool, operation: &str) {
 fn validate(root: &Path, fit: bool) {
     let store = store(root, fit);
     let public: [u8; 32] = fs::read(root.join("public")).unwrap().try_into().unwrap();
-    let entries = store.entries().unwrap();
+    let mut entries = store.entries().unwrap();
+    assert!(entries.len() <= 2, "a third deployment was published");
     let retained = fs::read_to_string(root.join("retained-id")).unwrap();
     assert!(
         entries
             .iter()
             .any(|e| e.id == retained && e.tries_left != Some(0))
     );
+    if let BootBackend::Fit { firmware } = &store.boot {
+        let bytes = fs::read(firmware).unwrap();
+        for offset in ENV_OFFSETS {
+            // Either CRC-valid redundant copy must refer only to complete
+            // deployments, even if a later read loses the newest copy.
+            let mut isolated = tempfile::NamedTempFile::new().unwrap();
+            isolated.as_file().set_len(18 * 1048576 - 32768).unwrap();
+            isolated.seek(SeekFrom::Start(offset)).unwrap();
+            isolated
+                .write_all(&bytes[offset as usize..offset as usize + mos_deploy::fit_env::ENV_SIZE])
+                .unwrap();
+            if let Ok(environment) = mos_deploy::fit_env::Environment::load(isolated.path()) {
+                let records = environment.records;
+                for record in records {
+                    if !entries.iter().any(|entry| entry.id == record.id) {
+                        entries.push(mos_deploy::deployments::Entry {
+                            id: record.id,
+                            file: String::new(),
+                            generation: record.generation,
+                            tries_left: record.tries_left,
+                        });
+                    }
+                }
+            }
+        }
+    }
     for entry in &entries {
         let d = authenticate_deployment(
             &fs::read(store.system.join(format!("deployments/{}.json", entry.id))).unwrap(),
@@ -367,6 +410,21 @@ fn transactions_survive_each_boundary() {
                             );
                         }
                         validate(case.path(), fit);
+                        // Restart the interrupted transaction with its durable
+                        // state; an already published candidate is reconciled.
+                        let restarted = store(case.path(), fit);
+                        if operation != "install"
+                            || restarted.effective_state().unwrap().candidate.is_none()
+                        {
+                            run_operation(case.path(), fit, operation);
+                        } else {
+                            let receipt = serde_json::from_slice(
+                                &fs::read(case.path().join("current-receipt.json")).unwrap(),
+                            )
+                            .unwrap();
+                            restarted.confirm(&receipt).unwrap();
+                        }
+                        validate(case.path(), fit);
                     });
                     if let Err(error) = check {
                         eprintln!("failed fixture retained: {}", case.keep().display());
@@ -383,4 +441,283 @@ fn transactions_survive_each_boundary() {
         }
     }
     fs::write(evidence.join("results.txt"), summaries.join("\n")).unwrap();
+}
+
+#[test]
+fn install_replaces_the_inactive_deployment_and_preserves_shared_objects() {
+    for fit in [false, true] {
+        for operation in ["install", "reuse"] {
+            let root = TempDir::new().unwrap();
+            seed(root.path(), fit, operation);
+            let store = store(root.path(), fit);
+            let old = fs::read_to_string(root.path().join("retired-id")).unwrap();
+            let old_descriptor = store.system.join(format!("deployments/{old}.json"));
+            let public: [u8; 32] = fs::read(root.path().join("public"))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let old_deployment =
+                authenticate_deployment(&fs::read(&old_descriptor).unwrap(), &[public]).unwrap();
+            if operation == "reuse" {
+                // Acquisition omitted an object already verified on SYSTEM.
+                fs::remove_file(
+                    root.path()
+                        .join("objects")
+                        .join(&old_deployment.rootfs.content.image.sha256),
+                )
+                .unwrap();
+            }
+            run_operation(root.path(), fit, "install");
+            validate(root.path(), fit);
+            assert!(!old_descriptor.exists());
+            assert_eq!(store.state().unwrap().fallback, None);
+            assert_eq!(store.entries().unwrap().len(), 2);
+            assert_eq!(
+                store
+                    .system
+                    .join(format!("roots/{}", old_deployment.rootfs.id))
+                    .exists(),
+                operation == "reuse"
+            );
+            assert_eq!(
+                fs::read_dir(store.system.join("deployments"))
+                    .unwrap()
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_update_preserves_both_installed_deployments() {
+    for fit in [false, true] {
+        let root = TempDir::new().unwrap();
+        seed(root.path(), fit, "install");
+        let store = store(root.path(), fit);
+        let public: [u8; 32] = fs::read(root.path().join("public"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let envelope = fs::read(root.path().join("candidate.json")).unwrap();
+        let candidate = authenticate_deployment(&envelope, &[public]).unwrap();
+        fs::write(
+            root.path()
+                .join("objects")
+                .join(&candidate.rootfs.content.image.sha256),
+            b"corrupt",
+        )
+        .unwrap();
+        let before = serde_json::to_vec(&store.entries().unwrap()).unwrap();
+        assert!(
+            store
+                .install(
+                    &envelope,
+                    &[public],
+                    if fit { "cx3576" } else { "x64" },
+                    if fit { "arm64" } else { "amd64" },
+                    &root.path().join("objects"),
+                    &serde_json::from_slice(
+                        &fs::read(root.path().join("current-receipt.json")).unwrap()
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            serde_json::to_vec(&store.entries().unwrap()).unwrap()
+        );
+        validate(root.path(), fit);
+    }
+}
+
+#[test]
+fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
+    for fit in [false, true] {
+        let root = TempDir::new().unwrap();
+        seed(root.path(), fit, "install");
+        let store = store(root.path(), fit);
+        let public: [u8; 32] = fs::read(root.path().join("public"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let envelope = fs::read(root.path().join("candidate.json")).unwrap();
+        let mut current: BootReceipt =
+            serde_json::from_slice(&fs::read(root.path().join("current-receipt.json")).unwrap())
+                .unwrap();
+        let install = |receipt: &BootReceipt| {
+            store.install(
+                &envelope,
+                &[public],
+                if fit { "cx3576" } else { "x64" },
+                if fit { "arm64" } else { "amd64" },
+                &root.path().join("objects"),
+                receipt,
+            )
+        };
+        current.content_verified = false;
+        assert!(
+            install(&current)
+                .unwrap_err()
+                .to_string()
+                .contains("authenticated")
+        );
+        current.content_verified = true;
+        let candidate_receipt: BootReceipt =
+            serde_json::from_slice(&fs::read(root.path().join("candidate-receipt.json")).unwrap())
+                .unwrap();
+        assert!(install(&candidate_receipt).is_err());
+        let pending = install(&current).unwrap();
+        let candidate = pending.candidate.unwrap();
+        let mut interrupted = store.state().unwrap();
+        interrupted.candidate = None;
+        interrupted.highest_generation = 2;
+        store.save_state(&interrupted).unwrap();
+        let recovered = store.effective_state().unwrap();
+        assert_eq!(recovered.candidate.as_deref(), Some(candidate.as_str()));
+        assert_eq!(recovered.highest_generation, 3);
+        assert_eq!(
+            store.confirm(&current).unwrap().candidate,
+            Some(candidate.clone())
+        );
+        assert_eq!(store.describe(&[public]).unwrap().len(), 2);
+        assert!(install(&current).is_err());
+        assert!(
+            store.confirm(&candidate_receipt).is_err(),
+            "unlaunched trial was confirmed"
+        );
+        if let BootBackend::Fit { firmware } = &store.boot {
+            let mut env = mos_deploy::fit_env::Environment::load(firmware).unwrap();
+            env.records[0].tries_left = Some(2);
+            env.save(firmware).unwrap();
+        } else {
+            fs::rename(
+                root.path()
+                    .join(format!("store/esp/loader/entries/mos-{candidate}+3.conf")),
+                root.path()
+                    .join(format!("store/esp/loader/entries/mos-{candidate}+2-1.conf")),
+            )
+            .unwrap();
+        }
+        assert!(install(&candidate_receipt).is_err());
+        let confirmed = store.confirm(&candidate_receipt).unwrap();
+        assert_eq!(confirmed.current, Some(candidate));
+        assert_eq!(confirmed.fallback, Some(current.deployment_id));
+        assert!(confirmed.candidate.is_none());
+        validate(root.path(), fit);
+    }
+}
+
+#[test]
+#[ignore = "requires the bounded tmpfs provided by tests/file-ab-faults/run.sh"]
+fn replacement_capacity_uses_reclaimed_blocks_without_a_third_version() {
+    use mos_deploy::components::authenticate_deployment;
+    let parent = std::env::var("MOS_TEST_SPACE_ROOT").unwrap();
+    for insufficient in [false, true] {
+        let root = TempDir::new_in(&parent).unwrap();
+        seed(root.path(), true, "install");
+        let store = store(root.path(), true);
+        let public: [u8; 32] = fs::read(root.path().join("public"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let envelope = fs::read(root.path().join("candidate.json")).unwrap();
+        let receipt =
+            serde_json::from_slice(&fs::read(root.path().join("current-receipt.json")).unwrap())
+                .unwrap();
+        let d = authenticate_deployment(&envelope, &[public]).unwrap();
+        let needed: u64 = store.object_paths(&d).iter().map(|(_, a)| a.bytes).sum();
+        let reserve = 128 * 1048576;
+        let target = if insufficient {
+            reserve - 32768
+        } else {
+            reserve + 16384
+        };
+        let available = rustix::fs::statvfs(&store.system).unwrap();
+        let filler = available.f_bavail * available.f_frsize - target;
+        fs::write(root.path().join("filler"), vec![0_u8; filler as usize]).unwrap();
+        let before = rustix::fs::statvfs(&store.system).unwrap();
+        assert!(before.f_bavail * before.f_frsize < needed + reserve);
+        let entries = serde_json::to_vec(&store.entries().unwrap()).unwrap();
+        let result = store.install(
+            &envelope,
+            &[public],
+            "cx3576",
+            "arm64",
+            &root.path().join("objects"),
+            &receipt,
+        );
+        if insufficient {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("insufficient destination space")
+            );
+            assert_eq!(
+                entries,
+                serde_json::to_vec(&store.entries().unwrap()).unwrap()
+            );
+        } else {
+            result.unwrap();
+            let after = rustix::fs::statvfs(&store.system).unwrap();
+            assert!(after.f_bavail * after.f_frsize >= reserve);
+        }
+        validate(root.path(), true);
+    }
+}
+
+#[test]
+fn an_unconfirmed_running_trial_cannot_retire_the_other_deployment() {
+    for fit in [false, true] {
+        let root = TempDir::new().unwrap();
+        seed(root.path(), fit, "install");
+        let store = store(root.path(), fit);
+        let current: BootReceipt =
+            serde_json::from_slice(&fs::read(root.path().join("current-receipt.json")).unwrap())
+                .unwrap();
+        if let BootBackend::Fit { firmware } = &store.boot {
+            let mut env = mos_deploy::fit_env::Environment::load(firmware).unwrap();
+            env.records
+                .iter_mut()
+                .for_each(|entry| entry.tries_left = Some(2));
+            env.save(firmware).unwrap();
+        } else {
+            for entry in store.entries().unwrap() {
+                fs::rename(
+                    root.path()
+                        .join("store/esp/loader/entries")
+                        .join(entry.file),
+                    root.path().join(format!(
+                        "store/esp/loader/entries/mos-{}+2-1.conf",
+                        entry.id
+                    )),
+                )
+                .unwrap();
+            }
+        }
+        let public: [u8; 32] = fs::read(root.path().join("public"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let envelope = fs::read(root.path().join("candidate.json")).unwrap();
+        let entries = serde_json::to_vec(&store.entries().unwrap()).unwrap();
+        let error = store
+            .install(
+                &envelope,
+                &[public],
+                if fit { "cx3576" } else { "x64" },
+                if fit { "arm64" } else { "amd64" },
+                &root.path().join("objects"),
+                &current,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("confirm the running deployment"));
+        assert_eq!(
+            entries,
+            serde_json::to_vec(&store.entries().unwrap()).unwrap()
+        );
+        validate(root.path(), fit);
+    }
 }

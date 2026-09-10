@@ -33,6 +33,12 @@ fn boot_records_are_bounded_canonical_and_unambiguous() {
         text.replace(",3;", ",4;"),
         text.replace(&"b".repeat(64), &"a".repeat(64)),
         format!("{text};{}", &text[3..]),
+        format!(
+            "v1|{},{},3,3;{}",
+            "d".repeat(64),
+            "c".repeat(64),
+            &text[3..]
+        ),
         text.to_uppercase(),
         "v1|".into(),
     ] {
