@@ -235,19 +235,17 @@ pub(crate) async fn api_v1_provisioning_status(
     //
     // `provisioning_status_at` and not `provisioning_status`: the no-argument
     // form reads the production manifest, which would be a SECOND reading of
-    // layer 1 beside the digests above. The operator document keeps its
-    // production path — nothing here overrides it, and a missing one is the
-    // absent case rather than an error.
+    // layer 1 beside the digests above. `updates_path` remains the fixed
+    // production operator document outside tests; its private test seam lets
+    // route tests use an isolated file without changing that source.
     //
     // A layer-2 read, parse, anchor-key or validation failure is an error
     // HERE TOO. The route refusing and the update path refusing are one fact
     // reaching two surfaces, and a baked value served in the `effective` slot
     // would read as correct on every device that has overridden nothing —
     // which is all of them today, so nothing would catch it.
-    let mut resolved = match configuration::provisioning_status_at(
-        manifest_path,
-        Path::new(configuration::DEFAULT_UPDATES_PATH),
-    ) {
+    let updates_path = state.updates_path.as_path();
+    let mut resolved = match configuration::provisioning_status_at(manifest_path, updates_path) {
         Ok(value) => value,
         Err(err) => {
             return api_response(
