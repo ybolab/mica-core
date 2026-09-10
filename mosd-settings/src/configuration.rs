@@ -1255,13 +1255,19 @@ fn load_fleet(path: &Path) -> Result<Option<FleetDocument>, ConfigError> {
             message: format!("unsupported schema; expected `{FLEET_SCHEMA_TAG}`"),
         });
     }
-    if let Some(Some(url)) = &document.url
-        && !Origin::parse(url).is_some_and(|origin| origin.scheme == "https")
-    {
-        return Err(ConfigError::Validation {
-            path: path.to_path_buf(),
-            message: "`url` must be an HTTPS URL".to_string(),
+    if let Some(Some(value)) = &document.url {
+        let valid = url::Url::parse(value).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
         });
+        if !valid {
+            return Err(ConfigError::Validation {
+                path: path.to_path_buf(),
+                message: "`url` must be an HTTPS URL without userinfo".to_string(),
+            });
+        }
     }
     Ok(Some(document))
 }
@@ -1404,6 +1410,41 @@ mod tests {
             r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
         ] {
             assert!(serde_json::from_str::<super::FleetDocument>(document).is_err());
+        }
+    }
+
+    #[test]
+    fn fleet_urls_require_complete_https_authorities_without_normalizing_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fleet.json");
+        for url in [
+            "https://fleet.example.invalid/path?mode=test#fragment",
+            "https://192.0.2.1:8443/report",
+            "https://[2001:db8::1]/report?device=1",
+        ] {
+            std::fs::write(
+                &path,
+                json!({ "schema": FLEET_SCHEMA_TAG, "url": url }).to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                load_fleet(&path).unwrap().unwrap().url,
+                Some(Some(url.to_string()))
+            );
+        }
+
+        for url in [
+            "https://bad host/REJECTED-FLEET-SENTINEL",
+            "https://[]/REJECTED-FLEET-SENTINEL",
+            "https://REJECTED-FLEET-SENTINEL@fleet.example/path",
+        ] {
+            std::fs::write(
+                &path,
+                json!({ "schema": FLEET_SCHEMA_TAG, "url": url }).to_string(),
+            )
+            .unwrap();
+            let error = load_fleet(&path).unwrap_err().to_string();
+            assert!(!error.contains("REJECTED-FLEET-SENTINEL"));
         }
     }
 
