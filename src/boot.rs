@@ -1,5 +1,6 @@
 //! Bounded boot selection and the single signed dm-verity invocation.
 
+pub mod shutdown;
 pub mod startup;
 
 use crate::components::VerityImage;
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
 };
@@ -90,9 +91,23 @@ pub fn persistent_machine_id(
 /// Validate every member before writing; input and destination must be private
 /// to PID 1 throughout copying, as they are before the systemd handoff.
 pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow::Result<()> {
+    materialize_exitrd(source, Some(destination), manifest).map(|_| ())
+}
+
+/// Capacity is a limit, not allocation/RSS: round each retained member and
+/// directory to a 64 KiB page, plus 1 MiB for bounded runtime record/scratch.
+pub fn exitrd_tmpfs_bytes(source: &Path, manifest: &str) -> anyhow::Result<u64> {
+    materialize_exitrd(source, None, manifest)
+}
+
+fn materialize_exitrd(
+    source: &Path,
+    destination: Option<&Path>,
+    manifest: &str,
+) -> anyhow::Result<u64> {
     use anyhow::{Context, ensure};
     use rustix::fs::{CWD, Dir, Mode, OFlags, ResolveFlags, mkdirat, openat2};
-    const RUNTIME_DIRS: [&str; 6] = ["dev", "proc", "sys", "run", "oldroot", "etc"];
+    const RUNTIME_DIRS: [&str; 7] = ["dev", "proc", "sys", "run", "oldroot", "etc", "backing"];
     const RELEASE: &str = "etc/initrd-release";
 
     anyhow::ensure!(
@@ -110,7 +125,7 @@ pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow:
         );
         ensure!(names.insert(name), "duplicate exitrd manifest member");
         ensure!(
-            !RUNTIME_DIRS.contains(&name) && name != RELEASE,
+            !RUNTIME_DIRS.contains(&name) && name != RELEASE && name != "storage.json",
             "exitrd reserved path"
         );
     }
@@ -141,26 +156,32 @@ pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow:
         )
         .context("invalid exitrd source")?,
     );
-    let destination = fs::File::from(
-        openat2(
-            CWD,
-            destination,
-            directory_flags,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        )
-        .context("invalid exitrd destination")?,
-    );
-    for entry in Dir::read_from(&destination)? {
-        let entry = entry?;
-        ensure!(
-            entry.file_name() == c"." || entry.file_name() == c"..",
-            "exitrd destination is not empty"
-        );
-    }
+    let destination = destination
+        .map(|path| -> anyhow::Result<fs::File> {
+            let directory = fs::File::from(
+                openat2(
+                    CWD,
+                    path,
+                    directory_flags,
+                    Mode::empty(),
+                    ResolveFlags::NO_SYMLINKS,
+                )
+                .context("invalid exitrd destination")?,
+            );
+            for entry in Dir::read_from(&directory)? {
+                let entry = entry?;
+                ensure!(
+                    entry.file_name() == c"." || entry.file_name() == c"..",
+                    "exitrd destination is not empty"
+                );
+            }
+            Ok(directory)
+        })
+        .transpose()?;
     let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
     let mut members = Vec::new();
     let mut bytes = 0_u64;
+    let mut capacity = (directories.len() as u64 + 4) * 65536 + 1024 * 1024;
     for &name in &names {
         // NONBLOCK prevents a substituted FIFO from blocking before fstat.
         let file = fs::File::from(
@@ -188,8 +209,73 @@ pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow:
             .checked_add(metadata.len())
             .ok_or_else(|| anyhow::anyhow!("exitrd size overflow"))?;
         ensure!(bytes <= 32 * 1024 * 1024, "excessive exitrd size");
+        capacity += metadata.len().div_ceil(65536) * 65536;
         members.push((name, file, metadata));
     }
+    let machine = if cfg!(target_arch = "x86_64") {
+        62
+    } else {
+        183
+    };
+    let triplet = if machine == 62 {
+        "x86_64-linux-gnu"
+    } else {
+        "aarch64-linux-gnu"
+    };
+    let mut dependencies = std::collections::BTreeMap::new();
+    for (name, file, metadata) in &mut members {
+        let core = ["shutdown", "bin/busybox", "sbin/dmsetup"].contains(name);
+        let library = name
+            .strip_prefix(&format!("usr/lib/{triplet}/"))
+            .is_some_and(|leaf| {
+                !leaf.contains('/')
+                    && (leaf.starts_with("lib") || leaf.starts_with("ld-linux-"))
+                    && leaf.contains(".so")
+            })
+            || *name == "lib64/ld-linux-x86-64.so.2" && machine == 62
+            || *name == "lib/ld-linux-aarch64.so.1" && machine == 183;
+        ensure!(core || library, "unselected exitrd member layout");
+        ensure!(
+            !core || metadata.permissions().mode() & 0o100 != 0,
+            "exitrd executable permission missing"
+        );
+        let needed = exitrd_elf(file, machine)?;
+        ensure!(
+            *name != "bin/busybox" || needed.is_empty(),
+            "exitrd BusyBox must be static"
+        );
+        dependencies.insert(*name, needed);
+    }
+    let mut pending = vec![
+        "shutdown".to_owned(),
+        "bin/busybox".to_owned(),
+        "sbin/dmsetup".to_owned(),
+    ];
+    let mut reachable = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        for needed in dependencies
+            .get(name.as_str())
+            .context("missing required exitrd dependency")?
+        {
+            let path = if let Some(relative) = needed.strip_prefix('/') {
+                relative.to_owned()
+            } else {
+                format!("usr/lib/{triplet}/{needed}")
+            };
+            ensure!(
+                names.contains(path.as_str()),
+                "missing exitrd ELF dependency"
+            );
+            pending.push(path);
+        }
+    }
+    ensure!(reachable.len() == names.len(), "unneeded exitrd member");
+    let Some(destination) = destination else {
+        return Ok(capacity);
+    };
     for directory in directories {
         let parent = directory
             .parent()
@@ -228,7 +314,139 @@ pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow:
     let mut release = create(RELEASE)?;
     release.write_all(b"ID=mos-exitrd\n")?;
     release.set_permissions(fs::Permissions::from_mode(0o644))?;
-    Ok(())
+    Ok(capacity)
+}
+
+fn exitrd_elf(file: &mut fs::File, machine: u16) -> anyhow::Result<Vec<String>> {
+    use anyhow::{Context, ensure};
+    use std::io::SeekFrom;
+    let mut header = [0_u8; 64];
+    file.rewind()?;
+    file.read_exact(&mut header)?;
+    let word = |bytes: &[u8]| -> anyhow::Result<u64> { Ok(u64::from_le_bytes(bytes.try_into()?)) };
+    ensure!(
+        &header[..7] == b"\x7fELF\x02\x01\x01"
+            && u16::from_le_bytes([header[18], header[19]]) == machine,
+        "invalid exitrd ELF architecture"
+    );
+    ensure!(
+        [2, 3].contains(&u16::from_le_bytes([header[16], header[17]]))
+            && header[20..24] == [1, 0, 0, 0],
+        "invalid exitrd ELF type"
+    );
+    let count = u16::from_le_bytes([header[56], header[57]]) as u64;
+    ensure!(
+        count <= 128 && (count == 0 || u16::from_le_bytes([header[54], header[55]]) == 56),
+        "invalid exitrd ELF program headers"
+    );
+    let mut loads = Vec::new();
+    let mut dynamic = None;
+    let mut needed = Vec::new();
+    for n in 0..count {
+        let offset = word(&header[32..40])?
+            .checked_add(n * 56)
+            .context("ELF offset overflow")?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut ph = [0; 56];
+        file.read_exact(&mut ph)?;
+        let kind = u32::from_le_bytes(ph[..4].try_into()?);
+        let offset = word(&ph[8..16])?;
+        let size = word(&ph[32..40])?;
+        ensure!(
+            offset
+                .checked_add(size)
+                .is_some_and(|end| end <= file.metadata().map_or(0, |m| m.len())),
+            "exitrd ELF segment outside file"
+        );
+        match kind {
+            1 => loads.push((word(&ph[16..24])?, offset, size)),
+            2 => {
+                ensure!(
+                    dynamic.is_none() && size <= 65536,
+                    "excessive exitrd ELF dynamic table"
+                );
+                dynamic = Some((offset, size));
+            }
+            3 => {
+                ensure!(size > 1 && size <= 4096, "invalid exitrd interpreter");
+                file.seek(SeekFrom::Start(offset))?;
+                let mut value = vec![0; size as usize];
+                file.read_exact(&mut value)?;
+                ensure!(
+                    value.pop() == Some(0) && !value.contains(&0),
+                    "invalid exitrd interpreter"
+                );
+                let path = String::from_utf8(value)?;
+                ensure!(path.starts_with('/'), "invalid exitrd interpreter");
+                needed.push(path);
+            }
+            _ => {}
+        }
+    }
+    if let Some((offset, size)) = dynamic {
+        let mut strings = None;
+        let mut length = None;
+        let mut indices = Vec::new();
+        let mut terminated = false;
+        file.seek(SeekFrom::Start(offset))?;
+        for _ in 0..size / 16 {
+            let mut entry = [0; 16];
+            file.read_exact(&mut entry)?;
+            let value = word(&entry[8..])?;
+            match word(&entry[..8])? {
+                0 => {
+                    terminated = true;
+                    break;
+                }
+                1 => indices.push(value),
+                5 => strings = Some(value),
+                10 => length = Some(value),
+                15 | 29 => anyhow::bail!("exitrd ELF search path is forbidden"),
+                _ => {}
+            }
+        }
+        ensure!(terminated, "unterminated exitrd dynamic table");
+        if !indices.is_empty() {
+            let strings = strings.context("missing exitrd ELF strings")?;
+            let length = length.context("missing exitrd ELF string length")?;
+            ensure!(
+                length <= 65536 && indices.len() <= 128,
+                "excessive exitrd ELF dependencies"
+            );
+            let (base, offset, size) = loads
+                .iter()
+                .find(|(base, _, size)| {
+                    strings >= *base
+                        && strings - *base <= *size
+                        && length <= *size - (strings - *base)
+                })
+                .context("exitrd strings outside load segment")?;
+            let _ = size;
+            file.seek(SeekFrom::Start(offset + strings - base))?;
+            let mut data = vec![0; length as usize];
+            file.read_exact(&mut data)?;
+            for index in indices {
+                let tail = data
+                    .get(usize::try_from(index)?..)
+                    .context("invalid exitrd string index")?;
+                let end = tail
+                    .iter()
+                    .position(|b| *b == 0)
+                    .context("unterminated exitrd dependency")?;
+                let name = std::str::from_utf8(&tail[..end])?;
+                ensure!(
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+                    "invalid exitrd dependency name"
+                );
+                needed.push(name.to_owned());
+            }
+        }
+    }
+    file.rewind()?;
+    Ok(needed)
 }
 
 #[derive(Debug)]

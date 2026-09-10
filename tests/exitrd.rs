@@ -5,10 +5,59 @@ use std::{
     path::Path,
 };
 
+fn elf(needed: Option<&str>) -> Vec<u8> {
+    let mut bytes = vec![0; 512];
+    bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    bytes[16] = 3;
+    bytes[18] = if cfg!(target_arch = "x86_64") {
+        62
+    } else {
+        183
+    };
+    bytes[20] = 1;
+    bytes[52] = 64;
+    if let Some(needed) = needed {
+        bytes[32] = 64;
+        bytes[54] = 56;
+        bytes[56] = 2;
+        bytes[64] = 1;
+        bytes[96..104].copy_from_slice(&512_u64.to_le_bytes());
+        bytes[120] = 2;
+        bytes[128] = 176;
+        bytes[152] = 64;
+        for (n, (tag, value)) in [
+            (5_u64, 240_u64),
+            (10, needed.len() as u64 + 2),
+            (1, 1),
+            (0, 0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            bytes[176 + n * 16..184 + n * 16].copy_from_slice(&tag.to_le_bytes());
+            bytes[184 + n * 16..192 + n * 16].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[241..241 + needed.len()].copy_from_slice(needed.as_bytes());
+    }
+    bytes
+}
+fn native_library() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "usr/lib/x86_64-linux-gnu/libc.so.6"
+    } else {
+        "usr/lib/aarch64-linux-gnu/libc.so.6"
+    }
+}
+fn native_members(root: &Path) {
+    for name in ["shutdown", "bin/busybox", "sbin/dmsetup"] {
+        member(root, name, 0o755);
+    }
+}
+
 fn member(root: &Path, name: &str, mode: u32) {
     let path = root.join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, b"retained payload").unwrap();
+    fs::write(&path, elf(None)).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
@@ -141,13 +190,26 @@ fn rejects_generated_nodes_and_file_directory_conflicts_before_writes() {
 fn preserves_data_modes_and_materializes_runtime_directories() {
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    member(source.path(), "shutdown", 0o755);
-    member(source.path(), "lib/arch/libc.so", 0o644);
-    copy_exitrd(source.path(), target.path(), "shutdown\nlib/arch/libc.so\n").unwrap();
-    for (name, mode) in [("shutdown", 0o755), ("lib/arch/libc.so", 0o644)] {
+    native_members(source.path());
+    member(source.path(), native_library(), 0o644);
+    fs::write(source.path().join("shutdown"), elf(Some("libc.so.6"))).unwrap();
+    let manifest = format!(
+        "shutdown\nbin/busybox\nsbin/dmsetup\n{}\n",
+        native_library()
+    );
+    let capacity = mos_deploy::boot::exitrd_tmpfs_bytes(source.path(), &manifest).unwrap();
+    assert_eq!(capacity % 65536, 0);
+    assert!(capacity > 4 * 512 && capacity < 4 * 1024 * 1024);
+    copy_exitrd(source.path(), target.path(), &manifest).unwrap();
+    for (name, mode) in [
+        ("shutdown", 0o755),
+        ("bin/busybox", 0o755),
+        ("sbin/dmsetup", 0o755),
+        (native_library(), 0o644),
+    ] {
         assert_eq!(
             fs::read(target.path().join(name)).unwrap(),
-            b"retained payload"
+            fs::read(source.path().join(name)).unwrap()
         );
         assert_eq!(
             fs::metadata(target.path().join(name))
@@ -158,11 +220,73 @@ fn preserves_data_modes_and_materializes_runtime_directories() {
             mode
         );
     }
-    for name in ["dev", "proc", "sys", "run", "oldroot", "etc"] {
+    for name in ["dev", "proc", "sys", "run", "oldroot", "etc", "backing"] {
         assert!(target.path().join(name).is_dir());
     }
     assert_eq!(
         fs::read(target.path().join("etc/initrd-release")).unwrap(),
         b"ID=mos-exitrd\n"
     );
+}
+
+#[test]
+fn rejects_old_or_incomplete_layout_and_measures_retained_budget() {
+    let source = tempfile::tempdir().unwrap();
+    member(source.path(), "shutdown", 0o755);
+    let target = tempfile::tempdir().unwrap();
+    assert!(copy_exitrd(source.path(), target.path(), "shutdown\n").is_err());
+    for name in ["bin/busybox", "sbin/dmsetup"] {
+        member(source.path(), name, 0o755);
+    }
+    let manifest = "bin/busybox\nsbin/dmsetup\nshutdown\n";
+    member(source.path(), "usr/lib/systemd/libsystemd-shared.so", 0o755);
+    assert!(
+        copy_exitrd(
+            source.path(),
+            target.path(),
+            &format!("{manifest}usr/lib/systemd/libsystemd-shared.so\n")
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn rejects_missing_loader_library_foreign_elf_and_unneeded_files() {
+    for case in [
+        "missing-dependency",
+        "wrong-architecture",
+        "script",
+        "unneeded",
+        "dynamic-busybox",
+    ] {
+        let source = tempfile::tempdir().unwrap();
+        native_members(source.path());
+        let mut manifest = "shutdown\nbin/busybox\nsbin/dmsetup\n".to_owned();
+        match case {
+            "missing-dependency" => {
+                fs::write(source.path().join("shutdown"), elf(Some("missing.so"))).unwrap()
+            }
+            "wrong-architecture" => {
+                let mut bytes = elf(None);
+                bytes[18] = 0;
+                fs::write(source.path().join("shutdown"), bytes).unwrap();
+            }
+            "script" => fs::write(source.path().join("shutdown"), b"#!/bin/busybox sh\n").unwrap(),
+            "unneeded" => {
+                member(source.path(), native_library(), 0o755);
+                manifest.push_str(native_library());
+                manifest.push('\n');
+            }
+            "dynamic-busybox" => {
+                fs::write(source.path().join("bin/busybox"), elf(Some("missing.so"))).unwrap()
+            }
+            _ => unreachable!(),
+        }
+        let target = tempfile::tempdir().unwrap();
+        assert!(
+            copy_exitrd(source.path(), target.path(), &manifest).is_err(),
+            "{case}"
+        );
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
+    }
 }

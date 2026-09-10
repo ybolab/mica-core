@@ -64,7 +64,7 @@ for b in ${BINS}; do BINARIES+=("${b}"); done
 # producer names the ones it OWNS in its prepare.sh, and the complement is what
 # the independence assertion looks for -- so a fourth binary added to this crate
 # is checked without any producer being edited.
-ALL_BINARIES=(mos-init mos-deploy)
+ALL_BINARIES=(mos-init mos-shutdown mos-deploy)
 
 # A binary this crate does not declare would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never
@@ -132,7 +132,7 @@ RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
 # recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
-    --label ai-agent=true --network traefik \
+    --label ai-agent=true --network traefik --name "ai-agent-mos-deploy-${PRODUCER}-$$" \
     --platform linux/amd64 \
     -v "${REPO_ROOT}:/src" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \

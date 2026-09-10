@@ -1,23 +1,28 @@
 //! The authenticated initramfs PID 1. No network or shell policy is accepted.
 #![forbid(unsafe_code)]
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use mos_deploy::{
     boot::{
-        BootKind, copy_exitrd, fit_selected, persistent_machine_id, selected_entry, startup,
-        utf16_variable, verity_args,
+        BootKind, copy_exitrd, exitrd_tmpfs_bytes, fit_selected, persistent_machine_id,
+        selected_entry,
+        shutdown::{self, Action, Device, LifecycleIo, Operation, Ownership, Supervisor, SystemIo},
+        startup, utf16_variable, verity_args,
     },
     components::{BootIdentity, VerityImage, component_id, verify_deployment},
-    deployments::{BootBackend, DeploymentStore, boot_partition},
+    deployments::boot_partition,
 };
 use serde::Deserialize;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::process::CommandExt,
+    fs::{self, File},
+    io::Read,
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt},
+        process::CommandExt,
+    },
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -47,8 +52,50 @@ struct BootAttempt {
     board: String,
 }
 
+struct BootControl {
+    supervisor: Supervisor,
+    storage: Ownership,
+}
+
+impl BootControl {
+    fn observe(&mut self) -> Result<shutdown::Snapshot> {
+        self.supervisor.observe("/sbin/mos-shutdown")
+    }
+
+    fn backing(&mut self, path: &str) -> Result<()> {
+        let metadata = fs::metadata(path)?;
+        ensure!(
+            metadata.file_type().is_block_device(),
+            "backing source is not a block device"
+        );
+        let device = Device::from_raw(metadata.rdev());
+        let state = self.observe()?;
+        let generation = state
+            .blocks
+            .iter()
+            .find(|b| b.device == device)
+            .context("backing block missing from live graph")?
+            .generation;
+        if let Some((_, known)) = self
+            .storage
+            .backing_generations
+            .iter()
+            .find(|(id, _)| *id == device)
+        {
+            ensure!(
+                *known == generation,
+                "backing block was reused during startup"
+            );
+        } else {
+            self.storage.backing_generations.push((device, generation));
+        }
+        self.storage.backings.insert(device);
+        Ok(())
+    }
+}
+
 impl BootAttempt {
-    fn retire_failed_confirmed(&self) -> Result<()> {
+    fn retire_failed_confirmed(&self, control: &mut BootControl) -> Result<()> {
         let system = fs::canonicalize(
             Path::new("/sys/class/block").join(
                 Path::new(&self.system_device)
@@ -57,38 +104,36 @@ impl BootAttempt {
             ),
         )?;
         let device = boot_partition(&system, self.backend, &self.board)?;
-        let boot = match self.backend {
-            BootKind::Uefi => {
-                mount(
-                    device.to_str().context("invalid ESP device")?,
-                    "/boot-state",
-                    "vfat",
-                    "rw,nodev,nosuid,noexec",
-                )?;
-                BootBackend::Uefi {
-                    esp: "/boot-state".into(),
-                }
-            }
-            BootKind::UbootFit => BootBackend::Fit {
-                firmware: device.clone(),
-                layout: mos_deploy::fit_env::FitLayout::for_board(&self.board)?,
+        let boot_device = device.to_str().context("invalid boot device")?.to_owned();
+        control.backing(&boot_device)?;
+        let state = control.observe()?;
+        let expected = Device::from_raw(fs::metadata(&self.system_device)?.rdev());
+        let system_root = state
+            .mounts
+            .iter()
+            .find(|m| m.device == expected && m.kind == "ext4" && m.root == "/")
+            .context("verified SYSTEM mount no longer available for retirement")?
+            .path
+            .clone();
+        let deadline = control
+            .supervisor
+            .begin_shutdown()?
+            .operation_deadline(control.supervisor.now_ms())?;
+        SystemIo {
+            supervisor: &mut control.supervisor,
+            executable: "/sbin/mos-shutdown",
+        }
+        .execute(
+            &Operation::Retire {
+                id: self.id.clone(),
+                backend: self.backend,
+                board: self.board.clone(),
+                system: system_root,
+                system_device: self.system_device.clone(),
+                boot_device,
             },
-        };
-        // PID 1 has not started any DATA writer. Only the native boot record
-        // changes here; the fallback reconciles diagnostic state after boot.
-        let store = DeploymentStore::new("/system".into(), boot, "/unused-meta".into());
-        let result = store.retire_failed_confirmed(&self.id);
-        if self.backend == BootKind::Uefi {
-            run(startup::remount(
-                device.to_str().context("invalid ESP device")?,
-                "/boot-state",
-                "remount,ro,nodev,nosuid,noexec",
-            ))?;
-        }
-        if result? {
-            eprintln!("mos-init: retired failed confirmed deployment {}", self.id);
-        }
-        Ok(())
+            deadline,
+        )
     }
 }
 
@@ -116,42 +161,38 @@ fn command(program: &str, args: &[&str]) -> Command {
     command
 }
 
-fn run(mut command: Command) -> Result<String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        // /dev/null does not exist until the first devtmpfs mount completes.
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("execute {program}"))?;
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            let output = child.wait_with_output()?;
-            ensure!(status.success(), "{program} failed: {status}");
-            ensure!(output.stdout.len() <= 16384, "excessive command output");
-            return Ok(String::from_utf8(output.stdout)?.trim().to_owned());
-        }
-        if start.elapsed() >= Duration::from_secs(30) {
-            child.kill()?;
-            child.wait()?;
-            bail!("{program} timed out");
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+fn run(control: &mut BootControl, command: Command) -> Result<String> {
+    control.supervisor.run_startup(command)
 }
 
-fn mount(source: &str, target: &str, kind: &str, options: &str) -> Result<()> {
+fn mount(
+    control: &mut BootControl,
+    source: &str,
+    target: &str,
+    kind: &str,
+    options: &str,
+) -> Result<()> {
     fs::create_dir_all(target)?;
-    run(startup::mount(source, target, kind, options))
-        .with_context(|| format!("mount {source} at {target}"))?;
+    if kind == "ext4" {
+        control.backing(source)?;
+    }
+    let mounted = run(control, startup::mount(source, target, kind, options));
+    if target == "/run/initramfs" {
+        let live = control.observe()?;
+        if let Some(mount) = live
+            .mounts
+            .into_iter()
+            .find(|m| m.path == target && m.kind == "tmpfs" && m.root == "/")
+        {
+            control.storage.mounts.push(mount);
+        }
+    }
+    mounted.with_context(|| format!("mount {source} at {target}"))?;
     Ok(())
 }
 
 fn verified_mount(
+    control: &mut BootControl,
     path: &str,
     signature: &str,
     name: &str,
@@ -164,13 +205,67 @@ fn verified_mount(
         "image type or length mismatch: {path}"
     );
     image.signature.verify(&bounded_file(signature, 65536)?)?;
-    let loop_device = startup::attach_read_only_loop(Path::new(path), run, startup::inspect_loop)?;
+    let loop_device = startup::attach_read_only_loop(
+        Path::new(path),
+        |cmd| run(control, cmd),
+        startup::inspect_loop,
+    )?;
+    let live = control.observe()?;
+    let loop_id = Device::from_raw(fs::metadata(&loop_device)?.rdev());
+    let association = live
+        .blocks
+        .iter()
+        .find(|b| b.device == loop_id)
+        .and_then(|b| b.association.as_ref())
+        .context("new loop association disappeared")?
+        .clone();
+    ensure!(
+        association.backing == Device::from_raw(meta.dev())
+            && association.inode == meta.ino()
+            && association.flags & 1 == 1
+            && association.offset == 0
+            && association.size_limit == 0,
+        "native loop identity disagrees with verified startup association"
+    );
+    control.storage.loops.push(association);
+    ensure!(
+        !live
+            .blocks
+            .iter()
+            .any(|b| b.mapping.as_ref().is_some_and(|m| m.name == name)),
+        "MOS mapping already exists before creation"
+    );
     let args = verity_args(&loop_device, name, signature, image);
-    run(command(
-        "/sbin/veritysetup",
-        &args.iter().map(String::as_str).collect::<Vec<_>>(),
-    ))?;
-    let table = run(command("/sbin/dmsetup", &["table", name]))?;
+    let creation = run(
+        control,
+        command(
+            "/sbin/veritysetup",
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        ),
+    );
+    // A worker can create the mapping and then fail. Adopt only the live
+    // expected verity table and the already verified owned loop, never a name.
+    let live = control.observe()?;
+    if let Some(block) = live
+        .blocks
+        .iter()
+        .find(|b| b.mapping.as_ref().is_some_and(|m| m.name == name))
+    {
+        let mapping = block.mapping.as_ref().context("mapping disappeared")?;
+        ensure!(
+            block.slaves == std::collections::BTreeSet::from([loop_id])
+                && mapping.table.split_whitespace().nth(2) == Some("verity")
+                && mapping
+                    .table
+                    .split_whitespace()
+                    .any(|s| s == image.root_hash)
+                && !mapping.uuid.is_empty(),
+            "created mapping ownership cannot be established"
+        );
+        control.storage.mappings.push(mapping.clone());
+    }
+    creation?;
+    let table = run(control, command("/sbin/dmsetup", &["table", name]))?;
     ensure!(
         table
             .split_whitespace()
@@ -186,6 +281,7 @@ fn verified_mount(
     }
     ensure!(read_only, "kernel mapping is not read-only");
     mount(
+        control,
         &format!("/dev/mapper/{name}"),
         target,
         "squashfs",
@@ -193,24 +289,26 @@ fn verified_mount(
     )
 }
 
-fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
+fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<()> {
     let started = Instant::now();
     ensure!(std::process::id() == 1, "mos-init must run as PID 1");
-    mount("devtmpfs", "/dev", "devtmpfs", "nosuid,mode=0755")?;
-    mount("proc", "/proc", "proc", "nosuid,nodev,noexec")?;
-    mount("sysfs", "/sys", "sysfs", "nosuid,nodev,noexec")?;
-    mount("tmpfs", "/run", "tmpfs", "nosuid,nodev,mode=0755,size=32M")?;
+    mount(control, "devtmpfs", "/dev", "devtmpfs", "nosuid,mode=0755")?;
+    mount(control, "proc", "/proc", "proc", "nosuid,nodev,noexec")?;
+    mount(control, "sysfs", "/sys", "sysfs", "nosuid,nodev,noexec")?;
+    mount(
+        control,
+        "tmpfs",
+        "/run",
+        "tmpfs",
+        "nosuid,nodev,mode=0755,size=32M",
+    )?;
     ensure!(
         fs::read_to_string("/sys/module/dm_verity/parameters/require_signatures")?.trim() == "Y",
         "signature enforcement is disabled"
     );
     // Arming is synchronous and precedes access to deployment storage. The
     // signed cmdline fixes the timeout; NOWAYOUT keeps it armed across exec.
-    let mut watchdog = OpenOptions::new()
-        .write(true)
-        .open("/dev/watchdog")
-        .context("required boot watchdog is unavailable")?;
-    watchdog.write_all(b"1")?;
+    control.supervisor.arm()?;
     eprintln!("mos-init: boot watchdog armed");
     eprintln!("mos-init: pseudo-filesystems and signature policy ready");
     let config: Config = serde_json::from_slice(&bounded_file("/etc/mos/boot.json", 4096)?)?;
@@ -238,6 +336,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
     let (selected, id, secure_boot) = match backend {
         BootKind::Uefi => {
             mount(
+                control,
                 "efivarfs",
                 "/sys/firmware/efi/efivars",
                 "efivarfs",
@@ -264,18 +363,22 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
         }
     };
     eprintln!("mos-init: selected deployment {id}");
+    control.storage.deployment = id.clone();
     let mut device = String::new();
     let discovery = Instant::now();
     while discovery.elapsed() < Duration::from_secs(15) {
-        if let Ok(found) = run(command(
-            "/sbin/blkid",
-            &[
-                "-t",
-                &format!("PARTUUID={}", config.system_part_uuid),
-                "-o",
-                "device",
-            ],
-        )) && !found.is_empty()
+        if let Ok(found) = run(
+            control,
+            command(
+                "/sbin/blkid",
+                &[
+                    "-t",
+                    &format!("PARTUUID={}", config.system_part_uuid),
+                    "-o",
+                    "device",
+                ],
+            ),
+        ) && !found.is_empty()
         {
             device = found;
             break;
@@ -287,9 +390,15 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             anyhow::anyhow!("SYSTEM partition not found uniquely").context(SharedSystemFailure)
         );
     }
-    watchdog.write_all(b"1")?;
     // ext4 replays a dirty journal before completing this read-only mount.
-    mount(&device, "/system", "ext4", "ro,nodev,nosuid,noexec").context(SharedSystemFailure)?;
+    mount(
+        control,
+        &device,
+        "/system",
+        "ext4",
+        "ro,nodev,nosuid,noexec",
+    )
+    .context(SharedSystemFailure)?;
     *attempt = Some(BootAttempt {
         id: id.clone(),
         backend,
@@ -306,6 +415,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
     );
     let paths = deployment.paths()?;
     verified_mount(
+        control,
         &format!("/system/{}", paths.rootfs),
         &format!("/system/roots/{}/rootfs.roothash.p7s", deployment.rootfs.id),
         "mos-root",
@@ -313,6 +423,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
         &deployment.rootfs.content,
     )?;
     verified_mount(
+        control,
         &format!("/system/{}", paths.support),
         &format!(
             "/system/kernels/{}/support.roothash.p7s",
@@ -334,23 +445,25 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             fs::symlink_metadata(target)?.is_dir() && fs::read_dir(target)?.next().is_none(),
             "invalid support mountpoint {target}"
         );
-        run(startup::bind(source, target))?;
-        run(startup::remount(
-            source,
-            target,
-            "remount,bind,ro,nodev,nosuid",
-        ))?;
+        run(control, startup::bind(source, target))?;
+        run(
+            control,
+            startup::remount(source, target, "remount,bind,ro,nodev,nosuid"),
+        )?;
     }
     (|| -> Result<()> {
-        let data = run(command(
-            "/sbin/blkid",
-            &[
-                "-t",
-                &format!("PARTUUID={}", config.data_part_uuid),
-                "-o",
-                "device",
-            ],
-        ))?;
+        let data = run(
+            control,
+            command(
+                "/sbin/blkid",
+                &[
+                    "-t",
+                    &format!("PARTUUID={}", config.data_part_uuid),
+                    "-o",
+                    "device",
+                ],
+            ),
+        )?;
         ensure!(
             data.starts_with("/dev/") && !data.contains(char::is_whitespace),
             "DATA partition not found uniquely"
@@ -375,7 +488,13 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
                 && fs::read_to_string(data_node.join("partition"))?.trim() == "3",
             "DATA is not on the authenticated system disk"
         );
-        mount(&data, "/newroot/mnt/data", "ext4", "rw,noatime,prjquota")?;
+        mount(
+            control,
+            &data,
+            "/newroot/mnt/data",
+            "ext4",
+            "rw,noatime,prjquota",
+        )?;
         persistent_machine_id(Path::new("/newroot/mnt/data/state"), || {
             Ok(fs::read_to_string("/proc/sys/kernel/random/uuid")?
                 .trim()
@@ -385,20 +504,25 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             fs::symlink_metadata("/newroot/etc/machine-id")?.is_file(),
             "machine identity mountpoint is not a file"
         );
-        run(startup::bind(
-            "/newroot/mnt/data/state/machine-id",
-            "/newroot/etc/machine-id",
-        ))?;
-        run(startup::remount(
-            "/newroot/mnt/data/state/machine-id",
-            "/newroot/etc/machine-id",
-            "remount,bind,ro,nodev,nosuid,noexec",
-        ))?;
+        run(
+            control,
+            startup::bind(
+                "/newroot/mnt/data/state/machine-id",
+                "/newroot/etc/machine-id",
+            ),
+        )?;
+        run(
+            control,
+            startup::remount(
+                "/newroot/mnt/data/state/machine-id",
+                "/newroot/etc/machine-id",
+                "remount,bind,ro,nodev,nosuid,noexec",
+            ),
+        )?;
         Ok(())
     })()
     .context(mos_deploy::deployments::SharedDataFailure)?;
     eprintln!("mos-init: persistent DATA identity ready before system init");
-    watchdog.write_all(b"1")?;
     fs::create_dir_all("/run/mos")?;
     fs::write(
         "/run/mos/boot.json",
@@ -409,17 +533,32 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
         }))?,
     )?;
     fs::write("/run/mos/deployment.json", &envelope)?;
+    let manifest = String::from_utf8(bounded_file("/exitrd.files", 8192)?)?;
+    let retained_bytes = exitrd_tmpfs_bytes(Path::new("/exitrd"), &manifest)?;
     mount(
+        control,
         "tmpfs",
         "/run/initramfs",
         "tmpfs",
-        "nosuid,nodev,mode=0700,size=36M",
+        &format!("nosuid,nodev,mode=0700,size={retained_bytes},nr_inodes=8192"),
     )?;
-    copy_exitrd(
-        Path::new("/exitrd"),
-        Path::new("/run/initramfs"),
-        std::str::from_utf8(&bounded_file("/exitrd.files", 8192)?)?,
-    )?;
+    copy_exitrd(Path::new("/exitrd"), Path::new("/run/initramfs"), &manifest)?;
+    let state = control.observe()?;
+    for mount in state.mounts.into_iter().filter(|m| {
+        control.storage.backings.contains(&m.device)
+            || control
+                .storage
+                .mappings
+                .iter()
+                .any(|dm| dm.device == m.device)
+    }) {
+        if !control.storage.mounts.iter().any(|old| old.id == mount.id) {
+            control.storage.mounts.push(mount);
+        }
+    }
+    let mut handoff = control.storage.clone();
+    handoff.allow_extra_loops = true;
+    fs::write("/run/initramfs/storage.json", serde_json::to_vec(&handoff)?)?;
     startup::validate_new_root(Path::new("/newroot"))?;
     for (source, target) in [
         ("/system", "/newroot/mnt/system"),
@@ -438,13 +577,13 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             Path::new(destination).is_dir(),
             "missing immutable mountpoint {destination}"
         );
-        run(startup::move_mount(source, destination))?;
+        run(control, startup::move_mount(source, destination))?;
     }
     for dir in ["dev", "proc", "sys", "run"] {
-        run(startup::move_mount(
-            &format!("/{dir}"),
-            &format!("/newroot/{dir}"),
-        ))?;
+        run(
+            control,
+            startup::move_mount(&format!("/{dir}"), &format!("/newroot/{dir}")),
+        )?;
     }
     fs::copy("/etc/mos/boot.json", "/newroot/run/mos/boot-policy.json")?;
     eprintln!("mos-init: verified deployment {id}; support mounted before system init");
@@ -478,42 +617,70 @@ fn main() {
             maximum: Some(0),
         },
     );
-    let mut recovery = false;
-    let mut attempt = None;
-    if let Err(error) = boot(&mut attempt) {
-        recovery = error.is::<SharedSystemFailure>()
-            || error.is::<mos_deploy::deployments::SharedDataFailure>();
-        eprintln!("mos-init: boot refused: {error:#}");
-        if !recovery {
-            match attempt
-                .context("boot selection could not be established")
-                .and_then(|attempt| attempt.retire_failed_confirmed())
-            {
-                Ok(()) => (),
-                Err(error) => {
-                    eprintln!("mos-init: recovery required: {error:#}");
-                    recovery = true;
-                }
-            }
-        }
-    }
     if std::process::id() != 1 {
+        eprintln!("mos-init must run as PID 1");
         std::process::exit(1);
     }
-    thread::sleep(Duration::from_secs(2));
-    let command = if recovery {
-        rustix::system::RebootCommand::PowerOff
-    } else {
-        rustix::system::RebootCommand::Restart
+    let mut control = BootControl {
+        supervisor: Supervisor::new(),
+        storage: Ownership::default(),
     };
-    let _ = rustix::system::reboot(command);
-    // If firmware cannot power off, hold recovery without consuming more
-    // deployment attempts. A shared filesystem failure affects every entry.
-    let mut watchdog = OpenOptions::new().write(true).open("/dev/watchdog").ok();
-    loop {
-        if let Some(watchdog) = &mut watchdog {
-            let _ = watchdog.write_all(b"1");
+    let mut attempt = None;
+    let error = boot(&mut control, &mut attempt)
+        .err()
+        .unwrap_or_else(|| anyhow::anyhow!("boot unexpectedly returned"));
+    let _ = shutdown::diagnostic(&format!("mos-init: boot refused: {error:#}"));
+    let mut recovery = error.is::<SharedSystemFailure>()
+        || error.is::<mos_deploy::deployments::SharedDataFailure>();
+    let cleanup = (|| -> Result<()> {
+        let budget = control.supervisor.begin_shutdown()?;
+        let deadline = budget.operation_deadline(control.supervisor.now_ms())?;
+        SystemIo {
+            supervisor: &mut control.supervisor,
+            executable: "/sbin/mos-shutdown",
         }
-        thread::sleep(Duration::from_secs(10));
-    }
+        .execute(&Operation::Private, deadline)?;
+        let deadline = budget.operation_deadline(control.supervisor.now_ms())?;
+        SystemIo {
+            supervisor: &mut control.supervisor,
+            executable: "/sbin/mos-shutdown",
+        }
+        .execute(&Operation::Quiesce, deadline)?;
+        ensure!(
+            control.observe()?.processes.is_empty(),
+            "startup workers remain before record retirement"
+        );
+        control.supervisor.prepare_process()?;
+        if !recovery
+            && let Err(error) = attempt
+                .as_ref()
+                .context("boot selection could not be established")
+                .and_then(|selected| selected.retire_failed_confirmed(&mut control))
+        {
+            let _ = shutdown::diagnostic(&format!("mos-init: recovery required: {error:#}"));
+            recovery = true;
+        }
+        let action = if recovery {
+            Action::Poweroff
+        } else {
+            Action::Reboot
+        };
+        shutdown::diagnostic(&format!(
+            "MOS_SHUTDOWN stage=entered action={} source=partial-startup",
+            action.as_str()
+        ))?;
+        shutdown::finish(
+            &mut SystemIo {
+                supervisor: &mut control.supervisor,
+                executable: "/sbin/mos-shutdown",
+            },
+            budget,
+            &control.storage,
+            action,
+        )
+    })();
+    let failure = cleanup
+        .err()
+        .unwrap_or_else(|| anyhow::anyhow!("shutdown returned"));
+    control.supervisor.failure(&failure)
 }
