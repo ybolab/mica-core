@@ -144,6 +144,20 @@ if [ -n "${primitive_hits}" ]; then
     printf '%s\n' "${primitive_hits}" | sed 's/^/    /' >&2
 fi
 
+# --- 9. route modules export their route and nothing else -------------------
+# The router plugin only code-splits a route whose exports are the route. One
+# re-export added for a test's convenience hoisted a whole feature page, and
+# everything it imported, into the entry chunk — 48 kB that nothing on the
+# first paint needs.
+checks=$((checks + 1))
+route_exports="$({ grep -rnE '^export (const|function|\{|default)' src/app/routes --include='*.tsx' 2>/dev/null || true; } |
+    { grep -v 'export const Route' || true; } |
+    { grep -v '/-' || true; })"
+if [ -n "${route_exports}" ]; then
+    bad "a route module exports something other than its Route, which defeats code splitting:"
+    printf '%s\n' "${route_exports}" | sed 's/^/    /' >&2
+fi
+
 if [ "${fail}" -ne 0 ]; then
     note "${fail} violation(s) across ${checks} checks"
     exit 1

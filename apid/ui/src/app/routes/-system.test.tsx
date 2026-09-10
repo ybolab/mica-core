@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nextProvider } from 'react-i18next'
 import type { UiStatus } from '@/lib/types'
 import { i18n } from '@/i18n/i18n'
-import { UiPanel, UpdateChecks, UpdatePanel } from './system'
+import { UiPanel, UpdateChecks, UpdatePanel } from '@/features/system/system-page'
 
 function response(value: UiStatus) {
   return new Response(JSON.stringify(value), {
