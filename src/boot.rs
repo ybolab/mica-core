@@ -5,8 +5,11 @@ pub mod startup;
 use crate::components::VerityImage;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs,
-    path::{Component, Path},
+    io::{Read, Write},
+    os::unix::fs::PermissionsExt,
+    path::Path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -83,40 +86,148 @@ pub fn persistent_machine_id(
     }
 }
 
-/// Preserve the signed, build-time ELF closure across deletion of the initramfs.
+/// Copy the signed build-time closure into a fresh, empty exitrd filesystem.
+/// Validate every member before writing; input and destination must be private
+/// to PID 1 throughout copying, as they are before the systemd handoff.
 pub fn copy_exitrd(source: &Path, destination: &Path, manifest: &str) -> anyhow::Result<()> {
+    use anyhow::{Context, ensure};
+    use rustix::fs::{CWD, Dir, Mode, OFlags, ResolveFlags, mkdirat, openat2};
+    const RUNTIME_DIRS: [&str; 6] = ["dev", "proc", "sys", "run", "oldroot", "etc"];
+    const RELEASE: &str = "etc/initrd-release";
+
     anyhow::ensure!(
-        manifest.len() <= 8192 && manifest.lines().count() <= 128,
-        "excessive exitrd manifest"
+        !manifest.is_empty() && manifest.len() <= 8192 && manifest.lines().count() <= 128,
+        "invalid or excessive exitrd manifest"
     );
-    let mut bytes = 0_u64;
+    ensure!(!manifest.contains(['\0', '\r']), "invalid exitrd path");
+    let mut names = BTreeSet::new();
     for name in manifest.lines() {
-        let path = Path::new(name);
-        anyhow::ensure!(
-            !name.is_empty()
-                && path
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_))),
+        ensure!(!name.is_empty(), "empty exitrd manifest member");
+        ensure!(
+            name.split('/')
+                .all(|part| !part.is_empty() && part != "." && part != ".."),
             "invalid exitrd path"
         );
-        let metadata = fs::symlink_metadata(source.join(path))?;
-        anyhow::ensure!(metadata.is_file(), "exitrd member is not a file");
+        ensure!(names.insert(name), "duplicate exitrd manifest member");
+        ensure!(
+            !RUNTIME_DIRS.contains(&name) && name != RELEASE,
+            "exitrd reserved path"
+        );
+    }
+    ensure!(names.contains("shutdown"), "missing exitrd shutdown");
+    let mut directories: BTreeSet<&Path> = RUNTIME_DIRS.iter().map(Path::new).collect();
+    for &name in &names {
+        for parent in Path::new(name)
+            .ancestors()
+            .skip(1)
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            ensure!(
+                !names.contains(parent.to_str().context("invalid exitrd path")?),
+                "exitrd path conflict"
+            );
+            ensure!(parent != Path::new(RELEASE), "exitrd reserved path");
+            directories.insert(parent);
+        }
+    }
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let source = fs::File::from(
+        openat2(
+            CWD,
+            source,
+            directory_flags,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS,
+        )
+        .context("invalid exitrd source")?,
+    );
+    let destination = fs::File::from(
+        openat2(
+            CWD,
+            destination,
+            directory_flags,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS,
+        )
+        .context("invalid exitrd destination")?,
+    );
+    for entry in Dir::read_from(&destination)? {
+        let entry = entry?;
+        ensure!(
+            entry.file_name() == c"." || entry.file_name() == c"..",
+            "exitrd destination is not empty"
+        );
+    }
+    let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
+    let mut members = Vec::new();
+    let mut bytes = 0_u64;
+    for &name in &names {
+        // NONBLOCK prevents a substituted FIFO from blocking before fstat.
+        let file = fs::File::from(
+            openat2(
+                &source,
+                name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                Mode::empty(),
+                resolve,
+            )
+            .with_context(|| format!("invalid exitrd member: {name}"))?,
+        );
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file(), "exitrd member is not a file");
+        let mode = metadata.permissions().mode();
+        ensure!(
+            mode & 0o7022 == 0 && mode & 0o400 != 0,
+            "invalid exitrd member permissions"
+        );
+        ensure!(
+            name != "shutdown" || mode & 0o100 != 0,
+            "exitrd shutdown is not executable"
+        );
         bytes = bytes
             .checked_add(metadata.len())
             .ok_or_else(|| anyhow::anyhow!("exitrd size overflow"))?;
-        anyhow::ensure!(bytes <= 32 * 1024 * 1024, "excessive exitrd size");
+        ensure!(bytes <= 32 * 1024 * 1024, "excessive exitrd size");
+        members.push((name, file, metadata));
     }
-    for name in manifest.lines() {
-        let target = destination.join(name);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source.join(name), target)?;
+    for directory in directories {
+        let parent = directory
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let parent = openat2(
+            &destination,
+            parent,
+            directory_flags,
+            Mode::empty(),
+            resolve,
+        )?;
+        mkdirat(
+            &parent,
+            directory.file_name().context("invalid exitrd directory")?,
+            Mode::from_raw_mode(0o755),
+        )?;
     }
-    for name in ["dev", "proc", "sys", "run", "oldroot", "etc"] {
-        fs::create_dir_all(destination.join(name))?;
+    let create = |name: &str| -> anyhow::Result<fs::File> {
+        Ok(fs::File::from(openat2(
+            &destination,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+            resolve,
+        )?))
+    };
+    for (name, file, metadata) in members {
+        let mut target = create(name)?;
+        ensure!(
+            std::io::copy(&mut file.take(metadata.len() + 1), &mut target)? == metadata.len(),
+            "exitrd member changed while copying"
+        );
+        target.set_permissions(metadata.permissions())?;
     }
-    fs::write(destination.join("etc/initrd-release"), b"ID=mos-exitrd\n")?;
+    let mut release = create(RELEASE)?;
+    release.write_all(b"ID=mos-exitrd\n")?;
+    release.set_permissions(fs::Permissions::from_mode(0o644))?;
     Ok(())
 }
 
