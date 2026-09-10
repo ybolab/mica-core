@@ -1,6 +1,6 @@
 //! Durable file-deployment state and native UEFI/FIT boot records.
 use crate::boot::selected_entry;
-use crate::fit_env::{Environment, Record};
+use crate::fit_env::{Environment, FitLayout, Record};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -66,8 +66,13 @@ pub struct DeploymentStatus {
 }
 
 pub enum BootBackend {
-    Uefi { esp: PathBuf },
-    Fit { firmware: PathBuf },
+    Uefi {
+        esp: PathBuf,
+    },
+    Fit {
+        firmware: PathBuf,
+        layout: FitLayout,
+    },
 }
 
 pub struct DeploymentStore {
@@ -77,7 +82,7 @@ pub struct DeploymentStore {
 }
 
 /// Resolve partition 1 on the disk containing the authenticated SYSTEM UUID.
-pub fn boot_partition(system: &Path, kind: crate::boot::BootKind) -> Result<PathBuf> {
+pub fn boot_partition(system: &Path, kind: crate::boot::BootKind, board: &str) -> Result<PathBuf> {
     use std::os::unix::fs::FileTypeExt;
     ensure!(
         fs::read_to_string(system.join("partition"))?.trim() == "2",
@@ -99,7 +104,8 @@ pub fn boot_partition(system: &Path, kind: crate::boot::BootKind) -> Result<Path
     if kind == crate::boot::BootKind::UbootFit {
         ensure!(
             fs::read_to_string(physical.join("start"))?.trim() == "64"
-                && fs::read_to_string(physical.join("size"))?.trim() == "36800",
+                && fs::read_to_string(physical.join("size"))?.trim()
+                    == FitLayout::for_board(board)?.sectors().to_string(),
             "FIRMWARE geometry differs from the compiled layout"
         );
     }
@@ -319,8 +325,8 @@ impl DeploymentStore {
     pub fn entries(&self) -> Result<Vec<Entry>> {
         let esp = match &self.boot {
             BootBackend::Uefi { esp } => esp,
-            BootBackend::Fit { firmware } => {
-                return Ok(Environment::load(firmware)?
+            BootBackend::Fit { firmware, layout } => {
+                return Ok(Environment::load(firmware, *layout)?
                     .records
                     .into_iter()
                     .map(|r| Entry {
@@ -396,7 +402,7 @@ impl DeploymentStore {
                     "boot receipt identity mismatch"
                 );
             }
-            BootBackend::Fit { firmware } => {
+            BootBackend::Fit { firmware, layout } => {
                 ensure!(
                     receipt.backend == crate::boot::BootKind::UbootFit
                         && !receipt.secure_boot
@@ -407,7 +413,7 @@ impl DeploymentStore {
                     receipt.entry == format!("fit:{}", receipt.deployment_id),
                     "boot receipt identity mismatch"
                 );
-                let env = Environment::load(firmware)?;
+                let env = Environment::load(firmware, *layout)?;
                 ensure!(
                     env.records
                         .iter()
@@ -434,12 +440,12 @@ impl DeploymentStore {
                 )?;
                 sync_directory(&directory)
             }
-            BootBackend::Fit { firmware } => {
+            BootBackend::Fit { firmware, layout } => {
                 ensure!(
                     tries_left.is_none() || tries_left == Some(0),
                     "attempts cannot be refilled"
                 );
-                let mut env = Environment::load(firmware)?;
+                let mut env = Environment::load(firmware, *layout)?;
                 let record = env
                     .records
                     .iter_mut()
@@ -488,13 +494,13 @@ impl DeploymentStore {
                 }
                 sync_directory(&esp.join("loader/entries"))
             }
-            BootBackend::Fit { firmware } => {
-                let mut env = Environment::load(firmware)?;
+            BootBackend::Fit { firmware, layout } => {
+                let mut env = Environment::load(firmware, *layout)?;
                 env.records.retain(|r| keep.contains(&Some(r.id.as_str())));
                 env.save(firmware)?;
                 // Both redundant copies must forget retired records before
                 // collection can remove their objects, including after retry.
-                Environment::load(firmware)?.save(firmware)
+                Environment::load(firmware, *layout)?.save(firmware)
             }
         }
     }
@@ -516,9 +522,9 @@ impl DeploymentStore {
                         && deployment.generation == entry.generation,
                     "deployment status identity mismatch"
                 );
-                if let BootBackend::Fit { firmware } = &self.boot {
+                if let BootBackend::Fit { firmware, layout } = &self.boot {
                     ensure!(
-                        Environment::load(firmware)?
+                        Environment::load(firmware, *layout)?
                             .records
                             .iter()
                             .any(|r| r.id == entry.id && r.kernel_id == deployment.kernel.id),
@@ -1109,8 +1115,8 @@ impl DeploymentStore {
                     entry.as_bytes(),
                 )?;
             }
-            BootBackend::Fit { firmware } => {
-                let mut env = Environment::load(firmware)?;
+            BootBackend::Fit { firmware, layout } => {
+                let mut env = Environment::load(firmware, *layout)?;
                 env.records.insert(
                     0,
                     Record {

@@ -7,8 +7,38 @@ use std::{
 };
 
 pub const ENV_SIZE: usize = 65536;
-/// Offsets inside FIRMWARE, whose first sector is absolute disk sector 64.
-pub const ENV_OFFSETS: [u64; 2] = [16 * 1048576 - 32768, 17 * 1048576 - 32768];
+/// Compiled board geometry; disk contents never choose writable offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FitLayout {
+    Cx3576,
+    S905x5m,
+}
+
+impl FitLayout {
+    pub fn for_board(board: &str) -> Result<Self> {
+        match board {
+            "cx3576" => Ok(Self::Cx3576),
+            "s905x5m" => Ok(Self::S905x5m),
+            _ => anyhow::bail!("unsupported FIT layout"),
+        }
+    }
+
+    /// Relative to FIRMWARE, which starts at absolute disk sector 64.
+    pub const fn offsets(self) -> [u64; 2] {
+        let mib = match self {
+            Self::Cx3576 => [16, 17],
+            Self::S905x5m => [120, 124],
+        };
+        [mib[0] * 1048576 - 32768, mib[1] * 1048576 - 32768]
+    }
+
+    pub const fn sectors(self) -> u64 {
+        match self {
+            Self::Cx3576 => 36800,
+            Self::S905x5m => 262080,
+        }
+    }
+}
 const MAX_GENERATION: u64 = 9_007_199_254_740_991;
 const KEY: &[u8] = b"mos_entries=";
 
@@ -131,15 +161,16 @@ pub struct Environment {
     pub records: Vec<Record>,
     pub slot: usize,
     pub flag: u8,
+    layout: FitLayout,
 }
 
 impl Environment {
-    pub fn load(region: &Path) -> Result<Self> {
+    pub fn load(region: &Path, layout: FitLayout) -> Result<Self> {
         let mut file = File::open(region)?;
         let mut copies = [vec![0; ENV_SIZE], vec![0; ENV_SIZE]];
         let mut valid = [false; 2];
         for i in 0..2 {
-            if file.seek(SeekFrom::Start(ENV_OFFSETS[i])).is_ok()
+            if file.seek(SeekFrom::Start(layout.offsets()[i])).is_ok()
                 && file.read_exact(&mut copies[i]).is_ok()
             {
                 valid[i] = valid_crc(&copies[i]);
@@ -163,6 +194,7 @@ impl Environment {
             records: decode(&copies[slot])?,
             slot,
             flag: copies[slot][4],
+            layout,
         })
     }
 
@@ -174,10 +206,10 @@ impl Environment {
         let flag = self.flag.wrapping_add(1);
         let bytes = encode(&self.records, flag)?;
         let mut file = OpenOptions::new().write(true).open(region)?;
-        file.seek(SeekFrom::Start(ENV_OFFSETS[slot]))?;
+        file.seek(SeekFrom::Start(self.layout.offsets()[slot]))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        let saved = Self::load(region)?;
+        let saved = Self::load(region, self.layout)?;
         ensure!(
             saved.slot == slot && saved.flag == flag && saved.records == self.records,
             "boot environment read-back mismatch"

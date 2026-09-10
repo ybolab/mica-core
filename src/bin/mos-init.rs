@@ -44,6 +44,7 @@ struct BootAttempt {
     id: String,
     backend: BootKind,
     system_device: String,
+    board: String,
 }
 
 impl BootAttempt {
@@ -55,7 +56,7 @@ impl BootAttempt {
                     .context("missing SYSTEM device")?,
             ),
         )?;
-        let device = boot_partition(&system, self.backend)?;
+        let device = boot_partition(&system, self.backend, &self.board)?;
         let boot = match self.backend {
             BootKind::Uefi => {
                 mount(
@@ -68,7 +69,10 @@ impl BootAttempt {
                     esp: "/boot-state".into(),
                 }
             }
-            BootKind::UbootFit => BootBackend::Fit { firmware: device },
+            BootKind::UbootFit => BootBackend::Fit {
+                firmware: device,
+                layout: mos_deploy::fit_env::FitLayout::for_board(&self.board)?,
+            },
         };
         // PID 1 has not started any DATA writer. Only the native boot record
         // changes here; the fallback reconciles diagnostic state after boot.
@@ -288,6 +292,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
         id: id.clone(),
         backend,
         system_device: device.clone(),
+        board: config.identity.board.clone(),
     });
     eprintln!("mos-init: SYSTEM mounted read-only");
     let envelope = bounded_file(&format!("/system/deployments/{id}.json"), 24576)?;

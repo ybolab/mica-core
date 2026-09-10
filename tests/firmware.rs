@@ -92,6 +92,7 @@ fn firmware_readback_checks_only_the_bound_loader_bytes_and_never_changes_counte
             fs::write(&file, image).unwrap();
             (
                 BootBackend::Fit {
+                    layout: mos_deploy::fit_env::FitLayout::Cx3576,
                     firmware: file.clone(),
                 },
                 file,
@@ -104,5 +105,39 @@ fn firmware_readback_checks_only_the_bound_loader_bytes_and_never_changes_counte
         damaged[0] ^= 1;
         fs::write(&path, damaged).unwrap();
         assert!(verify_installed(&manifest, &boot).is_err());
+    }
+}
+
+#[test]
+fn amlogic_receipt_checks_payload_after_the_vendor_header() {
+    let directory = tempfile::tempdir().unwrap();
+    let payload = b"signed S7D boot payload";
+    let digest = hex::encode(ring::digest::digest(&ring::digest::SHA256, payload));
+    let mut value = golden()["records"][2]["manifest"].clone();
+    value["board"] = json!("s905x5m");
+    value["target"] = json!({"format":"amlogic-boot0","payloadOffset":512,"maxBytes":4193792});
+    value["artifact"] = json!({"bytes":payload.len(),"sha256":digest});
+    value["id"] = json!(mos_deploy::components::component_id(&value).unwrap());
+    let manifest = parse_firmware(&serde_json::to_vec(&value).unwrap()).unwrap();
+    let path = directory.path().join("boot0");
+    let mut bytes = vec![42; 512];
+    bytes.extend_from_slice(payload);
+    std::fs::write(&path, &bytes).unwrap();
+    mos_deploy::firmware::verify_boot0_payload(&manifest, &path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    bytes[0] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    mos_deploy::firmware::verify_boot0_payload(&manifest, &path).unwrap();
+    bytes[512] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(mos_deploy::firmware::verify_boot0_payload(&manifest, &path).is_err());
+    for target in [
+        json!({"format":"amlogic-boot0","payloadOffset":0,"maxBytes":4193792}),
+        json!({"format":"amlogic-boot0","payloadOffset":512,"maxBytes":4194304}),
+        json!({"format":"amlogic-boot1","payloadOffset":512,"maxBytes":4193792}),
+    ] {
+        value["target"] = target;
+        value["id"] = json!(mos_deploy::components::component_id(&value).unwrap());
+        assert!(parse_firmware(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }

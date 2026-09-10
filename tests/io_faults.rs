@@ -4,7 +4,7 @@ use mos_deploy::{
     boot::BootKind,
     components::{authenticate_deployment, component_id},
     deployments::{BootBackend, BootReceipt, DeploymentStore, State},
-    fit_env::{ENV_OFFSETS, Record, encode},
+    fit_env::{Record, encode},
 };
 use ring::{
     digest,
@@ -25,6 +25,7 @@ fn store(root: &Path, fit: bool) -> DeploymentStore {
         root.join("store/system"),
         if fit {
             BootBackend::Fit {
+                layout: mos_deploy::fit_env::FitLayout::Cx3576,
                 firmware: root.join("store/firmware.img"),
             }
         } else {
@@ -170,7 +171,11 @@ fn seed(root: &Path, fit: bool, operation: &str) {
     if fit {
         let mut file = fs::File::create(root.join("store/firmware.img")).unwrap();
         file.set_len(18 * 1048576 - 32768).unwrap();
-        for (i, offset) in ENV_OFFSETS.into_iter().enumerate() {
+        for (i, offset) in mos_deploy::fit_env::FitLayout::Cx3576
+            .offsets()
+            .into_iter()
+            .enumerate()
+        {
             file.seek(SeekFrom::Start(offset)).unwrap();
             file.write_all(&encode(&records, i as u8).unwrap()).unwrap();
         }
@@ -221,8 +226,12 @@ fn seed(root: &Path, fit: bool, operation: &str) {
             .unwrap();
     }
     if !["install", "reuse"].contains(&operation) {
-        if let BootBackend::Fit { firmware } = &store.boot {
-            let mut environment = mos_deploy::fit_env::Environment::load(firmware).unwrap();
+        if let BootBackend::Fit { firmware, .. } = &store.boot {
+            let mut environment = mos_deploy::fit_env::Environment::load(
+                firmware,
+                mos_deploy::fit_env::FitLayout::Cx3576,
+            )
+            .unwrap();
             environment.records[0].tries_left = Some(2);
             environment.save(firmware).unwrap();
         } else {
@@ -283,9 +292,9 @@ fn validate(root: &Path, fit: bool) {
             .iter()
             .any(|e| e.id == retained && e.tries_left != Some(0))
     );
-    if let BootBackend::Fit { firmware } = &store.boot {
+    if let BootBackend::Fit { firmware, .. } = &store.boot {
         let bytes = fs::read(firmware).unwrap();
-        for offset in ENV_OFFSETS {
+        for offset in mos_deploy::fit_env::FitLayout::Cx3576.offsets() {
             // Either CRC-valid redundant copy must refer only to complete
             // deployments, even if a later read loses the newest copy.
             let mut isolated = tempfile::NamedTempFile::new().unwrap();
@@ -294,7 +303,10 @@ fn validate(root: &Path, fit: bool) {
             isolated
                 .write_all(&bytes[offset as usize..offset as usize + mos_deploy::fit_env::ENV_SIZE])
                 .unwrap();
-            if let Ok(environment) = mos_deploy::fit_env::Environment::load(isolated.path()) {
+            if let Ok(environment) = mos_deploy::fit_env::Environment::load(
+                isolated.path(),
+                mos_deploy::fit_env::FitLayout::Cx3576,
+            ) {
                 let records = environment.records;
                 for record in records {
                     if !entries.iter().any(|entry| entry.id == record.id) {
@@ -587,8 +599,12 @@ fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
             store.confirm(&candidate_receipt).is_err(),
             "unlaunched trial was confirmed"
         );
-        if let BootBackend::Fit { firmware } = &store.boot {
-            let mut env = mos_deploy::fit_env::Environment::load(firmware).unwrap();
+        if let BootBackend::Fit { firmware, .. } = &store.boot {
+            let mut env = mos_deploy::fit_env::Environment::load(
+                firmware,
+                mos_deploy::fit_env::FitLayout::Cx3576,
+            )
+            .unwrap();
             env.records[0].tries_left = Some(2);
             env.save(firmware).unwrap();
         } else {
@@ -677,8 +693,12 @@ fn an_unconfirmed_running_trial_cannot_retire_the_other_deployment() {
         let current: BootReceipt =
             serde_json::from_slice(&fs::read(root.path().join("current-receipt.json")).unwrap())
                 .unwrap();
-        if let BootBackend::Fit { firmware } = &store.boot {
-            let mut env = mos_deploy::fit_env::Environment::load(firmware).unwrap();
+        if let BootBackend::Fit { firmware, .. } = &store.boot {
+            let mut env = mos_deploy::fit_env::Environment::load(
+                firmware,
+                mos_deploy::fit_env::FitLayout::Cx3576,
+            )
+            .unwrap();
             env.records
                 .iter_mut()
                 .for_each(|entry| entry.tries_left = Some(2));

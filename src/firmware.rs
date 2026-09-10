@@ -26,6 +26,7 @@ pub struct Firmware {
 pub enum Target {
     Efi { partition: u8, path: String },
     RockchipLoader { disk_offset: u64, max_bytes: u64 },
+    AmlogicBoot0 { payload_offset: u64, max_bytes: u64 },
 }
 
 pub fn parse_firmware(payload: &[u8]) -> Result<Firmware> {
@@ -42,7 +43,7 @@ pub fn parse_firmware(payload: &[u8]) -> Result<Firmware> {
     );
     let arch = match firmware.board.as_str() {
         "x64" => "amd64",
-        "virt-arm64" | "cx3576" => "arm64",
+        "virt-arm64" | "cx3576" | "s905x5m" => "arm64",
         _ => anyhow::bail!("unsupported firmware board"),
     };
     ensure!(firmware.arch == arch, "firmware architecture mismatch");
@@ -74,6 +75,16 @@ pub fn parse_firmware(payload: &[u8]) -> Result<Firmware> {
         "invalid firmware digest"
     );
     let limit = match &firmware.target {
+        Target::AmlogicBoot0 {
+            payload_offset,
+            max_bytes,
+        } => {
+            ensure!(
+                firmware.board == "s905x5m" && *payload_offset == 512 && *max_bytes == 4193792,
+                "invalid Amlogic boot0 payload"
+            );
+            4193792
+        }
         Target::RockchipLoader {
             disk_offset,
             max_bytes,
@@ -116,7 +127,13 @@ pub fn verify_installed(manifest: &Firmware, boot: &crate::deployments::BootBack
         (Target::Efi { path, .. }, BootBackend::Uefi { esp }) => {
             read_bounded(&esp.join(path), manifest.artifact.bytes)?
         }
-        (Target::RockchipLoader { .. }, BootBackend::Fit { firmware }) => {
+        (
+            Target::RockchipLoader { .. },
+            BootBackend::Fit {
+                firmware,
+                layout: crate::fit_env::FitLayout::Cx3576,
+            },
+        ) => {
             // FIRMWARE partition 1 starts at the manifest's absolute disk offset.
             let mut bytes = Vec::new();
             File::open(firmware)?
@@ -124,8 +141,58 @@ pub fn verify_installed(manifest: &Firmware, boot: &crate::deployments::BootBack
                 .read_to_end(&mut bytes)?;
             bytes
         }
+        (
+            Target::AmlogicBoot0 { .. },
+            BootBackend::Fit {
+                layout: crate::fit_env::FitLayout::S905x5m,
+                ..
+            },
+        ) => {
+            return verify_boot0_payload(manifest, &amlogic_boot0_device()?);
+        }
         _ => anyhow::bail!("firmware target differs from the boot backend"),
     };
     manifest.artifact.verify(&bytes)?;
     Ok(())
+}
+
+/// Compare only the signed payload; the vendor creates the preceding boot header.
+pub fn verify_boot0_payload(manifest: &Firmware, device: &std::path::Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Target::AmlogicBoot0 { payload_offset, .. } = manifest.target else {
+        anyhow::bail!("expected Amlogic boot0 firmware");
+    };
+    let mut file = std::fs::File::open(device)?;
+    file.seek(SeekFrom::Start(payload_offset))?;
+    let mut bytes = Vec::new();
+    file.take(manifest.artifact.bytes).read_to_end(&mut bytes)?;
+    manifest.artifact.verify(&bytes)?;
+    Ok(())
+}
+
+fn amlogic_boot0_device() -> Result<std::path::PathBuf> {
+    use std::{fs, os::unix::fs::FileTypeExt, path::Path};
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/sys/class/block")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name
+            .strip_prefix("mmcblk")
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+            || !fs::read_to_string(entry.path().join("device/type"))
+                .is_ok_and(|kind| kind.trim() == "MMC")
+        {
+            continue;
+        }
+        let device = Path::new("/dev").join(format!("{name}boot0"));
+        if device
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_block_device())
+        {
+            found.push(device);
+        }
+    }
+    ensure!(found.len() == 1, "eMMC boot0 absent or ambiguous");
+    Ok(found.remove(0))
 }

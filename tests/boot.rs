@@ -142,6 +142,7 @@ fn fit_selection_accepts_only_one_nul_terminated_deployment_digest() {
     use mos_deploy::boot::{BootKind, fit_selected};
     let id = "a".repeat(64);
     assert_eq!(BootKind::for_board("cx3576").unwrap(), BootKind::UbootFit);
+    assert_eq!(BootKind::for_board("s905x5m").unwrap(), BootKind::UbootFit);
     assert_eq!(BootKind::for_board("virt-arm64").unwrap(), BootKind::Uefi);
     assert!(BootKind::for_board("unknown").is_err());
     assert_eq!(fit_selected(format!("{id}\0").as_bytes()).unwrap(), id);

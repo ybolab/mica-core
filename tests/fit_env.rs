@@ -1,5 +1,5 @@
 use mos_deploy::fit_env::{
-    ENV_OFFSETS, ENV_SIZE, Environment, Record, encode, parse_records, render_records,
+    ENV_SIZE, Environment, FitLayout, Record, encode, parse_records, render_records,
 };
 use std::{
     fs,
@@ -63,7 +63,8 @@ fn region() -> (tempfile::TempDir, std::path::PathBuf) {
     fs::write(&path, vec![0x55; 18 * 1048576 - 32768]).unwrap();
     let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
     for (slot, flag) in [255, 0].into_iter().enumerate() {
-        file.seek(SeekFrom::Start(ENV_OFFSETS[slot])).unwrap();
+        file.seek(SeekFrom::Start(FitLayout::Cx3576.offsets()[slot]))
+            .unwrap();
         file.write_all(&encode(&records(), flag).unwrap()).unwrap();
     }
     file.sync_all().unwrap();
@@ -74,16 +75,16 @@ fn region() -> (tempfile::TempDir, std::path::PathBuf) {
 fn redundant_environment_rolls_flags_and_writes_only_the_inactive_copy() {
     let (_dir, path) = region();
     let before = fs::read(&path).unwrap();
-    let mut env = Environment::load(&path).unwrap();
+    let mut env = Environment::load(&path, FitLayout::Cx3576).unwrap();
     assert_eq!(env.slot, 1);
     env.records[0].tries_left = Some(2);
     env.save(&path).unwrap();
-    let saved = Environment::load(&path).unwrap();
+    let saved = Environment::load(&path, FitLayout::Cx3576).unwrap();
     assert_eq!(saved.slot, 0);
     assert_eq!(saved.flag, 1);
     assert_eq!(saved.records[0].tries_left, Some(2));
     let after = fs::read(&path).unwrap();
-    let offset = ENV_OFFSETS[0] as usize;
+    let offset = FitLayout::Cx3576.offsets()[0] as usize;
     assert_eq!(before[..offset], after[..offset]);
     assert_eq!(before[offset + ENV_SIZE..], after[offset + ENV_SIZE..]);
 }
@@ -92,12 +93,44 @@ fn redundant_environment_rolls_flags_and_writes_only_the_inactive_copy() {
 fn torn_or_invalid_environment_copies_never_refill_attempts() {
     let (_dir, path) = region();
     let mut bytes = fs::read(&path).unwrap();
-    bytes[ENV_OFFSETS[1] as usize + 20] ^= 1;
+    bytes[FitLayout::Cx3576.offsets()[1] as usize + 20] ^= 1;
     fs::write(&path, &bytes).unwrap();
-    let valid = Environment::load(&path).unwrap();
+    let valid = Environment::load(&path, FitLayout::Cx3576).unwrap();
     assert_eq!(valid.slot, 0);
     assert_eq!(valid.flag, 255);
-    bytes[ENV_OFFSETS[0] as usize + 20] ^= 1;
+    bytes[FitLayout::Cx3576.offsets()[0] as usize + 20] ^= 1;
     fs::write(&path, bytes).unwrap();
-    assert!(Environment::load(&path).is_err());
+    assert!(Environment::load(&path, FitLayout::Cx3576).is_err());
+}
+
+#[test]
+fn s905x5m_records_preserve_all_vendor_ranges_and_reject_the_other_board_offsets() {
+    let layout = FitLayout::S905x5m;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("firmware.img");
+    let mut file = fs::File::create(&path).unwrap();
+    file.set_len(layout.sectors() * 512).unwrap();
+    for offset in [36 * 1048576 - 32768, 108 * 1048576 - 32768] {
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(b"vendor sentinel").unwrap();
+    }
+    for (slot, offset) in layout.offsets().into_iter().enumerate() {
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&encode(&records(), slot as u8).unwrap())
+            .unwrap();
+    }
+    file.sync_all().unwrap();
+    assert!(Environment::load(&path, FitLayout::Cx3576).is_err());
+    let before = fs::read(&path).unwrap();
+    let mut env = Environment::load(&path, layout).unwrap();
+    env.records[0].tries_left = Some(2);
+    env.save(&path).unwrap();
+    assert_eq!(
+        Environment::load(&path, layout).unwrap().records[0].tries_left,
+        Some(2)
+    );
+    let after = fs::read(&path).unwrap();
+    let offset = layout.offsets()[0] as usize;
+    assert_eq!(before[..offset], after[..offset]);
+    assert_eq!(before[offset + ENV_SIZE..], after[offset + ENV_SIZE..]);
 }

@@ -221,7 +221,12 @@ fn execute() -> Result<()> {
             }
         }
         BootKind::UbootFit => BootBackend::Fit {
-            firmware: mos_deploy::deployments::boot_partition(&system, backend)?,
+            layout: mos_deploy::fit_env::FitLayout::for_board(&policy.identity.board)?,
+            firmware: mos_deploy::deployments::boot_partition(
+                &system,
+                backend,
+                &policy.identity.board,
+            )?,
         },
     };
     let store = DeploymentStore::new("/mnt/system".into(), boot, "/mnt/data/meta".into());
