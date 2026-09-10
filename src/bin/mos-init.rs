@@ -5,8 +5,8 @@ use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use mos_deploy::{
     boot::{
-        BootKind, copy_exitrd, fit_selected, persistent_machine_id, selected_entry, utf16_variable,
-        verity_args,
+        BootKind, copy_exitrd, fit_selected, persistent_machine_id, selected_entry, startup,
+        utf16_variable, verity_args,
     },
     components::{BootIdentity, VerityImage, component_id, verify_deployment},
     deployments::{BootBackend, DeploymentStore, boot_partition},
@@ -70,7 +70,7 @@ impl BootAttempt {
                 }
             }
             BootKind::UbootFit => BootBackend::Fit {
-                firmware: device,
+                firmware: device.clone(),
                 layout: mos_deploy::fit_env::FitLayout::for_board(&self.board)?,
             },
         };
@@ -79,10 +79,11 @@ impl BootAttempt {
         let store = DeploymentStore::new("/system".into(), boot, "/unused-meta".into());
         let result = store.retire_failed_confirmed(&self.id);
         if self.backend == BootKind::Uefi {
-            run(
-                "/bin/mount",
-                &["-o", "remount,ro,nodev,nosuid,noexec", "/boot-state"],
-            )?;
+            run(startup::remount(
+                device.to_str().context("invalid ESP device")?,
+                "/boot-state",
+                "remount,ro,nodev,nosuid,noexec",
+            ))?;
         }
         if result? {
             eprintln!("mos-init: retired failed confirmed deployment {}", self.id);
@@ -109,9 +110,15 @@ fn bounded_file(path: &str, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn run(program: &str, args: &[&str]) -> Result<String> {
-    let mut child = Command::new(program)
-        .args(args)
+fn command(program: &str, args: &[&str]) -> Command {
+    let mut command = Command::new(program);
+    command.args(args);
+    command
+}
+
+fn run(mut command: Command) -> Result<String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         // /dev/null does not exist until the first devtmpfs mount completes.
@@ -139,7 +146,7 @@ fn run(program: &str, args: &[&str]) -> Result<String> {
 
 fn mount(source: &str, target: &str, kind: &str, options: &str) -> Result<()> {
     fs::create_dir_all(target)?;
-    run("/bin/mount", &["-t", kind, "-o", options, source, target])
+    run(startup::mount(source, target, kind, options))
         .with_context(|| format!("mount {source} at {target}"))?;
     Ok(())
 }
@@ -157,18 +164,13 @@ fn verified_mount(
         "image type or length mismatch: {path}"
     );
     image.signature.verify(&bounded_file(signature, 65536)?)?;
-    let loop_device = run("/sbin/losetup", &["--read-only", "--find", "--show", path])?;
-    ensure!(
-        loop_device.starts_with("/dev/loop")
-            && loop_device[9..].bytes().all(|b| b.is_ascii_digit()),
-        "invalid loop device"
-    );
+    let loop_device = startup::attach_read_only_loop(Path::new(path), run, startup::inspect_loop)?;
     let args = verity_args(&loop_device, name, signature, image);
-    run(
+    run(command(
         "/sbin/veritysetup",
         &args.iter().map(String::as_str).collect::<Vec<_>>(),
-    )?;
-    let table = run("/sbin/dmsetup", &["table", name])?;
+    ))?;
+    let table = run(command("/sbin/dmsetup", &["table", name]))?;
     ensure!(
         table
             .split_whitespace()
@@ -265,7 +267,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
     let mut device = String::new();
     let discovery = Instant::now();
     while discovery.elapsed() < Duration::from_secs(15) {
-        if let Ok(found) = run(
+        if let Ok(found) = run(command(
             "/sbin/blkid",
             &[
                 "-t",
@@ -273,7 +275,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
                 "-o",
                 "device",
             ],
-        ) && !found.is_empty()
+        )) && !found.is_empty()
         {
             device = found;
             break;
@@ -332,14 +334,15 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             fs::symlink_metadata(target)?.is_dir() && fs::read_dir(target)?.next().is_none(),
             "invalid support mountpoint {target}"
         );
-        run("/bin/mount", &["--bind", source, target])?;
-        run(
-            "/bin/mount",
-            &["-o", "remount,bind,ro,nodev,nosuid", target],
-        )?;
+        run(startup::bind(source, target))?;
+        run(startup::remount(
+            source,
+            target,
+            "remount,bind,ro,nodev,nosuid",
+        ))?;
     }
     (|| -> Result<()> {
-        let data = run(
+        let data = run(command(
             "/sbin/blkid",
             &[
                 "-t",
@@ -347,7 +350,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
                 "-o",
                 "device",
             ],
-        )?;
+        ))?;
         ensure!(
             data.starts_with("/dev/") && !data.contains(char::is_whitespace),
             "DATA partition not found uniquely"
@@ -382,22 +385,15 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             fs::symlink_metadata("/newroot/etc/machine-id")?.is_file(),
             "machine identity mountpoint is not a file"
         );
-        run(
-            "/bin/mount",
-            &[
-                "--bind",
-                "/newroot/mnt/data/state/machine-id",
-                "/newroot/etc/machine-id",
-            ],
-        )?;
-        run(
-            "/bin/mount",
-            &[
-                "-o",
-                "remount,bind,ro,nodev,nosuid,noexec",
-                "/newroot/etc/machine-id",
-            ],
-        )?;
+        run(startup::bind(
+            "/newroot/mnt/data/state/machine-id",
+            "/newroot/etc/machine-id",
+        ))?;
+        run(startup::remount(
+            "/newroot/mnt/data/state/machine-id",
+            "/newroot/etc/machine-id",
+            "remount,bind,ro,nodev,nosuid,noexec",
+        ))?;
         Ok(())
     })()
     .context(mos_deploy::deployments::SharedDataFailure)?;
@@ -424,6 +420,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
         Path::new("/run/initramfs"),
         std::str::from_utf8(&bounded_file("/exitrd.files", 8192)?)?,
     )?;
+    startup::validate_new_root(Path::new("/newroot"))?;
     for (source, target) in [
         ("/system", "/newroot/mnt/system"),
         ("/support", "/newroot/run/mos-support"),
@@ -441,13 +438,13 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             Path::new(destination).is_dir(),
             "missing immutable mountpoint {destination}"
         );
-        run("/bin/mount", &["--move", source, destination])?;
+        run(startup::move_mount(source, destination))?;
     }
     for dir in ["dev", "proc", "sys", "run"] {
-        run(
-            "/bin/mount",
-            &["--move", &format!("/{dir}"), &format!("/newroot/{dir}")],
-        )?;
+        run(startup::move_mount(
+            &format!("/{dir}"),
+            &format!("/newroot/{dir}"),
+        ))?;
     }
     fs::copy("/etc/mos/boot.json", "/newroot/run/mos/boot-policy.json")?;
     eprintln!("mos-init: verified deployment {id}; support mounted before system init");
@@ -466,8 +463,7 @@ fn boot(attempt: &mut Option<BootAttempt>) -> Result<()> {
             );
         }
     }
-    Err(Command::new("/sbin/switch_root")
-        .args(["/newroot", "/sbin/init"])
+    Err(startup::switch_root()
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .exec())

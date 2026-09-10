@@ -1,5 +1,7 @@
 //! Bounded boot selection and the single signed dm-verity invocation.
 
+pub mod startup;
+
 use crate::components::VerityImage;
 use serde::{Deserialize, Serialize};
 use std::{
