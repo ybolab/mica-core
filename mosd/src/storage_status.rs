@@ -96,7 +96,7 @@ pub const TIERS: &[TierSpec] = &[
 /// could not be checked against `/etc/fstab`.
 pub const DATA_MOUNT: &str = "/mnt/data";
 
-/// The two bind namespaces PLAN-063 carves out of the DATA filesystem, with
+/// The bind namespaces carved out of the DATA filesystem, with
 /// the source each is bound from.
 ///
 /// Transcribed from `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, which
@@ -116,6 +116,12 @@ pub const BINDS: &[BindSpec] = &[
         mount: "/srv",
         source: "/mnt/data/srv",
         owner: "user",
+    },
+    BindSpec {
+        name: "containers",
+        mount: "/mos/containers",
+        source: "/mnt/data/containers",
+        owner: "system",
     },
 ];
 
@@ -421,7 +427,7 @@ fn parse_project_quotas(csv: &str) -> Option<BTreeMap<u32, ProjectUsage>> {
             return None;
         }
         let id: u32 = fields[0].strip_prefix('#')?.parse().ok()?;
-        if ![100, 101].contains(&id) {
+        if ![100, 101, 102].contains(&id) {
             continue;
         }
         if projects.contains_key(&id) {
@@ -437,10 +443,19 @@ fn parse_project_quotas(csv: &str) -> Option<BTreeMap<u32, ProjectUsage>> {
             },
         );
     }
-    (projects.len() == 2).then_some(projects)
+    (projects.len() == 3).then_some(projects)
 }
 
-const DATA_DIRECTORIES: [&str; 6] = ["state", "meta", "mos", "srv", "cache", "tmp"];
+const DATA_DIRECTORIES: [&str; 8] = [
+    "state",
+    "meta",
+    "mos",
+    "srv",
+    "cache",
+    "tmp",
+    "var",
+    "containers",
+];
 
 /// One observation of the whole storage surface.
 #[derive(Debug, Clone, Default)]
@@ -601,17 +616,17 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
         .collect();
     json!({
         "tiers": tiers,
-        // One filesystem, two namespaces. This member is not a second tier
-        // list: every capacity number for both binds is the DATA tier's, and
+        // One filesystem, multiple namespaces. This member is not a second tier
+        // list: every filesystem capacity number for the binds is the DATA tier's, and
         // saying so here is what stops a reader adding them together.
         "namespaces": {
             "sharedCapacityTier": DATA_TIER,
-            "detail": "/mos and /srv are bind namespaces of one DATA filesystem and share its single capacity pool; their space is reported once, on the `data` tier",
+            "detail": "/mos, /srv and /mos/containers bind directories of one DATA filesystem; capacity is reported once on the data tier, with independent project accounting; system/user and container limits are zero (unlimited), while variable data is bounded",
             "binds": binds,
             "directories": DATA_DIRECTORIES.map(|name| json!({
                 "name": name,
                 "usedBytes": evidence.directory_bytes.get(name),
-                "project": match name { "mos" | "srv" => Some(100), "cache" | "tmp" => Some(101), _ => None },
+                "project": match name { "mos" | "srv" => Some(100), "cache" | "tmp" | "var" => Some(101), "containers" => Some(102), _ => None },
             })),
             "projectQuotas": evidence.project_quotas,
         },
@@ -1176,7 +1191,7 @@ impl HostStorage {
     fn probe(&self, spec: &BindSpec, mount: Option<&MountEvidence>) -> Option<ProbeOutcome> {
         if spec.name != "mos" {
             return Some(ProbeOutcome::NotAttempted(format!(
-                "{} is the user-owned namespace; mosd owns no subtree of it to probe",
+                "{} is outside the system readiness probe namespace; no probe write is authorized",
                 spec.mount
             )));
         }
@@ -1930,7 +1945,7 @@ mod tests {
         assert_eq!(data["space"]["usedPercent"], 85);
         assert_eq!(data["pressure"], "warning");
 
-        // One filesystem, two namespaces. The binds carry no capacity of
+        // One filesystem, multiple namespaces. The binds carry no capacity of
         // their own -- a `space` object on either would be the DATA tier's
         // bytes reported a second time, and a reader summing the three would
         // get three times the disk.
@@ -2128,7 +2143,7 @@ mod tests {
         // reporting a pass nobody earned.
         match &srv.probe {
             Some(ProbeOutcome::NotAttempted(reason)) => {
-                assert!(reason.contains("user-owned"), "{reason}")
+                assert!(reason.contains("no probe write"), "{reason}")
             }
             other => panic!("expected /srv to be un-probed, got {other:?}"),
         }
@@ -2264,12 +2279,44 @@ mod tests {
 
     #[test]
     fn project_reports_use_bytes_and_inodes_without_duplicating_data_capacity() {
-        let csv = "Project,BlockStatus,FileStatus,BlockUsed,BlockSoftLimit,BlockHardLimit,BlockGrace,FileUsed,FileSoftLimit,FileHardLimit,FileGrace\n#0,ok,ok,732,0,0,,45,0,0,\n#100,ok,ok,92,0,1366132,,23,0,94208,\n#101,ok,ok,104,0,32768,,10,0,2048,\n";
+        let csv = "Project,BlockStatus,FileStatus,BlockUsed,BlockSoftLimit,BlockHardLimit,BlockGrace,FileUsed,FileSoftLimit,FileHardLimit,FileGrace\n#0,ok,ok,732,0,0,,45,0,0,\n#100,ok,ok,92,0,0,,23,0,0,\n#101,ok,ok,104,0,32768,,10,0,2048,\n#102,ok,ok,200,0,0,,50,0,0,\n";
         let projects = parse_project_quotas(csv).unwrap();
-        assert_eq!(projects.len(), 2);
+        assert_eq!(projects.len(), 3);
+        assert_eq!(projects[&100].limit_bytes, 0);
+        assert_eq!(projects[&100].limit_inodes, 0);
+        assert_eq!(projects[&102].limit_bytes, 0);
+        assert_eq!(projects[&102].limit_inodes, 0);
         assert_eq!(projects[&100].used_bytes, 92 * 1024);
         assert_eq!(projects[&101].limit_bytes, 32 * 1024 * 1024);
         assert_eq!(projects[&101].limit_inodes, 2048);
         assert!(parse_project_quotas("Project\n#100,unknown").is_none());
+    }
+
+    #[test]
+    fn writable_var_usage_belongs_to_the_bounded_variable_project() {
+        let mut evidence = StorageEvidence::default();
+        evidence.directory_bytes.insert("var".into(), 4096);
+        let status = status_json(&evidence, &PressureTracker::default());
+        let directories = status["namespaces"]["directories"].as_array().unwrap();
+        let var = directories
+            .iter()
+            .find(|entry| entry["name"] == "var")
+            .unwrap();
+        assert_eq!(var["usedBytes"], 4096);
+        assert_eq!(var["project"], 101);
+    }
+    #[test]
+    fn container_storage_is_an_independent_bind_and_project() {
+        let status = status_json(&StorageEvidence::default(), &PressureTracker::default());
+        let dirs = status["namespaces"]["directories"].as_array().unwrap();
+        assert!(
+            dirs.iter()
+                .any(|entry| entry["name"] == "containers" && entry["project"] == 102)
+        );
+        assert!(
+            BINDS.iter().any(
+                |spec| spec.mount == "/mos/containers" && spec.source == "/mnt/data/containers"
+            )
+        );
     }
 }

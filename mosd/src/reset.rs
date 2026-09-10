@@ -68,7 +68,6 @@ const SYSTEM_SKELETON: &[&str] = &[
     "ui",
     "config",
     "containers",
-    "containers/networks",
     "diagnostics",
     "home",
     "root",
@@ -107,7 +106,7 @@ const CONFIG_DIR: &str = "config";
 /// 2 does not empty it. `ui/`, `updates/` — an acquired deployment is not
 /// application data — and the `home/`/`root/` backing directories are not
 /// opened.
-const APPLICATION_DIRS: &[&str] = &["apps", "containers"];
+const APPLICATION_DIRS: &[&str] = &["apps"];
 
 /// The STATE directories holding application enrolment records.
 ///
@@ -149,6 +148,10 @@ impl Roots {
 
     fn system(&self) -> PathBuf {
         self.data.join(SYSTEM_DIR)
+    }
+
+    fn containers(&self) -> PathBuf {
+        self.data.join("containers")
     }
 
     fn user(&self) -> PathBuf {
@@ -207,12 +210,12 @@ fn preflight_reset(roots: &Roots, tier: ResetTier) -> Result<()> {
                     .iter()
                     .map(|dir| roots.state.join(dir)),
             )
-            .chain([roots.user()])
+            .chain([roots.user(), roots.containers()])
             .collect(),
         ResetTier::FullFactory => STATE_APPLICATION_DIRS
             .iter()
             .map(|dir| roots.state.join(dir))
-            .chain([roots.system(), roots.user()])
+            .chain([roots.system(), roots.user(), roots.containers()])
             .collect(),
     };
     let mut traversal = Traversal::new();
@@ -384,12 +387,9 @@ fn clear_application_state(roots: &Roots) -> Result<()> {
     }
     for dir in APPLICATION_DIRS {
         let path = roots.system().join(dir);
-        if *dir == "containers" {
-            reseed_tree(&path, &["networks"])?;
-        } else {
-            clear_contents(&path).with_context(|| format!("clear {}", path.display()))?;
-        }
+        clear_contents(&path).with_context(|| format!("clear {}", path.display()))?;
     }
+    reseed_tree(&roots.containers(), &["networks", "tmp"])?;
     // §2.1 marks `/srv` `cleared` and not `re-seeded`, footnote `[^apps-mos]`:
     // the product gives that namespace to the operator, so mos recreates the
     // mount point and never its contents. Clearing the contents and keeping
@@ -412,6 +412,7 @@ fn validate_roots(roots: &Roots) -> Result<()> {
         roots.data.join("meta"),
         roots.system(),
         roots.user(),
+        roots.containers(),
     ] {
         anyhow::ensure!(
             path.symlink_metadata()?.is_dir(),
@@ -425,6 +426,10 @@ fn validate_roots(roots: &Roots) -> Result<()> {
         .iter()
         .map(|p| roots.state.join(p))
         .chain(SYSTEM_SKELETON.iter().map(|p| roots.system().join(p)))
+        .chain([
+            roots.containers().join("networks"),
+            roots.containers().join("tmp"),
+        ])
     {
         if let Ok(metadata) = path.symlink_metadata() {
             anyhow::ensure!(
@@ -618,6 +623,8 @@ mod tests {
             fs::create_dir_all(roots.system().join(relative)).unwrap();
         }
         fs::create_dir_all(roots.user()).unwrap();
+        fs::create_dir_all(roots.containers().join("networks")).unwrap();
+        fs::create_dir_all(roots.containers().join("tmp")).unwrap();
         for dir in STATE_APPLICATION_DIRS {
             fs::create_dir_all(roots.state.join(dir)).unwrap();
         }
@@ -626,7 +633,7 @@ mod tests {
         fs::create_dir_all(roots.state.join("mos/secrets")).unwrap();
 
         write(&roots.system().join("apps/inventory/db.sqlite"), "app data");
-        write(&roots.system().join("containers/overlay/layer"), "layer");
+        write(&roots.containers().join("overlay/layer"), "layer");
         write(&roots.system().join("ui/active/index.html"), "custom ui");
         write(
             &roots.system().join("updates/verified/deployment.json"),
@@ -747,7 +754,7 @@ mod tests {
         // UNAFFECTED: tier 1 opens no DATA store and no STATE directory but
         // the settings file.
         assert!(exists(&roots.system().join("apps/inventory/db.sqlite")));
-        assert!(exists(&roots.system().join("containers/overlay/layer")));
+        assert!(exists(&roots.containers().join("overlay/layer")));
         assert!(exists(&roots.user().join("operator/report.csv")));
         assert!(exists(&roots.state.join("quadlet/web.container")));
         assert_identity_survived(&roots);
@@ -779,7 +786,7 @@ mod tests {
         // CLEARED: the application subtrees of `/mos`, all of `/srv`, and the
         // enrolment records on STATE.
         assert!(!exists(&roots.system().join("apps/inventory")));
-        assert!(!exists(&roots.system().join("containers/overlay")));
+        assert!(!exists(&roots.containers().join("overlay")));
         assert!(!exists(&roots.user().join("operator")));
         assert!(!exists(&roots.state.join("quadlet/web.container")));
         assert!(!exists(&roots.state.join("systemd-units/vendor.service")));
@@ -807,6 +814,26 @@ mod tests {
         // write is the record's removal.
         assert_eq!(settings, before_settings);
         assert_eq!(store.load().unwrap(), before_settings);
+    }
+
+    #[test]
+    fn application_and_factory_reset_clear_the_independent_container_namespace() {
+        for tier in [ResetTier::ApplicationData, ResetTier::FullFactory] {
+            let (dir, roots) = populated_roots();
+            let store = store_at(&dir, &roots);
+            let mut settings = fielded_settings();
+            let containers = roots.data.join("containers");
+            write(
+                &containers.join("storage/overlay/layer"),
+                "container payload",
+            );
+            fs::create_dir_all(containers.join("networks")).unwrap();
+            stage(&mut settings, tier);
+            apply_pending(&store, &mut settings, &roots).unwrap();
+            assert!(!containers.join("storage").exists());
+            assert!(containers.join("networks").is_dir());
+            assert!(containers.join("tmp").is_dir());
+        }
     }
 
     /// Tier 3, §2.1 row 3: the whole mutable state goes; identity,
