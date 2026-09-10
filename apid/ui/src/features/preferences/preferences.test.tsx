@@ -35,17 +35,22 @@ function renderPreferences() {
   )
 }
 
+async function openPicker() {
+  const input = screen.getByRole('combobox', { name: 'Language' })
+  await userEvent.click(input)
+  return input
+}
+
 describe('display preferences', () => {
   it('searches the picker, applies a language and persists the choice', async () => {
     renderPreferences()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Language' }))
-    await userEvent.type(await screen.findByRole('searchbox', { name: 'Search languages' }), 'chinese')
-    await userEvent.click(screen.getByRole('button', { name: /简体中文/ }))
+    const input = await openPicker()
+    await userEvent.type(input, 'chinese')
+    await userEvent.click(await screen.findByRole('option', { name: /简体中文/ }))
 
     await waitFor(() => expect(document.documentElement.lang).toBe('zh-CN'))
     expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('zh-CN')
-    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   /// A language the console has no bundle for is still offered, labelled, and
@@ -54,8 +59,8 @@ describe('display preferences', () => {
   it('marks a language it cannot render and falls back to English', async () => {
     renderPreferences()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Language' }))
-    const japanese = screen.getByRole('button', { name: /日本語/ })
+    await openPicker()
+    const japanese = await screen.findByRole('option', { name: /日本語/ })
     expect(japanese.textContent).toContain('Planned')
     await userEvent.click(japanese)
 
@@ -66,19 +71,31 @@ describe('display preferences', () => {
   it('says when no language matches the search', async () => {
     renderPreferences()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Language' }))
-    await userEvent.type(await screen.findByRole('searchbox', { name: 'Search languages' }), 'klingon')
+    const input = await openPicker()
+    await userEvent.type(input, 'klingon')
 
-    expect(screen.getByText('No languages match')).toBeTruthy()
+    expect(await screen.findByText('No languages match')).toBeTruthy()
   })
 
   it('changes and persists an explicit theme', async () => {
     renderPreferences()
 
-    await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Dark' }))
 
     await waitFor(() => expect(document.documentElement.classList.contains('dark')).toBe(true))
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
-    expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Dark' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  /// The picker used to be a dialog rendered inside the header's dropdown menu,
+  /// which left the menu open on top of its own backdrop. It anchors to its own
+  /// trigger now, so there is no second layer to leave behind.
+  it('opens no dialog layer of its own', async () => {
+    renderPreferences()
+
+    await openPicker()
+
+    expect(await screen.findByRole('listbox')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

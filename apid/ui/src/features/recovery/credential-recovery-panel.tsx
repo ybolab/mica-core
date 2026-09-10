@@ -1,6 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import { KeyRound } from 'lucide-react'
-import { Card, CardHeader } from '@/components/ui/card'
+import { Callout } from '@/shared/components/callout'
+import { FactList } from '@/shared/components/fact-list'
+import { Panel } from '@/shared/components/panel'
 
 /// Credential recovery, rendered and deliberately NOT offered.
 ///
@@ -14,16 +16,19 @@ import { Card, CardHeader } from '@/components/ui/card'
 export function CredentialRecoveryPanel() {
   const { t } = useTranslation()
   return (
-    <Card>
-      <CardHeader title={t('system.recovery.credential.title')} description={t('system.recovery.credential.description')} action={<KeyRound className="size-5 text-muted-foreground" />} />
-      <dl className="details">
-        <div><dt>{t('system.recovery.credential.authority')}</dt><dd>{t('system.recovery.credential.authorityValue')}</dd></div>
-        <div><dt>{t('system.recovery.credential.channel')}</dt><dd>{t('system.recovery.credential.channelValue')}</dd></div>
-        <div><dt>{t('system.recovery.credential.cost')}</dt><dd>{t('system.recovery.credential.costValue')}</dd></div>
-      </dl>
-      <p className="callout warning" role="status">{t('system.recovery.credential.unavailable')}</p>
-      <p className="callout" role="status">{t('system.recovery.credential.stillHolding')}</p>
-      <p className="callout" role="status">{t('system.recovery.credential.noSoftwarePath')}</p>
-    </Card>
+    <Panel
+      title={t('system.recovery.credential.title')}
+      description={t('system.recovery.credential.description')}
+      action={<KeyRound className="size-5 text-muted-foreground" />}
+    >
+      <FactList facts={[
+        { id: 'authority', label: t('system.recovery.credential.authority'), value: t('system.recovery.credential.authorityValue') },
+        { id: 'channel', label: t('system.recovery.credential.channel'), value: t('system.recovery.credential.channelValue') },
+        { id: 'cost', label: t('system.recovery.credential.cost'), value: t('system.recovery.credential.costValue') },
+      ]} />
+      <Callout tone="warning" title={t('system.recovery.credential.unavailable')} />
+      <Callout title={t('system.recovery.credential.stillHolding')} />
+      <Callout title={t('system.recovery.credential.noSoftwarePath')} />
+    </Panel>
   )
 }

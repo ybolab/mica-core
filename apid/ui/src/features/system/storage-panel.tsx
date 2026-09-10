@@ -1,9 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { FolderTree, HardDrive, Layers, ShieldQuestion } from 'lucide-react'
-import { api, errorMessage } from '@/lib/api'
+import { api } from '@/shared/lib/http'
 import type { StorageBind, StorageMedium, StorageStatus, StorageTier } from '@/lib/types'
-import { Card, CardHeader } from '@/components/ui/card'
+import { Callout } from '@/shared/components/callout'
+import { FactList } from '@/shared/components/fact-list'
+import { Panel } from '@/shared/components/panel'
+import { Spinner } from '@/shared/components/ui/spinner'
+import { failureDetail } from '@/shared/feedback/toast'
 import { formatBytes } from '@/shared/components/fact'
 
 function useStorage() {
@@ -17,10 +21,10 @@ function useStorage() {
 
 export function StoragePanel() {
   return (
-    <div className="stack">
+    <div className="grid gap-3">
       <TiersPanel />
       <NamespacesPanel />
-      <div className="split-grid"><MediaPanel /><LifecyclePanel /></div>
+      <div className="grid gap-3 lg:grid-cols-2"><MediaPanel /><LifecyclePanel /></div>
     </div>
   )
 }
@@ -29,19 +33,11 @@ export function TiersPanel() {
   const { t } = useTranslation()
   const status = useStorage()
   return (
-    <Card>
-      <CardHeader title={t('system.storage.tiers.title')} description={t('system.storage.tiers.description')} action={<Layers className="size-5 text-muted-foreground" />} />
-      {status.isPending ? <p className="callout" role="status">{t('system.storage.tiers.loading')}</p> : null}
-      <dl className="details">
-        {status.data?.tiers.map((tier) => (
-          <div key={tier.name}>
-            <dt>{tier.name}</dt>
-            <dd>{tierSummary(tier, t)}</dd>
-          </div>
-        ))}
-      </dl>
-      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
-    </Card>
+    <Panel title={t('system.storage.tiers.title')} description={t('system.storage.tiers.description')} action={<Layers className="size-5 text-muted-foreground" />}>
+      {status.isPending ? <p className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />{t('system.storage.tiers.loading')}</p> : null}
+      <FactList facts={(status.data?.tiers ?? []).map((tier) => ({ id: tier.name, label: tier.name, value: tierSummary(tier, t) }))} />
+      {status.error ? <Callout tone="danger" title={failureDetail(status.error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 
@@ -50,20 +46,12 @@ export function NamespacesPanel() {
   const status = useStorage()
   const namespaces = status.data?.namespaces
   return (
-    <Card>
-      <CardHeader title={t('system.storage.namespaces.title')} description={t('system.storage.namespaces.description')} action={<FolderTree className="size-5 text-muted-foreground" />} />
-      <dl className="details">
-        {namespaces?.binds.map((bind) => (
-          <div key={bind.name}>
-            <dt>{bind.mount}</dt>
-            <dd>{bindSummary(bind, t)}</dd>
-          </div>
-        ))}
-      </dl>
+    <Panel title={t('system.storage.namespaces.title')} description={t('system.storage.namespaces.description')} action={<FolderTree className="size-5 text-muted-foreground" />}>
+      <FactList facts={(namespaces?.binds ?? []).map((bind) => ({ id: bind.name, label: bind.mount, value: bindSummary(bind, t) }))} />
       {/* One pool, two views. Said in the UI as well as the API, because a
           reader looking at two mounts will otherwise assume two capacities. */}
-      {namespaces ? <p className="callout" role="note">{t('system.storage.namespaces.sharedPool', { tier: namespaces.sharedCapacityTier })}</p> : null}
-    </Card>
+      {namespaces ? <Callout title={t('system.storage.namespaces.sharedPool', { tier: namespaces.sharedCapacityTier })} /> : null}
+    </Panel>
   )
 }
 
@@ -71,18 +59,14 @@ export function MediaPanel() {
   const { t } = useTranslation()
   const status = useStorage()
   return (
-    <Card>
-      <CardHeader title={t('system.storage.media.title')} description={t('system.storage.media.description')} action={<HardDrive className="size-5 text-muted-foreground" />} />
-      <dl className="details">
-        {status.data?.media.map((medium) => (
-          <div key={medium.name}>
-            <dt>{medium.name}{medium.sizeBytes ? ` · ${formatBytes(medium.sizeBytes)}` : ''}</dt>
-            <dd>{mediumHealth(medium, t)}</dd>
-          </div>
-        ))}
-      </dl>
-      {status.data && status.data.media.length === 0 ? <p className="callout warning" role="status">{t('system.storage.media.none')}</p> : null}
-    </Card>
+    <Panel title={t('system.storage.media.title')} description={t('system.storage.media.description')} action={<HardDrive className="size-5 text-muted-foreground" />}>
+      <FactList facts={(status.data?.media ?? []).map((medium) => ({
+        id: medium.name,
+        label: `${medium.name}${medium.sizeBytes ? ` · ${formatBytes(medium.sizeBytes)}` : ''}`,
+        value: mediumHealth(medium, t),
+      }))} />
+      {status.data && status.data.media.length === 0 ? <Callout tone="warning" title={t('system.storage.media.none')} /> : null}
+    </Panel>
   )
 }
 
@@ -90,17 +74,13 @@ export function LifecyclePanel() {
   const { t } = useTranslation()
   const status = useStorage()
   return (
-    <Card>
-      <CardHeader title={t('system.storage.lifecycle.title')} description={t('system.storage.lifecycle.description')} action={<ShieldQuestion className="size-5 text-muted-foreground" />} />
-      <dl className="details">
-        {Object.entries(status.data?.lifecycle ?? {}).map(([name, decision]) => (
-          <div key={name}>
-            <dt>{t(`system.storage.lifecycle.${name}`, { defaultValue: name })}</dt>
-            <dd>{decision === 'unsupported' ? t('system.storage.lifecycle.unsupported') : t('system.storage.lifecycle.supported')}</dd>
-          </div>
-        ))}
-      </dl>
-    </Card>
+    <Panel title={t('system.storage.lifecycle.title')} description={t('system.storage.lifecycle.description')} action={<ShieldQuestion className="size-5 text-muted-foreground" />}>
+      <FactList facts={Object.entries(status.data?.lifecycle ?? {}).map(([name, decision]) => ({
+        id: name,
+        label: t(`system.storage.lifecycle.${name}`, { defaultValue: name }),
+        value: decision === 'unsupported' ? t('system.storage.lifecycle.unsupported') : t('system.storage.lifecycle.supported'),
+      }))} />
+    </Panel>
   )
 }
 

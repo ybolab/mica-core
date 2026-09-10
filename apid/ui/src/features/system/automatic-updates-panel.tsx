@@ -1,14 +1,18 @@
 import { useState, type FormEvent } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { CalendarClock, Timer } from 'lucide-react'
-import { api, errorMessage, json } from '@/lib/api'
+import { api, json } from '@/shared/lib/http'
 import { Button } from '@/shared/components/ui/button'
-import { Card, CardHeader } from '@/components/ui/card'
-import { Field } from '@/shared/components/field'
+import { Callout } from '@/shared/components/callout'
+import { FactList } from '@/shared/components/fact-list'
+import { FormField } from '@/shared/components/form-field'
+import { Panel } from '@/shared/components/panel'
 import { Input } from '@/shared/components/ui/input'
-import { Surface } from '@/shared/components/product-layout'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
+import { Spinner } from '@/shared/components/ui/spinner'
+import { failureDetail } from '@/shared/feedback/toast'
+import { useMutationFeedback } from '@/shared/feedback/use-mutation-feedback'
 
 /// The **resolved** policy, as `GET /api/v1/update` reports it under
 /// `lifecycle.policy`: PLAN-070 §5.1's precedence already applied, which is
@@ -80,33 +84,41 @@ interface UpdateConfigPatch {
 const POLICIES = ['off', 'check', 'auto'] as const
 const REBOOT_POLICIES = ['manual', 'window'] as const
 
-type WriteMutation = ReturnType<typeof useMutation<unknown, Error, UpdateConfigPatch>>
+/// One write, three panes, three sentences.
+///
+/// The three forms shared a single mutation and reported nothing at all on
+/// success, so saving a policy and losing the click looked the same. They still
+/// share the endpoint and the two invalidations; what differs is what the
+/// operator is told, which is per-form and therefore per-hook.
+function useWriteConfig(success: string, failure: string) {
+  const queryClient = useQueryClient()
+  return useMutationFeedback<unknown, UpdateConfigPatch>({
+    mutationFn: (patch) => api<unknown>('/api/v1/update/config', json('POST', patch)),
+    success,
+    failure,
+    onSuccess: () => {
+      // Both reads move: the resolved policy, and which layer it came from.
+      void queryClient.invalidateQueries({ queryKey: ['update-state'] })
+      void queryClient.invalidateQueries({ queryKey: ['provisioning-status'] })
+    },
+  })
+}
 
 export function AutomaticUpdatesPanel() {
   const { t } = useTranslation()
-  const queryClient = useQueryClient()
   // The same query key the rest of the update tab reads: one document, one
   // fetch, and no second answer about the same policy.
   const state = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdatePolicyDoc>('/api/v1/update') })
   const layers = useQuery({ queryKey: ['provisioning-status'], queryFn: () => api<ProvisioningLayers>('/api/v1/provisioning/status') })
-  const write = useMutation({
-    mutationFn: (patch: UpdateConfigPatch) => api<unknown>('/api/v1/update/config', json('POST', patch)),
-    onSuccess: () => {
-      // Both reads move: the resolved policy, and which layer it came from.
-      queryClient.invalidateQueries({ queryKey: ['update-state'] })
-      queryClient.invalidateQueries({ queryKey: ['provisioning-status'] })
-    },
-  })
   const policy = state.data?.lifecycle?.policy
   return (
-    <div className="stack">
-      <SourcePanel layers={layers.data} error={layers.error} write={write} />
-      <PolicyPanel policy={policy} write={write} />
-      <WindowsPanel windows={policy?.maintenanceWindows} write={write} />
+    <div className="grid gap-3">
+      <SourcePanel layers={layers.data} error={layers.error} />
+      <PolicyPanel policy={policy} />
+      <WindowsPanel windows={policy?.maintenanceWindows} />
       <DeferralNotice deferred={state.data?.lifecycle?.deferred} />
-      {state.data?.lifecycle?.policy_error ? <p className="callout error" role="alert">{t('system.update.automatic.documentError', { reason: state.data.lifecycle.policy_error })}</p> : null}
-      {state.error ? <p className="callout error" role="alert">{errorMessage(state.error, t('common.requestFailed'))}</p> : null}
-      {write.error ? <p className="callout error" role="alert">{errorMessage(write.error, t('common.requestFailed'))}</p> : null}
+      {state.data?.lifecycle?.policy_error ? <Callout tone="danger" title={t('system.update.automatic.documentError', { reason: state.data.lifecycle.policy_error })} /> : null}
+      {state.error ? <Callout tone="danger" title={failureDetail(state.error, t('common.requestFailed'))} /> : null}
     </div>
   )
 }
@@ -122,8 +134,9 @@ export function AutomaticUpdatesPanel() {
 /// The two fields hold the **operator's** value, not the effective one, and an
 /// empty field is `null`: clearing the box returns the device to the image's
 /// default rather than writing that default back as an override.
-function SourcePanel({ layers, error, write }: { layers?: ProvisioningLayers; error: unknown; write: WriteMutation }) {
+function SourcePanel({ layers, error }: { layers?: ProvisioningLayers; error: unknown }) {
   const { t } = useTranslation()
+  const write = useWriteConfig(t('system.update.automatic.sourceSaved'), t('system.update.automatic.saveSource'))
   const baked = layers?.baked?.update
   const operator = layers?.operator?.update
   const effective = layers?.effective?.update
@@ -148,23 +161,21 @@ function SourcePanel({ layers, error, write }: { layers?: ProvisioningLayers; er
     },
   ]
   return (
-    <Card>
-      <CardHeader title={t('system.update.automatic.sourceTitle')} description={t('system.update.automatic.sourceDescription')} action={<CalendarClock className="size-5 text-muted-foreground" />} />
-      <dl className="details">
-        {rows.map((row) => (
-          <div key={row.id}>
-            <dt>{row.label}</dt>
-            <dd>
-              <span className="mono">{row.effective ?? t('system.update.automatic.noSource')}</span>
-              <small>
-                {row.overridden
-                  ? t('system.update.automatic.overridden', { baked: row.baked ?? t('system.update.automatic.noSource') })
-                  : t('system.update.automatic.fromImage')}
-              </small>
-            </dd>
-          </div>
-        ))}
-      </dl>
+    <Panel title={t('system.update.automatic.sourceTitle')} description={t('system.update.automatic.sourceDescription')} action={<CalendarClock className="size-5 text-muted-foreground" />}>
+      <FactList facts={rows.map((row) => ({
+        id: row.id,
+        label: row.label,
+        value: (
+          <span className="flex flex-col items-end gap-0.5">
+            <span className="font-mono">{row.effective ?? t('system.update.automatic.noSource')}</span>
+            <span className="text-xs text-muted-foreground">
+              {row.overridden
+                ? t('system.update.automatic.overridden', { baked: row.baked ?? t('system.update.automatic.noSource') })
+                : t('system.update.automatic.fromImage')}
+            </span>
+          </span>
+        ),
+      }))} />
       <form
         className="grid gap-4"
         onSubmit={(event: FormEvent) => {
@@ -172,23 +183,25 @@ function SourcePanel({ layers, error, write }: { layers?: ProvisioningLayers; er
           write.mutate({ source: { url: currentUrl.trim() || null, channel: currentChannel.trim() || null } })
         }}
       >
-        <div className="content-grid">
-          <Field label={t('system.update.automatic.urlLabel')} hint={t('system.update.automatic.urlHint')}>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField label={t('system.update.automatic.urlLabel')} hint={t('system.update.automatic.urlHint')}>
             {/* No invented fallback address. When the image bakes no source the
                 device HAS no server (PLAN-070 section 4.1), so an example URL here
                 would suggest a default that does not exist -- and it would put an
                 update-shaped URL literal in the apid binary, which the image
                 contract's no-compiled-in-endpoint check refuses by design. */}
-            <Input value={currentUrl} onChange={(event) => setUrl(event.target.value)} placeholder={baked?.source ?? undefined} />
-          </Field>
-          <Field label={t('system.update.automatic.channelLabel')} hint={t('system.update.automatic.channelHint')}>
-            <Input value={currentChannel} onChange={(event) => setChannel(event.target.value)} placeholder={baked?.channel ?? 'stable'} />
-          </Field>
+            {(id) => <Input id={id} value={currentUrl} onChange={(event) => setUrl(event.target.value)} placeholder={baked?.source ?? undefined} />}
+          </FormField>
+          <FormField label={t('system.update.automatic.channelLabel')} hint={t('system.update.automatic.channelHint')}>
+            {(id) => <Input id={id} value={currentChannel} onChange={(event) => setChannel(event.target.value)} placeholder={baked?.channel ?? 'stable'} />}
+          </FormField>
         </div>
-        <Button type="submit" disabled={write.isPending}>{t('system.update.automatic.saveSource')}</Button>
+        <Button className="justify-self-end" type="submit" disabled={write.isPending}>
+          {write.isPending ? <Spinner /> : null}{t('system.update.automatic.saveSource')}
+        </Button>
       </form>
-      {error ? <p className="callout error" role="alert">{errorMessage(error, t('common.requestFailed'))}</p> : null}
-    </Card>
+      {error ? <Callout tone="danger" title={failureDetail(error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 
@@ -198,8 +211,9 @@ function SourcePanel({ layers, error, write }: { layers?: ProvisioningLayers; er
 /// These three are written explicitly, unlike the address and channel above:
 /// choosing a mode in a selector IS the operator deciding, so recording it in
 /// their layer is what they meant.
-function PolicyPanel({ policy, write }: { policy?: ResolvedPolicy; write: WriteMutation }) {
+function PolicyPanel({ policy }: { policy?: ResolvedPolicy }) {
   const { t } = useTranslation()
+  const write = useWriteConfig(t('system.update.automatic.policySaved'), t('system.update.automatic.save'))
   const [mode, setMode] = useState<string>()
   const [interval, setInterval] = useState<string>()
   const [rebootPolicy, setRebootPolicy] = useState<string>()
@@ -209,8 +223,7 @@ function PolicyPanel({ policy, write }: { policy?: ResolvedPolicy; write: WriteM
   const knownMode = POLICIES.find((known) => known === currentMode)
   const knownReboot = REBOOT_POLICIES.find((known) => known === currentReboot)
   return (
-    <Card>
-      <CardHeader title={t('system.update.automatic.policyTitle')} description={t('system.update.automatic.policyDescription')} action={<Timer className="size-5 text-muted-foreground" />} />
+    <Panel title={t('system.update.automatic.policyTitle')} description={t('system.update.automatic.policyDescription')} action={<Timer className="size-5 text-muted-foreground" />}>
       <form
         className="grid gap-4"
         onSubmit={(event: FormEvent) => {
@@ -222,26 +235,32 @@ function PolicyPanel({ policy, write }: { policy?: ResolvedPolicy; write: WriteM
           })
         }}
       >
-        <div className="content-grid">
-          <Field label={t('system.update.automatic.mode')} hint={knownMode ? t(`system.update.automatic.modes.${knownMode}`) : undefined}>
-            <Select value={currentMode} onValueChange={(value) => setMode(String(value))}>
-              <SelectTrigger aria-label={t('system.update.automatic.mode')}><SelectValue /></SelectTrigger>
-              <SelectContent>{POLICIES.map((option) => <SelectItem value={option} key={option}>{t(`system.update.automatic.modeNames.${option}`)}</SelectItem>)}</SelectContent>
-            </Select>
-          </Field>
-          <Field label={t('system.update.automatic.interval')} hint={t('system.update.automatic.intervalHint')}>
-            <Input type="number" min={0} value={currentInterval} onChange={(event) => setInterval(event.target.value)} required />
-          </Field>
-          <Field label={t('system.update.automatic.rebootPolicy')} hint={knownReboot ? t(`system.update.automatic.rebootPolicies.${knownReboot}`) : undefined}>
-            <Select value={currentReboot} onValueChange={(value) => setRebootPolicy(String(value))}>
-              <SelectTrigger aria-label={t('system.update.automatic.rebootPolicy')}><SelectValue /></SelectTrigger>
-              <SelectContent>{REBOOT_POLICIES.map((option) => <SelectItem value={option} key={option}>{t(`system.update.automatic.rebootPolicyNames.${option}`)}</SelectItem>)}</SelectContent>
-            </Select>
-          </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField label={t('system.update.automatic.mode')} hint={knownMode ? t(`system.update.automatic.modes.${knownMode}`) : undefined}>
+            {(id) => (
+              <Select value={currentMode} onValueChange={(value) => setMode(String(value))}>
+                <SelectTrigger id={id} aria-label={t('system.update.automatic.mode')}><SelectValue /></SelectTrigger>
+                <SelectContent>{POLICIES.map((option) => <SelectItem value={option} key={option}>{t(`system.update.automatic.modeNames.${option}`)}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
+          </FormField>
+          <FormField label={t('system.update.automatic.interval')} hint={t('system.update.automatic.intervalHint')}>
+            {(id) => <Input id={id} type="number" min={0} value={currentInterval} onChange={(event) => setInterval(event.target.value)} required />}
+          </FormField>
+          <FormField label={t('system.update.automatic.rebootPolicy')} hint={knownReboot ? t(`system.update.automatic.rebootPolicies.${knownReboot}`) : undefined}>
+            {(id) => (
+              <Select value={currentReboot} onValueChange={(value) => setRebootPolicy(String(value))}>
+                <SelectTrigger id={id} aria-label={t('system.update.automatic.rebootPolicy')}><SelectValue /></SelectTrigger>
+                <SelectContent>{REBOOT_POLICIES.map((option) => <SelectItem value={option} key={option}>{t(`system.update.automatic.rebootPolicyNames.${option}`)}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
+          </FormField>
         </div>
-        <Button type="submit" disabled={write.isPending}>{t('system.update.automatic.save')}</Button>
+        <Button className="justify-self-end" type="submit" disabled={write.isPending}>
+          {write.isPending ? <Spinner /> : null}{t('system.update.automatic.save')}
+        </Button>
       </form>
-    </Card>
+    </Panel>
   )
 }
 
@@ -253,8 +272,9 @@ function PolicyPanel({ policy, write }: { policy?: ResolvedPolicy; write: WriteM
 /// means every day. The device validates both and refuses with the offending
 /// value named, so this form does not restate the rule — including §2's, that
 /// `auto` needs a window at all.
-function WindowsPanel({ windows, write }: { windows?: MaintenanceWindow[]; write: WriteMutation }) {
+function WindowsPanel({ windows }: { windows?: MaintenanceWindow[] }) {
   const { t } = useTranslation()
+  const write = useWriteConfig(t('system.update.automatic.windowsSaved'), t('system.update.automatic.saveWindows'))
   const [draft, setDraft] = useState<{ days: string; start: string; end: string }[]>()
   const rows = draft ?? (windows ?? []).map((window) => ({
     days: (window.days ?? []).join(', '),
@@ -264,8 +284,7 @@ function WindowsPanel({ windows, write }: { windows?: MaintenanceWindow[]; write
   const change = (index: number, key: 'days' | 'start' | 'end', value: string) =>
     setDraft(rows.map((row, at) => at === index ? { ...row, [key]: value } : row))
   return (
-    <Card>
-      <CardHeader title={t('system.update.automatic.windowsTitle')} description={t('system.update.automatic.windowsDescription')} />
+    <Panel title={t('system.update.automatic.windowsTitle')} description={t('system.update.automatic.windowsDescription')}>
       <form
         className="grid gap-4"
         onSubmit={(event: FormEvent) => {
@@ -281,27 +300,29 @@ function WindowsPanel({ windows, write }: { windows?: MaintenanceWindow[]; write
           })
         }}
       >
-        {rows.length === 0 ? <p className="empty">{t('system.update.automatic.noWindows')}</p> : null}
+        {rows.length === 0 ? <p className="py-4 text-center text-sm text-muted-foreground">{t('system.update.automatic.noWindows')}</p> : null}
         {rows.map((row, index) => (
-          <div className="content-grid" key={index}>
-            <Field label={t('system.update.automatic.windowDays')} hint={t('system.update.automatic.windowDaysHint')}>
-              <Input value={row.days} onChange={(event) => change(index, 'days', event.target.value)} placeholder="mon, thu" />
-            </Field>
-            <Field label={t('system.update.automatic.windowStart')}>
-              <Input value={row.start} onChange={(event) => change(index, 'start', event.target.value)} placeholder="02:00" required />
-            </Field>
-            <Field label={t('system.update.automatic.windowEnd')}>
-              <Input value={row.end} onChange={(event) => change(index, 'end', event.target.value)} placeholder="04:00" required />
-            </Field>
+          <div className="grid items-end gap-3 sm:grid-cols-[1fr_auto_auto_auto]" key={index}>
+            <FormField label={t('system.update.automatic.windowDays')} hint={t('system.update.automatic.windowDaysHint')}>
+              {(id) => <Input id={id} value={row.days} onChange={(event) => change(index, 'days', event.target.value)} placeholder="mon, thu" />}
+            </FormField>
+            <FormField label={t('system.update.automatic.windowStart')}>
+              {(id) => <Input id={id} className="sm:w-28" value={row.start} onChange={(event) => change(index, 'start', event.target.value)} placeholder="02:00" required />}
+            </FormField>
+            <FormField label={t('system.update.automatic.windowEnd')}>
+              {(id) => <Input id={id} className="sm:w-28" value={row.end} onChange={(event) => change(index, 'end', event.target.value)} placeholder="04:00" required />}
+            </FormField>
             <Button type="button" variant="outline" onClick={() => setDraft(rows.filter((_, at) => at !== index))}>{t('system.update.automatic.removeWindow')}</Button>
           </div>
         ))}
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={() => setDraft([...rows, { days: '', start: '02:00', end: '04:00' }])}>{t('system.update.automatic.addWindow')}</Button>
-          <Button type="submit" disabled={write.isPending}>{t('system.update.automatic.saveWindows')}</Button>
+          <Button type="submit" disabled={write.isPending}>
+            {write.isPending ? <Spinner /> : null}{t('system.update.automatic.saveWindows')}
+          </Button>
         </div>
       </form>
-    </Card>
+    </Panel>
   )
 }
 
@@ -320,20 +341,19 @@ function DeferralNotice({ deferred }: { deferred?: Deferral }) {
   // an older console instead of as the wrong sentence.
   const known = DEFERRAL_REASONS.find((reason) => reason === deferred.reason)
   return (
-    <Surface className="surface-compact">
-      <p className="callout warning" role="status">
-        {t('system.update.automatic.deferred', {
-          reason: known ? t(`system.update.automatic.deferrals.${known}`) : deferred.reason,
-        })}
-      </p>
-      {deferred.detail ? <p className="field-hint">{deferred.detail}</p> : null}
-      <p className="field-hint">
-        {t('system.update.automatic.deferredSince', {
-          minutes: Math.round((deferred.waitedSeconds ?? 0) / 60),
-          attempts: deferred.attempts ?? 1,
-        })}
-      </p>
-    </Surface>
+    <Callout tone="warning" title={t('system.update.automatic.deferred', {
+      reason: known ? t(`system.update.automatic.deferrals.${known}`) : deferred.reason,
+    })}>
+      <span className="grid gap-1">
+        {deferred.detail ? <span>{deferred.detail}</span> : null}
+        <span>
+          {t('system.update.automatic.deferredSince', {
+            minutes: Math.round((deferred.waitedSeconds ?? 0) / 60),
+            attempts: deferred.attempts ?? 1,
+          })}
+        </span>
+      </span>
+    </Callout>
   )
 }
 

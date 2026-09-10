@@ -1,5 +1,6 @@
-import { Progress as ProgressPrimitive } from "@base-ui/react/progress"
+"use client"
 
+import { Progress as ProgressPrimitive } from "@base-ui/react/progress"
 import { cn } from "@/shared/lib/utils"
 
 function Progress({

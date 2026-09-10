@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { claimQuery } from '@/features/onboarding/claim-panel'
+import { Callout } from '@/shared/components/callout'
 
 /// The bound announced where it bites. A device claimed by a provisioning
 /// document refuses every authenticated mutation on every page, so the notice
@@ -11,10 +12,13 @@ export function RotationNotice() {
   const claim = useQuery(claimQuery)
   if (!claim.data?.rotationRequired) return null
   return (
-    <div className="mx-auto w-full max-w-[1280px] px-6 pt-4">
-      <p className="callout warning" role="status">
-        {t('access.claim.notice')} <a className="text-link" href="/_ui/access">{t('access.claim.noticeLink')}</a>
-      </p>
+    <div className="mx-auto w-full max-w-[1280px] px-4 pt-4 sm:px-6 lg:px-8">
+      <Callout tone="warning" title={t('access.claim.notice')}>
+        {/* A plain anchor rather than a router link: this notice is rendered
+            above the outlet, and the destination is a full route the operator
+            reaches once. */}
+        <a href="/_ui/access" className="underline underline-offset-2">{t('access.claim.noticeLink')}</a>
+      </Callout>
     </div>
   )
 }

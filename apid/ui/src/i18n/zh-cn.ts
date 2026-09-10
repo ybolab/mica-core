@@ -10,6 +10,7 @@ export const zhCN: Translation = {
     states: { available: '可用', unavailable: '不可用', enabled: '已启用', disabled: '已停用', unknown: '未知', finished: '已完成', succeeded: '成功', failed: '失败', pending: '等待中', running: '执行中', queued: '已排队', healthy: '健康', routable: '可路由', carrier: '有载波', degraded: '降级' },
     requestFailed: '请求未能完成。',
     deviceClock: '{{time}} UTC',
+    copyFailed: '无法复制到剪贴板。',
     notAvailable: '—',
     unavailable: '不可用',
   },
@@ -129,6 +130,7 @@ export const zhCN: Translation = {
       },
     },
     review: {
+      applied: '{{name}} 的更改已接受。',
       title: '审阅变更', change: '变更', affects: '影响', affectsBridge: '{{name}} · 网桥 {{bridge}}',
       session: '当前会话', sessionOn: '当前浏览器正是通过 {{name}} 访问设备的，可能会断开',
       sessionOff: '当前浏览器不是通过 {{name}} 访问的',
@@ -137,10 +139,20 @@ export const zhCN: Translation = {
     },
     kinds: { physical: '物理接口', vlan: 'VLAN', bridge: '网桥', wireguard: 'WireGuard' },
     editor: {
+      added: '接口 {{name}} 已保存。',
       addTitle: '添加网络接口', editTitle: '编辑网络接口', description: '应用到设备前，请检查完整的期望状态。', name: '接口名称', kind: '接口类型', dhcp: '使用 DHCP', dhcpCopy: '自动获取地址与 DNS。', address: '地址', gateway: '网关', dns: 'DNS 服务器', parent: '父接口', vlanId: 'VLAN ID', ports: '网桥端口', listenPort: '监听端口', delete: '删除接口', deleteCopy: '从期望网络配置中删除 {{name}}？当前会话可能断开。',
     },
-    wifi: { enabled: 'Wi-Fi 客户端', add: '添加 Wi-Fi 网络', addCopy: '凭据由 mosd 保存，后续读取时会隐藏。', security: '安全', credential: '凭据', auto: '自动连接', wpa: 'WPA-PSK', saved: '已保存 · 不回显', noCredential: '无', priorityValue: '优先级 {{priority}}', client: 'Wi-Fi 客户端', hidden: '隐藏 SSID', priority: '优先级', password: '密码', open: '开放网络', empty: '没有保存 Wi-Fi 网络。', remove: '移除 {{name}}', removeCopy: '忘记 {{name}}？设备之后将不再自动连接此网络。' },
-    wireguard: { empty: '请先创建 WireGuard 接口，再添加对端。', add: '添加对端', addCopy: '向 {{iface}} 添加一个对端。', rotate: '轮换密钥', rotateCopy: '轮换 {{iface}} 的私钥？必须使用新公钥更新所有远端对端。', rotated: '私钥已轮换。请使用此公钥更新所有远端对端：', publicKey: '公钥', tunnel: '隧道', listen: '监听端口', listenCopy: 'UDP，在设备响应的所有地址上。', keyHidden: '由设备保管', keyCopy: '公钥仅在轮换后立即显示一次。', peers: '对端', peerCount: '{{count}} 个对端', keepalive: '保活', keepaliveValue: '{{seconds}} 秒', rotateConfirm: '轮换私钥？所有远端对端都必须更新为新公钥后才能重新连接。', allowed: '允许的 IP', endpoint: '端点', remove: '移除对端', removeCopy: '移除此对端及其允许 IP 声明的全部路由？', noPeers: '此隧道尚未配置对端。' },
+    wifi: {
+      clientEnabled: '已启用 Wi-Fi 客户端。',
+      clientDisabled: '已停用 Wi-Fi 客户端。',
+      added: '网络 {{name}} 已保存。',
+      removed: '网络 {{name}} 已删除。',
+      enabled: 'Wi-Fi 客户端', add: '添加 Wi-Fi 网络', addCopy: '凭据由 mosd 保存，后续读取时会隐藏。', security: '安全', credential: '凭据', auto: '自动连接', wpa: 'WPA-PSK', saved: '已保存 · 不回显', noCredential: '无', priorityValue: '优先级 {{priority}}', client: 'Wi-Fi 客户端', hidden: '隐藏 SSID', priority: '优先级', password: '密码', open: '开放网络', empty: '没有保存 Wi-Fi 网络。', remove: '移除 {{name}}', removeCopy: '忘记 {{name}}？设备之后将不再自动连接此网络。' },
+    wireguard: {
+      added: '对端已添加。',
+      removed: '对端已删除。',
+      rotatedKey: '隧道密钥已轮换。',
+      empty: '请先创建 WireGuard 接口，再添加对端。', add: '添加对端', addCopy: '向 {{iface}} 添加一个对端。', rotate: '轮换密钥', rotateCopy: '轮换 {{iface}} 的私钥？必须使用新公钥更新所有远端对端。', rotated: '私钥已轮换。请使用此公钥更新所有远端对端：', publicKey: '公钥', tunnel: '隧道', listen: '监听端口', listenCopy: 'UDP，在设备响应的所有地址上。', keyHidden: '由设备保管', keyCopy: '公钥仅在轮换后立即显示一次。', peers: '对端', peerCount: '{{count}} 个对端', keepalive: '保活', keepaliveValue: '{{seconds}} 秒', rotateConfirm: '轮换私钥？所有远端对端都必须更新为新公钥后才能重新连接。', allowed: '允许的 IP', endpoint: '端点', remove: '移除对端', removeCopy: '移除此对端及其允许 IP 声明的全部路由？', noPeers: '此隧道尚未配置对端。' },
     observed: {
       title: '观测状态',
       addition: '不属于已批准的设计。设备会报告这些信息，在设计给出位置之前控制台先保留它们。',
@@ -227,6 +239,8 @@ export const zhCN: Translation = {
       timeout: '空闲超时', shell: 'Shell',
       planned: '设备尚未提供终端端点。此窗口显示固定的示例输出，且不接受输入。',
     },
+    enabledToast: '已启用 {{name}}。',
+    disabledToast: '已停用 {{name}}。',
     saving: '正在保存…',
   },
   applications: {
@@ -238,7 +252,8 @@ export const zhCN: Translation = {
     columns: { application: '应用', source: '来源', kind: '类型', desired: '期望', runtime: '运行', health: '健康', action: '动作', result: '结果', time: '时间' },
     sources: { catalog: '已验证目录', local: '本地签名者', system: '系统 · OS 验证' }, kinds: { container: '容器', native: '原生程序' },
     states: { running: '运行中', stopped: '已停止', blocked: '被阻止', notInstalled: '未安装', healthy: '健康', unknown: '未知', retained: '数据已保留' },
-    actions: { open: '打开', start: '启动', stop: '停止', update: '更新', install: '安装', remove: '移除' },
+    actions: { open: '打开', start: '启动', stop: '停止', update: '更新', install: '安装', remove: '移除',
+      removed: '已移除 {{name}}。', started: '已启动 {{name}}。', stopped: '已停止 {{name}}。', updated: '已更新 {{name}}。' },
     activityActions: { update: '更新', start: '启动', remove: '移除（保留数据）', install: '安装', changeRuntime: '更改运行状态' },
     activityTimes: { justNow: '刚刚', hourAgo: '1 小时前', dayAgo: '1 天前', twoDaysAgo: '2 天前' },
     remove: { title: '移除 {{name}}？', description: '工作负载会被移除，但应用的持久数据将保留。' }, empty: '没有符合搜索条件的应用。',
@@ -290,6 +305,7 @@ export const zhCN: Translation = {
     },
     tokens: {
       title: 'API 令牌', description: '用于自动化的长期凭据。明文只显示一次。', copyNow: '立即复制此令牌', revokeLabel: '撤销 {{name}}', confirmRevoke: '撤销 {{name}}？正在使用此令牌的自动化将立即停止工作。', empty: '没有 API 令牌。',
+      revoked: '令牌 {{name}} 已吊销。', minted: '令牌已创建。', revealClosed: '令牌不再显示。',
       label: '标签', created: '创建时间', revoke: '吊销', mint: '生成令牌', copied: '已复制', revealCopy: '这是设备唯一一次显示它。', closeReveal: '关闭', closeRevealCopy: '关闭此面板后明文令牌会被丢弃，无法再次显示。', closeRevealConfirm: '关闭并丢弃', newLabel: '新令牌标签', placeholder: '部署代理', pending: '正在创建…', create: '创建令牌',
     },
     ssh: {
@@ -297,6 +313,7 @@ export const zhCN: Translation = {
       server: 'SSH 服务', serverState: '{{state}} · 仍可管理密钥', remove: '移除',
       defaultNotice: '每个授权密钥都会授予此设备的 root 权限。', status: 'SSH {{state}}', keyFallback: 'SSH 公钥', unreadableFingerprint: '无法读取指纹',
       removeLabel: '移除 SSH 密钥', confirmRemove: '从设备移除此 root 授权密钥？', authorizedKey: '授权密钥', keyPlaceholder: 'ssh-ed25519 AAAA… operator', addKey: '添加密钥',
+      keyAdded: '已添加授权密钥。', keyRemoved: '已移除授权密钥。', serverEnabled: '已启用 SSH 服务。', serverDisabled: '已停用 SSH 服务。',
       transient: '临时 root 密码', transientHint: '8–72 字节；下次重启时移除。', confirmTransient: '将此 root 密码设置到下次重启为止？',
       setting: '正在设置…', setUntilReboot: '设置到重启为止', transientAccepted: '临时 root 密码已接受。',
     },
@@ -369,6 +386,7 @@ export const zhCN: Translation = {
         label: '服务器',
         hint: '轮询、重试和保存间隔属于固定的设备策略，不可配置。',
         save: '保存服务器',
+        saved: 'NTP 服务器已保存。',
       },
       timezone: {
         title: '时区',
@@ -376,6 +394,7 @@ export const zhCN: Translation = {
         label: '时区',
         hint: '填写 IANA 名称，例如“UTC”或“Europe/Berlin”。',
         save: '保存时区',
+        saved: '时区已保存。',
       },
       status: {
         title: '同步状态',
@@ -485,6 +504,7 @@ export const zhCN: Translation = {
         download: '下载',
         downloadLabel: '下载快照 {{id}}',
         deleteLabel: '删除快照 {{id}}',
+        deleted: '快照 {{id}} 已删除。',
         deleteCopy: '从本设备删除快照 {{id}}？保留策略也会自动删除最旧的快照；此操作会立即删除它。',
       },
     },
@@ -543,9 +563,10 @@ export const zhCN: Translation = {
       },
       supportTitle: '临时支持访问', supportDescription: '授予有审计记录且限时的故障排查会话。', supportAccess: '启用支持访问', supportCopy: '60 分钟后自动失效。', supportExpires: '支持访问将在 60 分钟后失效', supportDisabled: '支持访问已停用',
     },
-    identity: { title: '设备标识', description: '本地服务和发现功能使用的主机名。', hostname: '主机名', save: '保存主机名' },
+    identity: { title: '设备标识', description: '本地服务和发现功能使用的主机名。', hostname: '主机名', save: '保存主机名', saved: '主机名已保存。' },
     ui: {
       title: '用户界面', description: '内置 SPA 始终可通过 /_ui/ 访问。', checking: '正在检查 UI 选择', customActive: '自定义 UI 已在 / 激活', builtInActive: '内置 UI 已在 / 激活',
+      builtInSelected: '已启用内置控制台。', customSelected: '已启用自定义界面。',
       useCustom: '在根路径使用自定义 UI', recoveryCopy: '/_ui/ 上的恢复控制台不会改变。', noCustom: '未安装保留的自定义 UI。', cannotSelect: '无法选择保留的自定义 UI：{{reason}}。',
       bundle: '包', generation: '第 {{generation}} 代', index: '入口', readable: '可读取', unreadable: '不可读取', digest: '摘要', digestVerified: '已验证', digestChanged: '已改变', digestUnknown: '未验证', openCustom: '在根路径打开自定义 UI', manage: '管理 UI 版本',
       unavailable: {
@@ -556,6 +577,7 @@ export const zhCN: Translation = {
     uiManager: {
       back: '返回系统', title: 'UI 版本', description: '上传、验证和选择自定义界面，且不改变内置恢复控制台。',
       uploadTitle: '上传 UI 包', uploadDescription: '软件包会作为未激活版本安装；激活始终是单独操作。', packageFile: 'mos UI 软件包', noFile: '请选择 .mos-ui.zip 软件包。',
+      choose: '选择文件', packageHint: '一个 .mos-ui.zip 包。', activated: '版本 {{generation}} 已启用。', deactivated: '已启用内置控制台。', deleted: '版本 {{generation}} 已删除。',
       upload: '上传软件包', uploading: '正在上传…', validating: '正在验证并安装…', uploadProgress: 'UI 软件包上传进度', uploadedInactive: '软件包已安装，当前界面未改变。',
       safetyNote: '软件包必须在根目录包含 index.html 和 schemaVersion 为 1 的 mos-ui.json；压缩包上限为 64 MiB。',
       versionsTitle: '已安装版本', versionsDescription: '系统不会自动删除任何版本；活动版本必须停用后才能删除。', version: '版本', size: '安装大小', archiveSize: '压缩包 {{size}}', sizeUnavailable: '旧版包未记录大小', validation: '验证', state: '状态', actions: '操作',
@@ -581,7 +603,10 @@ export const zhCN: Translation = {
         urlHint: '留空则恢复为镜像构建时的地址。',
         channelLabel: '发布通道',
         channelHint: '留空则恢复为镜像构建时的通道。若更新源不发布该通道，则不会选中任何版本，设备也不会回退。',
-        saveSource: '保存更新源',
+        sourceSaved: '更新源已保存。',
+      policySaved: '更新策略已保存。',
+      windowsSaved: '维护窗口已保存。',
+      saveSource: '保存更新源',
         policyTitle: '策略',
         policyDescription: '设备自行执行到哪一步、多久检查一次，以及更新安装完成后如何处理。',
         mode: '自动行为',
@@ -642,6 +667,7 @@ export const zhCN: Translation = {
       checking: '正在读取更新状态', available: '可用更新', lastCheck: '上次检查',
       pendingReboot: '已安装的更新等待首次启动。', gateSafe: '可以安全重启。', gateBlocked: '重启被阻止：{{reasons}}。',
       clientUnavailable: '更新客户端不可用：{{reason}}。', policyError: '更新策略文件无效：{{reason}}。',
+      accepted: { check: '已开始检查更新。', fetch: '已开始下载。', install: '已开始安装。' },
       actionsTitle: '更新操作', actionsDescription: '发现、下载并安装经过认证的 A/B 系统版本。', checkNow: '立即检查', download: '下载', install: '安装更新',
       staged: '已获取的部署',
       running: '当前运行部署',
@@ -662,6 +688,7 @@ export const zhCN: Translation = {
         confirm: '拒绝当前运行部署，并在下次启动时运行 {{target}}？',
         rejected: '部署 {{deploymentId}} 已被拒绝，下次启动将使用 {{target}}。',
         rebootToApply: '此操作不会重启。请重启设备以完成回滚。',
+        accepted: '回滚请求已接受。',
         reasons: {
           candidatePending: '存在待处理的候选部署，请先完成或拒绝该部署。',
           runningNotConfirmed: '当前运行部署尚未确认。',

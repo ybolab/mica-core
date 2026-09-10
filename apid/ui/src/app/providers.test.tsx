@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { api, type SessionStatus } from '@/lib/api'
-import { sessionKey } from '@/components/auth'
+import { api, type SessionStatus } from '@/shared/lib/http'
+import { sessionKey } from '@/features/auth/auth'
 import { stubFetch, jsonResponse } from '@/shared/testing/panel'
 import { AppProviders } from './providers'
 import { queryClient } from './query-client'
@@ -22,6 +22,18 @@ it('returns the application to an unauthenticated session when a protected read 
   })
   render(<AppProviders><SessionProbe /></AppProviders>)
   expect(await screen.findByText('unauthenticated')).toBeTruthy()
+})
+
+it('drops what an expired session had already read, so nothing stale reads as current', async () => {
+  stubFetch({
+    '/api/v1/session': { state: 'authenticated', csrfToken: 'expired-token' },
+    '/api/v1/health': () => jsonResponse({ error: { code: 'not_authenticated' } }, 401),
+  })
+  queryClient.setQueryData(['tokens'], [{ id: 'tok', name: 'fleet agent', created: 0 }])
+  render(<AppProviders><SessionProbe /></AppProviders>)
+
+  expect(await screen.findByText('unauthenticated')).toBeTruthy()
+  expect(queryClient.getQueryData(['tokens'])).toBeUndefined()
 })
 
 function LogoutProbe() {

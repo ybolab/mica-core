@@ -1,20 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ApiError, api, errorMessage, json } from '@/lib/api'
+import { ApiError, api, json } from '@/shared/lib/http'
 import { Button } from '@/shared/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { Callout } from '@/shared/components/callout'
+import { ConfirmDialog } from '@/shared/components/confirm-dialog'
+import { Panel } from '@/shared/components/panel'
+import { RowItem, RowList } from '@/shared/components/row-item'
+import { failureDetail } from '@/shared/feedback/toast'
 import { formatDeviceClock } from '@/shared/components/fact'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/shared/components/ui/alert-dialog'
 
 /// The tiers an authenticated management session may stage. Tier 3
 /// (`full-factory`) is listed beside them and deliberately carries no control:
@@ -46,6 +39,8 @@ export function ResetPanel() {
     queryFn: () => api<StagedReset>('/api/v1/settings/reset'),
     retry: false,
   })
+  // The dialog owns the report and the close; this mutation exists for the
+  // cache invalidation, so it deliberately does not raise its own toast.
   const stage = useMutation({
     mutationFn: (tier: ReachableTier) => api<ResetStaged>('/api/v1/reset', json('POST', { tier })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings', 'reset'] }),
@@ -54,48 +49,42 @@ export function ResetPanel() {
   const nothingStaged = staged.error instanceof ApiError && staged.error.status === 404
   const record = staged.data
   return (
-    <Card>
+    <Panel>
       {record ? (
-        <p className="callout warning" role="status">
-          {t('system.recovery.reset.pending', { tier: tierLabel(record.tier, t) })}
-          {record.requested ? ` ${t('system.recovery.reset.pendingAt', { time: formatDeviceClock(record.requested, activeI18n.resolvedLanguage ?? 'en') })}` : ''}
-          {` ${t('system.recovery.reset.replaces')}`}
-        </p>
+        <Callout tone="warning" title={t('system.recovery.reset.pending', { tier: tierLabel(record.tier, t) })}>
+          {record.requested ? `${t('system.recovery.reset.pendingAt', { time: formatDeviceClock(record.requested, activeI18n.resolvedLanguage ?? 'en') })} ` : ''}
+          {t('system.recovery.reset.replaces')}
+        </Callout>
       ) : null}
-      <div className="collection-list">
+      <RowList className="rounded-lg border">
         {REACHABLE_TIERS.map((tier) => (
-          <div className="collection-row" key={tier}>
-            <div><strong>{tierLabel(tier, t)}</strong><small>{t(`system.recovery.reset.tiers.${tier}.effect`)}</small></div>
-            <AlertDialog>
-              <AlertDialogTrigger render={<Button variant="destructive" size="sm" disabled={stage.isPending} />}>{t('system.recovery.reset.stage')}</AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>{tierLabel(tier, t)}</AlertDialogTitle>
-                  <AlertDialogDescription>{t('system.recovery.reset.confirm', { effect: t(`system.recovery.reset.tiers.${tier}.effect`) })}</AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel>
-                  <AlertDialogAction variant="destructive" onClick={() => stage.mutate(tier)}>{t('system.recovery.reset.stage')}</AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
+          <RowItem
+            key={tier}
+            title={tierLabel(tier, t)}
+            description={t(`system.recovery.reset.tiers.${tier}.effect`)}
+            actions={(
+              <ConfirmDialog
+                trigger={<Button variant="destructive" size="sm">{t('system.recovery.reset.stage')}</Button>}
+                title={tierLabel(tier, t)}
+                description={t('system.recovery.reset.confirm', { effect: t(`system.recovery.reset.tiers.${tier}.effect`) })}
+                confirmLabel={t('system.recovery.reset.stage')}
+                success={`${t('system.recovery.reset.staged', { tier: tierLabel(tier, t) })} ${t('system.recovery.reset.rebootToApply')}`}
+                failure={t('system.recovery.reset.stage')}
+                onConfirm={() => stage.mutateAsync(tier)}
+              />
+            )}
+          />
         ))}
-        <div className="collection-row">
-          <div><strong>{tierLabel('full-factory', t)}</strong><small>{t('system.recovery.reset.tiers.full-factory.effect')}</small></div>
-          <span className="text-xs text-muted-foreground">{t('system.recovery.reset.presenceShort')}</span>
-        </div>
-      </div>
-      <p className="callout warning" role="status">{t('system.recovery.reset.presenceUnavailable')}</p>
-      <p className="callout" role="status">{t('system.recovery.reset.noSecureWipe')}</p>
-      {stage.data ? (
-        <p className="callout success" role="status">
-          {t('system.recovery.reset.staged', { tier: tierLabel(stage.data.tier, t) })} {t('system.recovery.reset.rebootToApply')}
-        </p>
-      ) : null}
-      {stage.error ? <p className="callout error" role="alert">{errorMessage(stage.error, t('common.requestFailed'))}</p> : null}
-      {staged.error && !nothingStaged ? <p className="callout error" role="alert">{errorMessage(staged.error, t('common.requestFailed'))}</p> : null}
-    </Card>
+        <RowItem
+          title={tierLabel('full-factory', t)}
+          description={t('system.recovery.reset.tiers.full-factory.effect')}
+          actions={<span className="text-xs text-muted-foreground">{t('system.recovery.reset.presenceShort')}</span>}
+        />
+      </RowList>
+      <Callout tone="warning" title={t('system.recovery.reset.presenceUnavailable')} />
+      <Callout title={t('system.recovery.reset.noSecureWipe')} />
+      {staged.error && !nothingStaged ? <Callout tone="danger" title={failureDetail(staged.error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 

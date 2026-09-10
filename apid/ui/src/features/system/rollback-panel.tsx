@@ -1,21 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Undo2 } from 'lucide-react'
-import { ApiError, api, errorMessage } from '@/lib/api'
+import { ApiError, api } from '@/shared/lib/http'
 import { Button } from '@/shared/components/ui/button'
-import { Card, CardHeader } from '@/components/ui/card'
-import { Status } from '@/components/ui/status'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/shared/components/ui/alert-dialog'
+import { Callout } from '@/shared/components/callout'
+import { ConfirmDialog } from '@/shared/components/confirm-dialog'
+import { Panel } from '@/shared/components/panel'
+import { StatusDot } from '@/shared/components/status-badge'
+import { failureDetail } from '@/shared/feedback/toast'
 
 /// The `rollback` object of the update state document. `permitted` is derived
 /// from the absence of a reason, so "permitted with a reason" is not a state
@@ -49,42 +41,39 @@ export function RollbackPanel() {
   const permitted = decision?.permitted === true && !!decision.target
   const target = decision?.target ?? undefined
   return (
-    <Card>
-      <CardHeader title={t('system.update.rollback.title')} description={t('system.update.rollback.description')} action={<Undo2 className="size-5 text-muted-foreground" />} />
-      <div className="service-state">
-        <Status ok={permitted}>
+    <Panel title={t('system.update.rollback.title')} description={t('system.update.rollback.description')} action={<Undo2 className="size-5 text-muted-foreground" />}>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <StatusDot state={status.isPending ? 'pending' : permitted ? 'ok' : 'warning'}>
           {status.isPending
             ? t('system.update.rollback.checking')
             : permitted
               ? t('system.update.rollback.permitted', { target })
               : t('system.update.rollback.refused')}
-        </Status>
+        </StatusDot>
         {permitted ? (
-          <AlertDialog>
-            <AlertDialogTrigger render={<Button variant="destructive" size="sm" disabled={rollback.isPending} />}>{t('system.update.rollback.action', { target })}</AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('system.update.rollback.action', { target })}</AlertDialogTitle>
-                <AlertDialogDescription>{t('system.update.rollback.confirm', { target })}</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel>
-                <AlertDialogAction variant="destructive" onClick={() => rollback.mutate()}>{t('system.update.rollback.action', { target })}</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <ConfirmDialog
+            trigger={<Button variant="destructive" size="sm">{t('system.update.rollback.action', { target })}</Button>}
+            title={t('system.update.rollback.action', { target })}
+            description={t('system.update.rollback.confirm', { target })}
+            confirmLabel={t('system.update.rollback.action', { target })}
+            success={t('system.update.rollback.accepted')}
+            failure={t('system.update.rollback.action', { target })}
+            onConfirm={() => rollback.mutateAsync()}
+          />
         ) : null}
       </div>
-      {decision && !permitted ? <p className="callout warning" role="status">{refusalMessage(decision.reason, t)}</p> : null}
+      {decision && !permitted ? <Callout tone="warning" title={refusalMessage(decision.reason, t)} /> : null}
+      {/* The accepted rollback stays on the page: it names the deployment that
+          will boot next and is still true after a reload, unlike the toast that
+          reported the click. */}
       {rollback.data ? (
-        <div className="callout success grid gap-2" role="status">
-          <p>{t('system.update.rollback.rejected', { deploymentId: rollback.data.deploymentId, target: rollback.data.target })}</p>
-          <p>{t('system.update.rollback.rebootToApply')}</p>
-        </div>
+        <Callout tone="success" title={t('system.update.rollback.rejected', { deploymentId: rollback.data.deploymentId, target: rollback.data.target })}>
+          {t('system.update.rollback.rebootToApply')}
+        </Callout>
       ) : null}
-      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
-      {rollback.error ? <p className="callout error" role="alert">{rollbackErrorMessage(rollback.error, t)}</p> : null}
-    </Card>
+      {status.error ? <Callout tone="danger" title={failureDetail(status.error, t('common.requestFailed'))} /> : null}
+      {rollback.error ? <Callout tone="danger" title={rollbackErrorMessage(rollback.error, t)} /> : null}
+    </Panel>
   )
 }
 
@@ -102,5 +91,5 @@ function refusalMessage(reason: string | null | undefined, t: ReturnType<typeof 
 
 function rollbackErrorMessage(error: unknown, t: ReturnType<typeof useTranslation>['t']) {
   if (error instanceof ApiError && error.status === 409) return refusalMessage(error.code, t)
-  return errorMessage(error, t('common.requestFailed'))
+  return failureDetail(error, t('common.requestFailed'))
 }

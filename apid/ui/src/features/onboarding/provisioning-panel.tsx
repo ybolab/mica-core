@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { FileCog } from 'lucide-react'
-import { api, errorMessage } from '@/lib/api'
-import { Card, CardHeader } from '@/components/ui/card'
-import { Status } from '@/components/ui/status'
+import { api } from '@/shared/lib/http'
+import { Callout } from '@/shared/components/callout'
+import { FactList } from '@/shared/components/fact-list'
+import { Panel } from '@/shared/components/panel'
+import { StatusDot } from '@/shared/components/status-badge'
+import { failureDetail } from '@/shared/feedback/toast'
 import { formatDeviceClock } from '@/shared/components/fact'
 
 /// The last import ATTEMPT. `outcome` is `applied`, `unchanged` or `rejected`,
@@ -31,27 +34,26 @@ export function ProvisioningPanel() {
   const lastImport = value?.lastImport
   const applied = value?.documentVersion !== undefined && value?.documentVersion !== null
   return (
-    <Card>
-      <CardHeader title={t('access.provisioning.title')} description={t('access.provisioning.description')} action={<FileCog className="size-5 text-muted-foreground" />} />
-      <div className="service-state">
-        <Status ok={!status.isPending && !status.isError && lastImport?.outcome !== 'rejected'}>
-          {status.isPending ? t('access.provisioning.checking') : t(applied ? 'access.provisioning.applied' : 'access.provisioning.none')}
-        </Status>
-      </div>
-      {value ? (
-        <dl className="details">
-          {applied ? <div><dt>{t('access.provisioning.version')}</dt><dd>{value.documentVersion}</dd></div> : null}
-          {value.documentDigest ? <div><dt>{t('access.provisioning.digest')}</dt><dd><code>{value.documentDigest}</code></dd></div> : null}
-          {lastImport?.source ? <div><dt>{t('access.provisioning.source')}</dt><dd>{sourceLabel(lastImport.source, t)}</dd></div> : null}
-          {lastImport?.outcome ? <div><dt>{t('access.provisioning.outcome')}</dt><dd>{outcomeLabel(lastImport.outcome, t)}</dd></div> : null}
-          {lastImport?.at ? <div><dt>{t('access.provisioning.importedAt')}</dt><dd>{t('common.deviceClock', { time: formatDeviceClock(lastImport.at, activeI18n.resolvedLanguage ?? 'en') })}</dd></div> : null}
-        </dl>
-      ) : null}
-      {value && !lastImport ? <p className="empty">{t('access.provisioning.neverOffered')}</p> : null}
-      {lastImport?.outcome === 'rejected' ? <p className="callout warning" role="status">{t('access.provisioning.rejected', { reason: lastImport.reason ?? t('common.states.unknown') })}</p> : null}
-      {value ? <p className="callout" role="status">{t(value.unclaimed ? 'access.provisioning.wouldApply' : 'access.provisioning.refusesDocuments')}</p> : null}
-      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
-    </Card>
+    <Panel
+      title={t('access.provisioning.title')}
+      description={t('access.provisioning.description')}
+      action={<FileCog className="size-5 text-muted-foreground" />}
+    >
+      <StatusDot state={status.isPending ? 'pending' : !status.isError && lastImport?.outcome !== 'rejected' ? 'ok' : 'warning'}>
+        {status.isPending ? t('access.provisioning.checking') : t(applied ? 'access.provisioning.applied' : 'access.provisioning.none')}
+      </StatusDot>
+      <FactList facts={[
+        applied ? { id: 'version', label: t('access.provisioning.version'), value: value?.documentVersion } : undefined,
+        value?.documentDigest ? { id: 'digest', label: t('access.provisioning.digest'), value: value.documentDigest, mono: true } : undefined,
+        lastImport?.source ? { id: 'source', label: t('access.provisioning.source'), value: sourceLabel(lastImport.source, t) } : undefined,
+        lastImport?.outcome ? { id: 'outcome', label: t('access.provisioning.outcome'), value: outcomeLabel(lastImport.outcome, t) } : undefined,
+        lastImport?.at ? { id: 'at', label: t('access.provisioning.importedAt'), value: t('common.deviceClock', { time: formatDeviceClock(lastImport.at, activeI18n.resolvedLanguage ?? 'en') }) } : undefined,
+      ]} />
+      {value && !lastImport ? <p className="text-sm text-muted-foreground">{t('access.provisioning.neverOffered')}</p> : null}
+      {lastImport?.outcome === 'rejected' ? <Callout tone="warning" title={t('access.provisioning.rejected', { reason: lastImport.reason ?? t('common.states.unknown') })} /> : null}
+      {value ? <Callout title={t(value.unclaimed ? 'access.provisioning.wouldApply' : 'access.provisioning.refusesDocuments')} /> : null}
+      {status.error ? <Callout tone="danger" title={failureDetail(status.error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 

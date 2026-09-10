@@ -1,5 +1,5 @@
 import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query'
-import { ApiError, rememberSession } from '@/lib/api'
+import { ApiError, rememberSession } from '@/shared/lib/http'
 
 function onError(error: unknown) {
   if (!(error instanceof ApiError) || error.status !== 401) return

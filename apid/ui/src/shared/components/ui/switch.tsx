@@ -1,5 +1,6 @@
-import { Switch as SwitchPrimitive } from "@base-ui/react/switch"
+"use client"
 
+import { Switch as SwitchPrimitive } from "@base-ui/react/switch"
 import { cn } from "@/shared/lib/utils"
 
 function Switch({

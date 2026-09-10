@@ -5,13 +5,11 @@ export type ResolvedTheme = Exclude<ThemeMode, 'system'>
 
 export const THEME_STORAGE_KEY = 'mos.ui.theme'
 
-/// The `--background` token of each theme, restated here because the browser
-/// chrome color cannot read a CSS custom property. Keep in step with
-/// `styles.css`.
-const themeColors: Record<ResolvedTheme, string> = {
-  light: '#f3f2ec',
-  dark: '#070a19',
-}
+/// The value `<meta name="theme-color">` falls back to before the stylesheet
+/// has resolved, or in a test environment that computes no styles. The live
+/// value is read from `--background` below; a second copy of the palette here
+/// would agree with itself while the tokens moved.
+const FALLBACK_THEME_COLOR = 'oklch(0.9603 0.008 98.88)'
 
 export function normalizeThemeMode(value: string | null | undefined): ThemeMode {
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
@@ -44,7 +42,10 @@ export function applyResolvedTheme(theme: ResolvedTheme, rootDocument: Document 
     meta.name = 'theme-color'
     rootDocument.head.append(meta)
   }
-  meta.content = themeColors[theme]
+  // Read back rather than restated: the browser chrome cannot resolve a custom
+  // property itself, but it can be told what this document resolved it to.
+  const resolved = rootDocument.defaultView?.getComputedStyle(root).getPropertyValue('--background').trim()
+  meta.content = resolved || FALLBACK_THEME_COLOR
 }
 
 export function initializeTheme(): ThemeMode {

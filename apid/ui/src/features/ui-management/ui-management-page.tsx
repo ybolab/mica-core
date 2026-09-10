@@ -1,160 +1,146 @@
-import { useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, Check, ExternalLink, MonitorCog, PackageOpen, Trash2, Upload } from 'lucide-react'
-import { api, errorMessage, json, uploadZip } from '@/lib/api'
+import { api, json, uploadZip } from '@/shared/lib/http'
 import type { UiBundleDetails, UiBundleList, UiStatus } from '@/lib/types'
-import { Button } from '@/shared/components/ui/button'
-import { Card, CardHeader } from '@/components/ui/card'
-import { Status } from '@/components/ui/status'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/shared/components/ui/alert-dialog'
+import { Callout } from '@/shared/components/callout'
+import { ConfirmDialog } from '@/shared/components/confirm-dialog'
+import { DataTable } from '@/shared/components/data-table'
+import { FilePicker } from '@/shared/components/file-picker'
+import { Page, PageHeader } from '@/shared/components/page'
+import { CollectionPanel, Panel } from '@/shared/components/panel'
+import { StatusDot } from '@/shared/components/status-badge'
+import { Button, buttonVariants } from '@/shared/components/ui/button'
+import { useMutationFeedback } from '@/shared/feedback/use-mutation-feedback'
+import { failureDetail } from '@/shared/feedback/toast'
 
 export function UiManagementPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const input = useRef<HTMLInputElement>(null)
-  const [file, setFile] = useState<File>()
-  const [progress, setProgress] = useState(0)
-  const [uploaded, setUploaded] = useState(false)
+  const [progress, setProgress] = useState<number>()
   const bundles = useQuery({ queryKey: ['ui-bundles'], queryFn: () => api<UiBundleList>('/api/v1/ui/bundles') })
   const refresh = (value?: UiBundleList) => {
     if (value) queryClient.setQueryData(['ui-bundles'], value)
     void queryClient.invalidateQueries({ queryKey: ['ui-status'] })
+    void bundles.refetch()
   }
-  const upload = useMutation({
-    mutationFn: (selected: File) => uploadZip<UiBundleList>('/api/v1/ui/bundles', selected, setProgress),
-    onMutate: () => { setProgress(0); setUploaded(false) },
-    onSuccess: (value) => {
-      refresh(value)
-      setUploaded(true)
-      setFile(undefined)
-      if (input.current) input.current.value = ''
-    },
+  const upload = useMutationFeedback<UiBundleList, File>({
+    mutationFn: (selected) => uploadZip<UiBundleList>('/api/v1/ui/bundles', selected, setProgress),
+    success: t('system.uiManager.uploadedInactive'),
+    failure: t('system.uiManager.upload'),
+    onMutate: () => setProgress(0),
+    onSuccess: (value) => { setProgress(undefined); refresh(value) },
+    onError: () => setProgress(undefined),
   })
-  const activate = useMutation({
-    mutationFn: (generation: number) => api<UiStatus>('/api/v1/ui/active', json('PUT', { generation })),
-    onSuccess: () => { refresh(); void bundles.refetch() },
+  const activate = useMutationFeedback<UiStatus, number>({
+    mutationFn: (generation) => api<UiStatus>('/api/v1/ui/active', json('PUT', { generation })),
+    success: (_data, generation) => t('system.uiManager.activated', { generation }),
+    failure: t('system.uiManager.activate'),
+    onSuccess: () => refresh(),
   })
-  const deactivate = useMutation({
+  const deactivate = useMutationFeedback<UiStatus>({
     mutationFn: () => api<UiStatus>('/api/v1/ui/active', { method: 'DELETE' }),
-    onSuccess: () => { refresh(); void bundles.refetch() },
+    success: t('system.uiManager.deactivated'),
+    failure: t('system.uiManager.useBuiltIn'),
+    onSuccess: () => refresh(),
   })
-  const remove = useMutation({
-    mutationFn: (generation: number) => api<void>(`/api/v1/ui/bundles/${generation}`, { method: 'DELETE' }),
-    onSuccess: () => { refresh(); void bundles.refetch() },
+  const remove = useMutationFeedback<void, number>({
+    mutationFn: (generation) => api<void>(`/api/v1/ui/bundles/${generation}`, { method: 'DELETE' }),
+    success: (_data, generation) => t('system.uiManager.deleted', { generation }),
+    failure: t('common.actions.delete'),
+    onSuccess: () => refresh(),
   })
   const pending = activate.isPending || deactivate.isPending || remove.isPending
-  const mutationError = upload.error ?? activate.error ?? deactivate.error ?? remove.error
 
   return (
-    <div className="page">
-      <header className="page-head">
-        <div>
-          <a className="text-link" href="/_ui/system"><ArrowLeft className="size-4" /> {t('system.uiManager.back')}</a>
-          <h1>{t('system.uiManager.title')}</h1>
-          <p>{t('system.uiManager.description')}</p>
-        </div>
-        <a className="text-link" href="/">{t('system.ui.openCustom')} <ExternalLink className="size-4" /></a>
-      </header>
+    <Page>
+      <PageHeader
+        title={t('system.uiManager.title')}
+        description={t('system.uiManager.description')}
+        back={<a className={buttonVariants({ variant: 'outline', size: 'sm' })} href="/_ui/system"><ArrowLeft />{t('system.uiManager.back')}</a>}
+        action={<a className={buttonVariants({ variant: 'outline', size: 'sm' })} href="/">{t('system.ui.openCustom')}<ExternalLink /></a>}
+      />
 
-      <Card>
-        <CardHeader title={t('system.uiManager.uploadTitle')} description={t('system.uiManager.uploadDescription')} action={<Upload className="size-5 text-muted-foreground" />} />
-        <div className="upload-grid">
-          <label className="upload-picker">
-            <span>{t('system.uiManager.packageFile')}</span>
-            <input ref={input} type="file" accept=".zip,.mos-ui.zip,application/zip" onChange={(event) => { setFile(event.target.files?.[0]); setUploaded(false) }} />
-            <small>{file?.name ?? t('system.uiManager.noFile')}</small>
-          </label>
-          <Button disabled={!file || upload.isPending} onClick={() => file && upload.mutate(file)}><Upload className="size-4" /> {upload.isPending ? (progress >= 100 ? t('system.uiManager.validating') : t('system.uiManager.uploading')) : t('system.uiManager.upload')}</Button>
-        </div>
-        {upload.isPending ? <div className="upload-progress" role="progressbar" aria-label={t('system.uiManager.uploadProgress')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /><small>{progress}%</small></div> : null}
-        {uploaded ? <p className="callout success" role="status">{t('system.uiManager.uploadedInactive')}</p> : null}
-        <p className="callout warning" role="note">{t('system.uiManager.safetyNote')}</p>
-      </Card>
+      <Panel title={t('system.uiManager.uploadTitle')} description={t('system.uiManager.uploadDescription')} action={<Upload className="size-5 text-muted-foreground" />}>
+        <FilePicker
+          label={t('system.uiManager.packageFile')}
+          hint={t('system.uiManager.packageHint')}
+          accept=".zip,.mos-ui.zip,application/zip"
+          chooseLabel={t('system.uiManager.choose')}
+          emptyLabel={t('system.uiManager.noFile')}
+          submitLabel={t('system.uiManager.upload')}
+          pendingLabel={progress !== undefined && progress >= 100 ? t('system.uiManager.validating') : t('system.uiManager.uploading')}
+          progress={upload.isPending ? progress : undefined}
+          pending={upload.isPending}
+          onSubmit={(file) => upload.mutate(file)}
+        />
+        <Callout tone="warning" title={t('system.uiManager.safetyNote')} />
+      </Panel>
 
-      <Card>
-        <CardHeader title={t('system.uiManager.versionsTitle')} description={t('system.uiManager.versionsDescription')} action={<PackageOpen className="size-5 text-muted-foreground" />} />
-        {bundles.isPending ? <p className="empty">{t('system.ui.checking')}</p> : null}
-        {!bundles.isPending && bundles.data?.bundles.length === 0 ? <p className="empty">{t('system.ui.noCustom')}</p> : null}
-        {bundles.data?.bundles.length ? (
-          <div className="ui-table-wrap">
-            <table className="ui-table">
-              <thead><tr><th>{t('system.uiManager.version')}</th><th>{t('system.uiManager.size')}</th><th>{t('system.uiManager.validation')}</th><th>{t('system.uiManager.state')}</th><th>{t('system.uiManager.actions')}</th></tr></thead>
-              <tbody>{bundles.data.bundles.map((bundle) => (
-                <BundleRow
-                  key={bundle.generation}
-                  bundle={bundle}
-                  active={bundles.data?.activeGeneration === bundle.generation}
-                  pending={pending}
-                  onActivate={() => activate.mutate(bundle.generation)}
-                  onDeactivate={() => deactivate.mutate()}
-                  onDelete={() => remove.mutate(bundle.generation)}
-                />
-              ))}</tbody>
-            </table>
-          </div>
-        ) : null}
-        {bundles.data ? <p className="retention-note">{t('system.uiManager.retention', { count: bundles.data.bundles.length, limit: bundles.data.retentionLimit })}</p> : null}
-      </Card>
-      {bundles.error ? <p className="callout error" role="alert">{errorMessage(bundles.error, t('common.requestFailed'))}</p> : null}
-      {mutationError ? <p className="callout error" role="alert">{errorMessage(mutationError, t('common.requestFailed'))}</p> : null}
-    </div>
-  )
-}
-
-function BundleRow({ bundle, active, pending, onActivate, onDeactivate, onDelete }: {
-  bundle: UiBundleDetails
-  active: boolean
-  pending: boolean
-  onActivate: () => void
-  onDeactivate: () => void
-  onDelete: () => void
-}) {
-  const { t } = useTranslation()
-  return (
-    <tr>
-      <td><strong>{bundle.name ?? t('system.ui.generation', { generation: bundle.generation })}</strong><small>{bundle.version ?? `#${bundle.generation}`}</small></td>
-      <td>{bundle.expandedBytes !== undefined
-        ? <><strong>{formatBytes(bundle.expandedBytes)}</strong><small>{t('system.uiManager.archiveSize', { size: formatBytes(bundle.compressedBytes ?? 0) })}</small></>
-        : <span className="text-muted-foreground">{t('system.uiManager.sizeUnavailable')}</span>}</td>
-      <td>
-        <Status ok={bundle.usable}>{bundle.usable ? t('system.uiManager.valid') : unavailableMessage(bundle.unavailableReason, t)}</Status>
-        <small>{bundle.compatible === true ? t('system.uiManager.compatible') : bundle.compatible === false ? t('system.uiManager.incompatible') : t('system.uiManager.unchecked')}</small>
-        {bundle.digest ? <code className="bundle-digest" title={bundle.digest}>{bundle.digest.slice(0, 12)}…</code> : null}
-      </td>
-      <td>{active ? <Status ok><Check className="size-3" /> {t('system.uiManager.active')}</Status> : t('system.uiManager.inactive')}</td>
-      <td><div className="table-actions">
-        {active
-          ? <Button size="sm" variant="secondary" disabled={pending} onClick={onDeactivate}>{t('system.uiManager.useBuiltIn')}</Button>
-          : <Button size="sm" disabled={pending || !bundle.usable} onClick={onActivate}><MonitorCog className="size-4" /> {t('system.uiManager.activate')}</Button>}
-        <AlertDialog>
-          <AlertDialogTrigger
-            disabled={pending || active}
-            render={<Button size="sm" variant="ghost" disabled={pending || active} aria-label={t('system.uiManager.deleteVersion', { generation: bundle.generation })} />}
-          ><Trash2 className="size-4" /></AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t('system.uiManager.deleteVersion', { generation: bundle.generation })}</AlertDialogTitle>
-              <AlertDialogDescription>{t('system.uiManager.confirmDelete', { generation: bundle.generation })}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel>
-              <AlertDialogAction variant="destructive" onClick={onDelete}>{t('common.actions.delete')}</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div></td>
-    </tr>
+      <CollectionPanel
+        title={t('system.uiManager.versionsTitle')}
+        description={t('system.uiManager.versionsDescription')}
+        action={<PackageOpen className="size-5 text-muted-foreground" />}
+        footer={bundles.data ? <p className="text-right text-sm text-muted-foreground">{t('system.uiManager.retention', { count: bundles.data.bundles.length, limit: bundles.data.retentionLimit })}</p> : undefined}
+      >
+        <DataTable<UiBundleDetails>
+          rows={bundles.data?.bundles}
+          rowKey={(bundle) => String(bundle.generation)}
+          isPending={bundles.isPending}
+          empty={t('system.ui.noCustom')}
+          columns={[
+            { id: 'version', header: t('system.uiManager.version'), cell: (bundle) => (
+              // Two lines, not two inline runs. The hand-rolled table rendered
+              // these adjacent, so a version read as "kiosk1.2.0".
+              <span className="flex flex-col">
+                <strong className="font-medium">{bundle.name ?? t('system.ui.generation', { generation: bundle.generation })}</strong>
+                <small className="text-muted-foreground">{bundle.version ?? `#${bundle.generation}`}</small>
+              </span>
+            ) },
+            { id: 'size', header: t('system.uiManager.size'), cell: (bundle) => bundle.expandedBytes !== undefined
+              ? (
+                <span className="flex flex-col">
+                  <strong className="font-medium">{formatBytes(bundle.expandedBytes)}</strong>
+                  <small className="text-muted-foreground">{t('system.uiManager.archiveSize', { size: formatBytes(bundle.compressedBytes ?? 0) })}</small>
+                </span>
+              )
+              : <span className="text-muted-foreground">{t('system.uiManager.sizeUnavailable')}</span> },
+            { id: 'validation', header: t('system.uiManager.validation'), cell: (bundle) => (
+              <span className="flex flex-col gap-0.5">
+                <StatusDot state={bundle.usable ? 'ok' : 'warning'}>{bundle.usable ? t('system.uiManager.valid') : unavailableMessage(bundle.unavailableReason, t)}</StatusDot>
+                <small className="text-muted-foreground">{bundle.compatible === true ? t('system.uiManager.compatible') : bundle.compatible === false ? t('system.uiManager.incompatible') : t('system.uiManager.unchecked')}</small>
+                {bundle.digest ? <code className="w-fit font-mono text-xs" title={bundle.digest}>{bundle.digest.slice(0, 12)}…</code> : null}
+              </span>
+            ) },
+            { id: 'state', header: t('system.uiManager.state'), cell: (bundle) => bundles.data?.activeGeneration === bundle.generation
+              ? <StatusDot state="ok"><Check className="size-3" />{t('system.uiManager.active')}</StatusDot>
+              : t('system.uiManager.inactive') },
+            { id: 'actions', header: t('system.uiManager.actions'), align: 'end', cell: (bundle) => {
+              const active = bundles.data?.activeGeneration === bundle.generation
+              return (
+                <div className="flex justify-end gap-2">
+                  {active
+                    ? <Button size="sm" variant="secondary" disabled={pending} onClick={() => deactivate.mutate()}>{t('system.uiManager.useBuiltIn')}</Button>
+                    : <Button size="sm" disabled={pending || !bundle.usable} onClick={() => activate.mutate(bundle.generation)}><MonitorCog />{t('system.uiManager.activate')}</Button>}
+                  <ConfirmDialog
+                    disabled={pending || active}
+                    trigger={<Button size="icon-sm" variant="destructive" disabled={pending || active} aria-label={t('system.uiManager.deleteVersion', { generation: bundle.generation })}><Trash2 /></Button>}
+                    title={t('system.uiManager.deleteVersion', { generation: bundle.generation })}
+                    description={t('system.uiManager.confirmDelete', { generation: bundle.generation })}
+                    confirmLabel={t('common.actions.delete')}
+                    success={t('system.uiManager.deleted', { generation: bundle.generation })}
+                    failure={t('common.actions.delete')}
+                    onConfirm={() => remove.mutateAsync(bundle.generation)}
+                  />
+                </div>
+              )
+            } },
+          ]}
+        />
+      </CollectionPanel>
+      {bundles.error ? <Callout tone="danger" title={failureDetail(bundles.error, t('common.requestFailed'))} /> : null}
+    </Page>
   )
 }
 

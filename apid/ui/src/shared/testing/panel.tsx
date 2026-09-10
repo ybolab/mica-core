@@ -2,18 +2,53 @@ import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { I18nextProvider } from 'react-i18next'
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { vi } from 'vitest'
 import { i18n } from '@/i18n/i18n'
+import { Toaster } from '@/shared/components/ui/toast'
 
+/// Panels are rendered with the feedback channel mounted, because the outcome
+/// of a write is now reported through it. A harness without the toaster would
+/// let a silent write pass its own test.
 export function renderPanel(node: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
     <I18nextProvider i18n={i18n}>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <Toaster>{node}</Toaster>
+      </QueryClientProvider>
     </I18nextProvider>,
   )
+}
+
+/// The same providers plus a memory router, for a page that renders a `Link`.
+/// The route tree is one root: these tests assert what the page renders, not
+/// where its links go, and the real tree is generated.
+export function renderRoute(node: ReactNode, path = '/') {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  const rootRoute = createRootRoute({
+    component: () => (
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <Toaster>{node}</Toaster>
+        </QueryClientProvider>
+      </I18nextProvider>
+    ),
+  })
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: [path] }),
+  })
+  return render(<RouterProvider router={router as never} />)
 }
 
 export function jsonResponse(value: unknown, status = 200) {

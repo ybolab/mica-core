@@ -78,6 +78,11 @@ docker run --rm \
         cd /build/work
         bun install --frozen-lockfile
         if [ "${MOS_APID_UI_RUN_CHECKS}" = 1 ]; then
+            # The UI library policy first: it is the cheapest check and the one
+            # that catches a hand-written primitive or a re-styled registry
+            # component before the type checker spends a minute agreeing the
+            # code is valid.
+            bash verify-ui-policy.sh
             bun run lint
             bun run typecheck
             bun run test

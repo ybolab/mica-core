@@ -14,7 +14,7 @@ test('navigates the complete desktop console', async ({ page, isMobile }) => {
   await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible()
   await expect(page.getByText('Simulation', { exact: true })).toBeVisible()
   await page.getByRole('tab', { name: 'Catalog' }).click()
-  const mqtt = page.locator('.catalog-card').filter({ hasText: 'MQTT Bridge' })
+  const mqtt = page.locator('[data-slot=card]').filter({ hasText: 'MQTT Bridge' })
   await mqtt.getByRole('button', { name: 'Install' }).click()
   await page.getByRole('button', { name: 'Next' }).click()
   await page.getByRole('button', { name: 'Next' }).click()
@@ -42,7 +42,7 @@ test('writes real time settings while the simulation boundary stays named', asyn
 
   await expect(page.getByRole('heading', { name: 'System' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'NTP servers' })).toBeVisible()
-  await expect(page.getByText('synchronized with network time')).toBeVisible()
+  await expect(page.getByText('the kernel reports a bounded clock error')).toBeVisible()
   await page.getByRole('textbox', { name: /^Timezone/ }).fill('Europe/Berlin')
   await page.getByRole('button', { name: 'Save timezone' }).click()
   await expect(page.getByText('Change applied.')).toBeVisible()
@@ -78,7 +78,9 @@ test('applies a typed interface edit through the review dialog', async ({ page, 
   await page.getByRole('link', { name: 'eth0' }).click()
 
   await expect(page.getByRole('heading', { name: 'eth0' })).toBeVisible()
-  await page.getByRole('radio', { name: 'Static' }).click()
+  // The mode control is the registry's toggle group: single-select buttons
+  // carrying aria-pressed, where the page previously hand-rolled a radiogroup.
+  await page.getByRole('button', { name: 'Static', exact: true }).click()
   await page.getByRole('textbox', { name: 'Address / prefix' }).fill('192.168.1.24/24')
   await page.getByRole('button', { name: 'Review and save' }).click()
 
@@ -127,6 +129,61 @@ test('labels every route that contains simulated behavior', async ({ page }, tes
       await terminal.getByRole('button', { name: 'End session' }).click()
     }
   }
+})
+
+test('keeps a tall dialog inside a short appliance screen', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'one browser covers the geometry')
+  // A 1024x600 panel is a normal appliance display. The dialog used to be
+  // centred with no height bound and no internal scroll, so at 520px its title
+  // sat at -37px and both footer buttons were below the fold.
+  await page.setViewportSize({ width: 1024, height: 520 })
+  await page.goto('./network')
+  await page.getByRole('button', { name: 'Add interface' }).click()
+  await page.getByRole('switch', { name: 'Use DHCP' }).click()
+
+  const dialog = page.locator('[data-slot=dialog-content]')
+  const box = (await dialog.boundingBox())!
+  expect(box.y).toBeGreaterThanOrEqual(0)
+  expect(box.y + box.height).toBeLessThanOrEqual(520)
+  await expect(page.getByRole('heading', { name: 'Add network interface' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+})
+
+test('opens the language picker without a second layer behind it', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'one browser covers the overlay contract')
+  // The picker used to be a dialog rendered inside the header menu, which left
+  // the menu open and painted above its own backdrop.
+  await page.goto('./')
+  await page.getByRole('combobox', { name: 'Language' }).click()
+
+  await expect(page.getByRole('option', { name: /简体中文/ })).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator('[data-slot=dropdown-menu-popup]')).toHaveCount(0)
+})
+
+test('confirms a destructive action by closing it and saying what happened', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'one browser covers the confirmation contract')
+  // Ten of the eleven confirmations left the modal open with nothing said, so
+  // a completed action and a lost click looked identical.
+  await page.goto('./system')
+  await page.getByRole('button', { name: 'Reboot' }).click()
+  const dialog = page.getByRole('alertdialog')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Reboot' }).click()
+
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByText('Power action accepted.').first()).toBeVisible()
+})
+
+test('reports a saved policy, which used to change nothing on the page', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'one browser covers the feedback contract')
+  await page.goto('./system')
+  await page.getByRole('tab', { name: /Update/ }).click()
+  await page.getByRole('button', { name: 'Save policy' }).click()
+
+  await expect(page.getByText('Update policy saved.').first()).toBeVisible()
 })
 
 test('matches the approved responsive visual baseline', async ({ page }, testInfo) => {

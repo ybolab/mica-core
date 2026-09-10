@@ -3,8 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/shared/lib/http'
 import type { Health, NetworkOverview, SystemInformation, TaskRecord, TimeStatus } from '@/lib/types'
-import { Page, PageHeader, Surface } from '@/shared/components/product-layout'
+import { Callout } from '@/shared/components/callout'
+import { DataTable } from '@/shared/components/data-table'
+import { MetricCard } from '@/shared/components/metric-card'
+import { Page, PageHeader } from '@/shared/components/page'
+import { CollectionPanel } from '@/shared/components/panel'
+import { RowItem, RowList } from '@/shared/components/row-item'
 import { StatusBadge } from '@/shared/components/status-badge'
+import { buttonVariants } from '@/shared/components/ui/button'
 import { formatAge, formatKnownState } from '@/i18n/format'
 import { freshnessLabel } from '@/features/shell/connection'
 
@@ -60,70 +66,79 @@ export function OverviewPage() {
         action={
           <>
             <StatusBadge tone={healthy ? 'success' : health.isPending ? 'warning' : 'danger'}>{healthLabel}</StatusBadge>
-            <span className="page-freshness">{freshnessLabel(health.dataUpdatedAt, t)}</span>
+            <span className="text-sm whitespace-nowrap text-muted-foreground">{freshnessLabel(health.dataUpdatedAt, t)}</span>
           </>
         }
       />
-      {queryError ? <p className="callout error" role="alert">{t('common.requestFailed')}</p> : null}
+      {queryError ? <Callout tone="danger" title={t('common.requestFailed')} /> : null}
       {attention.length > 0 ? (
-        <section className="labelled-section">
-          <p className="section-label">{t('overview.attention.title')} · {attention.length}</p>
-          <Surface className="surface-compact">
-            <div className="attention-list">
+        <section className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">{t('overview.attention.title')} · {attention.length}</p>
+          <CollectionPanel>
+            <RowList>
               {attention.map((item) => (
-                <div className="attention-row" key={item.id}>
-                  <StatusBadge tone={item.tone}>{item.tag}</StatusBadge>
-                  <div><strong>{item.title}</strong><small>{item.copy}</small></div>
-                  <Link to="/system" hash={item.hash} className="text-link">{item.action}</Link>
-                </div>
+                <RowItem
+                  key={item.id}
+                  media={<StatusBadge tone={item.tone}>{item.tag}</StatusBadge>}
+                  title={item.title}
+                  description={item.copy}
+                  actions={<Link to="/system" hash={item.hash} className={buttonVariants({ variant: 'outline', size: 'sm' })}>{item.action}</Link>}
+                />
               ))}
-            </div>
-          </Surface>
+            </RowList>
+          </CollectionPanel>
         </section>
       ) : null}
-      <div className="metric-grid">
-        <Link to="/services" className="metric surface">
-          <span>{t('overview.systemHealth')}</span>
-          <strong>{healthy ? t('common.states.healthy') : t('common.states.unknown')}</strong>
-          <small>{t('overview.systemHealthCopy')}</small>
-        </Link>
-        <Link to="/system" hash="information" className="metric surface">
-          <span>{t('overview.identity')}</span>
-          <strong className="mono">{hostname.data ?? t('common.notAvailable')}</strong>
-          <small>{machineId?.available && machineId.id ? t('overview.machineId', { id: machineId.id.slice(0, 8) }) : t('common.notAvailable')}</small>
-        </Link>
-        <Link to="/network" className="metric surface">
-          <span>{t('overview.network')}</span>
-          <strong className="mono">{observed ? `${observed.name} · ${observed.addresses?.[0] ?? ''}` : t('common.notAvailable')}</strong>
-          <small>{observed?.operationalState ? formatKnownState(observed.operationalState, t) : t('overview.liveUnavailable')}</small>
-        </Link>
-        <Link to="/system" hash="information" className="metric surface">
-          <span>{t('overview.deviceUptime')}</span>
-          <strong className="mono">{uptime?.available && uptime.seconds !== undefined ? formatUptime(uptime.seconds, t) : t('common.notAvailable')}</strong>
-          <small>{t('overview.readFromMosd')}</small>
-        </Link>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          label={t('overview.systemHealth')}
+          value={healthy ? t('common.states.healthy') : t('common.states.unknown')}
+          caption={t('overview.systemHealthCopy')}
+          render={(card) => <Link to="/services" className="contents">{card}</Link>}
+        />
+        <MetricCard
+          label={t('overview.identity')}
+          mono
+          value={hostname.data ?? t('common.notAvailable')}
+          caption={machineId?.available && machineId.id ? t('overview.machineId', { id: machineId.id.slice(0, 8) }) : t('common.notAvailable')}
+          render={(card) => <Link to="/system" hash="information" className="contents">{card}</Link>}
+        />
+        <MetricCard
+          label={t('overview.network')}
+          mono
+          value={observed ? `${observed.name} · ${observed.addresses?.[0] ?? ''}` : t('common.notAvailable')}
+          caption={observed?.operationalState ? formatKnownState(observed.operationalState, t) : t('overview.liveUnavailable')}
+          render={(card) => <Link to="/network" className="contents">{card}</Link>}
+        />
+        <MetricCard
+          label={t('overview.deviceUptime')}
+          mono
+          value={uptime?.available && uptime.seconds !== undefined ? formatUptime(uptime.seconds, t) : t('common.notAvailable')}
+          caption={t('overview.readFromMosd')}
+          render={(card) => <Link to="/system" hash="information" className="contents">{card}</Link>}
+        />
       </div>
-      <Surface className="surface-compact">
-        <div className="surface-title"><div><h2>{t('overview.recentTasks')}</h2></div><span className="page-freshness">{freshnessLabel(tasks.dataUpdatedAt, t)}</span></div>
-        <div className="data-table-wrap">
-          <table className="data-table">
-            <thead><tr><th>{t('overview.tasks.action')}</th><th>{t('overview.tasks.target')}</th><th>{t('overview.tasks.phase')}</th><th>{t('overview.tasks.result')}</th><th className="text-right">{t('overview.tasks.time')}</th></tr></thead>
-            <tbody>{tasks.data?.slice(-6).reverse().map((task) => {
+      <CollectionPanel
+        title={t('overview.recentTasks')}
+        action={<span className="text-sm whitespace-nowrap text-muted-foreground">{freshnessLabel(tasks.dataUpdatedAt, t)}</span>}
+      >
+        <DataTable<TaskRecord>
+          rows={tasks.data?.slice(-6).reverse()}
+          rowKey={(task) => task.id}
+          isPending={tasks.isPending}
+          empty={t('overview.noTasks')}
+          columns={[
+            { id: 'action', header: t('overview.tasks.action'), cell: (task) => task.operation },
+            { id: 'target', header: t('overview.tasks.target'), cell: (task) => <span className="font-mono text-[0.8125rem]">{task.dotPath}</span> },
+            { id: 'phase', header: t('overview.tasks.phase'), cell: (task) => {
               const phase = task.status === 'finished' ? task.outcome ?? 'finished' : task.status
-              return (
-                <tr key={task.id}>
-                  <td>{task.operation}</td>
-                  <td className="mono-cell">{task.dotPath}</td>
-                  <td><StatusBadge tone={task.outcome === 'succeeded' ? 'success' : task.outcome === 'failed' ? 'danger' : 'warning'}>{formatKnownState(phase, t)}</StatusBadge></td>
-                  <td>{task.message ?? t('overview.tasks.noDetail', { source: task.source })}</td>
-                  <td className="text-right">{formatAge(Date.now() - Date.parse(task.enqueuedAt), t)}</td>
-                </tr>
-              )
-            })}</tbody>
-          </table>
-          {!tasks.isPending && !tasks.isError && tasks.data?.length === 0 ? <p className="empty">{t('overview.noTasks')}</p> : null}
-        </div>
-      </Surface>
+              return <StatusBadge tone={task.outcome === 'succeeded' ? 'success' : task.outcome === 'failed' ? 'danger' : 'warning'}>{formatKnownState(phase, t)}</StatusBadge>
+            } },
+            { id: 'result', header: t('overview.tasks.result'), cell: (task) => task.message ?? t('overview.tasks.noDetail', { source: task.source }) },
+            { id: 'time', header: t('overview.tasks.time'), align: 'end', cell: (task) => formatAge(Date.now() - Date.parse(task.enqueuedAt), t) },
+          ]}
+        />
+      </CollectionPanel>
     </Page>
   )
 }

@@ -2,14 +2,19 @@ import { useState, type FormEvent } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Check, ChevronLeft, Loader2 } from 'lucide-react'
-import { api, errorMessage, json } from '@/shared/lib/http'
+import { Check, ChevronLeft } from 'lucide-react'
+import { api, json } from '@/shared/lib/http'
 import type { Health, NetworkOverview, ObservedNetworkInterface, ObservedNetworkState, TaskAccepted, TaskRecord } from '@/lib/types'
-import { Page, Section, Surface } from '@/shared/components/product-layout'
+import { FactList } from '@/shared/components/fact-list'
+import { FormDialog } from '@/shared/components/form-dialog'
+import { FormField } from '@/shared/components/form-field'
+import { Page, PageHeader, PageSection } from '@/shared/components/page'
+import { Panel } from '@/shared/components/panel'
+import { SegmentedControl } from '@/shared/components/segmented-control'
 import { StatusBadge } from '@/shared/components/status-badge'
-import { Button } from '@/shared/components/ui/button'
+import { Button, buttonVariants } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
+import { Spinner } from '@/shared/components/ui/spinner'
 import { connectionState } from '@/features/shell/connection'
 import { applyStage, applyStages, stageState } from './apply-stage'
 import { bridgeMembership, isSessionInterface } from './interface-facts'
@@ -64,71 +69,95 @@ export function InterfaceDetailPage() {
   const submit = (event: FormEvent) => { event.preventDefault(); setReview(true) }
   const link = observed?.link
   const online = link?.carrier === true
+  const onSession = isSessionInterface((observed?.addresses ?? []).map(formatAddress), window.location.hostname)
 
   return (
     <Page>
-      <header className="page-head">
-        <div>
-          <Link to="/network" className="text-link"><ChevronLeft aria-hidden="true" />{t('network.title')} / {t('network.tabs.interfaces')}</Link>
-          <div className="iface-title">
-            <h1 className="mono">{name}</h1>
+      <PageHeader
+        title={name}
+        back={<Link to="/network" className={buttonVariants({ variant: 'outline', size: 'sm' })}><ChevronLeft aria-hidden="true" />{t('network.title')} / {t('network.tabs.interfaces')}</Link>}
+        action={(
+          <>
             <StatusBadge>{kindLabel(configured, observed, t)}</StatusBadge>
             <StatusBadge tone={online ? 'success' : 'danger'}>{link?.operationalState ?? t('network.notObserved')}</StatusBadge>
-          </div>
-        </div>
-      </header>
+          </>
+        )}
+      />
 
       {taskId ? <ApplyStrip taskId={taskId} onDismiss={() => setTaskId(undefined)} /> : null}
 
-      <Section title={t('network.detail.overview')}>
-        <Surface className="fact-grid">
-          <div><span>{t('network.detail.mac')}</span><span className="mono">{observed?.hardwareAddress ?? t('common.notAvailable')}</span></div>
-          <div><span>{t('network.detail.mtu')}</span><span className="mono">{observed?.mtu ?? t('common.notAvailable')}</span></div>
-          <div><span>{t('network.detail.memberOf')}</span><span className="mono">{bridge ?? t('network.detail.noBridge')}</span></div>
-          <div><span>{t('network.detail.link')}</span><span className={online ? undefined : 'text-danger'}>{link?.carrierState ?? t('common.notAvailable')}</span></div>
-        </Surface>
-      </Section>
+      <PageSection title={t('network.detail.overview')}>
+        <Panel>
+          <FactList facts={[
+            { id: 'mac', label: t('network.detail.mac'), value: observed?.hardwareAddress ?? t('common.notAvailable'), mono: true },
+            { id: 'mtu', label: t('network.detail.mtu'), value: observed?.mtu ?? t('common.notAvailable'), mono: true },
+            { id: 'bridge', label: t('network.detail.memberOf'), value: bridge ?? t('network.detail.noBridge'), mono: true },
+            { id: 'link', label: t('network.detail.link'), value: <span className={online ? undefined : 'text-destructive'}>{link?.carrierState ?? t('common.notAvailable')}</span> },
+          ]} />
+        </Panel>
+      </PageSection>
 
-      <Section title={t('network.detail.addressing')}>
-        <Surface>
-          <form className="stack" onSubmit={submit}>
-            <div className="field">
-              <span className="field-label">{t('network.detail.mode')}</span>
-              <div className="segmented" role="radiogroup" aria-label={t('network.detail.mode')}>
-                <button type="button" role="radio" aria-checked={useDhcp} data-active={useDhcp || undefined} onClick={() => setDhcp(true)}>DHCP</button>
-                <button type="button" role="radio" aria-checked={!useDhcp} data-active={!useDhcp || undefined} onClick={() => setDhcp(false)}>{t('network.detail.static')}</button>
-              </div>
-            </div>
-            {useDhcp ? <p className="field-hint">{t('network.detail.dhcpNote')}</p> : (
-              <div className="content-grid">
-                <div className="field"><label htmlFor="iface-address">{t('network.detail.address')}</label><Input id="iface-address" className="mono" value={addressValue} onChange={(event) => setAddress(event.target.value)} placeholder="10.0.0.2/24" required /></div>
-                <div className="field"><label htmlFor="iface-gateway">{t('network.detail.gateway')}</label><Input id="iface-gateway" className="mono" value={gatewayValue} onChange={(event) => setGateway(event.target.value)} placeholder="10.0.0.1" /></div>
-                <div className="field span-2"><label htmlFor="iface-dns">{t('network.detail.dns')}</label><Input id="iface-dns" className="mono" value={dnsValue} onChange={(event) => setDns(event.target.value)} placeholder="10.0.0.1, 1.1.1.1" /></div>
+      <PageSection title={t('network.detail.addressing')}>
+        <Panel>
+          <form className="grid gap-4" onSubmit={submit}>
+            <FormField label={t('network.detail.mode')}>
+              {() => (
+                <SegmentedControl<'dhcp' | 'static'>
+                  label={t('network.detail.mode')}
+                  value={useDhcp ? 'dhcp' : 'static'}
+                  onValueChange={(mode) => setDhcp(mode === 'dhcp')}
+                  segments={[
+                    { value: 'dhcp', label: 'DHCP' },
+                    { value: 'static', label: t('network.detail.static') },
+                  ]}
+                />
+              )}
+            </FormField>
+            {useDhcp ? <p className="text-sm text-muted-foreground">{t('network.detail.dhcpNote')}</p> : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField label={t('network.detail.address')}>
+                  {(id) => <Input id={id} className="font-mono" value={addressValue} onChange={(event) => setAddress(event.target.value)} placeholder="10.0.0.2/24" required />}
+                </FormField>
+                <FormField label={t('network.detail.gateway')}>
+                  {(id) => <Input id={id} className="font-mono" value={gatewayValue} onChange={(event) => setGateway(event.target.value)} placeholder="10.0.0.1" />}
+                </FormField>
+                <FormField className="sm:col-span-2" label={t('network.detail.dns')}>
+                  {(id) => <Input id={id} className="font-mono" value={dnsValue} onChange={(event) => setDns(event.target.value)} placeholder="10.0.0.1, 1.1.1.1" />}
+                </FormField>
               </div>
             )}
-            {save.error ? <p className="callout error" role="alert">{errorMessage(save.error, t('common.requestFailed'))}</p> : null}
-            <div className="form-actions">
+            <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={reset}>{t('common.actions.cancel')}</Button>
               <Button type="submit">{t('network.detail.save')}</Button>
             </div>
           </form>
-        </Surface>
-      </Section>
+        </Panel>
+      </PageSection>
 
-      <Section title={t('network.detail.danger')} className="danger-section">
-        <Surface><p className="field-hint">{t('network.detail.dangerCopy', { name })}</p></Surface>
-      </Section>
+      <PageSection title={t('network.detail.danger')} tone="danger">
+        <Panel><p className="text-sm text-muted-foreground">{t('network.detail.dangerCopy', { name })}</p></Panel>
+      </PageSection>
 
-      <ReviewDialog
+      <FormDialog
         open={review}
-        onClose={() => setReview(false)}
-        onApply={() => save.mutate()}
-        pending={save.isPending}
-        name={name}
-        bridge={bridge}
-        change={t(useDhcp ? 'network.detail.changeDhcp' : 'network.detail.changeStatic', { address: addressValue })}
-        onSession={isSessionInterface((observed?.addresses ?? []).map(formatAddress), window.location.hostname)}
-      />
+        onOpenChange={(next) => { if (!next) setReview(false) }}
+        title={t('network.review.title')}
+        submitLabel={t('network.review.apply')}
+        success={t('network.review.applied', { name })}
+        failure={t('network.detail.save')}
+        onSubmit={() => save.mutateAsync()}
+      >
+        <FactList facts={[
+          { id: 'change', label: t('network.review.change'), value: t(useDhcp ? 'network.detail.changeDhcp' : 'network.detail.changeStatic', { address: addressValue }), mono: true },
+          { id: 'affects', label: t('network.review.affects'), value: bridge ? t('network.review.affectsBridge', { name, bridge }) : name },
+          { id: 'session', label: t('network.review.session'), value: (
+            <span className={onSession ? 'text-destructive' : 'text-success'}>
+              {t(onSession ? 'network.review.sessionOn' : 'network.review.sessionOff', { name })}
+            </span>
+          ) },
+          { id: 'recover', label: t('network.review.recover'), value: t('network.review.recoverCopy') },
+        ]} />
+      </FormDialog>
     </Page>
   )
 }
@@ -145,55 +174,27 @@ function ApplyStrip({ taskId, onDismiss }: { taskId: string; onDismiss: () => vo
   const stage = applyStage(task.data, connection)
   const settled = stage === 'applied' || stage === 'failed'
   return (
-    <Surface role="status" aria-live="polite" className="apply-strip">
-      <div className="apply-head">
-        <strong>{t('network.apply.title')}</strong>
-        {settled ? <StatusBadge tone={stage === 'applied' ? 'success' : 'danger'}>{t(`network.apply.${stage}`)}</StatusBadge> : null}
+    <Panel className="gap-3" contentClassName="gap-3">
+      <div role="status" aria-live="polite" className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <strong className="text-sm font-medium">{t('network.apply.title')}</strong>
+          {settled ? <StatusBadge tone={stage === 'applied' ? 'success' : 'danger'}>{t(`network.apply.${stage}`)}</StatusBadge> : null}
+        </div>
+        <div className="flex flex-wrap gap-5 text-sm">
+          {applyStages.map((step) => {
+            const state = stageState(step, stage)
+            return (
+              <span key={step} className={state === 'done' ? 'flex items-center gap-2 text-success' : state === 'active' ? 'flex items-center gap-2 font-semibold text-foreground' : 'flex items-center gap-2 text-muted-foreground'}>
+                {state === 'done' ? <Check className="size-3.5" aria-hidden="true" /> : state === 'active' ? <Spinner className="size-3.5" /> : null}
+                {t(`network.apply.steps.${step}`)}
+              </span>
+            )
+          })}
+        </div>
+        <p className="text-sm text-muted-foreground">{t(`network.apply.body.${stage}`)}</p>
       </div>
-      <div className="apply-steps">
-        {applyStages.map((step) => {
-          const state = stageState(step, stage)
-          return (
-            <span key={step} data-state={state}>
-              {state === 'done' ? <Check aria-hidden="true" /> : state === 'active' ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-              {t(`network.apply.steps.${step}`)}
-            </span>
-          )
-        })}
-      </div>
-      <p className="field-hint">{t(`network.apply.body.${stage}`)}</p>
-      {settled ? <Button size="sm" variant="outline" onClick={onDismiss}>{t('network.apply.dismiss')}</Button> : null}
-    </Surface>
-  )
-}
-
-function ReviewDialog({ open, onClose, onApply, pending, name, bridge, change, onSession }: {
-  open: boolean
-  onClose: () => void
-  onApply: () => void
-  pending: boolean
-  name: string
-  bridge?: string
-  change: string
-  onSession: boolean
-}) {
-  const { t } = useTranslation()
-  return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <DialogContent showCloseButton={false}>
-        <DialogHeader><DialogTitle>{t('network.review.title')}</DialogTitle></DialogHeader>
-        <dl className="review-list">
-          <div><dt>{t('network.review.change')}</dt><dd className="mono">{change}</dd></div>
-          <div><dt>{t('network.review.affects')}</dt><dd>{bridge ? t('network.review.affectsBridge', { name, bridge }) : name}</dd></div>
-          <div><dt>{t('network.review.session')}</dt><dd className={onSession ? 'text-danger' : 'text-success'}>{t(onSession ? 'network.review.sessionOn' : 'network.review.sessionOff', { name })}</dd></div>
-          <div><dt>{t('network.review.recover')}</dt><dd>{t('network.review.recoverCopy')}</dd></div>
-        </dl>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>{t('common.actions.cancel')}</Button>
-          <Button type="button" onClick={onApply} disabled={pending}>{t('network.review.apply')}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      {settled ? <Button className="justify-self-start" size="sm" variant="outline" onClick={onDismiss}>{t('network.apply.dismiss')}</Button> : null}
+    </Panel>
   )
 }
 

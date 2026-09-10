@@ -1,23 +1,28 @@
-import { useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRouterState } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { Download, ExternalLink, PackageSearch, Power, RefreshCcw, Settings2, Upload } from 'lucide-react'
-import { api, errorMessage, json } from '@/lib/api'
+import { api, json } from '@/shared/lib/http'
 import type { TaskAccepted, UiStatus } from '@/lib/types'
-import { Button } from '@/shared/components/ui/button'
-import { Card, CardHeader } from '@/components/ui/card'
-import { Section, Surface } from '@/shared/components/product-layout'
-import { StatusBadge } from '@/shared/components/status-badge'
+import { Button, buttonVariants } from '@/shared/components/ui/button'
+import { Callout } from '@/shared/components/callout'
+import { ConfirmDialog } from '@/shared/components/confirm-dialog'
+import { FactList } from '@/shared/components/fact-list'
+import { FormField, ToggleField } from '@/shared/components/form-field'
+import { Page, PageHeader, PageSection } from '@/shared/components/page'
+import { Panel } from '@/shared/components/panel'
+import { RowItem, RowList } from '@/shared/components/row-item'
+import { StatusBadge, StatusDot } from '@/shared/components/status-badge'
 import { PlannedNotice } from '@/shared/simulation/planned'
-import { Field } from '@/shared/components/field'
 import { Input } from '@/shared/components/ui/input'
-import { Status } from '@/components/ui/status'
 import { Switch } from '@/shared/components/ui/switch'
 import { TaskProgress } from '@/shared/components/task-progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { SimulationNotice } from '@/shared/simulation/simulation-notice'
 import { useSimulation } from '@/shared/simulation/simulation-provider'
+import { useMutationFeedback } from '@/shared/feedback/use-mutation-feedback'
+import { failureDetail } from '@/shared/feedback/toast'
 import { InformationPanel } from '@/features/system/information-panel'
 import { TimePanel } from '@/features/system/time-panel'
 import { StoragePanel } from '@/features/system/storage-panel'
@@ -26,65 +31,57 @@ import { RollbackPanel } from '@/features/system/rollback-panel'
 import { AutomaticUpdatesPanel } from '@/features/system/automatic-updates-panel'
 import { CredentialRecoveryPanel } from '@/features/recovery/credential-recovery-panel'
 import { ResetPanel } from '@/features/recovery/reset-panel'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/shared/components/ui/alert-dialog'
+
+// The prototype has six tabs: recovery is folded into update, general and
+// diagnostics. The old anchor still resolves rather than dropping the reader
+// on the first tab.
+const TABS = ['general', 'information', 'time', 'update', 'storage', 'diagnostics'] as const
 
 export function SystemPage() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const hash = useRouterState({ select: (state) => state.location.hash })
-  // The prototype has six tabs: recovery is folded into update, general and
-  // diagnostics. The old anchor still resolves rather than dropping the reader
-  // on the first tab.
-  const tabs = ['general', 'information', 'time', 'update', 'storage', 'diagnostics']
-  const initialTab = tabs.includes(hash) ? hash : hash === 'recovery' ? 'update' : 'general'
+  const active = (TABS as readonly string[]).includes(hash) ? hash : hash === 'recovery' ? 'update' : 'general'
   return (
-    <div className="page">
-      <header className="page-head"><div><h1>{t('system.title')}</h1></div></header>
-      <Tabs key={initialTab} defaultValue={initialTab}>
+    <Page>
+      <PageHeader title={t('system.title')} />
+      {/* Controlled and written back to the hash, so a tab can be linked, sent
+          to someone, and survive a reload. It used to be uncontrolled with a
+          `key` remount, which read the hash once and then diverged from it. */}
+      <Tabs value={active} onValueChange={(value) => void navigate({ to: '/system', hash: String(value), replace: true })}>
         <TabsList aria-label={t('system.title')}>
-          <TabsTrigger value="general">{t('system.tabs.general')}</TabsTrigger>
-          <TabsTrigger value="information">{t('system.tabs.information')}</TabsTrigger>
-          <TabsTrigger value="time">{t('system.tabs.time')}</TabsTrigger>
-          <TabsTrigger value="update">{t('system.tabs.update')}</TabsTrigger>
-          <TabsTrigger value="storage">{t('system.tabs.storage')}</TabsTrigger>
-          <TabsTrigger value="diagnostics">{t('system.tabs.diagnostics')}</TabsTrigger>
+          {TABS.map((tab) => <TabsTrigger key={tab} value={tab}>{t(`system.tabs.${tab}`)}</TabsTrigger>)}
         </TabsList>
-        <TabsContent value="general" className="tab-panel">
-          <Section title={t('system.identity.title')} description={t('system.identity.description')}><HostnamePanel /></Section>
-          <Section title={t('system.ui.title')} description={t('system.ui.description')}><UiPanel /></Section>
-          <Section title={t('system.power.title')} description={t('system.power.description')}><PowerPanel /></Section>
-          <Section title={t('system.recovery.reset.title')} description={t('system.recovery.reset.description')} className="danger-section"><ResetPanel /></Section>
+        <TabsContent value="general" className="grid gap-6 pt-4">
+          <PageSection title={t('system.identity.title')} description={t('system.identity.description')}><HostnamePanel /></PageSection>
+          <PageSection title={t('system.ui.title')} description={t('system.ui.description')}><UiPanel /></PageSection>
+          <PageSection title={t('system.power.title')} description={t('system.power.description')}><PowerPanel /></PageSection>
+          <PageSection title={t('system.recovery.reset.title')} description={t('system.recovery.reset.description')} tone="danger"><ResetPanel /></PageSection>
         </TabsContent>
-        <TabsContent value="information" className="tab-panel"><InformationPanel /></TabsContent>
-        <TabsContent value="time" className="tab-panel"><TimePanel /></TabsContent>
-        <TabsContent value="update" className="tab-panel">
-          <UpdatePanel />
-          <UpdateChecks />
-          <UpdateActions />
-          <Section title={t('system.update.automaticTitle')} description={t('system.update.automaticDescription')}><AutomaticUpdatesPanel /></Section>
-          <Section title={t('system.update.manualTitle')} description={t('system.update.manualDescription')}><ManualUpdate /></Section>
-          <Section title={t('system.backup.title')} description={t('system.backup.description')}><ConfigBackup /></Section>
-          <Section title={t('system.recovery.additionTitle')} description={t('system.recovery.addition')} className="marked-addition">
-            <div className="stack"><RollbackPanel /><CredentialRecoveryPanel /></div>
-          </Section>
+        <TabsContent value="information" className="grid gap-6 pt-4"><InformationPanel /></TabsContent>
+        <TabsContent value="time" className="grid gap-6 pt-4"><TimePanel /></TabsContent>
+        <TabsContent value="update" className="grid gap-6 pt-4">
+          <PageSection title={t('system.update.title')} description={t('system.update.description')}>
+            <UpdatePanel />
+            <UpdateChecks />
+            <UpdateActions />
+          </PageSection>
+          <PageSection title={t('system.update.automaticTitle')} description={t('system.update.automaticDescription')}><AutomaticUpdatesPanel /></PageSection>
+          <PageSection title={t('system.update.manualTitle')} description={t('system.update.manualDescription')}><ManualUpdate /></PageSection>
+          <PageSection title={t('system.backup.title')} description={t('system.backup.description')}><ConfigBackup /></PageSection>
+          <PageSection title={t('system.recovery.additionTitle')} description={t('system.recovery.addition')}>
+            <RollbackPanel />
+            <CredentialRecoveryPanel />
+          </PageSection>
         </TabsContent>
-        <TabsContent value="storage" className="tab-panel"><StoragePanel /></TabsContent>
-        <TabsContent value="diagnostics" className="tab-panel">
+        <TabsContent value="storage" className="grid gap-6 pt-4"><StoragePanel /></TabsContent>
+        <TabsContent value="diagnostics" className="grid gap-6 pt-4">
           <DiagnosticsPanel />
-          <Section title={t('system.support.title')} description={t('system.support.description')}><SupportAccess /></Section>
+          <PageSection title={t('system.support.title')} description={t('system.support.description')}><SupportAccess /></PageSection>
         </TabsContent>
       </Tabs>
       <SimulationNotice scope={t('system.simulationScope')} />
-    </div>
+    </Page>
   )
 }
 
@@ -108,6 +105,9 @@ interface UpdateStateDoc {
 
 const activeUpdateStates = new Set(['checking', 'downloading', 'installing', 'discarding'])
 
+/// One query key, one `queryFn`. Two panes used to declare the same key with
+/// different result types, which is a cache entry whose shape depends on which
+/// pane mounted first.
 function useUpdateState() {
   return useQuery({
     queryKey: ['update-state'],
@@ -124,34 +124,34 @@ export function UpdatePanel() {
   const boot = status.data?.boot
   const deployment = status.data?.state
   const running = status.data?.deployments?.find((entry) => entry.id === boot?.deploymentId)
+  const healthy = !status.isPending && !status.isError && lifecycle?.state !== 'failed' && lifecycle?.state !== 'update-unavailable'
   return (
-    <Card>
-      <CardHeader title={t('system.update.title')} description={t('system.update.description')} action={<PackageSearch className="size-5 text-muted-foreground" />} />
-      <div className="service-state"><Status ok={!status.isPending && !status.isError && lifecycle?.state !== 'failed' && lifecycle?.state !== 'update-unavailable'}>{status.isPending ? t('system.update.checking') : (lifecycle?.state ?? t('common.states.unknown'))}</Status></div>
+    <Panel title={t('system.update.title')} description={t('system.update.description')} action={<PackageSearch className="size-5 text-muted-foreground" />}>
+      <StatusDot state={status.isPending ? 'pending' : healthy ? 'ok' : 'warning'}>
+        {status.isPending ? t('system.update.checking') : (lifecycle?.state ?? t('common.states.unknown'))}
+      </StatusDot>
       {lifecycle?.reason ? <p className="text-sm text-muted-foreground">{lifecycle.reason}</p> : null}
-      <dl className="details">
-        {available ? <div><dt>{t('system.update.available')}</dt><dd>{available.version} · {available.deploymentId} ({available.channel})</dd></div> : null}
-        {lifecycle?.deploymentId ? <div><dt>{t('system.update.staged')}</dt><dd className="break-all">{lifecycle.deploymentId}</dd></div> : null}
-        {boot ? <>
-          <div><dt>{t('system.update.running')}</dt><dd className="break-all">{boot.deploymentId}</dd></div>
-          <div><dt>{t('system.update.kernel')}</dt><dd className="break-all">{boot.kernelId}</dd></div>
-          <div><dt>{t('system.update.rootfs')}</dt><dd className="break-all">{boot.rootfsId}</dd></div>
-        </> : null}
-        {running ? <div><dt>{t('system.update.version')}</dt><dd>{running.version} · {running.kernelRelease}</dd></div> : null}
-        {deployment ? <>
-          <div><dt>{t('system.update.generation')}</dt><dd>{deployment.highestGeneration}</dd></div>
-          {deployment.current && deployment.current !== boot?.deploymentId ? <div><dt>{t('system.update.confirmed')}</dt><dd className="break-all">{deployment.current}</dd></div> : null}
-          {deployment.candidate ? <div><dt>{t('system.update.candidate')}</dt><dd className="break-all">{deployment.candidate}</dd></div> : null}
-          {deployment.fallback ? <div><dt>{t('system.update.fallback')}</dt><dd className="break-all">{deployment.fallback}</dd></div> : null}
-          {deployment.failed.length ? <div><dt>{t('system.update.failed')}</dt><dd>{deployment.failed.map((id) => <div className="break-all" key={id}>{id}</div>)}</dd></div> : null}
-        </> : null}
-        {lifecycle?.last_check ? <div><dt>{t('system.update.lastCheck')}</dt><dd>{lifecycle.last_check}</dd></div> : null}
-      </dl>
-      {deployment?.candidate && deployment.candidate !== boot?.deploymentId ? <p className="callout warning" role="status">{t('system.update.pendingReboot')}</p> : null}
-      {lifecycle?.client && lifecycle.client.available === false ? <p className="callout warning" role="status">{t('system.update.clientUnavailable', { reason: lifecycle.client.reason ?? '' })}</p> : null}
-      {lifecycle?.policy_error ? <p className="callout error" role="alert">{t('system.update.policyError', { reason: lifecycle.policy_error })}</p> : null}
-      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
-    </Card>
+      <FactList facts={[
+        available && { id: 'available', label: t('system.update.available'), value: `${available.version} · ${available.deploymentId} (${available.channel})` },
+        lifecycle?.deploymentId && { id: 'staged', label: t('system.update.staged'), value: lifecycle.deploymentId, mono: true },
+        boot && { id: 'running', label: t('system.update.running'), value: boot.deploymentId, mono: true },
+        boot && { id: 'kernel', label: t('system.update.kernel'), value: boot.kernelId, mono: true },
+        boot && { id: 'rootfs', label: t('system.update.rootfs'), value: boot.rootfsId, mono: true },
+        running && { id: 'version', label: t('system.update.version'), value: `${running.version} · ${running.kernelRelease}` },
+        deployment && { id: 'generation', label: t('system.update.generation'), value: deployment.highestGeneration },
+        deployment?.current && deployment.current !== boot?.deploymentId
+          ? { id: 'confirmed', label: t('system.update.confirmed'), value: deployment.current, mono: true } : undefined,
+        deployment?.candidate ? { id: 'candidate', label: t('system.update.candidate'), value: deployment.candidate, mono: true } : undefined,
+        deployment?.fallback ? { id: 'fallback', label: t('system.update.fallback'), value: deployment.fallback, mono: true } : undefined,
+        deployment?.failed.length
+          ? { id: 'failed', label: t('system.update.failed'), value: deployment.failed.join(', '), mono: true } : undefined,
+        lifecycle?.last_check && { id: 'lastCheck', label: t('system.update.lastCheck'), value: lifecycle.last_check },
+      ]} />
+      {deployment?.candidate && deployment.candidate !== boot?.deploymentId ? <Callout tone="warning" title={t('system.update.pendingReboot')} /> : null}
+      {lifecycle?.client && lifecycle.client.available === false ? <Callout tone="warning" title={t('system.update.clientUnavailable', { reason: lifecycle.client.reason ?? '' })} /> : null}
+      {lifecycle?.policy_error ? <Callout tone="danger" title={t('system.update.policyError', { reason: lifecycle.policy_error })} /> : null}
+      {status.error ? <Callout tone="danger" title={failureDetail(status.error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 
@@ -159,20 +159,30 @@ export function UpdateActions() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useUpdateState()
-  const action = useMutation({ mutationFn: (name: 'check' | 'fetch' | 'install') => api<unknown>(`/api/v1/update/${name}`, json('POST', name === 'install' ? { deploymentId: status.data?.lifecycle?.deploymentId } : undefined)), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }) })
+  const action = useMutationFeedback<unknown, 'check' | 'fetch' | 'install'>({
+    mutationFn: (name) => api<unknown>(`/api/v1/update/${name}`, json('POST', name === 'install' ? { deploymentId: status.data?.lifecycle?.deploymentId } : undefined)),
+    success: (_data, name) => t(`system.update.accepted.${name}`),
+    failure: t('system.update.actionsTitle'),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['update-state'] }),
+  })
   const busy = action.isPending || status.isPending || status.isError || activeUpdateStates.has(status.data?.lifecycle?.state ?? '')
-  return <Card><CardHeader title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')} /><div className="flex flex-wrap gap-3"><Button variant="secondary" onClick={() => action.mutate('check')} disabled={busy}>{t('system.update.checkNow')}</Button><Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={busy}>{t('system.update.download')}</Button><Button onClick={() => action.mutate('install')} disabled={busy || !status.data?.lifecycle?.deploymentId}>{t('system.update.install')}</Button></div>{action.error ? <p className="callout error">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}</Card>
+  return (
+    <Panel title={t('system.update.actionsTitle')} description={t('system.update.actionsDescription')}>
+      <div className="flex flex-wrap gap-3">
+        <Button variant="secondary" onClick={() => action.mutate('check')} disabled={busy}>{t('system.update.checkNow')}</Button>
+        <Button variant="secondary" onClick={() => action.mutate('fetch')} disabled={busy}>{t('system.update.download')}</Button>
+        <Button onClick={() => action.mutate('install')} disabled={busy || !status.data?.lifecycle?.deploymentId}>{t('system.update.install')}</Button>
+      </div>
+    </Panel>
+  )
 }
 
-/// The reset tiers and credential recovery bind REAL routes and are their own
-/// area; the two cards beside them are still simulated and stay behind the
-/// page's simulation notice.
 /// The prototype's check table. Only the rows the device actually answers are
 /// rendered; the signature, compatibility and space checks it also shows have
 /// no endpoint, and are named as missing rather than invented.
 export function UpdateChecks() {
   const { t } = useTranslation()
-  const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateStateDoc>('/api/v1/update') })
+  const status = useUpdateState()
   const lifecycle = status.data?.lifecycle
   const gate = lifecycle?.reboot_gate
   const rows = [
@@ -182,14 +192,17 @@ export function UpdateChecks() {
   ].filter((row) => row !== undefined)
   if (rows.length === 0) return null
   return (
-    <Surface className="surface-compact">
-      {rows.map((row) => (
-        <div className="check-row" key={row.id}>
-          <span>{row.label}</span>
-          <span><StatusBadge tone={row.tone}>{row.tag}</StatusBadge><span>{row.value}</span></span>
-        </div>
-      ))}
-    </Surface>
+    <Panel contentClassName="gap-0 p-0">
+      <RowList>
+        {rows.map((row) => (
+          <RowItem
+            key={row.id}
+            title={row.label}
+            actions={<><StatusBadge tone={row.tone}>{row.tag}</StatusBadge><span className="text-sm text-muted-foreground">{row.value}</span></>}
+          />
+        ))}
+      </RowList>
+    </Panel>
   )
 }
 
@@ -197,37 +210,37 @@ function ManualUpdate() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [deploymentId, setDeploymentId] = useState('')
-  const install = useMutation({
+  const install = useMutationFeedback({
     mutationFn: () => api<unknown>('/api/v1/update/install', json('POST', { deploymentId })),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-state'] }),
+    success: t('system.update.installAccepted'),
+    failure: t('system.update.install'),
+    onSuccess: () => { setDeploymentId(''); void queryClient.invalidateQueries({ queryKey: ['update-state'] }) },
   })
-  return <Surface><form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); install.mutate() }}>
-    <p className="text-sm text-muted-foreground">{t('system.update.manualFormats')}</p>
-    <Field label={t('system.update.deploymentId')}>
-      <Input value={deploymentId} onChange={(event) => setDeploymentId(event.target.value)} maxLength={64} pattern="[0-9a-f]{64}" required />
-    </Field>
-    <Button type="submit" disabled={install.isPending || !/^[0-9a-f]{64}$/.test(deploymentId)}>{t('system.update.install')}</Button>
-    {install.isSuccess ? <p className="callout success" role="status">{t('system.update.installAccepted')}</p> : null}
-    {install.error ? <p className="callout error" role="alert">{errorMessage(install.error, t('common.requestFailed'))}</p> : null}
-  </form></Surface>
+  return (
+    <Panel>
+      <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); install.mutate() }}>
+        <p className="text-sm text-muted-foreground">{t('system.update.manualFormats')}</p>
+        <FormField label={t('system.update.deploymentId')}>
+          {(id) => <Input id={id} className="font-mono" value={deploymentId} onChange={(event) => setDeploymentId(event.target.value)} maxLength={64} pattern="[0-9a-f]{64}" required />}
+        </FormField>
+        <Button className="justify-self-end" type="submit" disabled={install.isPending || !/^[0-9a-f]{64}$/.test(deploymentId)}>{t('system.update.install')}</Button>
+      </form>
+    </Panel>
+  )
 }
 
 function ConfigBackup() {
   const { t } = useTranslation()
   return (
-    <div className="stack">
+    <div className="grid gap-3">
       <PlannedNotice>{t('system.backup.planned')}</PlannedNotice>
-      <div className="split-grid">
-        <Surface>
-          <strong>{t('system.backup.exportTitle')}</strong>
-          <p className="field-hint">{t('system.backup.exportCopy')}</p>
-          <Button variant="outline" size="sm" disabled><Download />{t('system.backup.download')}</Button>
-        </Surface>
-        <Surface>
-          <strong>{t('system.backup.importTitle')}</strong>
-          <p className="field-hint">{t('system.backup.importCopy')}</p>
-          <Button variant="outline" size="sm" disabled><Upload />{t('system.backup.restore')}</Button>
-        </Surface>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Panel title={t('system.backup.exportTitle')} description={t('system.backup.exportCopy')}>
+          <Button className="justify-self-start" variant="outline" size="sm" disabled><Download />{t('system.backup.download')}</Button>
+        </Panel>
+        <Panel title={t('system.backup.importTitle')} description={t('system.backup.importCopy')}>
+          <Button className="justify-self-start" variant="outline" size="sm" disabled><Upload />{t('system.backup.restore')}</Button>
+        </Panel>
       </div>
     </div>
   )
@@ -237,14 +250,15 @@ function SupportAccess() {
   const { t } = useTranslation()
   const simulation = useSimulation()
   return (
-    <Surface>
+    <Panel>
       <PlannedNotice>{t('system.support.planned')}</PlannedNotice>
-      <div className="ui-selector">
-        <div><strong>{t('system.recovery.supportAccess')}</strong><small>{t('system.recovery.supportCopy')}</small></div>
-        <Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} />
-      </div>
-      <p className="field-hint">{t(simulation.supportAccess ? 'system.support.on' : 'system.support.off')}</p>
-    </Surface>
+      <ToggleField
+        title={t('system.recovery.supportAccess')}
+        description={t('system.recovery.supportCopy')}
+        control={<Switch aria-label={t('system.recovery.supportAccess')} checked={simulation.supportAccess} onCheckedChange={simulation.setSupportAccess} />}
+      />
+      <p className="text-sm text-muted-foreground">{t(simulation.supportAccess ? 'system.support.on' : 'system.support.off')}</p>
+    </Panel>
   )
 }
 
@@ -253,20 +267,25 @@ function HostnamePanel() {
   const queryClient = useQueryClient()
   const hostname = useQuery({ queryKey: ['settings', 'hostname'], queryFn: () => api<string>('/api/v1/settings/hostname') })
   const [draft, setDraft] = useState<string>()
-  const update = useMutation({
-    mutationFn: (value: string) => api<TaskAccepted>('/api/v1/settings/hostname', json('PUT', value)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings', 'hostname'] }),
+  const update = useMutationFeedback<TaskAccepted, string>({
+    mutationFn: (value) => api<TaskAccepted>('/api/v1/settings/hostname', json('PUT', value)),
+    success: t('system.identity.saved'),
+    failure: t('system.identity.save'),
+    // The draft is dropped so the field shows what the device confirmed rather
+    // than what this browser last typed.
+    onSuccess: () => { setDraft(undefined); void queryClient.invalidateQueries({ queryKey: ['settings', 'hostname'] }) },
   })
   const value = draft ?? hostname.data ?? ''
   return (
-    <Card>
-      <form className="grid gap-4" onSubmit={(event: FormEvent) => { event.preventDefault(); update.mutate(value) }}>
-        <Field label={t('system.identity.hostname')}><Input value={value} onChange={(event) => setDraft(event.target.value)} required /></Field>
-        <Button type="submit" disabled={update.isPending || !draft}>{t('system.identity.save')}</Button>
+    <Panel>
+      <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); update.mutate(value) }}>
+        <FormField label={t('system.identity.hostname')}>
+          {(id) => <Input id={id} value={value} onChange={(event) => setDraft(event.target.value)} required />}
+        </FormField>
+        <Button className="justify-self-end" type="submit" disabled={update.isPending || draft === undefined}>{t('system.identity.save')}</Button>
         <TaskProgress taskId={update.data?.taskId} />
-        {update.error ? <p className="callout error" role="alert">{errorMessage(update.error, t('common.requestFailed'))}</p> : null}
       </form>
-    </Card>
+    </Panel>
   )
 }
 
@@ -274,44 +293,48 @@ export function UiPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const status = useQuery({ queryKey: ['ui-status'], queryFn: () => api<UiStatus>('/api/v1/ui') })
-  const activate = useMutation({
-    mutationFn: (generation: number) => api<UiStatus>('/api/v1/ui/active', json('PUT', { generation })),
-    onSuccess: (value) => queryClient.setQueryData(['ui-status'], value),
-  })
-  const deactivate = useMutation({
-    mutationFn: () => api<UiStatus>('/api/v1/ui/active', { method: 'DELETE' }),
+  const select = useMutationFeedback<UiStatus, number | undefined>({
+    mutationFn: (generation) => generation === undefined
+      ? api<UiStatus>('/api/v1/ui/active', { method: 'DELETE' })
+      : api<UiStatus>('/api/v1/ui/active', json('PUT', { generation })),
+    success: (_data, generation) => t(generation === undefined ? 'system.ui.builtInSelected' : 'system.ui.customSelected'),
+    failure: t('system.ui.useCustom'),
     onSuccess: (value) => queryClient.setQueryData(['ui-status'], value),
   })
   const active = status.data?.mode === 'custom'
   const candidate = status.data?.availableCustom
   const custom = status.data?.custom ?? candidate
-  const mutationPending = activate.isPending || deactivate.isPending
-  const mutationError = activate.error ?? deactivate.error
-  const selectorDisabled = status.isPending || status.isError || mutationPending || (!active && !candidate?.usable)
-  const select = (checked: boolean) => {
-    if (checked && candidate) activate.mutate(candidate.generation)
-    else deactivate.mutate()
-  }
+  const selectorDisabled = status.isPending || status.isError || select.isPending || (!active && !candidate?.usable)
   return (
-    <Card>
-      <div className="service-state"><Status ok={!status.isPending && !status.isError}>{status.isPending ? t('system.ui.checking') : active ? t('system.ui.customActive') : t('system.ui.builtInActive')}</Status></div>
-      <div className="ui-selector">
-        <div><strong>{t('system.ui.useCustom')}</strong><small>{t('system.ui.recoveryCopy')}</small></div>
-        <Switch
-          aria-label={t('system.ui.useCustom')}
-          checked={active}
-          disabled={selectorDisabled}
-          onCheckedChange={select}
-        />
+    <Panel>
+      <StatusDot state={status.isPending ? 'pending' : status.isError ? 'warning' : 'ok'}>
+        {status.isPending ? t('system.ui.checking') : active ? t('system.ui.customActive') : t('system.ui.builtInActive')}
+      </StatusDot>
+      <ToggleField
+        title={t('system.ui.useCustom')}
+        description={t('system.ui.recoveryCopy')}
+        control={(
+          <Switch
+            aria-label={t('system.ui.useCustom')}
+            checked={active}
+            disabled={selectorDisabled}
+            onCheckedChange={(checked) => select.mutate(checked && candidate ? candidate.generation : undefined)}
+          />
+        )}
+      />
+      {!status.isPending && !candidate ? <Callout tone="warning" title={t('system.ui.noCustom')} /> : null}
+      {candidate && !candidate.usable ? <Callout tone="warning" title={t('system.ui.cannotSelect', { reason: unavailableMessage(candidate.unavailableReason, t) })} /> : null}
+      <FactList facts={custom ? [
+        { id: 'bundle', label: t('system.ui.bundle'), value: `${custom.name ?? t('system.ui.generation', { generation: custom.generation })} ${custom.version ?? ''}`.trim() },
+        { id: 'index', label: t('system.ui.index'), value: custom.indexReadable ? t('system.ui.readable') : t('system.ui.unreadable') },
+        { id: 'digest', label: t('system.ui.digest'), value: digestMessage(custom.digestMatches, t) },
+      ] : []} />
+      <div className="flex flex-wrap gap-2">
+        {active ? <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href="/">{t('system.ui.openCustom')} <ExternalLink /></a> : null}
+        <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href="/_ui/system/ui">{t('system.ui.manage')} <Settings2 /></a>
       </div>
-      {!status.isPending && !candidate ? <p className="callout warning" role="status">{t('system.ui.noCustom')}</p> : null}
-      {candidate && !candidate.usable ? <p className="callout warning" role="status">{t('system.ui.cannotSelect', { reason: unavailableMessage(candidate.unavailableReason, t) })}</p> : null}
-      {custom ? <dl className="details"><div><dt>{t('system.ui.bundle')}</dt><dd>{custom.name ?? t('system.ui.generation', { generation: custom.generation })} {custom.version}</dd></div><div><dt>{t('system.ui.index')}</dt><dd>{custom.indexReadable ? t('system.ui.readable') : t('system.ui.unreadable')}</dd></div><div><dt>{t('system.ui.digest')}</dt><dd>{digestMessage(custom.digestMatches, t)}</dd></div></dl> : null}
-      {active ? <a className="text-link" href="/">{t('system.ui.openCustom')} <ExternalLink className="size-4" /></a> : null}
-      <a className="text-link" href="/_ui/system/ui">{t('system.ui.manage')} <Settings2 className="size-4" /></a>
-      {status.error ? <p className="callout error" role="alert">{errorMessage(status.error, t('common.requestFailed'))}</p> : null}
-      {mutationError ? <p className="callout error" role="alert">{errorMessage(mutationError, t('common.requestFailed'))}</p> : null}
-    </Card>
+      {status.error ? <Callout tone="danger" title={failureDetail(status.error, t('common.requestFailed'))} /> : null}
+    </Panel>
   )
 }
 
@@ -338,20 +361,31 @@ function unavailableMessage(
 
 export function PowerPanel() {
   const { t } = useTranslation()
+  // The device is about to stop answering, so the report is raised by the
+  // dialog before the connection drops rather than by a later poll.
   const action = useMutation({ mutationFn: (name: 'reboot' | 'poweroff') => api<void>(`/api/v1/actions/${name}`, { method: 'POST' }) })
   return (
-    <Card>
-      <div className="flex flex-wrap gap-3"><PowerAction name="reboot" pending={action.isPending} onConfirm={() => action.mutate('reboot')} /><PowerAction name="poweroff" pending={action.isPending} onConfirm={() => action.mutate('poweroff')} /></div>
-      {action.isSuccess ? <p className="callout success" role="status">{t('system.power.accepted')}</p> : null}
-      {action.error ? <p className="callout error" role="alert">{errorMessage(action.error, t('common.requestFailed'))}</p> : null}
-    </Card>
+    <Panel>
+      <div className="flex flex-wrap gap-3">
+        <ConfirmDialog
+          trigger={<Button variant="secondary" disabled={action.isPending}><RefreshCcw />{t('system.power.reboot')}</Button>}
+          title={t('system.power.reboot')}
+          description={t('system.power.confirmReboot')}
+          confirmLabel={t('system.power.reboot')}
+          success={t('system.power.accepted')}
+          failure={t('system.power.reboot')}
+          onConfirm={() => action.mutateAsync('reboot')}
+        />
+        <ConfirmDialog
+          trigger={<Button variant="destructive" disabled={action.isPending}><Power />{t('system.power.powerOff')}</Button>}
+          title={t('system.power.powerOff')}
+          description={t('system.power.confirmPowerOff')}
+          confirmLabel={t('system.power.powerOff')}
+          success={t('system.power.accepted')}
+          failure={t('system.power.powerOff')}
+          onConfirm={() => action.mutateAsync('poweroff')}
+        />
+      </div>
+    </Panel>
   )
-}
-
-function PowerAction({ name, pending, onConfirm }: { name: 'reboot' | 'poweroff'; pending: boolean; onConfirm: () => void }) {
-  const { t } = useTranslation()
-  const [open, setOpen] = useState(false)
-  const label = name === 'reboot' ? t('system.power.reboot') : t('system.power.powerOff')
-  const description = name === 'reboot' ? t('system.power.confirmReboot') : t('system.power.confirmPowerOff')
-  return <AlertDialog open={open} onOpenChange={setOpen}><AlertDialogTrigger render={<Button variant={name === 'reboot' ? 'secondary' : 'destructive'} disabled={pending} />}>{name === 'reboot' ? <RefreshCcw className="size-4" /> : <Power className="size-4" />}{label}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{label}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common.actions.cancel')}</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={pending} onClick={() => { setOpen(false); onConfirm() }}>{label}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
 }
