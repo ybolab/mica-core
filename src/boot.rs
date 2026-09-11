@@ -9,7 +9,7 @@ use std::{
     collections::BTreeSet,
     fs,
     io::{Read, Seek, Write},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
 };
 
@@ -195,6 +195,10 @@ fn materialize_exitrd(
             .with_context(|| format!("invalid exitrd member: {name}"))?,
         );
         let metadata = file.metadata()?;
+        ensure!(
+            metadata.uid() == 0 && metadata.gid() == 0,
+            "invalid exitrd member owner"
+        );
         ensure!(metadata.is_file(), "exitrd member is not a file");
         let mode = metadata.permissions().mode();
         ensure!(
@@ -217,62 +221,16 @@ fn materialize_exitrd(
     } else {
         183
     };
-    let triplet = if machine == 62 {
-        "x86_64-linux-gnu"
-    } else {
-        "aarch64-linux-gnu"
-    };
-    let mut dependencies = std::collections::BTreeMap::new();
-    for (name, file, metadata) in &mut members {
-        let core = ["shutdown", "bin/busybox", "sbin/dmsetup"].contains(name);
-        let library = name
-            .strip_prefix(&format!("usr/lib/{triplet}/"))
-            .is_some_and(|leaf| {
-                !leaf.contains('/')
-                    && (leaf.starts_with("lib") || leaf.starts_with("ld-linux-"))
-                    && leaf.contains(".so")
-            })
-            || *name == "lib64/ld-linux-x86-64.so.2" && machine == 62
-            || *name == "lib/ld-linux-aarch64.so.1" && machine == 183;
-        ensure!(core || library, "unselected exitrd member layout");
+    ensure!(
+        names.len() == 1,
+        "exitrd requires a single shutdown executable"
+    );
+    for (_, file, _) in &mut members {
         ensure!(
-            !core || metadata.permissions().mode() & 0o100 != 0,
-            "exitrd executable permission missing"
+            exitrd_elf(file, machine)?.is_empty(),
+            "exitrd shutdown must be static"
         );
-        let needed = exitrd_elf(file, machine)?;
-        ensure!(
-            *name != "bin/busybox" || needed.is_empty(),
-            "exitrd BusyBox must be static"
-        );
-        dependencies.insert(*name, needed);
     }
-    let mut pending = vec![
-        "shutdown".to_owned(),
-        "bin/busybox".to_owned(),
-        "sbin/dmsetup".to_owned(),
-    ];
-    let mut reachable = BTreeSet::new();
-    while let Some(name) = pending.pop() {
-        if !reachable.insert(name.clone()) {
-            continue;
-        }
-        for needed in dependencies
-            .get(name.as_str())
-            .context("missing required exitrd dependency")?
-        {
-            let path = if let Some(relative) = needed.strip_prefix('/') {
-                relative.to_owned()
-            } else {
-                format!("usr/lib/{triplet}/{needed}")
-            };
-            ensure!(
-                names.contains(path.as_str()),
-                "missing exitrd ELF dependency"
-            );
-            pending.push(path);
-        }
-    }
-    ensure!(reachable.len() == names.len(), "unneeded exitrd member");
     let Some(destination) = destination else {
         return Ok(capacity);
     };
@@ -336,7 +294,7 @@ fn exitrd_elf(file: &mut fs::File, machine: u16) -> anyhow::Result<Vec<String>> 
     );
     let count = u16::from_le_bytes([header[56], header[57]]) as u64;
     ensure!(
-        count <= 128 && (count == 0 || u16::from_le_bytes([header[54], header[55]]) == 56),
+        (1..=128).contains(&count) && u16::from_le_bytes([header[54], header[55]]) == 56,
         "invalid exitrd ELF program headers"
     );
     let mut loads = Vec::new();
@@ -383,7 +341,12 @@ fn exitrd_elf(file: &mut fs::File, machine: u16) -> anyhow::Result<Vec<String>> 
             _ => {}
         }
     }
+    ensure!(!loads.is_empty(), "exitrd ELF has no load segment");
     if let Some((offset, size)) = dynamic {
+        ensure!(
+            size >= 16 && size % 16 == 0,
+            "invalid exitrd dynamic table length"
+        );
         let mut strings = None;
         let mut length = None;
         let mut indices = Vec::new();

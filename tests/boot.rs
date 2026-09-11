@@ -65,7 +65,7 @@ fn preserves_only_the_bounded_exitrd_closure() {
     };
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    let mut payload = [0_u8; 64];
+    let mut payload = [0_u8; 128];
     payload[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
     payload[16] = 3;
     payload[18] = if cfg!(target_arch = "x86_64") {
@@ -75,23 +75,19 @@ fn preserves_only_the_bounded_exitrd_closure() {
     };
     payload[20] = 1;
     payload[52] = 64;
-    for name in ["shutdown", "bin/busybox", "sbin/dmsetup"] {
-        let path = source.path().join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, payload).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    payload[32] = 64;
+    payload[54] = 56;
+    payload[56] = 1;
+    payload[64] = 1;
+    payload[96] = 128;
+    let path = source.path().join("shutdown");
+    fs::write(&path, payload).unwrap();
     fs::set_permissions(
         source.path().join("shutdown"),
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    copy_exitrd(
-        source.path(),
-        target.path(),
-        "shutdown\nbin/busybox\nsbin/dmsetup\n",
-    )
-    .unwrap();
+    copy_exitrd(source.path(), target.path(), "shutdown\n").unwrap();
     assert_eq!(fs::read(target.path().join("shutdown")).unwrap(), payload);
     assert_eq!(
         fs::metadata(target.path().join("shutdown"))

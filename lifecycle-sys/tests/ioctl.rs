@@ -26,3 +26,29 @@ fn unrelated_regular_descriptor_returns_errno_without_writes_or_close() {
     file.read_to_string(&mut data).unwrap();
     assert_eq!(data, "must remain intact");
 }
+
+#[test]
+fn device_mapper_requests_refuse_unrelated_descriptors() {
+    let file = tempfile::tempfile().unwrap();
+    assert_eq!(
+        lifecycle_sys::dm_status(&file, 0xfd00).unwrap_err(),
+        rustix::io::Errno::NOTTY
+    );
+    let status = lifecycle_sys::DmStatus {
+        device: 0xfd00,
+        name: "mos-root".into(),
+        uuid: "CRYPT-VERITY-owned".into(),
+        targets: 1,
+        open_count: 0,
+        event: 0,
+    };
+    assert_eq!(
+        lifecycle_sys::dm_table(&file, &status).unwrap_err(),
+        rustix::io::Errno::NOTTY
+    );
+    assert_eq!(
+        lifecycle_sys::dm_remove(&file, &status).unwrap_err(),
+        rustix::io::Errno::NOTTY
+    );
+    assert_eq!(file.metadata().unwrap().len(), 0);
+}

@@ -1212,34 +1212,87 @@ fn devfs() -> Result<PathBuf> {
     api("dev", 0x01021994)
 }
 
-fn tool(program: &str, args: &[&str]) -> Result<String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/sbin:/bin")
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-    let mut output = String::new();
-    child
-        .stdout
-        .take()
-        .context("tool stdout missing")?
-        .take(16385)
-        .read_to_string(&mut output)?;
-    if output.len() > 16384 {
-        let _ = child.kill();
-        bail!("excessive fixed tool output");
-    }
-    // This wait is confined to the supervised worker process group. PID 1
-    // never waits here and still services watchdog/deadlines if this blocks.
-    ensure!(child.wait()?.success(), "fixed tool refused operation");
-    Ok(output.trim().into())
+fn dm_control() -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(
+            (rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOFOLLOW)
+                .bits() as i32,
+        )
+        .open(devfs()?.join("mapper/control"))?;
+    let expected =
+        Device::parse(read_text(sysfs()?.join("class/misc/device-mapper/dev"), 64)?.trim())?;
+    ensure!(
+        file.metadata()?.file_type().is_char_device()
+            && Device::from_raw(file.metadata()?.rdev()) == expected,
+        "device-mapper control descriptor identity mismatch"
+    );
+    Ok(file)
 }
-fn busybox(args: &[&str]) -> Result<()> {
-    tool("/bin/busybox", args)?;
-    Ok(())
+
+fn checked_verity_table(
+    status: &lifecycle_sys::DmStatus,
+    targets: &[lifecycle_sys::DmTarget],
+    device: Device,
+    name: &str,
+    uuid: &str,
+    slaves: &BTreeSet<Device>,
+    sectors: u64,
+) -> Result<String> {
+    ensure!(
+        Device::from_raw(status.device) == device
+            && status.name == name
+            && status.uuid == uuid
+            && !uuid.is_empty()
+            && status.targets == 1
+            && targets.len() == 1,
+        "DM device/name/UUID/target identity mismatch"
+    );
+    let target = &targets[0];
+    ensure!(
+        target.kind == "verity" && target.sector == 0 && target.length == sectors && sectors > 0,
+        "DM table does not completely cover the verified device"
+    );
+    let parameters: Vec<_> = target.parameters.split_whitespace().collect();
+    ensure!(
+        parameters.len() >= 10 && parameters[0] == "1",
+        "unsupported MOS verity table"
+    );
+    let providers = BTreeSet::from([Device::parse(parameters[1])?, Device::parse(parameters[2])?]);
+    ensure!(
+        providers == *slaves && providers.len() == 1 && providers.iter().all(|d| d.major == 7),
+        "DM table providers differ from live MOS loop dependencies"
+    );
+    Ok(format!(
+        "{} {} {} {}",
+        target.sector,
+        target.length,
+        target.kind,
+        parameters.join(" ")
+    ))
+}
+
+fn read_mos_table(
+    control: &File,
+    device: Device,
+    path: &Path,
+    name: &str,
+    uuid: &str,
+    slaves: &BTreeSet<Device>,
+) -> Result<(String, lifecycle_sys::DmStatus)> {
+    let status =
+        lifecycle_sys::dm_status(control, rustix::fs::makedev(device.major, device.minor))?;
+    let targets = lifecycle_sys::dm_table(control, &status)?;
+    let sectors = read_text(path.join("size"), 64)?.trim().parse::<u64>()?;
+    let table = checked_verity_table(&status, &targets, device, name, uuid, slaves, sectors)?;
+    ensure!(
+        lifecycle_sys::dm_status(control, status.device)? == status,
+        "DM identity changed while reading its table"
+    );
+    Ok((table, status))
 }
 fn list(path: &Path, limit: usize) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
@@ -1377,13 +1430,24 @@ fn snapshot() -> Result<Snapshot> {
             }
             ensure!(stable, "loop changed during descriptor inspection");
         }
+        let holders = links(&path.join("holders"))?;
+        let slaves = slave_links(&path)?;
         let mapping = if path.join("dm").is_dir() {
             let dm_name = read_text(path.join("dm/name"), 256)?.trim().to_owned();
             let uuid = read_text(path.join("dm/uuid"), 256)?.trim().to_owned();
             // Only MOS tables need content identity. Foreign holders remain
             // visible but are never passed to a removal command.
             let table = if ["mos-root", "mos-support"].contains(&dm_name.as_str()) {
-                tool("/sbin/dmsetup", &["table", &dm_name])?
+                let control = dm_control()?;
+                let (table, _) = read_mos_table(&control, device, &path, &dm_name, &uuid, &slaves)?;
+                drop(control);
+                ensure!(
+                    disk_generation(&path)? == generation
+                        && read_text(path.join("dm/name"), 256)?.trim() == dm_name
+                        && read_text(path.join("dm/uuid"), 256)?.trim() == uuid,
+                    "DM generation or identity changed during inspection"
+                );
+                table
             } else {
                 String::new()
             };
@@ -1401,8 +1465,8 @@ fn snapshot() -> Result<Snapshot> {
             device,
             generation,
             name,
-            holders: links(&path.join("holders"))?,
-            slaves: slave_links(&path)?,
+            holders,
+            slaves,
             association,
             mapping,
         });
@@ -1526,25 +1590,23 @@ fn perform(op: &Operation) -> Result<()> {
             // Privatize before restoring moved APIs: moving beneath a shared
             // parent is rejected by mount(2). Inherited stdin also works while
             // /dev/null temporarily lives below /newroot/dev.
-            busybox(&["mount", "-o", "rprivate", "/", "/"])?;
+            rustix::mount::mount_change(
+                "/",
+                rustix::mount::MountPropagationFlags::PRIVATE
+                    | rustix::mount::MountPropagationFlags::REC,
+            )?;
             // Startup can fail between API mount moves. Restore them before
             // traversing/removing the old root; validate the real fs types.
             for (name, magic) in [("dev", 0x01021994), ("proc", 0x9fa0), ("sys", 0x62656572)] {
                 let source = api(name, magic)?;
                 let target = Path::new("/").join(name);
                 if source != target {
-                    busybox(&[
-                        "mount",
-                        "-o",
-                        "move",
-                        source.to_str().context("API path")?,
-                        target.to_str().context("API path")?,
-                    ])?;
+                    rustix::mount::mount_move(&source, &target)?;
                 }
             }
         }
         Operation::Quiesce => quiesce()?,
-        Operation::Sync => busybox(&["sync"])?,
+        Operation::Sync => rustix::fs::sync(),
         Operation::SyncMount(mount) => {
             current_mount(mount)?;
             let fd = rustix::fs::open(
@@ -1573,7 +1635,7 @@ fn perform(op: &Operation) -> Result<()> {
         }
         Operation::Unmount(mount) => {
             current_mount(mount)?;
-            busybox(&["umount", &mount.path])?;
+            rustix::mount::unmount(&mount.path, rustix::mount::UnmountFlags::empty())?;
         }
         Operation::MoveBacking(mount) => {
             current_mount(mount)?;
@@ -1619,7 +1681,7 @@ fn perform(op: &Operation) -> Result<()> {
             drop(target_fd);
             drop(directory);
             drop(root);
-            busybox(&["mount", "-o", "move", &mount.path, &target])?;
+            rustix::mount::mount_move(&mount.path, &target)?;
             let moved =
                 parse_mountinfo(&read_text(procfs()?.join("self/mountinfo"), 1024 * 1024)?)?;
             ensure!(
@@ -1647,7 +1709,30 @@ fn perform(op: &Operation) -> Result<()> {
                     && !state.mounts.iter().any(|m| m.device == expected.device),
                 "mapping identity or users changed"
             );
-            tool("/sbin/dmsetup", &["remove", "--noudevsync", &expected.name])?;
+            let path = sysfs()?.join("class/block").join(&block.name);
+            let control = dm_control()?;
+            let (table, status) = read_mos_table(
+                &control,
+                expected.device,
+                &path,
+                &expected.name,
+                &expected.uuid,
+                &block.slaves,
+            )?;
+            ensure!(
+                table == expected.table && disk_generation(&path)? == expected.generation,
+                "DM table/generation changed before removal"
+            );
+            lifecycle_sys::dm_remove(&control, &status)?;
+            drop(control);
+            let after = snapshot()?;
+            ensure!(
+                !after.blocks.iter().any(|b| b.device == expected.device
+                    || b.mapping
+                        .as_ref()
+                        .is_some_and(|m| m.name == expected.name || m.uuid == expected.uuid)),
+                "DM removal did not release the observed device"
+            );
         }
         Operation::DetachLoop(expected) => {
             let state = snapshot()?;
@@ -1734,15 +1819,15 @@ fn perform(op: &Operation) -> Result<()> {
             let boot = match backend {
                 super::BootKind::Uefi => {
                     fs::create_dir_all("/boot-state")?;
-                    busybox(&[
-                        "mount",
-                        "-t",
-                        "vfat",
-                        "-o",
-                        "rw,nodev,nosuid,noexec",
+                    rustix::mount::mount(
                         boot_device,
                         "/boot-state",
-                    ])?;
+                        "vfat",
+                        rustix::mount::MountFlags::NODEV
+                            | rustix::mount::MountFlags::NOSUID
+                            | rustix::mount::MountFlags::NOEXEC,
+                        None,
+                    )?;
                     crate::deployments::BootBackend::Uefi {
                         esp: "/boot-state".into(),
                     }
@@ -1759,13 +1844,14 @@ fn perform(op: &Operation) -> Result<()> {
             );
             let result = store.retire_failed_confirmed(id);
             if *backend == super::BootKind::Uefi {
-                busybox(&[
-                    "mount",
-                    "-o",
-                    "remount,ro,nodev,nosuid,noexec",
-                    boot_device,
+                rustix::mount::mount_remount(
                     "/boot-state",
-                ])?;
+                    rustix::mount::MountFlags::RDONLY
+                        | rustix::mount::MountFlags::NODEV
+                        | rustix::mount::MountFlags::NOSUID
+                        | rustix::mount::MountFlags::NOEXEC,
+                    "",
+                )?;
             }
             println!("{}", result?);
         }
@@ -1776,6 +1862,76 @@ fn perform(op: &Operation) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_verity_table_preserves_live_device_provider_and_complete_coverage() {
+        let device = Device {
+            major: 253,
+            minor: 0,
+        };
+        let provider = Device { major: 7, minor: 0 };
+        let status = lifecycle_sys::DmStatus {
+            device: rustix::fs::makedev(253, 0),
+            name: "mos-root".into(),
+            uuid: "CRYPT-VERITY-owned".into(),
+            targets: 1,
+            open_count: 0,
+            event: 7,
+        };
+        let target = lifecycle_sys::DmTarget {
+            sector: 0,
+            length: 80,
+            kind: "verity".into(),
+            parameters: "1 7:0 7:0 4096 4096 10 10 sha256 abcd - 1 restart_on_corruption".into(),
+        };
+        let slaves = BTreeSet::from([provider]);
+        assert_eq!(
+            checked_verity_table(
+                &status,
+                std::slice::from_ref(&target),
+                device,
+                "mos-root",
+                "CRYPT-VERITY-owned",
+                &slaves,
+                80
+            )
+            .unwrap(),
+            format!("0 80 verity {}", target.parameters)
+        );
+        for case in 0..11 {
+            let mut status = status.clone();
+            let mut target = target.clone();
+            let mut slaves = slaves.clone();
+            match case {
+                0 => status.device = rustix::fs::makedev(253, 1),
+                1 => status.name = "mos-support".into(),
+                2 => status.uuid = "reused".into(),
+                3 => status.targets = 2,
+                4 => target.sector = 1,
+                5 => target.length = 79,
+                6 => target.kind = "linear".into(),
+                7 => target.parameters = "1 7:0".into(),
+                8 => target.parameters = target.parameters.replacen("1 ", "0 ", 1),
+                9 => target.parameters = target.parameters.replace("7:0", "7:1"),
+                _ => {
+                    slaves.insert(Device { major: 7, minor: 1 });
+                }
+            }
+            assert!(
+                checked_verity_table(
+                    &status,
+                    &[target],
+                    device,
+                    "mos-root",
+                    "CRYPT-VERITY-owned",
+                    &slaves,
+                    80
+                )
+                .is_err(),
+                "case={case}"
+            );
+        }
+    }
 
     #[test]
     fn diagnostic_output_never_waits_for_a_full_pipe() {

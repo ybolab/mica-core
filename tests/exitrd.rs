@@ -16,6 +16,11 @@ fn elf(needed: Option<&str>) -> Vec<u8> {
     };
     bytes[20] = 1;
     bytes[52] = 64;
+    bytes[32] = 64;
+    bytes[54] = 56;
+    bytes[56] = 1;
+    bytes[64] = 1;
+    bytes[96..104].copy_from_slice(&512_u64.to_le_bytes());
     if let Some(needed) = needed {
         bytes[32] = 64;
         bytes[54] = 56;
@@ -46,11 +51,6 @@ fn native_library() -> &'static str {
         "usr/lib/x86_64-linux-gnu/libc.so.6"
     } else {
         "usr/lib/aarch64-linux-gnu/libc.so.6"
-    }
-}
-fn native_members(root: &Path) {
-    for name in ["shutdown", "bin/busybox", "sbin/dmsetup"] {
-        member(root, name, 0o755);
     }
 }
 
@@ -190,36 +190,23 @@ fn rejects_generated_nodes_and_file_directory_conflicts_before_writes() {
 fn preserves_data_modes_and_materializes_runtime_directories() {
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    native_members(source.path());
-    member(source.path(), native_library(), 0o644);
-    fs::write(source.path().join("shutdown"), elf(Some("libc.so.6"))).unwrap();
-    let manifest = format!(
-        "shutdown\nbin/busybox\nsbin/dmsetup\n{}\n",
-        native_library()
+    member(source.path(), "shutdown", 0o755);
+    let manifest = "shutdown\n";
+    let capacity = mos_deploy::boot::exitrd_tmpfs_bytes(source.path(), manifest).unwrap();
+    assert_eq!(capacity, (11 + 1) * 65536 + 1024 * 1024);
+    copy_exitrd(source.path(), target.path(), manifest).unwrap();
+    assert_eq!(
+        fs::read(target.path().join("shutdown")).unwrap(),
+        fs::read(source.path().join("shutdown")).unwrap()
     );
-    let capacity = mos_deploy::boot::exitrd_tmpfs_bytes(source.path(), &manifest).unwrap();
-    assert_eq!(capacity % 65536, 0);
-    assert!(capacity > 4 * 512 && capacity < 4 * 1024 * 1024);
-    copy_exitrd(source.path(), target.path(), &manifest).unwrap();
-    for (name, mode) in [
-        ("shutdown", 0o755),
-        ("bin/busybox", 0o755),
-        ("sbin/dmsetup", 0o755),
-        (native_library(), 0o644),
-    ] {
-        assert_eq!(
-            fs::read(target.path().join(name)).unwrap(),
-            fs::read(source.path().join(name)).unwrap()
-        );
-        assert_eq!(
-            fs::metadata(target.path().join(name))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o7777,
-            mode
-        );
-    }
+    assert_eq!(
+        fs::metadata(target.path().join("shutdown"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
     for name in ["dev", "proc", "sys", "run", "oldroot", "etc", "backing"] {
         assert!(target.path().join(name).is_dir());
     }
@@ -234,7 +221,6 @@ fn rejects_old_or_incomplete_layout_and_measures_retained_budget() {
     let source = tempfile::tempdir().unwrap();
     member(source.path(), "shutdown", 0o755);
     let target = tempfile::tempdir().unwrap();
-    assert!(copy_exitrd(source.path(), target.path(), "shutdown\n").is_err());
     for name in ["bin/busybox", "sbin/dmsetup"] {
         member(source.path(), name, 0o755);
     }
@@ -257,11 +243,13 @@ fn rejects_missing_loader_library_foreign_elf_and_unneeded_files() {
         "wrong-architecture",
         "script",
         "unneeded",
-        "dynamic-busybox",
+        "interpreter",
+        "program-table",
+        "owner",
     ] {
         let source = tempfile::tempdir().unwrap();
-        native_members(source.path());
-        let mut manifest = "shutdown\nbin/busybox\nsbin/dmsetup\n".to_owned();
+        member(source.path(), "shutdown", 0o755);
+        let mut manifest = "shutdown\n".to_owned();
         match case {
             "missing-dependency" => {
                 fs::write(source.path().join("shutdown"), elf(Some("missing.so"))).unwrap()
@@ -277,9 +265,26 @@ fn rejects_missing_loader_library_foreign_elf_and_unneeded_files() {
                 manifest.push_str(native_library());
                 manifest.push('\n');
             }
-            "dynamic-busybox" => {
-                fs::write(source.path().join("bin/busybox"), elf(Some("missing.so"))).unwrap()
+            "interpreter" => {
+                let mut bytes = elf(None);
+                bytes[56] = 2;
+                bytes[120] = 3;
+                bytes[128..136].copy_from_slice(&240_u64.to_le_bytes());
+                bytes[152..160].copy_from_slice(&8_u64.to_le_bytes());
+                bytes[240..248].copy_from_slice(b"/loader\0");
+                fs::write(source.path().join("shutdown"), bytes).unwrap();
             }
+            "program-table" => {
+                let mut bytes = elf(None);
+                bytes[56] = 0;
+                fs::write(source.path().join("shutdown"), bytes).unwrap();
+            }
+            "owner" => rustix::fs::chown(
+                source.path().join("shutdown"),
+                Some(rustix::process::Uid::from_raw(65534)),
+                None,
+            )
+            .unwrap(),
             _ => unreachable!(),
         }
         let target = tempfile::tempdir().unwrap();
@@ -289,4 +294,21 @@ fn rejects_missing_loader_library_foreign_elf_and_unneeded_files() {
         );
         assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn static_refinement_requires_exactly_one_static_shutdown() {
+    let source = tempfile::tempdir().unwrap();
+    member(source.path(), "shutdown", 0o755);
+    let target = tempfile::tempdir().unwrap();
+    copy_exitrd(source.path(), target.path(), "shutdown\n").unwrap();
+    member(source.path(), "bin/busybox", 0o755);
+    member(source.path(), "sbin/dmsetup", 0o755);
+    refuses(
+        source.path(),
+        "shutdown\nbin/busybox\nsbin/dmsetup\n",
+        "single",
+    );
+    fs::write(source.path().join("shutdown"), elf(Some("libc.so.6"))).unwrap();
+    refuses(source.path(), "shutdown\n", "static");
 }
