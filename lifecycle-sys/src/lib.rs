@@ -8,6 +8,11 @@ use rustix::{
     ioctl::{self, NoArg, Updater},
 };
 
+mod startup;
+pub use startup::{
+    DmCreated, dm_create, dm_discard_created, dm_load_verity, dm_resume, loop_attach, loop_free,
+};
+
 #[cfg(not(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -365,11 +370,14 @@ enum DmCommand {
     Status,
     Table,
     Remove,
+    Create,
+    Load,
+    Resume,
 }
 
 #[allow(unsafe_code)]
 fn dm_exchange(fd: impl AsFd, command: DmCommand, buffer: &mut DmBuffer) -> io::Result<()> {
-    // SAFETY: All three fixed Linux DM requests encode the repr(C) 312-byte
+    // SAFETY: These fixed Linux DM requests encode the repr(C) 312-byte
     // header, followed by at most data_size initialized bytes. The full 65536
     // byte repr(C), 8-aligned object is live and exclusively borrowed throughout
     // ioctl; data_size is constructed internally and never exceeds that object.
@@ -381,6 +389,17 @@ fn dm_exchange(fd: impl AsFd, command: DmCommand, buffer: &mut DmBuffer) -> io::
             DmCommand::Status => ioctl::ioctl(fd, Updater::<DM_STATUS_REQUEST, _>::new(buffer)),
             DmCommand::Table => ioctl::ioctl(fd, Updater::<DM_TABLE_REQUEST, _>::new(buffer)),
             DmCommand::Remove => ioctl::ioctl(fd, Updater::<DM_REMOVE_REQUEST, _>::new(buffer)),
+            DmCommand::Create => ioctl::ioctl(
+                fd,
+                Updater::<{ startup::DM_CREATE_REQUEST }, _>::new(buffer),
+            ),
+            DmCommand::Load => {
+                ioctl::ioctl(fd, Updater::<{ startup::DM_LOAD_REQUEST }, _>::new(buffer))
+            }
+            DmCommand::Resume => ioctl::ioctl(
+                fd,
+                Updater::<{ startup::DM_RESUME_REQUEST }, _>::new(buffer),
+            ),
         }
     }
 }

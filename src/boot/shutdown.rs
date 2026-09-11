@@ -941,13 +941,11 @@ impl Supervisor {
             .to_str()
             .context("invalid startup command")?;
         ensure!(
-            [
-                "/bin/busybox",
-                "/sbin/blkid",
-                "/sbin/veritysetup",
-                "/sbin/dmsetup"
-            ]
-            .contains(&program),
+            program == "/init"
+                && command
+                    .get_args()
+                    .next()
+                    .is_some_and(|arg| arg == "--startup-worker"),
             "unapproved startup executable"
         );
         let deadline = if let Some(budget) = self.budget {

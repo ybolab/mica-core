@@ -8,6 +8,9 @@ use std::{
     process::Command,
 };
 
+pub mod native;
+pub mod verity;
+
 fn busybox(args: &[&str]) -> Command {
     let mut command = Command::new("/bin/busybox");
     command.args(args);

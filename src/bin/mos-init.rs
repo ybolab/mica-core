@@ -8,7 +8,11 @@ use mos_deploy::{
         BootKind, copy_exitrd, exitrd_tmpfs_bytes, fit_selected, persistent_machine_id,
         selected_entry,
         shutdown::{self, Action, Device, LifecycleIo, Operation, Ownership, Supervisor, SystemIo},
-        startup, utf16_variable, verity_args,
+        startup::{
+            self,
+            native::{self, Operation as Startup},
+        },
+        utf16_variable,
     },
     components::{BootIdentity, VerityImage, component_id, verify_deployment},
     deployments::boot_partition,
@@ -17,12 +21,8 @@ use serde::Deserialize;
 use std::{
     fs::{self, File},
     io::Read,
-    os::unix::{
-        fs::{FileTypeExt, MetadataExt},
-        process::CommandExt,
-    },
+    os::unix::fs::{FileTypeExt, MetadataExt},
     path::Path,
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -155,14 +155,8 @@ fn bounded_file(path: &str, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn command(program: &str, args: &[&str]) -> Command {
-    let mut command = Command::new(program);
-    command.args(args);
-    command
-}
-
-fn run(control: &mut BootControl, command: Command) -> Result<String> {
-    control.supervisor.run_startup(command)
+fn run(control: &mut BootControl, operation: Startup) -> Result<String> {
+    control.supervisor.run_startup(native::command(operation)?)
 }
 
 fn mount(
@@ -176,7 +170,15 @@ fn mount(
     if kind == "ext4" {
         control.backing(source)?;
     }
-    let mounted = run(control, startup::mount(source, target, kind, options));
+    let mounted = run(
+        control,
+        Startup::Mount {
+            source: source.into(),
+            target: target.into(),
+            kind: kind.into(),
+            options: options.into(),
+        },
+    );
     if target == "/run/initramfs" {
         let live = control.observe()?;
         if let Some(mount) = live
@@ -205,11 +207,7 @@ fn verified_mount(
         "image type or length mismatch: {path}"
     );
     image.signature.verify(&bounded_file(signature, 65536)?)?;
-    let loop_device = startup::attach_read_only_loop(
-        Path::new(path),
-        |cmd| run(control, cmd),
-        startup::inspect_loop,
-    )?;
+    let loop_device = run(control, Startup::Loop { image: path.into() })?;
     let live = control.observe()?;
     let loop_id = Device::from_raw(fs::metadata(&loop_device)?.rdev());
     let association = live
@@ -235,13 +233,14 @@ fn verified_mount(
             .any(|b| b.mapping.as_ref().is_some_and(|m| m.name == name)),
         "MOS mapping already exists before creation"
     );
-    let args = verity_args(&loop_device, name, signature, image);
     let creation = run(
         control,
-        command(
-            "/sbin/veritysetup",
-            &args.iter().map(String::as_str).collect::<Vec<_>>(),
-        ),
+        Startup::Verity {
+            device: loop_device.clone(),
+            name: name.into(),
+            signature: signature.into(),
+            image: serde_json::from_value(serde_json::to_value(image)?)?,
+        },
     );
     // A worker can create the mapping and then fail. Adopt only the live
     // expected verity table and the already verified owned loop, never a name.
@@ -265,21 +264,25 @@ fn verified_mount(
         control.storage.mappings.push(mapping.clone());
     }
     creation?;
-    let table = run(control, command("/sbin/dmsetup", &["table", name]))?;
+    let mapping = control
+        .storage
+        .mappings
+        .last()
+        .context("created mapping is absent")?;
+    let expected = startup::verity::table(
+        loop_id.major,
+        loop_id.minor,
+        &format!("cryptsetup:{name}"),
+        image,
+    )?;
     ensure!(
-        table
-            .split_whitespace()
-            .any(|s| s == "root_hash_sig_key_desc"),
-        "kernel mapping has no verified signature"
+        mapping.table
+            == format!(
+                "{} {} {} {}",
+                expected.sector, expected.length, expected.kind, expected.parameters
+            ),
+        "kernel mapping differs from signed verity table"
     );
-    let mut read_only = false;
-    for entry in fs::read_dir("/sys/block")? {
-        let path = entry?.path();
-        if fs::read_to_string(path.join("dm/name")).is_ok_and(|value| value.trim() == name) {
-            read_only = fs::read_to_string(path.join("ro"))?.trim() == "1";
-        }
-    }
-    ensure!(read_only, "kernel mapping is not read-only");
     mount(
         control,
         &format!("/dev/mapper/{name}"),
@@ -369,15 +372,9 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
     while discovery.elapsed() < Duration::from_secs(15) {
         if let Ok(found) = run(
             control,
-            command(
-                "/sbin/blkid",
-                &[
-                    "-t",
-                    &format!("PARTUUID={}", config.system_part_uuid),
-                    "-o",
-                    "device",
-                ],
-            ),
+            Startup::Partition {
+                uuid: config.system_part_uuid.clone(),
+            },
         ) && !found.is_empty()
         {
             device = found;
@@ -445,24 +442,27 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             fs::symlink_metadata(target)?.is_dir() && fs::read_dir(target)?.next().is_none(),
             "invalid support mountpoint {target}"
         );
-        run(control, startup::bind(source, target))?;
         run(
             control,
-            startup::remount(source, target, "remount,bind,ro,nodev,nosuid"),
+            Startup::Bind {
+                source: source.into(),
+                target: target.into(),
+            },
+        )?;
+        run(
+            control,
+            Startup::Remount {
+                target: target.into(),
+                options: "remount,bind,ro,nodev,nosuid".into(),
+            },
         )?;
     }
     (|| -> Result<()> {
         let data = run(
             control,
-            command(
-                "/sbin/blkid",
-                &[
-                    "-t",
-                    &format!("PARTUUID={}", config.data_part_uuid),
-                    "-o",
-                    "device",
-                ],
-            ),
+            Startup::Partition {
+                uuid: config.data_part_uuid.clone(),
+            },
         )?;
         ensure!(
             data.starts_with("/dev/") && !data.contains(char::is_whitespace),
@@ -506,18 +506,17 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         );
         run(
             control,
-            startup::bind(
-                "/newroot/mnt/data/state/machine-id",
-                "/newroot/etc/machine-id",
-            ),
+            Startup::Bind {
+                source: "/newroot/mnt/data/state/machine-id".into(),
+                target: "/newroot/etc/machine-id".into(),
+            },
         )?;
         run(
             control,
-            startup::remount(
-                "/newroot/mnt/data/state/machine-id",
-                "/newroot/etc/machine-id",
-                "remount,bind,ro,nodev,nosuid,noexec",
-            ),
+            Startup::Remount {
+                target: "/newroot/etc/machine-id".into(),
+                options: "remount,bind,ro,nodev,nosuid,noexec".into(),
+            },
         )?;
         Ok(())
     })()
@@ -577,12 +576,21 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             Path::new(destination).is_dir(),
             "missing immutable mountpoint {destination}"
         );
-        run(control, startup::move_mount(source, destination))?;
+        run(
+            control,
+            Startup::Move {
+                source: source.into(),
+                target: destination.into(),
+            },
+        )?;
     }
     for dir in ["dev", "proc", "sys", "run"] {
         run(
             control,
-            startup::move_mount(&format!("/{dir}"), &format!("/newroot/{dir}")),
+            Startup::Move {
+                source: format!("/{dir}"),
+                target: format!("/newroot/{dir}"),
+            },
         )?;
     }
     fs::copy("/etc/mos/boot.json", "/newroot/run/mos/boot-policy.json")?;
@@ -602,11 +610,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             );
         }
     }
-    Err(startup::switch_root()
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .exec())
-    .context("switch_root failed")
+    native::switch_root()
 }
 
 fn main() {
@@ -617,6 +621,13 @@ fn main() {
             maximum: Some(0),
         },
     );
+    if let Some(result) = native::worker(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        if let Err(error) = result {
+            eprintln!("mos-init startup worker: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::process::id() != 1 {
         eprintln!("mos-init must run as PID 1");
         std::process::exit(1);
