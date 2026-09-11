@@ -112,9 +112,12 @@ esac
 # the signing tool this producer must not ship. Gitignored through
 # pkgs/mos-deploy/.gitignore.
 TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
-# Shutdown alone uses target-scoped CRT flags and a separate artifact cache.
+# Both lifecycle executables use the existing GNU static route. Their caches
+# stay separate from the main-system deployment tool and from each other.
 release_binary() {
-    if [ "$1" = mos-shutdown ]; then
+    if [ "$1" = mos-init ]; then
+        printf '%s/startup-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
+    elif [ "$1" = mos-shutdown ]; then
         printf '%s/shutdown-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
     else
         printf '%s/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
@@ -164,27 +167,29 @@ docker run --rm \
         # it.
         bins=()
         for b in ${BINS}; do
-            if [ "$b" != mos-shutdown ]; then bins+=(--bin "$b"); fi
+            if [ "$b" != mos-shutdown ] && [ "$b" != mos-init ]; then bins+=(--bin "$b"); fi
         done
         if [ "${#bins[@]}" -gt 0 ]; then
             cargo build --release --locked --target "${TARGET}" "${bins[@]}"
         fi
         for name in ${BINS}; do
-            if [ "$name" = mos-shutdown ]; then
+            if [ "$name" = mos-shutdown ] || [ "$name" = mos-init ]; then
+                static_directory=shutdown-static
+                if [ "$name" = mos-init ]; then static_directory=startup-static; fi
                 # Target-specific configuration leaves host build scripts and
                 # every other binary on their original dynamic GNU route.
                 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
-                    CARGO_TARGET_DIR="${CARGO_TARGET_DIR}/shutdown-static" \
-                    cargo build --release --locked --target "${TARGET}" --bin mos-shutdown \
+                    CARGO_TARGET_DIR="${CARGO_TARGET_DIR}/${static_directory}" \
+                    cargo build --release --locked --target "${TARGET}" --bin "$name" \
                     --config "target.${TARGET}.rustflags=[\"-C\",\"target-feature=+crt-static\",\"-C\",\"strip=symbols\"]"
-                bin="${CARGO_TARGET_DIR}/shutdown-static/${TARGET}/release/${name}"
+                bin="${CARGO_TARGET_DIR}/${static_directory}/${TARGET}/release/${name}"
                 # A flag is not proof. GNU x64 static PIE has a dynamic relocation
                 # section, which is permitted only without DT_NEEDED/PT_INTERP.
                 readelf -W -l "$bin" > "${bin}.program-headers"
                 readelf -W -d "$bin" > "${bin}.dynamic"
                 if grep -Ec "^[[:space:]]*INTERP[[:space:]]" "${bin}.program-headers" >/dev/null \
                     || grep -Ec "\(NEEDED\)|\(RPATH\)|\(RUNPATH\)" "${bin}.dynamic" >/dev/null; then
-                    echo "error: mos-shutdown is not a standalone static ELF" >&2; exit 1
+                    echo "error: ${name} is not a standalone static ELF" >&2; exit 1
                 fi
                 sha256sum "$bin" Cargo.lock
             else

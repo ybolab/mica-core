@@ -151,20 +151,21 @@ pub fn open(loop_device: &str, name: &str, signature: &Path, image: &VerityImage
     })();
     // The target retained the authenticated signature; no userspace key remains.
     let revoked = key.revoke().context("revoke loaded signature key");
-    if activated.is_err() || revoked.is_err() {
+    let finalized = activated.and(revoked).and_then(|()| {
+        // devtmpfs provides dm-N. Creating the conventional alias does not rely on
+        // udev and refuses an existing filesystem object rather than overwriting it.
+        let node = format!("/dev/dm-{}", rustix::fs::minor(created.device));
+        let actual = fs::symlink_metadata(&node)?;
+        ensure!(
+            actual.file_type().is_block_device() && actual.rdev() == created.device,
+            "new DM node identity mismatch"
+        );
+        std::os::unix::fs::symlink(node, format!("/dev/mapper/{name}"))?;
+        Ok(())
+    });
+    if finalized.is_err() {
         lifecycle_sys::dm_discard_created(&fd, &created)
             .context("rollback of newly created verity mapping failed")?;
     }
-    activated?;
-    revoked?;
-    // devtmpfs provides dm-N. Creating the conventional alias does not rely on
-    // udev and refuses an existing filesystem object rather than overwriting it.
-    let node = format!("/dev/dm-{}", rustix::fs::minor(created.device));
-    let actual = fs::symlink_metadata(&node)?;
-    ensure!(
-        actual.file_type().is_block_device() && actual.rdev() == created.device,
-        "new DM node identity mismatch"
-    );
-    std::os::unix::fs::symlink(node, format!("/dev/mapper/{name}"))?;
-    Ok(())
+    finalized
 }

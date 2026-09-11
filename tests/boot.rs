@@ -1,5 +1,4 @@
-use mos_deploy::boot::{selected_entry, utf16_variable, verity_args};
-use mos_deploy::components::parse_deployment;
+use mos_deploy::boot::{selected_entry, utf16_variable};
 
 #[test]
 fn normalizes_only_native_deployment_entries() {
@@ -28,32 +27,6 @@ fn reads_efi_attributes_and_strict_utf16_termination() {
     assert!(utf16_variable(&bytes[..bytes.len() - 2]).is_err());
     bytes.extend([0, 0]);
     assert!(utf16_variable(&bytes).is_err());
-}
-
-#[test]
-fn signed_mapping_arguments_never_enable_an_unsigned_retry() {
-    let d = parse_deployment(include_bytes!(
-        "../../../tests/component-contracts/deployment.json"
-    ))
-    .unwrap();
-    let args = verity_args(
-        "/dev/loop0",
-        "mos-root",
-        "/mnt/system/root.p7s",
-        &d.rootfs.content,
-    );
-    assert!(
-        args.windows(2)
-            .any(|p| p == ["--root-hash-signature", "/mnt/system/root.p7s"])
-    );
-    // veritysetup creates read-only mappings and has no --readonly option.
-    assert!(!args.iter().any(|p| p == "--readonly"));
-    assert!(args.iter().any(|p| p == "--panic-on-corruption"));
-    assert!(
-        !args
-            .iter()
-            .any(|p| p.contains("ignore-corruption") || p.contains("check-at-most-once"))
-    );
 }
 
 #[test]

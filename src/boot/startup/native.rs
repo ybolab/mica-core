@@ -259,6 +259,13 @@ pub fn switch_root() -> Result<()> {
     let device = root.metadata()?.dev();
     std::env::set_current_dir("/newroot")?;
     reclaim_old_root(Path::new("/"), device)?;
+    for entry in fs::read_dir("/")? {
+        ensure!(
+            fs::symlink_metadata(entry?.path())?.dev() != device,
+            "old root still contains startup files"
+        );
+    }
+    eprintln!("mos-init: old root startup files reclaimed");
     rustix::mount::mount_move(".", "/")?;
     rustix::process::chroot(".")?;
     std::env::set_current_dir("/")?;

@@ -3,7 +3,6 @@
 pub mod shutdown;
 pub mod startup;
 
-use crate::components::VerityImage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -458,37 +457,4 @@ pub fn utf16_variable(bytes: &[u8]) -> Result<String, BootError> {
         return Err(BootError("invalid EFI variable termination"));
     }
     String::from_utf16(&words).map_err(|_| BootError("invalid EFI UTF-16"))
-}
-
-pub fn verity_args(
-    loop_device: &str,
-    name: &str,
-    signature: &str,
-    image: &VerityImage,
-) -> Vec<String> {
-    vec![
-        "open".into(),
-        loop_device.into(),
-        name.into(),
-        loop_device.into(),
-        image.root_hash.clone(),
-        "--no-superblock".into(),
-        "--format".into(),
-        "1".into(),
-        "--hash".into(),
-        "sha256".into(),
-        "--data-block-size".into(),
-        "4096".into(),
-        "--hash-block-size".into(),
-        "4096".into(),
-        "--data-blocks".into(),
-        image.verity.data_blocks.to_string(),
-        "--hash-offset".into(),
-        image.verity.hash_offset.to_string(),
-        "--salt".into(),
-        image.verity.salt.clone(),
-        "--root-hash-signature".into(),
-        signature.into(),
-        "--panic-on-corruption".into(),
-    ]
 }

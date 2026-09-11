@@ -552,6 +552,19 @@ mod dm_tests {
         assert!(!b.header.data_size.is_multiple_of(8));
     }
     #[test]
+    fn dm_readonly_flag_is_required_in_status_and_table() {
+        for table in [false, true] {
+            let mut b = reply(table);
+            assert!(parse_dm_status(&b, 4096, table).is_ok());
+            b.header.flags &= !DM_READONLY;
+            assert_eq!(
+                parse_dm_status(&b, 4096, table).unwrap_err(),
+                io::Errno::PROTO
+            );
+        }
+    }
+
+    #[test]
     fn dm_status_rejects_non_kernel_reply_lengths() {
         for size in [304, 306, 312, 313] {
             let mut b = reply(false);
