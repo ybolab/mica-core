@@ -91,6 +91,16 @@ pub struct AppState {
     /// literal once, and a second spelling of it here would agree with the
     /// first until somebody moved the file.
     pub(crate) meta_manifest: Arc<std::path::PathBuf>,
+    /// The sole operator update document: `/mos/config/updates.json` on a
+    /// device, an isolated path in route tests.
+    ///
+    /// The default is the configuration library's production path. Only the
+    /// test-only builder below can replace it, so no shipped caller can
+    /// redirect this configuration input.
+    pub(crate) updates_path: Arc<std::path::PathBuf>,
+    /// The desired fleet document: `/mos/config/fleet.json` on a device, an
+    /// isolated path in route tests.
+    pub(crate) fleet_path: Arc<std::path::PathBuf>,
     /// The diagnostic snapshot store (PLAN-052): `/mos/diagnostics` on a
     /// device, a temporary directory in tests. A path and no syscall until
     /// the first publish.
@@ -133,6 +143,12 @@ impl AppState {
             task_registry: Arc::new(TaskRegistry::new()),
             meta_manifest: Arc::new(std::path::PathBuf::from(
                 mosd_settings::configuration::DEFAULT_MANIFEST_PATH,
+            )),
+            updates_path: Arc::new(std::path::PathBuf::from(
+                mosd_settings::configuration::DEFAULT_UPDATES_PATH,
+            )),
+            fleet_path: Arc::new(std::path::PathBuf::from(
+                mosd_settings::configuration::DEFAULT_FLEET_PATH,
             )),
             diagnostics: Arc::new(SnapshotStore::at_default()),
             collecting: Arc::new(tokio::sync::Mutex::new(())),
@@ -253,6 +269,23 @@ impl AppState {
     #[cfg(test)]
     pub fn with_meta_manifest(mut self, manifest: impl Into<std::path::PathBuf>) -> Self {
         self.meta_manifest = Arc::new(manifest.into());
+        self
+    }
+
+    /// Point the operator update document at an isolated test fixture.
+    ///
+    /// Test-only for the baked manifest's reason: the shipped location is
+    /// fixed and nothing configures it.
+    #[cfg(test)]
+    pub fn with_updates_path(mut self, updates: impl Into<std::path::PathBuf>) -> Self {
+        self.updates_path = Arc::new(updates.into());
+        self
+    }
+
+    /// Point the desired fleet document at an isolated test fixture.
+    #[cfg(test)]
+    pub fn with_fleet_path(mut self, fleet: impl Into<std::path::PathBuf>) -> Self {
+        self.fleet_path = Arc::new(fleet.into());
         self
     }
 

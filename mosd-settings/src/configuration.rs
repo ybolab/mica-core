@@ -10,10 +10,10 @@
 //! must refuse rather than fall back to the baked channel, and a route that
 //! quietly reported the baked document as effective while the update path was
 //! refusing would be two subsystems telling an operator different things
-//! about the same file. So there is one reader ([`load_updates`]) and one
-//! resolver ([`resolve`]), and the callers differ only in how they present a
-//! failure: mosd carries it beside a policy it can still evaluate the reboot
-//! gate with, apid returns it.
+//! about the same file. So the document readers and resolution live here,
+//! and the callers differ only in how they present a failure: mosd carries an
+//! update failure beside a policy it can still evaluate the reboot gate with,
+//! while apid returns it.
 //!
 //! # Three layers, one precedence rule (PLAN-070 §5.1)
 //!
@@ -24,7 +24,8 @@
 //! 2. **`/mos/config/updates.json`**, on DATA: operator-owned, and the only
 //!    place any of those four is overridden. It also *owns* the keys layer 1
 //!    never carries — the windows, the network mode, the workspace paths and
-//!    the reboot-gate keys.
+//!    the reboot-gate keys. The independent `/mos/config/fleet.json` document
+//!    carries only the fleet overlay.
 //! 3. **The running state**, which configures nothing.
 //!
 //! Per key: layer 2 wins where it speaks, layer 1 where it does not. The
@@ -1181,6 +1182,114 @@ pub fn resolve(baked: &BakedUpdate, document: UpdatesDocument) -> EffectivePolic
 }
 
 // ---------------------------------------------------------------------------
+// Layer 2: /mos/config/fleet.json
+// ---------------------------------------------------------------------------
+
+/// Where the desired fleet configuration is poured on the DATA pool.
+pub const DEFAULT_FLEET_PATH: &str = "/mos/config/fleet.json";
+
+/// The only fleet document schema this development tree accepts.
+const FLEET_SCHEMA_TAG: &str = "mos/fleet-config/v1";
+
+/// The operator's desired fleet overlay, before baked defaults are applied.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FleetDocument {
+    schema: String,
+    #[serde(default, deserialize_with = "present_boolean")]
+    enabled: Option<bool>,
+    #[serde(default, deserialize_with = "present_boolean")]
+    reporting: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    url: Override<String>,
+}
+
+/// Keep an omitted boolean optional while rejecting explicit `null`.
+fn present_boolean<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct EffectiveFleet {
+    enabled: bool,
+    reporting: bool,
+    url: Option<String>,
+}
+
+/// Read the current fleet overlay. Absence selects baked defaults; every
+/// present document must parse and validate completely.
+fn load_fleet(path: &Path) -> Result<Option<FleetDocument>, ConfigError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                source: err,
+            });
+        }
+    };
+    let value = serde_json::from_str::<Value>(&raw).map_err(|_| ConfigError::Parse {
+        path: path.to_path_buf(),
+        message: "invalid JSON document".to_string(),
+    })?;
+    if let Some(key) = anchor_key(&value) {
+        return Err(ConfigError::Anchor {
+            path: path.to_path_buf(),
+            key,
+        });
+    }
+    // Deserialize from the original text, not `value`: serde's struct visitor
+    // rejects duplicate fields, while a generic JSON map has already replaced
+    // an earlier duplicate by the time it exists.
+    let document = serde_json::from_str::<FleetDocument>(&raw).map_err(|_| ConfigError::Parse {
+        path: path.to_path_buf(),
+        message: "document does not match the fleet configuration schema".to_string(),
+    })?;
+    if document.schema != FLEET_SCHEMA_TAG {
+        return Err(ConfigError::Validation {
+            path: path.to_path_buf(),
+            message: format!("unsupported schema; expected `{FLEET_SCHEMA_TAG}`"),
+        });
+    }
+    if let Some(Some(value)) = &document.url {
+        let valid = url::Url::parse(value).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+        });
+        if !valid {
+            return Err(ConfigError::Validation {
+                path: path.to_path_buf(),
+                message: "`url` must be an HTTPS URL without userinfo".to_string(),
+            });
+        }
+    }
+    Ok(Some(document))
+}
+
+fn effective_fleet(baked: &BakedFleet, document: Option<&FleetDocument>) -> EffectiveFleet {
+    let enabled = document
+        .and_then(|document| document.enabled)
+        .unwrap_or(baked.enabled);
+    EffectiveFleet {
+        enabled,
+        reporting: enabled
+            && document
+                .and_then(|document| document.reporting)
+                .unwrap_or(true),
+        url: document
+            .and_then(|document| document.url.clone())
+            .flatten()
+            .or_else(|| baked.url.clone()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The read surface (PLAN-070 §8, F9)
 // ---------------------------------------------------------------------------
 
@@ -1192,10 +1301,11 @@ pub fn provisioning_status() -> Result<Value, ConfigError> {
     provisioning_status_at(
         Path::new(DEFAULT_MANIFEST_PATH),
         Path::new(DEFAULT_UPDATES_PATH),
+        Path::new(DEFAULT_FLEET_PATH),
     )
 }
 
-/// `{ "operator": …, "effective": … }` for the five fields §8 names, resolved
+/// `{ "operator": …, "effective": … }` for the six fields §8 names, resolved
 /// through the same reader and the same precedence mosd runs on.
 ///
 /// **`operator` is a projection over named fields, not the document.** It
@@ -1218,14 +1328,17 @@ pub fn provisioning_status() -> Result<Value, ConfigError> {
 /// values the device is genuinely running on, so the two callers still agree.
 /// The baked half of the route reports the manifest's own error.
 ///
-/// `fleet.url` and `fleet.enabled` are the **baked** values: `/mos/config/`'s
-/// fleet document is PLAN-072 §2's and does not exist yet, so there is no
-/// operator layer to read and nothing on the device reads one either. When
-/// that slice lands it extends this function; it does not add a second
-/// resolver.
-pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, ConfigError> {
+/// Fleet desired configuration follows the same projection rule: only
+/// `enabled`, `reporting`, and `url` may appear under `operator.fleet`, while
+/// `effective.fleet` always contains those three resolved values.
+pub fn provisioning_status_at(
+    manifest: &Path,
+    updates: &Path,
+    fleet: &Path,
+) -> Result<Value, ConfigError> {
     let baked = load_manifest(manifest).manifest;
     let document = load_updates(updates)?;
+    let fleet_document = load_fleet(fleet)?;
 
     let mut operator_update = Map::new();
     if let Some(url) = &document.source.url {
@@ -1242,7 +1355,24 @@ pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, 
         operator.insert("update".into(), Value::Object(operator_update));
     }
 
+    if let Some(document) = &fleet_document {
+        let mut operator_fleet = Map::new();
+        if let Some(enabled) = document.enabled {
+            operator_fleet.insert("enabled".into(), json!(enabled));
+        }
+        if let Some(reporting) = document.reporting {
+            operator_fleet.insert("reporting".into(), json!(reporting));
+        }
+        if let Some(url) = &document.url {
+            operator_fleet.insert("url".into(), json!(url));
+        }
+        if !operator_fleet.is_empty() {
+            operator.insert("fleet".into(), Value::Object(operator_fleet));
+        }
+    }
+
     let effective = resolve(&baked.update, document);
+    let fleet = effective_fleet(&baked.fleet, fleet_document.as_ref());
     // Unreachable: `resolve` always produces one, and the path that does not
     // is `Err` above. Reported rather than unwrapped, because the whole rule
     // is that nothing substitutes a baked value for an unknown one.
@@ -1263,8 +1393,9 @@ pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, 
                 "policy": selection.mode,
             },
             "fleet": {
-                "url": baked.fleet.url,
-                "enabled": baked.fleet.enabled,
+                "url": fleet.url,
+                "enabled": fleet.enabled,
+                "reporting": fleet.reporting,
             },
         },
     }))
@@ -1272,6 +1403,82 @@ pub fn provisioning_status_at(manifest: &Path, updates: &Path) -> Result<Value, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fleet_document_rejects_explicit_null_booleans() {
+        for document in [
+            r#"{ "schema": "mos/fleet-config/v1", "enabled": null }"#,
+            r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
+        ] {
+            assert!(serde_json::from_str::<super::FleetDocument>(document).is_err());
+        }
+    }
+
+    #[test]
+    fn fleet_urls_require_complete_https_authorities_without_normalizing_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fleet.json");
+        for url in [
+            "https://fleet.example.invalid/path?mode=test#fragment",
+            "https://192.0.2.1:8443/report",
+            "https://[2001:db8::1]/report?device=1",
+        ] {
+            std::fs::write(
+                &path,
+                json!({ "schema": FLEET_SCHEMA_TAG, "url": url }).to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                load_fleet(&path).unwrap().unwrap().url,
+                Some(Some(url.to_string()))
+            );
+        }
+
+        for url in [
+            "https://bad host/REJECTED-FLEET-SENTINEL",
+            "https://[]/REJECTED-FLEET-SENTINEL",
+            "https://REJECTED-FLEET-SENTINEL@fleet.example/path",
+        ] {
+            std::fs::write(
+                &path,
+                json!({ "schema": FLEET_SCHEMA_TAG, "url": url }).to_string(),
+            )
+            .unwrap();
+            let error = load_fleet(&path).unwrap_err().to_string();
+            assert!(!error.contains("REJECTED-FLEET-SENTINEL"));
+        }
+    }
+
+    #[test]
+    fn fleet_resolution_applies_baked_fallbacks_and_the_reporting_gate() {
+        let baked = super::BakedFleet {
+            enabled: true,
+            url: Some("https://baked.example/fleet".to_string()),
+        };
+        assert_eq!(
+            super::effective_fleet(&baked, None),
+            super::EffectiveFleet {
+                enabled: true,
+                reporting: true,
+                url: Some("https://baked.example/fleet".to_string()),
+            }
+        );
+
+        let disabled = super::FleetDocument {
+            schema: super::FLEET_SCHEMA_TAG.to_string(),
+            enabled: Some(false),
+            reporting: Some(true),
+            url: Some(None),
+        };
+        assert_eq!(
+            super::effective_fleet(&baked, Some(&disabled)),
+            super::EffectiveFleet {
+                enabled: false,
+                reporting: false,
+                url: Some("https://baked.example/fleet".to_string()),
+            }
+        );
+    }
+
     #[test]
     fn baked_manifest_keeps_metadata_anchors_in_the_authenticated_boot_policy() {
         let mut value = serde_json::to_value(super::BakedManifest::code_defaults()).unwrap();

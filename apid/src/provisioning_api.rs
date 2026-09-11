@@ -29,7 +29,7 @@
 //! paragraph forbids exactly that). `/mos/config/` is credential material and
 //! is never returned whole; what is returned is
 //! [`mosd_settings::configuration::provisioning_status`]'s projection over
-//! three named fields, built key by key rather than serialized from the
+//! six named update and fleet fields, built key by key rather than serialized from the
 //! document. A key the projection does not name cannot reach a caller however
 //! the schema grows — which is the allowlist argument again, applied to a
 //! document that may not be served whole, and it is stronger here than the
@@ -235,27 +235,28 @@ pub(crate) async fn api_v1_provisioning_status(
     //
     // `provisioning_status_at` and not `provisioning_status`: the no-argument
     // form reads the production manifest, which would be a SECOND reading of
-    // layer 1 beside the digests above. The operator document keeps its
-    // production path — nothing here overrides it, and a missing one is the
-    // absent case rather than an error.
+    // layer 1 beside the digests above. `updates_path` remains the fixed
+    // production operator document outside tests; it and `fleet_path` have
+    // private test seams that let route tests use isolated files without
+    // changing either production source.
     //
     // A layer-2 read, parse, anchor-key or validation failure is an error
     // HERE TOO. The route refusing and the update path refusing are one fact
     // reaching two surfaces, and a baked value served in the `effective` slot
     // would read as correct on every device that has overridden nothing —
     // which is all of them today, so nothing would catch it.
-    let mut resolved = match configuration::provisioning_status_at(
-        manifest_path,
-        Path::new(configuration::DEFAULT_UPDATES_PATH),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            return api_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ApiError::mosd("configuration_unavailable", format!("{err:#}")),
-            );
-        }
-    };
+    let updates_path = state.updates_path.as_path();
+    let fleet_path = state.fleet_path.as_path();
+    let mut resolved =
+        match configuration::provisioning_status_at(manifest_path, updates_path, fleet_path) {
+            Ok(value) => value,
+            Err(err) => {
+                return api_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ApiError::mosd("configuration_unavailable", format!("{err:#}")),
+                );
+            }
+        };
     let operator = resolved["operator"].take();
     let effective = resolved["effective"].take();
     api_response(
