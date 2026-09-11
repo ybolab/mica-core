@@ -170,18 +170,70 @@ pub fn loop_free(fd: impl AsFd) -> io::Result<u32> {
     unsafe { ioctl::ioctl(fd, FreeLoop) }
 }
 
-/// Bind the selected read-only file and set only read-only, whole-file state.
-/// SET_FD success grants ownership for rollback; EBUSY never triggers detach.
-#[allow(unsafe_code)]
+/// Bind the selected read-only file and verify its whole-file state on this FD.
+/// EBUSY from SET_FD never triggers detach. Configuration failure permits
+/// rollback only after a fresh exact readback; unknown or changed state is left
+/// untouched. Separate kernel ioctls do not provide atomic compare-and-clear.
 pub fn loop_attach(fd: impl AsFd, backing: impl AsFd) -> io::Result<()> {
+    let file = rustix::fs::fstat(backing.as_fd())?;
+    let device = rustix::fs::fstat(fd.as_fd())?;
+    let expected = LoopStatus {
+        backing_device: file.st_dev,
+        inode: file.st_ino,
+        offset: 0,
+        size_limit: 0,
+        number: rustix::fs::minor(device.st_rdev),
+        flags: 1,
+    };
+    attach_loop_with(
+        expected,
+        || set_loop_fd(fd.as_fd(), backing.as_fd()),
+        || set_loop_readonly(fd.as_fd()),
+        || loop_status(fd.as_fd()),
+        || clear_loop(fd.as_fd()),
+    )
+}
+
+// The fixed operation seam keeps tests on the production control flow without
+// exposing arbitrary ioctl requests or opening a host block device.
+fn attach_loop_with(
+    expected: LoopStatus,
+    set_fd: impl FnOnce() -> io::Result<()>,
+    set_readonly: impl FnOnce() -> io::Result<()>,
+    status: impl FnOnce() -> io::Result<Option<LoopStatus>>,
+    clear: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    set_fd()?;
+    if let Err(error) = set_readonly() {
+        // SET_FD is not a reservation: even this open read-only loop can have
+        // its backing replaced. Only current exact ownership permits rollback.
+        if status()? == Some(expected) {
+            clear()?;
+        }
+        return Err(error);
+    }
+    // Failed readback is not evidence that the current association is ours.
+    // In particular, never issue CLR_FD after an absent or unreadable status.
+    if status()? != Some(expected) {
+        return Err(io::Errno::PROTO);
+    }
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+fn set_loop_fd(fd: impl AsFd, backing: impl AsFd) -> io::Result<()> {
     // SAFETY: LOOP_SET_FD consumes the integer FD, not a pointer. Both AsFd
     // borrows keep descriptors live; only the kernel gains a file reference.
     unsafe {
         ioctl::ioctl(
             fd.as_fd(),
             IntegerSetter::<0x4c00>::new_usize(backing.as_fd().as_raw_fd() as usize),
-        )?;
+        )
     }
+}
+
+#[allow(unsafe_code)]
+fn set_loop_readonly(fd: impl AsFd) -> io::Result<()> {
     let mut value = LoopInfo {
         device: 0,
         inode: 0,
@@ -199,17 +251,143 @@ pub fn loop_attach(fd: impl AsFd, backing: impl AsFd) -> io::Result<()> {
     };
     // SAFETY: LOOP_SET_STATUS64 reads the initialized 232-byte Linux struct.
     // Updater conservatively allows writes, uniquely borrowing it through ioctl.
-    let result = unsafe { ioctl::ioctl(fd.as_fd(), Updater::<0x4c04, _>::new(&mut value)) };
-    if let Err(error) = result {
-        clear_loop(fd)?;
-        return Err(error);
-    }
-    Ok(())
+    unsafe { ioctl::ioctl(fd, Updater::<0x4c04, _>::new(&mut value)) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    const OWN_LOOP: LoopStatus = LoopStatus {
+        backing_device: 2049,
+        inode: 42,
+        offset: 0,
+        size_limit: 0,
+        number: 3,
+        flags: 1,
+    };
+
+    fn attach_trace(
+        set_fd: io::Result<()>,
+        set_readonly: io::Result<()>,
+        status: io::Result<Option<LoopStatus>>,
+        clear: io::Result<()>,
+    ) -> (io::Result<()>, Vec<&'static str>) {
+        let calls = RefCell::new(Vec::new());
+        let result = attach_loop_with(
+            OWN_LOOP,
+            || {
+                calls.borrow_mut().push("set_fd");
+                set_fd
+            },
+            || {
+                calls.borrow_mut().push("set_readonly");
+                set_readonly
+            },
+            || {
+                calls.borrow_mut().push("status");
+                status
+            },
+            || {
+                calls.borrow_mut().push("clear");
+                clear
+            },
+        );
+        (result, calls.into_inner())
+    }
+
+    fn unknown_loop_states() -> Vec<io::Result<Option<LoopStatus>>> {
+        let mut states = vec![Ok(None), Err(io::Errno::IO), Err(io::Errno::BUSY)];
+        for changed in [
+            LoopStatus {
+                backing_device: OWN_LOOP.backing_device + 1,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                inode: OWN_LOOP.inode + 1,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                number: OWN_LOOP.number + 1,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                flags: 0,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                flags: 5,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                offset: 4096,
+                ..OWN_LOOP
+            },
+            LoopStatus {
+                size_limit: 4096,
+                ..OWN_LOOP
+            },
+        ] {
+            states.push(Ok(Some(changed)));
+        }
+        states
+    }
+
+    #[test]
+    fn loop_attach_refuses_changed_or_unknown_readback_without_clear() {
+        for status in unknown_loop_states() {
+            let (result, calls) = attach_trace(Ok(()), Ok(()), status, Ok(()));
+            assert!(result.is_err(), "{status:?}");
+            assert_eq!(calls, ["set_fd", "set_readonly", "status"], "{status:?}");
+        }
+    }
+
+    #[test]
+    fn loop_configure_error_does_not_clear_changed_or_unknown_binding() {
+        for status in unknown_loop_states() {
+            let (result, calls) = attach_trace(Ok(()), Err(io::Errno::INVAL), status, Ok(()));
+            assert!(result.is_err(), "{status:?}");
+            assert_eq!(calls, ["set_fd", "set_readonly", "status"], "{status:?}");
+        }
+    }
+
+    #[test]
+    fn loop_configure_error_clears_only_after_current_own_readback() {
+        let (result, calls) =
+            attach_trace(Ok(()), Err(io::Errno::INVAL), Ok(Some(OWN_LOOP)), Ok(()));
+        assert_eq!(result, Err(io::Errno::INVAL));
+        assert_eq!(calls, ["set_fd", "set_readonly", "status", "clear"]);
+    }
+
+    #[test]
+    fn loop_owned_rollback_propagates_clear_failure() {
+        let (result, calls) = attach_trace(
+            Ok(()),
+            Err(io::Errno::INVAL),
+            Ok(Some(OWN_LOOP)),
+            Err(io::Errno::IO),
+        );
+        assert_eq!(result, Err(io::Errno::IO));
+        assert_eq!(calls, ["set_fd", "set_readonly", "status", "clear"]);
+    }
+
+    #[test]
+    fn loop_set_fd_failure_never_configures_reads_or_clears() {
+        for error in [io::Errno::BUSY, io::Errno::IO] {
+            let (result, calls) = attach_trace(Err(error), Ok(()), Ok(Some(OWN_LOOP)), Ok(()));
+            assert_eq!(result, Err(error));
+            assert_eq!(calls, ["set_fd"]);
+        }
+    }
+
+    #[test]
+    fn loop_attach_accepts_exact_readonly_whole_file_without_clear() {
+        let (result, calls) = attach_trace(Ok(()), Ok(()), Ok(Some(OWN_LOOP)), Ok(()));
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, ["set_fd", "set_readonly", "status"]);
+    }
+
     #[test]
     fn load_is_bounded_readonly_single_verity_with_terminated_aligned_spec() {
         let created = DmCreated {

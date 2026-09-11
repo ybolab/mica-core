@@ -196,24 +196,6 @@ pub fn attach_loop(image: &Path) -> Result<String> {
             Err(rustix::io::Errno::BUSY) => continue,
             result => result?,
         }
-        let valid = (|| -> Result<()> {
-            let state = lifecycle_sys::loop_status(&fd)?.context("new loop binding is absent")?;
-            ensure!(
-                state.backing_device == expected.dev()
-                    && state.inode == expected.ino()
-                    && state.number == index
-                    && state.flags == 1
-                    && state.offset == 0
-                    && state.size_limit == 0,
-                "loop binding differs from read-only selected image"
-            );
-            Ok(())
-        })();
-        if let Err(error) = valid {
-            lifecycle_sys::clear_loop(&fd).context("rollback loop binding")?;
-            drop(fd);
-            return Err(error);
-        }
         return Ok(path);
     }
     bail!("free loop device remained occupied after three attempts")
