@@ -468,6 +468,9 @@ QEMU_ENV=(
     MOS_QEMU_RUN_SECONDS="${RUN_SECONDS}"
     MOS_QEMU_TIMEOUT="${QEMU_TIMEOUT}"
 )
+if [ "${MOS_QEMU_SSH_PORT+x}" = x ]; then
+    QEMU_ENV+=("MOS_QEMU_SSH_PORT=${MOS_QEMU_SSH_PORT}")
+fi
 
 if ! bash "$REPO_ROOT/tests/signed-boot-lab/images.sh" --lifecycle > "$ART_DIR/qemu-image.log" 2>&1; then
     fail "could not build the pinned Secure Boot QEMU runner"
