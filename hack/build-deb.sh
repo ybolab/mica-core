@@ -143,14 +143,14 @@ RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
 # carries no such record
 docker run --rm \
     --label ai-agent=true --network traefik --name "ai-agent-mos-deploy-${PRODUCER}-$$" \
-    --platform linux/amd64 --cpus 4 --memory 10g --memory-swap 10g \
+    --platform linux/amd64 \
     -v "${REPO_ROOT}:/src" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \
     -v "${CARGO_CACHE}/git:/usr/local/cargo/git" \
     -w /src/pkgs/mos-deploy \
     -e "TARGET=${TRIPLE}" \
     -e "ELF_ARCH=${ELF_ARCH}" \
-    -e "BINS=${BINARIES[*]}" -e CARGO_BUILD_JOBS=4 \
+    -e "BINS=${BINARIES[*]}" \
     -e "CARGO_TARGET_DIR=/src/pkgs/mos-deploy/target-deb/${PRODUCER}" \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
