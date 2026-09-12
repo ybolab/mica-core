@@ -22,7 +22,7 @@
  *   - both move together                         -> green, correctly
  *   - the anchored assertion is renamed or deleted -> red, naming the anchor
  *
- * That last one is deliberate. `docs/verify-index.sh`'s header argues at length
+ * That last one is deliberate. `tools/docs/verify-index.sh`'s header argues at length
  * that a check which silently matches nothing is worse than no check, because
  * it reports the same green either way. An anchor that finds 0 sites, or 2, is
  * a hard failure here rather than a skipped row.
