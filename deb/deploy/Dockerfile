@@ -9,6 +9,9 @@ COPY --from=bin mos-deploy /in/mos-deploy
 ARG MOS_DEB_VERSION
 ARG MOS_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
+# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+ARG MOS_DEB_SOURCE_REPO
+ARG MOS_DEB_SOURCE_COMMIT
 RUN set -eu; \
     install -D -m 0755 /in/mos-deploy /stage/usr/bin/mos-deploy; \
     install -D -m 0644 /in/copyright /stage/usr/share/doc/mos-deploy/copyright; \
