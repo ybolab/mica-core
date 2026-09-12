@@ -33,6 +33,9 @@ COPY --from=bin mosd apid /in/bin/
 ARG MOS_DEB_VERSION
 ARG MOS_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
+# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+ARG MOS_DEB_SOURCE_REPO
+ARG MOS_DEB_SOURCE_COMMIT
 
 # Two staged roots and two pack.sh runs. The paths, the modes and the
 # enablement links are the ones rootfs/scripts/mosd-install.sh writes today,

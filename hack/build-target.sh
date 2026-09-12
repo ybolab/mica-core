@@ -104,12 +104,12 @@ fi
 # NO BUILD RECORD IS WRITTEN HERE, and that is a decision rather than an
 # omission. This script used to write `_out/mosd-build.txt` for the smoke runner
 # to assert against; a composed root has never carried the binaries it produces.
-# They come out of the mosd and mos-apid packages, which
-# pkgs/mosd/hack/build-deb.sh compiles, and it is that script that records the
-# commit -- per architecture, in `_out/mosd-build-<arch>.txt`. A record from
-# here would name the commit of a build whose output nothing installs, and
-# would be indistinguishable from one that named the build that did. See
-# RFCT-356.
+# They come out of the mosd and mos-apid packages, whose archives carry the
+# commit they were built from in their Mos-Source-Commit control field
+# (build-env/deb/pack.sh), and rootfs/build.sh reads that field into
+# `_out/<board>/mosd-build.txt`. A record from here would name the commit of a
+# build whose output nothing installs, and would be indistinguishable from one
+# that named the build that did. See RFCT-356.
 
 # The repository is mounted, not pkgs/mosd/. That used to be forced: pkgs/mosd/Cargo.toml
 # listed one workspace member outside this directory, and mounting pkgs/mosd/ alone

@@ -13,6 +13,21 @@ if [ -z "${MOS_APID_UI_DIST_DIR:-}" ]; then
     export MOS_APID_UI_DIST_DIR="${REPO_ROOT}/_out/apid-ui/dist"
 fi
 
+# THE REPOSITORY VERSION AND THE CRATE VERSION AGREE. build-env/deb/version.sh
+# stamps every archive from ${REPO_ROOT}/VERSION; the binaries report the crate
+# version from their manifests. Two numbers, one release: a drift between them
+# is a package whose version is not the version the binary inside it prints.
+declared="$(tr -d '[:space:]' <"${REPO_ROOT}/VERSION")"
+for m in */Cargo.toml; do
+    name="$(sed -n '/^\[package\]/,/^\[/ s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${m}" | head -n1)"
+    [ -n "${name}" ] || continue
+    v="$(sed -n '/^\[package\]/,/^\[/ s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${m}" | head -n1)"
+    [ "${v}" = "${declared}" ] || {
+        echo "error: ${m} declares ${name} at version '${v}' and ${REPO_ROOT}/VERSION declares '${declared}'. The package pool is stamped from VERSION and the binaries report the crate version; move whichever is behind" >&2
+        exit 1
+    }
+done
+
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo nextest run --workspace --locked
