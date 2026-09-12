@@ -60,13 +60,14 @@ pub fn parse(bytes: &[u8], sectors: u64) -> Result<Vec<Partition>> {
         "not a protective GPT partition table"
     );
     let h = &bytes[512..1024];
+    let backup = u64le(h, 32)?;
     ensure!(
         &h[..8] == b"EFI PART"
             && u32le(h, 8)? == 0x00010000
             && u32le(h, 12)? == 92
             && u32le(h, 20)? == 0
             && u64le(h, 24)? == 1
-            && u64le(h, 32)? == sectors - 1
+            && (67..sectors).contains(&backup)
             && u64le(h, 72)? == 2
             && u32le(h, 80)? == 128
             && u32le(h, 84)? == 128,
@@ -80,8 +81,10 @@ pub fn parse(bytes: &[u8], sectors: u64) -> Result<Vec<Partition>> {
     );
     let first = u64le(h, 40)?;
     let last = u64le(h, 48)?;
+    // A factory image can be written to a larger medium before DATA grows.
+    // Its usable range must still exclude its original backup table/header.
     ensure!(
-        first >= 34 && first <= last && last < sectors - 33,
+        first >= 34 && first <= last && last < backup - 32,
         "invalid GPT usable range"
     );
     let mut partitions: Vec<Partition> = Vec::new();
@@ -258,7 +261,7 @@ mod tests {
             assert!(parse(&b, 1000).is_err());
         }
         assert!(parse(&good[..good.len() - 1], 1000).is_err());
-        assert!(parse(&good, 1001).is_err());
+        assert!(parse(&good, 999).is_err());
         let mut duplicate = good.clone();
         duplicate.copy_within(1024..1152, 1152);
         checksums(&mut duplicate);
@@ -267,5 +270,57 @@ mod tests {
         mbr[510..512].copy_from_slice(&[0x55, 0xaa]);
         mbr[450] = 0x83;
         assert!(parse(&mbr, 1000).is_err());
+    }
+
+    #[test]
+    fn factory_gpt_on_larger_media_preserves_partition_identity() {
+        let factory = fixture();
+        let original = parse(&factory, 1000).unwrap();
+        for sectors in [1001, 2000, 8_388_608] {
+            assert_eq!(parse(&factory, sectors).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn larger_media_does_not_extend_the_declared_gpt_range() {
+        let good = fixture();
+        for backup in [0_u64, 1, 33, 66, 2000, u64::MAX] {
+            let mut b = good.clone();
+            b[544..552].copy_from_slice(&backup.to_le_bytes());
+            checksums(&mut b);
+            assert!(parse(&b, 2000).is_err(), "backup LBA {backup}");
+        }
+        for last in [967_u64, 998, 999, 1500, u64::MAX] {
+            let mut b = good.clone();
+            b[560..568].copy_from_slice(&last.to_le_bytes());
+            checksums(&mut b);
+            assert!(parse(&b, 2000).is_err(), "last usable LBA {last}");
+        }
+        let mut outside = good.clone();
+        outside[1064..1072].copy_from_slice(&967_u64.to_le_bytes());
+        checksums(&mut outside);
+        assert!(parse(&outside, 2000).is_err());
+    }
+
+    #[test]
+    fn larger_media_still_requires_crc_unique_uuid_and_nonoverlap() {
+        let good = fixture();
+        for at in [450, 510, 512, 528, 1056, 600] {
+            let mut b = good.clone();
+            b[at] ^= 1;
+            assert!(parse(&b, 2000).is_err());
+        }
+        for unique_uuid in [false, true] {
+            let mut b = good.clone();
+            b.copy_within(1024..1152, 1152);
+            if unique_uuid {
+                b[1168] ^= 1;
+            } else {
+                b[1184..1192].copy_from_slice(&100_u64.to_le_bytes());
+                b[1192..1200].copy_from_slice(&150_u64.to_le_bytes());
+            }
+            checksums(&mut b);
+            assert!(parse(&b, 2000).is_err());
+        }
     }
 }
