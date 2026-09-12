@@ -192,7 +192,7 @@ directory's.
 
 ```
 make os-debs              # every producer, both architectures, then both indexes
-make os-deb-package-gate  # bash tests/deb-package-gate.sh
+make os-deb-package-gate  # bash build-env/deb/package-gate.sh
 ```
 
 The gate reads the built pools and asserts, out of the archives themselves:
