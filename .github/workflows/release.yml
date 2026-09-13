@@ -25,15 +25,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      # The build images are public, but buildkit's anonymous GHCR tokens are
-      # refused intermittently on shared runners (403 in run 34787370206), so
-      # the pulls go out under this job's own token.
-      - name: Pull the pinned images as this job
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: The mica-build-env release at its pin
         run: make deps
       - name: Emulation for the arm64 packaging image
