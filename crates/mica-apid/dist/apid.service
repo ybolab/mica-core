@@ -13,7 +13,7 @@ RequiresMountsFor=/var/lib/mica /mica
 Type=simple
 ExecStart=/usr/bin/mica-apid
 Restart=on-failure
-StateDirectory=mos/apid
+StateDirectory=mica/apid
 # 0700, not the systemd default 0755: the directory holds the TLS private
 # key, the session-cookie signing key, the login-backoff counters and the
 # audit trail. Every file inside is 0600; the directory matches. apid's own
@@ -47,7 +47,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # binds at unit start and /run/mica does not exist on an ordinary boot: the
 # directory would be missing exactly when the assertion is not, and the spend
 # would fail with EROFS on the one path it exists for.
-RuntimeDirectory=mos
+RuntimeDirectory=mica
 # NOT removed when apid stops. /run/mica is micad's directory — the presence
 # marker, the rendered mqtt broker config, the timezone — and a unit that
 # deleted it on every restart would take micad's runtime state with it.
@@ -57,7 +57,7 @@ RuntimeDirectoryPreserve=yes
 # four trees: its StateDirectory (TLS material, the session signing key, the
 # login-backoff counters, the audit ring), the UI and diagnostics stores, and
 # /run/mica, where its only write is the removal of a spent presence assertion.
-# StateDirectory=mos/apid and RuntimeDirectory=mos above already exempt
+# StateDirectory=mica/apid and RuntimeDirectory=mica above already exempt
 # /var/lib/mica/apid and /run/mica from strict. mica-data-layout creates the two
 # DATA directories before this unit starts.
 ProtectSystem=strict
