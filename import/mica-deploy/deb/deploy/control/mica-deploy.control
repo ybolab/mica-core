@@ -1,0 +1,10 @@
+Package: mica-deploy
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: mos build <mos@example.invalid>
+Section: admin
+Priority: optional
+Depends: ${shlibs:Depends}, mount
+Description: authenticated file deployment installer and boot-state backend
+ Install signed component objects, confirm a healthy running deployment,
+ retain a usable fallback and expose bounded native boot attempts.

@@ -1,0 +1,236 @@
+{
+  "valid": {
+    "schema": "mos/deployment/v1",
+    "board": "x64",
+    "arch": "amd64",
+    "generation": 1,
+    "version": "dev-1",
+    "dataPolicy": "unchanged",
+    "kernel": {
+      "id": "2037b0ce34cb5dcfea7cff9e9d4ca6ccb02da11036de36f77a2b629809ad7961",
+      "schema": "mos/kernel/v1",
+      "board": "x64",
+      "arch": "amd64",
+      "buildId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "release": "6.12.68-mos",
+      "boot": {
+        "format": "uki",
+        "artifact": {
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "bytes": 100000
+        }
+      },
+      "support": {
+        "image": {
+          "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "bytes": 12288
+        },
+        "rootHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signature": {
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "bytes": 400
+        },
+        "verity": {
+          "version": 1,
+          "algorithm": "sha256",
+          "dataBlockSize": 4096,
+          "hashBlockSize": 4096,
+          "dataBlocks": 2,
+          "hashOffset": 8192,
+          "salt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    },
+    "rootfs": {
+      "id": "08e3231dda6b2e3fc33d69fabd188d2c1f37b7478620b7da442e1f575ae37d42",
+      "schema": "mos/rootfs/v1",
+      "arch": "amd64",
+      "version": "dev-1",
+      "content": {
+        "image": {
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "bytes": 12288
+        },
+        "rootHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signature": {
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "bytes": 400
+        },
+        "verity": {
+          "version": 1,
+          "algorithm": "sha256",
+          "dataBlockSize": 4096,
+          "hashBlockSize": 4096,
+          "dataBlocks": 2,
+          "hashOffset": 8192,
+          "salt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  },
+  "deploymentId": "b122f64d23f5c2c97914876620354a9eee64fce68caacd778aee60ca96ab4d42",
+  "context": {
+    "board": "x64",
+    "arch": "amd64",
+    "kernelBuildId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "kernelRelease": "6.12.68-mos",
+    "supportId": "4b667330fb3b5b1701191406853acd959c4046abbdc330f8e4d8fc8525ce0924"
+  },
+  "invalid": [
+    {
+      "name": "wrong-schema",
+      "pointer": "/schema",
+      "value": "mos/update-catalog/v1"
+    },
+    {
+      "name": "wrong-board",
+      "pointer": "/board",
+      "value": "cx3576"
+    },
+    {
+      "name": "wrong-arch",
+      "pointer": "/arch",
+      "value": "arm64"
+    },
+    {
+      "name": "traversal",
+      "pointer": "/kernel/id",
+      "value": "../../root"
+    },
+    {
+      "name": "unknown-field",
+      "pointer": "/extra",
+      "value": "ignored"
+    },
+    {
+      "name": "kernel-substitution",
+      "pointer": "/kernel/id",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "root-substitution",
+      "pointer": "/rootfs/id",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "support-substitution",
+      "pointer": "/kernel/support/image/sha256",
+      "value": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "name": "unsafe-release",
+      "pointer": "/kernel/release",
+      "value": "../../modules"
+    },
+    {
+      "name": "unsafe-version",
+      "pointer": "/version",
+      "value": "x\ninit=/bin/sh"
+    },
+    {
+      "name": "unsafe-integer",
+      "pointer": "/generation",
+      "value": 9007199254740992
+    },
+    {
+      "name": "float",
+      "pointer": "/generation",
+      "value": 1.5
+    },
+    {
+      "name": "zero-generation",
+      "pointer": "/generation",
+      "value": 0
+    },
+    {
+      "name": "unsupported-policy",
+      "pointer": "/dataPolicy",
+      "value": "migrate"
+    },
+    {
+      "name": "wrong-boot-format",
+      "pointer": "/kernel/boot/format",
+      "value": "fit"
+    },
+    {
+      "name": "verity-version",
+      "pointer": "/rootfs/content/verity/version",
+      "value": 0
+    },
+    {
+      "name": "algorithm",
+      "pointer": "/rootfs/content/verity/algorithm",
+      "value": "sha512"
+    },
+    {
+      "name": "block-size",
+      "pointer": "/rootfs/content/verity/dataBlockSize",
+      "value": 512
+    },
+    {
+      "name": "hash-block-size",
+      "pointer": "/rootfs/content/verity/hashBlockSize",
+      "value": 8192
+    },
+    {
+      "name": "zero-blocks",
+      "pointer": "/rootfs/content/verity/dataBlocks",
+      "value": 0
+    },
+    {
+      "name": "overlap",
+      "pointer": "/rootfs/content/verity/hashOffset",
+      "value": 4096
+    },
+    {
+      "name": "unaligned",
+      "pointer": "/rootfs/content/verity/hashOffset",
+      "value": 8193
+    },
+    {
+      "name": "truncated-tree",
+      "pointer": "/rootfs/content/image/bytes",
+      "value": 8192
+    },
+    {
+      "name": "extra-image-data",
+      "pointer": "/rootfs/content/image/bytes",
+      "value": 16384
+    },
+    {
+      "name": "uppercase-hash",
+      "pointer": "/rootfs/content/rootHash",
+      "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "invalid-salt",
+      "pointer": "/rootfs/content/verity/salt",
+      "value": "00"
+    },
+    {
+      "name": "zero-signature",
+      "pointer": "/rootfs/content/signature/bytes",
+      "value": 0
+    },
+    {
+      "name": "large-signature",
+      "pointer": "/rootfs/content/signature/bytes",
+      "value": 65537
+    },
+    {
+      "name": "free-verity-options",
+      "pointer": "/rootfs/content/verity/options",
+      "value": "ignore_corruption"
+    },
+    {
+      "name": "trailing-newline-name",
+      "pointer": "/version",
+      "value": "dev\n"
+    },
+    {
+      "name": "trailing-newline-hash",
+      "pointer": "/kernel/buildId",
+      "value": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
+    }
+  ]
+}

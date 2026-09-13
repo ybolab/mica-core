@@ -1,0 +1,65 @@
+{
+  "publicKey": "yx9KiVPfJyfv3VBxRd9i2b6DWDhhDDTvI2n/3E1zktA=",
+  "records": [
+    {
+      "manifest": {
+        "arch": "amd64",
+        "artifact": {
+          "bytes": 1048576,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "board": "x64",
+        "generation": 1,
+        "id": "95125ca88c98e1c28dbb4cfe45bfde5f2bf3ea44056cc1e14715f5adf970436c",
+        "schema": "mos/firmware/v1",
+        "target": {
+          "format": "efi",
+          "partition": 1,
+          "path": "EFI/BOOT/BOOTX64.EFI"
+        },
+        "version": "firmware-1"
+      },
+      "envelope": "{\"schema\":\"mos/update-envelope/v1\",\"keyId\":\"2b1f9899ad1a090c6a7ee0cc811e3d2f8c682b5ee0c04c0cbeb30f34f3e9b4f0\",\"payload\":\"eyJhcmNoIjoiYW1kNjQiLCJhcnRpZmFjdCI6eyJieXRlcyI6MTA0ODU3Niwic2hhMjU2IjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9LCJib2FyZCI6Ing2NCIsImdlbmVyYXRpb24iOjEsImlkIjoiOTUxMjVjYTg4Yzk4ZTFjMjhkYmI0Y2ZlNDViZmRlNWYyYmYzZWE0NDA1NmNjMWUxNDcxNWY1YWRmOTcwNDM2YyIsInNjaGVtYSI6Im1vcy9maXJtd2FyZS92MSIsInRhcmdldCI6eyJmb3JtYXQiOiJlZmkiLCJwYXJ0aXRpb24iOjEsInBhdGgiOiJFRkkvQk9PVC9CT09UWDY0LkVGSSJ9LCJ2ZXJzaW9uIjoiZmlybXdhcmUtMSJ9\",\"signature\":\"Tynlpw3gjr4s18zNh0305Lyoz3x6lGP5M/ZVJHdK61/H6k5D2uM9gR3itUXt2XKY854SIpqTaHMGQaUTBoCpDA==\"}"
+    },
+    {
+      "manifest": {
+        "arch": "arm64",
+        "artifact": {
+          "bytes": 1048576,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "board": "virt-arm64",
+        "generation": 1,
+        "id": "78e8201fafeb5358e94582bd673a04162dae212f9dfe794a98c60b9c17d9e7e9",
+        "schema": "mos/firmware/v1",
+        "target": {
+          "format": "efi",
+          "partition": 1,
+          "path": "EFI/BOOT/BOOTAA64.EFI"
+        },
+        "version": "firmware-1"
+      },
+      "envelope": "{\"schema\":\"mos/update-envelope/v1\",\"keyId\":\"2b1f9899ad1a090c6a7ee0cc811e3d2f8c682b5ee0c04c0cbeb30f34f3e9b4f0\",\"payload\":\"eyJhcmNoIjoiYXJtNjQiLCJhcnRpZmFjdCI6eyJieXRlcyI6MTA0ODU3Niwic2hhMjU2IjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9LCJib2FyZCI6InZpcnQtYXJtNjQiLCJnZW5lcmF0aW9uIjoxLCJpZCI6Ijc4ZTgyMDFmYWZlYjUzNThlOTQ1ODJiZDY3M2EwNDE2MmRhZTIxMmY5ZGZlNzk0YTk4YzYwYjljMTdkOWU3ZTkiLCJzY2hlbWEiOiJtb3MvZmlybXdhcmUvdjEiLCJ0YXJnZXQiOnsiZm9ybWF0IjoiZWZpIiwicGFydGl0aW9uIjoxLCJwYXRoIjoiRUZJL0JPT1QvQk9PVEFBNjQuRUZJIn0sInZlcnNpb24iOiJmaXJtd2FyZS0xIn0=\",\"signature\":\"1YqWB81jYy2pSM+jNfz2vaIjtD2PVIFWjjcFQqXEU16P8/jC4eqJyWxHmugCFGnSjxc/Dg9ZQ7HpcvEVr+mhAQ==\"}"
+    },
+    {
+      "manifest": {
+        "arch": "arm64",
+        "artifact": {
+          "bytes": 1048576,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "board": "cx3576",
+        "generation": 1,
+        "id": "9813c7e9c480f45507323069aa7468d3c98679e717c4d642831dee52dcfbee1f",
+        "schema": "mos/firmware/v1",
+        "target": {
+          "diskOffset": 32768,
+          "format": "rockchip-loader",
+          "maxBytes": 16744448
+        },
+        "version": "firmware-1"
+      },
+      "envelope": "{\"schema\":\"mos/update-envelope/v1\",\"keyId\":\"2b1f9899ad1a090c6a7ee0cc811e3d2f8c682b5ee0c04c0cbeb30f34f3e9b4f0\",\"payload\":\"eyJhcmNoIjoiYXJtNjQiLCJhcnRpZmFjdCI6eyJieXRlcyI6MTA0ODU3Niwic2hhMjU2IjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9LCJib2FyZCI6ImN4MzU3NiIsImdlbmVyYXRpb24iOjEsImlkIjoiOTgxM2M3ZTljNDgwZjQ1NTA3MzIzMDY5YWE3NDY4ZDNjOTg2NzllNzE3YzRkNjQyODMxZGVlNTJkY2ZiZWUxZiIsInNjaGVtYSI6Im1vcy9maXJtd2FyZS92MSIsInRhcmdldCI6eyJkaXNrT2Zmc2V0IjozMjc2OCwiZm9ybWF0Ijoicm9ja2NoaXAtbG9hZGVyIiwibWF4Qnl0ZXMiOjE2NzQ0NDQ4fSwidmVyc2lvbiI6ImZpcm13YXJlLTEifQ==\",\"signature\":\"k9gjubq/4VgXJJQ0TcRng0i6AsV4vIizj3fwwEmTI8yz39UDhNwEv/krdj3vufDFQuPV6ZL7gG70dyhlQiCQAA==\"}"
+    }
+  ]
+}

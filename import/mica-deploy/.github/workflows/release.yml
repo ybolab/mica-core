@@ -1,0 +1,43 @@
+name: release
+# Every push to main that passes the gates publishes the pool -- mica-deploy
+# and mica-lifecycle, both architectures -- as the GitHub Release
+# build-<commit12> of this commit; the assembly pins that release through
+# deps/packages/. The arm64 archives are cross-compiled by the pinned Rust
+# image and packed in the arm64 packaging image under emulation.
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the build substrate at its pin
+        run: make deps
+        env:
+          GH_TOKEN: ${{ secrets.MICA_DEPS_TOKEN }}
+      - name: Emulation for the arm64 packaging image
+        uses: docker/setup-qemu-action@v3
+      - name: Builder images, both architectures
+        run: |
+          set -euo pipefail
+          make build-env
+          MICA_BUILD_PLATFORM=linux/arm64 make build-env
+      - name: Prepare the check container network
+        run: docker network inspect traefik >/dev/null 2>&1 || docker network create --label ai-agent=true traefik
+      - name: Lint, the Rust gate, the shutdown suite and the IO fault suite
+        run: make check
+      - name: Pack and gate
+        run: |
+          set -euo pipefail
+          make pool
+          make package-gate
+      - name: Publish the release of this commit
+        if: github.event_name == 'push'
+        run: make publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
