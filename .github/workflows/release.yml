@@ -31,7 +31,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The baseline is an ancestor of HEAD; a shallow clone has none.
           fetch-depth: 0
@@ -43,7 +43,7 @@ jobs:
         run: make deps
       - name: Emulation for the arm64 packaging image
         if: steps.pool.outputs.pool == 'build'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Prepare the check container network
         if: steps.pool.outputs.pool == 'build'
         run: docker network inspect traefik >/dev/null 2>&1 || docker network create --label ai-agent=true traefik
