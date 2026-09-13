@@ -6,7 +6,7 @@
 #        --arch amd64 --stage <dir>
 #
 # WHY THIS FILE STILL EXISTS. Every producer in this repository is built by
-# build-env/deb/build.sh from its producer.env, and this is not a second
+# scripts/deb/build.sh from its producer.env, and this is not a second
 # driver: it is the micad workspace's PREPARE hook implementation, reached
 # through packaging/deb/<producer>/prepare.sh. What it does -- cross-compile
 # a named set of binaries and then assert that NOTHING ELSE was compiled with them
@@ -15,18 +15,18 @@
 # is handed and what may not be in it.
 #
 # THE COMPILE RUNS AT amd64 FOR BOTH TARGETS. cargo cross-compiles, so this is a
-# plain `docker run` against localhost/mica-build-rust:amd64 and needs no buildx
+# plain `docker run` against the amd64 IMAGE_MICA_BUILD_RUST and needs no buildx
 # and no emulation. The PACKAGING runs at the target architecture, and that is
-# build-env/deb/build.sh's half.
+# scripts/deb/build.sh's half.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "${HERE}/../.." && pwd)"
 REPO_ROOT="${WORKSPACE}"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
 for p in "${WORKSPACE}/Cargo.toml" "${FROM_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. scripts/build/build-deb.sh derives the workspace as two levels above itself, which is the repository; build-env/ is the mica-build-env source pin (make deps), and a missing one is refused here rather that; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. scripts/build/build-deb.sh derives the workspace as two levels above itself, which is the repository; build-env/images.env is the verified mica-build-env release asset (make deps), and a missing one is refused here rather that; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -71,8 +71,8 @@ done
 [ -n "${PRODUCER}" ] || { echo "error: --producer is required; it names the producer-private target directory, and two producers sharing one would let a build satisfy the independence assertion below with binaries nobody asked for" >&2; exit 1; }
 [ -n "${BINS}" ] || { echo "error: --bins is required; there is no default binary list, because a build that picked one would compile a subset nobody asked for" >&2; exit 1; }
 [ -n "${ARCH}" ] || { echo "error: --arch is required; guessing the host's would silently produce amd64 binaries for a cx3576 image" >&2; exit 1; }
-[ -n "${STAGE}" ] || { echo "error: --stage is required; it is where build-env/deb/build.sh looks for what this hook produced" >&2; exit 1; }
-[ -d "${STAGE}" ] || { echo "error: --stage ${STAGE} is not a directory. build-env/deb/build.sh creates it before running this hook" >&2; exit 1; }
+[ -n "${STAGE}" ] || { echo "error: --stage is required; it is where scripts/deb/build.sh looks for what this hook produced" >&2; exit 1; }
+[ -d "${STAGE}" ] || { echo "error: --stage ${STAGE} is not a directory. scripts/deb/build.sh creates it before running this hook" >&2; exit 1; }
 
 BINARIES=()
 for b in ${BINS}; do BINARIES+=("${b}"); done
@@ -134,7 +134,7 @@ DIRTY=""
 # resolution hack/build-target.sh uses -- micad and apid answer
 # --version with `<name> <crate version> (<commit>)`, and verify's smoke
 # runner checks that against what the build embedded. This is NOT the package
-# version: that is build-env/deb/version.sh's, and it is one rule for the
+# version: that is scripts/deb/version.sh's, and it is one rule for the
 # whole pool.
 MICA_BUILD_COMMIT="${MICA_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
 
@@ -158,9 +158,9 @@ release_binary() {
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${TARGET_DIR}"
 
-mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=LOCAL_MICA_BUILD_RUST)
+mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=IMAGE_MICA_BUILD_RUST)
 [ "${#RUST_FROM[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mica-build-rust:amd64 (see its message above); it is built by \`make build-env\`, which must run before any component build that stands on it" >&2
+    echo "error: scripts/build/from.sh did not yield IMAGE_MICA_BUILD_RUST (see its message above)" >&2
     exit 1
 }
 RUST_IMAGE="${RUST_FROM[1]#MICA_BUILD_RUST=}"
@@ -184,7 +184,7 @@ done
 # reason build-target.sh gives: rustc records the paths it is given, so mounting
 # the checkout at its own path would make the binaries depend on the directory
 # the repository was cloned into.
-# mica-build-side: container-block -- the compiler is localhost/mica-build-rust's,
+# mica-build-side: container-block -- the compiler is IMAGE_MICA_BUILD_RUST's,
 # recorded in that image's /etc/mica-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \

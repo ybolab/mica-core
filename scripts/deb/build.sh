@@ -2,25 +2,25 @@
 # Build one producer's Debian packages for one architecture. Every producer is
 # built by this driver and no other.
 #
-#   bash build-env/deb/build.sh --producer micad --arch amd64
-#   bash build-env/deb/build.sh --producer mica-ca-trust --arch all
+#   bash scripts/deb/build.sh --producer micad --arch amd64
+#   bash scripts/deb/build.sh --producer mica-ca-trust --arch all
 #
 #   -> _out/debs/<arch>/pool/<package>_<version>_<arch>.deb
 #      (MICA_POOL_DIR=<dir> writes <dir>/<arch>/pool instead)
 #
 # Packaging runs at the target architecture through buildx; anything that is
 # not packaging runs in the producer's PREPARE hook on the host. See
-# build-env/deb/README.md.
+# scripts/deb/README.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
 VERSION_SH="${HERE}/version.sh"
 PRODUCERS_SH="${HERE}/producers.sh"
 for p in "${REPO_ROOT}/Makefile" "${FROM_SH}" "${VERSION_SH}" "${PRODUCERS_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. build-env/deb/build.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. scripts/deb/build.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -45,7 +45,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash build-env/deb/build.sh --producer <name> --arch <amd64|arm64|all>" >&2
+        echo "usage: bash scripts/deb/build.sh --producer <name> --arch <amd64|arm64|all>" >&2
         exit 1
         ;;
     esac
@@ -87,7 +87,7 @@ while IFS= read -r line; do
         ;;
     esac
     [[ "${line}" =~ ^[A-Z][A-Z0-9_]*= ]] || {
-        echo "error: ${PRODUCER_REL}/producer.env carries a line that is neither KEY=value nor a comment: ${line}. Plain assignments only -- see build-env/deb/README.md" >&2
+        echo "error: ${PRODUCER_REL}/producer.env carries a line that is neither KEY=value nor a comment: ${line}. Plain assignments only -- see scripts/deb/README.md" >&2
         exit 1
     }
 done <"${PRODUCER_ENV}"
@@ -122,7 +122,7 @@ if [ -n "${VERSION_FROM}" ]; then
     VF_PATH="${VERSION_FROM%%:*}"
     VF_KEY="${VERSION_FROM##*:}"
     if [ -z "${VF_PATH}" ] || [ -z "${VF_KEY}" ] || [ "${VF_PATH}" = "${VERSION_FROM}" ]; then
-        echo "error: ${PRODUCER_REL}/producer.env declares VERSION_FROM='${VERSION_FROM}', which is not <repository-relative env file>:<KEY>. That pair is the whole wiring between the producer and the upstream version it packages; see build-env/deb/README.md" >&2
+        echo "error: ${PRODUCER_REL}/producer.env declares VERSION_FROM='${VERSION_FROM}', which is not <repository-relative env file>:<KEY>. That pair is the whole wiring between the producer and the upstream version it packages; see scripts/deb/README.md" >&2
         exit 1
     fi
     [ -f "${REPO_ROOT}/${VF_PATH}" ] || {
@@ -182,7 +182,7 @@ case "$(uname -m)" in
 x86_64) HOST_ARCH=amd64 ;;
 aarch64 | arm64) HOST_ARCH=arm64 ;;
 *)
-    echo "error: $(uname -m) is not an architecture build-env/images.env builds a mica-build-deb for, so there is no container to pack in" >&2
+    echo "error: $(uname -m) is not an architecture the IMAGE_MICA_BUILD_BASE index carries, so there is no container to pack in" >&2
     exit 1
     ;;
 esac
@@ -253,11 +253,11 @@ else
     fi
 fi
 
-# The driver decides whether local bases go over as tags or as OCI layouts.
+# The driver decides whether the platform and the outputs are reachable.
 builder_inspect="$(docker buildx inspect "${BUILDER}" 2>/dev/null || true)"
 BUILDER_DRIVER="$(printf '%s\n' "${builder_inspect}" | sed -n 's/^Driver:[[:space:]]*//p')"
 [ -n "${BUILDER_DRIVER}" ] || {
-    echo "error: \`docker buildx inspect ${BUILDER}\` names no driver, so this build cannot tell whether that builder can resolve a localhost/mica-build-deb tag or has to be handed it as an OCI layout. Either the builder does not exist or it is not running: \`docker buildx ls\` lists what does" >&2
+    echo "error: \`docker buildx inspect ${BUILDER}\` names no driver, so this build cannot tell whether that builder offers linux/${BUILD_PLATFORM}. Either the builder does not exist or it is not running: \`docker buildx ls\` lists what does" >&2
     exit 1
 }
 if [ "${BUILDER_DRIVER}" = docker ] &&
@@ -273,9 +273,10 @@ fi
 # The container's architecture; the host's for an `all` producer.
 IMAGE_ARCH="${BUILD_PLATFORM}"
 
-# The packer image is always supplied; FROM_IMAGES adds further bases, and a
+# The packer image is always supplied: the published base image of the pinned
+# release, which carries dpkg-dev; FROM_IMAGES adds further bases, and a
 # MICA_BUILD_DEB entry there replaces the default rather than duplicating it.
-FROM_ENTRIES=("MICA_BUILD_DEB=LOCAL_MICA_BUILD_DEB")
+FROM_ENTRIES=("MICA_BUILD_DEB=IMAGE_MICA_BUILD_BASE")
 for entry in ${FROM_IMAGES}; do
     case "${entry}" in
     MICA_BUILD_DEB=*) FROM_ENTRIES[0]="${entry}" ;;
@@ -284,41 +285,20 @@ for entry in ${FROM_IMAGES}; do
 done
 
 FROM_ARGS=()
-OCI_DIRS=()
 for entry in "${FROM_ENTRIES[@]}"; do
     argname="${entry%%=*}"
     key="${entry#*=}"
     [ -n "${argname}" ] && [ -n "${key}" ] && [ "${argname}" != "${entry}" ] || {
-        echo "error: ${PRODUCER_REL}/producer.env declares FROM_IMAGES entry '${entry}', which is not <build-arg name>=<images.env key>. build-env/from.sh takes that pair and it is the whole wiring between a Dockerfile's ARG and an images.env digest" >&2
+        echo "error: ${PRODUCER_REL}/producer.env declares FROM_IMAGES entry '${entry}', which is not <build-arg name>=<images.env key>. scripts/build/from.sh takes that pair and it is the whole wiring between a Dockerfile's ARG and an images.env digest" >&2
         exit 1
     }
     mapfile -t got < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" "${argname}=${key}")
     [ "${#got[@]}" -eq 2 ] || {
-        echo "error: build-env/from.sh did not resolve ${argname}=${key} for ${IMAGE_ARCH} (see its message above); the builder images are built by \`make build-env\`" >&2
+        echo "error: scripts/build/from.sh did not resolve ${argname}=${key} for ${IMAGE_ARCH} (see its message above); build-env/images.env is the pinned release asset (make deps)" >&2
         exit 1
     }
     FROM_ARGS+=("${got[@]}")
-
-    # Local images also go over as OCI layouts when the builder cannot read the local store.
-    case "${key}" in
-    LOCAL_*)
-        if [ "${BUILDER_DRIVER}" != docker ]; then
-            oci="${REPO_ROOT}/tmp/deb-oci-${PRODUCER}-${ARCH}-${key}"
-            rm -rf "${oci}"
-            mkdir -p "${oci}"
-            OCI_DIRS+=("${oci}")
-            mapfile -t ctx < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" --contexts="${oci}" "${key}")
-            [ "${#ctx[@]}" -eq 2 ] || {
-                echo "error: build-env/from.sh did not yield the OCI layout context for ${key} at ${IMAGE_ARCH} (see its message above); the '${BUILDER}' builder would have resolved the FROM as a pull from a registry called 'localhost'" >&2
-                exit 1
-            }
-            FROM_ARGS+=("${ctx[@]}")
-        fi
-        ;;
-    esac
 done
-cleanup() { for d in ${OCI_DIRS[@]+"${OCI_DIRS[@]}"}; do rm -rf "${d}"; done; }
-trap cleanup EXIT
 
 # pack.sh as the `packer` context, so edits apply without rebuilding the images.
 CTX_ARGS=(--build-context "packer=${HERE}")

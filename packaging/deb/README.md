@@ -17,13 +17,13 @@ Each is built by the repository's one generic driver, which discovers them:
 
 ```
 make os-deb-micad
-  -> bash build-env/deb/build.sh --producer micad --arch <amd64|arm64>
+  -> bash scripts/deb/build.sh --producer micad --arch <amd64|arm64>
   -> _out/debs/<arch>/pool/<package>_<version>_<arch>.deb
 ```
 
 A producer is a directory holding a `producer.env` and a `Dockerfile`;
-`build-env/deb/README.md` is that convention, and `make os-debs` builds every
-producer discovered anywhere in the tree. `bash build-env/deb/repo.sh --arch
+`scripts/deb/README.md` is that convention, and `make os-debs` builds every
+producer discovered anywhere in the tree. `bash scripts/deb/repo.sh --arch
 <arch>` then indexes the pool, which is shared: a producer deletes only its own
 archives from it.
 
@@ -46,8 +46,8 @@ Create `deb/<producer>/` holding `producer.env`, a `Dockerfile`,
 `control/<package>.control` per package, and a `prepare.sh` naming the crates it
 compiles. Nothing else: there is no register to add a case to, and no `make`
 target to write -- `make os-deb-<producer>` is a pattern rule resolved against
-`build-env/deb/producers.sh`, and `make os-debs` loops over the same list.
-The `producer.env` keys are documented in `build-env/deb/README.md`.
+`scripts/deb/producers.sh`, and `make os-debs` loops over the same list.
+The `producer.env` keys are documented in `scripts/deb/README.md`.
 
 ### Why `hack/build-deb.sh` still exists
 
@@ -56,7 +56,7 @@ implementation, and as nothing else: it cross-compiles a named crate set and
 then asserts that the producer boundary held, which is a claim about a `cargo`
 build that no key in `producer.env` could describe. It no longer knows what a
 package is, what a pool is, what version anything carries or how to run buildx;
-`build-env/deb/build.sh` owns all of that for every producer in the
+`scripts/deb/build.sh` owns all of that for every producer in the
 repository. Each producer reaches it through its own `prepare.sh`, which is
 where the crate list lives.
 
@@ -78,22 +78,21 @@ owning one path.
 ## The two routes
 
 The compile runs at **amd64 for both architectures**: `cargo` cross-compiles,
-so it is a plain `docker run` against `localhost/mica-build-rust:amd64` with
+so it is a plain `docker run` against the amd64 image of `IMAGE_MICA_BUILD_RUST` with
 `--target x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`, and needs
 no buildx and no emulation.
 
 The packaging runs at the **target** architecture, because `dpkg-shlibdeps`
 resolves an ELF's dependencies against the libraries of the container it runs
-in; `build-env/deb/pack.sh` refuses the mismatch rather than recording
+in; `scripts/deb/pack.sh` refuses the mismatch rather than recording
 amd64's versions in an arm64 package. This host has no binfmt registration, so
 `docker run --platform linux/arm64` is not a route -- it dies with `exec format
 error`. `docker buildx build --platform linux/arm64` on the `mos-arm64`
 docker-container builder is, because its buildkit image bundles the emulators.
-That builder cannot resolve a `localhost/*` tag, so the base is handed over as
-an OCI layout by `build-env/from.sh --contexts=`, exactly as
-`pkgs/rauc/build.sh` does it.
+The packing base is `IMAGE_MICA_BUILD_BASE`, a public index pinned by digest,
+which every builder pulls for itself.
 
-`pack.sh` is not baked into `mica-build-deb`. Each producer Dockerfile takes it
+`pack.sh` is not baked into the image. Each producer Dockerfile takes it
 through the `packer` named build context, which is what lets an edit to the
 packer take effect without rebuilding the builder family.
 
@@ -104,7 +103,7 @@ packer take effect without rebuilding the builder family.
 <crate version>+git<commit>.dirty-1    when the tree is not clean
 ```
 
-Computed by `build-env/deb/version.sh`, which is the one implementation of
+Computed by `scripts/deb/version.sh`, which is the one implementation of
 this rule for every producer in the repository -- including the ones that are
 not Rust and have no manifest to read a number out of. `<crate version>` comes
 from this workspace's crate manifests, which must all agree, and is never
@@ -196,7 +195,7 @@ directory's.
 
 ```
 make os-debs              # every producer, both architectures, then both indexes
-make os-deb-package-gate  # bash build-env/deb/package-gate.sh
+make os-deb-package-gate  # bash scripts/deb/package-gate.sh
 ```
 
 The gate reads the built pools and asserts, out of the archives themselves:

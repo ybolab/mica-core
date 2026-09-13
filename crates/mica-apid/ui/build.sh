@@ -43,7 +43,7 @@ do
 done
 
 mkdir -p "${BUILD_ROOT}/home" "${BUILD_ROOT}/work" "${OUTPUT}"
-image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_MICA_BUILD_BASE)"
+image="$(bash "${REPO_ROOT}/scripts/build/from.sh" --ref IMAGE_MICA_BUILD_BASE)"
 
 if [ "${RUN_CHECKS}" = 1 ]; then
     echo "apid UI checks: ${image} -> ${OUTPUT}"

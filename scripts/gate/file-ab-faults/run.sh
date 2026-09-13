@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 command -v docker >/dev/null
-image=$(bash build-env/from.sh --arch=amd64 --ref LOCAL_MICA_BUILD_RUST_CHECK)
+image=$(bash scripts/build/from.sh --arch=amd64 --ref IMAGE_MICA_BUILD_RUST)
 work=$(mktemp -d "$PWD/_out/io-faults.XXXXXX")
 mkdir -p _out/rust-gate _out/cargo/registry _out/cargo/git
 # mica-build-side: container-block -- the pinned compiler builds only the test shim.

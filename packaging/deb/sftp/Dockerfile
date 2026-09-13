@@ -3,7 +3,7 @@
 # The sftp producer: the `mica-sftp-server` package -- one binary, installed as
 # /usr/lib/sftp-server, the path dropbear-bin execs for the sftp subsystem.
 #
-#   make deb   ->  build-env/deb/build.sh --producer sftp --arch <amd64|arm64>
+#   make deb   ->  scripts/deb/build.sh --producer sftp --arch <amd64|arm64>
 #
 # The shape is deb/micad/Dockerfile's: this file only STAGES and PACKS, the
 # binary was cross-compiled on an amd64 Rust builder by this producer's PREPARE
@@ -11,7 +11,7 @@
 # architecture because dpkg-shlibdeps resolves an ELF's dependencies against
 # the libraries of the container it runs in.
 #
-# No default for the base, for the reason build-env/deb/Dockerfile gives: a
+# No default for the base, per RULES.md of mica-build-env: a
 # driver that failed to pass the argument would otherwise build from a floating
 # tag.
 ARG MICA_BUILD_DEB
@@ -29,7 +29,7 @@ COPY --from=bin mica-sftp-server /in/bin/
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
-# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+# Provenance, written into the control file by pack.sh; see scripts/deb/README.md.
 ARG MICA_DEB_SOURCE_REPO
 ARG MICA_DEB_SOURCE_COMMIT
 

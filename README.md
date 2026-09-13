@@ -8,11 +8,10 @@ UI under `crates/mica-apid/ui/`; the executable is `mica-apid`), `mica-mqttd`, `
 `mica-sftp-server`, `mica-deploy` (the device-side deployment client and the
 static `mica-runkit`), with the shared crates `micad-settings`, `mica-busname`,
 `mica-ui-bundle`, `mica-mqtt-reference` and `lifecycle-sys`. It stands on the
-`mica-build-env` substrate fetched at its pin into `build-env/`:
+`mica-build-env` release fetched and verified at its pin into `build-env/`:
 
 ```
-make deps            # build-env/ at deps/sources/mica-build-env.json
-make build-env       # the builder images
+make deps            # build-env/ at deps/build-env.json
 make check           # lint, the UI build contract, the Rust gate, the boot/shutdown fixtures, the IO fault suite
 make pool            # the seven packages, both architectures, indexed
 make package-gate    # the gate over that pool

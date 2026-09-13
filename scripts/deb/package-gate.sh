@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The package-level gates of PLAN-036 section 6, over the built pools.
 #
-#   bash build-env/deb/package-gate.sh
+#   bash scripts/deb/package-gate.sh
 #
 #   reads   _out/debs/<arch>/pool/*.deb          (built by `make os-debs`)
 #   asserts the facts listed below, per architecture
 #
-# Facts are read out of the archives with dpkg-deb (inside localhost/mica-build-deb);
+# Facts are read out of the archives with dpkg-deb (inside the IMAGE_MICA_BUILD_BASE image);
 # expectations come from producers.sh, each producer.env and the lock.
 #
 #   a  no non-directory path is in two archives of one pool, except packages
@@ -35,21 +35,21 @@ set -euo pipefail
 # Runs over the pool of the repository this substrate is checked out in.
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
-PRODUCERS_SH="${REPO_ROOT}/build-env/deb/producers.sh"
-BUILD_SH="${REPO_ROOT}/build-env/deb/build.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
+PRODUCERS_SH="${REPO_ROOT}/scripts/deb/producers.sh"
+BUILD_SH="${REPO_ROOT}/scripts/deb/build.sh"
 DIST="${REPO_ROOT}/_out/debs"
-[ "$#" -eq 0 ] || { echo "usage: bash build-env/deb/package-gate.sh    (no arguments; it reads the pools under _out/debs and the pins under deps/packages/)" >&2; exit 1; }
-LOCK_SH="${REPO_ROOT}/build-env/deb/lock.sh"
+[ "$#" -eq 0 ] || { echo "usage: bash scripts/deb/package-gate.sh    (no arguments; it reads the pools under _out/debs and the pins under deps/packages/)" >&2; exit 1; }
+LOCK_SH="${REPO_ROOT}/scripts/deb/lock.sh"
 for p in "${FROM_SH}" "${PRODUCERS_SH}" "${BUILD_SH}" "${LOCK_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. This gate derives the repository as two levels above build-env/deb; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. This gate derives the repository as two levels above scripts/deb; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
 
 command -v docker >/dev/null 2>&1 || {
-    echo "error: docker is required and not on PATH. dpkg-deb runs inside localhost/mica-build-deb rather than on the host, and the reproducibility check drives a real package build" >&2
+    echo "error: docker is required and not on PATH. dpkg-deb runs inside the IMAGE_MICA_BUILD_BASE image rather than on the host, and the reproducibility check drives a real package build" >&2
     exit 1
 }
 
@@ -57,9 +57,9 @@ command -v docker >/dev/null 2>&1 || {
 mapfile -t ROWS < <(bash "${PRODUCERS_SH}")
 # A repository that imports everything declares no producer (producers.sh
 # says so and exits 0); the gate then runs over the lock's rows alone.
-LOCK_ROW_N="$(bash "${REPO_ROOT}/build-env/deb/lock.sh" --rows | grep -c . || true)"
+LOCK_ROW_N="$(bash "${REPO_ROOT}/scripts/deb/lock.sh" --rows | grep -c . || true)"
 [ "${#ROWS[@]}" -gt 0 ] || [ "${LOCK_ROW_N}" -gt 0 ] || {
-    echo "error: build-env/deb/producers.sh named no producer (see its message above). Every expectation below is derived from that set, and over an empty one they all hold" >&2
+    echo "error: scripts/deb/producers.sh named no producer (see its message above). Every expectation below is derived from that set, and over an empty one they all hold" >&2
     exit 1
 }
 
@@ -77,7 +77,7 @@ done
 while IFS=$'\t' read -r _n _v larch _rest; do
     [ -n "${larch}" ] || continue
     case "${larch}" in all) declared_arches="${declared_arches}amd64 arm64 " ;; *) declared_arches="${declared_arches}${larch} " ;; esac
-done < <(bash "${REPO_ROOT}/build-env/deb/lock.sh" --rows)
+done < <(bash "${REPO_ROOT}/scripts/deb/lock.sh" --rows)
 ARCHES=()
 for a in amd64 arm64; do
     case "${declared_arches}" in *" ${a} "*) ARCHES+=("${a}") ;; esac
@@ -94,14 +94,14 @@ case "$(uname -m)" in
 x86_64) IMAGE_ARCH=amd64 ;;
 aarch64 | arm64) IMAGE_ARCH=arm64 ;;
 *)
-    echo "error: $(uname -m) is not an architecture build-env/images.env builds a mica-build-deb for, so there is no container to read the archives in" >&2
+    echo "error: $(uname -m) is not an architecture the IMAGE_MICA_BUILD_BASE index carries, so there is no container to read the archives in" >&2
     exit 1
     ;;
 esac
 # The host architecture's image: reading archives needs no emulation.
-mapfile -t FROM_ARGS < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_DEB=LOCAL_MICA_BUILD_DEB)
+mapfile -t FROM_ARGS < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_DEB=IMAGE_MICA_BUILD_BASE)
 [ "${#FROM_ARGS[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mica-build-deb:${IMAGE_ARCH} (see its message above); it is built by \`make build-env\`" >&2
+    echo "error: scripts/build/from.sh did not yield IMAGE_MICA_BUILD_BASE (see its message above); build-env/images.env is the pinned release asset (make deps)" >&2
     exit 1
 }
 IMAGE="${FROM_ARGS[1]#MICA_BUILD_DEB=}"
@@ -223,7 +223,7 @@ for row in "${ROWS[@]}"; do
 
     # ENABLEMENT needs a row per package; zero is spelled out.
     [ "${enablement}" != "-" ] || {
-        echo "error: the producer '${producer}' declares no ENABLEMENT. Add ENABLEMENT='<package>=<count> ...' to ${dir}/producer.env with a row per package it emits, stating how many /etc/systemd/system/multi-user.target.wants symlinks that package ships -- 0 for a package that ships none. There is no default: a missing row and a deliberate zero look identical, and only one of them is a decision. See build-env/deb/README.md" >&2
+        echo "error: the producer '${producer}' declares no ENABLEMENT. Add ENABLEMENT='<package>=<count> ...' to ${dir}/producer.env with a row per package it emits, stating how many /etc/systemd/system/multi-user.target.wants symlinks that package ships -- 0 for a package that ships none. There is no default: a missing row and a deliberate zero look identical, and only one of them is a decision. See scripts/deb/README.md" >&2
         exit 1
     }
     declared=""
@@ -412,7 +412,7 @@ for arch in "${ARCHES[@]}"; do
             pool_stamps+=("${stamp}")
             ;;
         *)
-            fail "${arch}: the version '${v}' carries no git<commit>[.dirty]-<rev> stamp after its last '+'. Every archive is stamped by build-env/deb/version.sh; a version without the stamp cannot be attributed to a commit"
+            fail "${arch}: the version '${v}' carries no git<commit>[.dirty]-<rev> stamp after its last '+'. Every archive is stamped by scripts/deb/version.sh; a version without the stamp cannot be attributed to a commit"
             ;;
         esac
     done

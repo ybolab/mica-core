@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mica-build-side: container -- both callers run this inside localhost/mica-build-rust-check: `make os-rust-gate` locally and .github/workflows/check.yml on the runner, each through tests/rust-gate.sh, which invokes this file unmodified. The PATH prepend below finds nothing in there and the image's own /opt/rust/bin answers, so the cargo, clippy, rustfmt, nextest and deny that run are the versions build-env/images.env records. PLAN-080 backlog B7 is what made this true: until CI stopped installing a rustup toolchain of its own, one of the two callers was a bare host and this declaration would have been a claim about only half the runs.
+# mica-build-side: container -- both callers run this inside IMAGE_MICA_BUILD_RUST: `make os-rust-gate` locally and .github/workflows/check.yml on the runner, each through tests/rust-gate.sh, which invokes this file unmodified. The PATH prepend below finds nothing in there and the image's own /opt/rust/bin answers, so the cargo, clippy, rustfmt, nextest and deny that run are the versions build-env/images.env records. PLAN-080 backlog B7 is what made this true: until CI stopped installing a rustup toolchain of its own, one of the two callers was a bare host and this declaration would have been a claim about only half the runs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,7 @@ if [ -z "${MICA_APID_UI_DIST_DIR:-}" ]; then
     export MICA_APID_UI_DIST_DIR="${REPO_ROOT}/_out/apid-ui/dist"
 fi
 
-# THE REPOSITORY VERSION AND THE CRATE VERSION AGREE. build-env/deb/version.sh
+# THE REPOSITORY VERSION AND THE CRATE VERSION AGREE. scripts/deb/version.sh
 # stamps every archive from ${REPO_ROOT}/VERSION; the binaries report the crate
 # version from their manifests. Two numbers, one release: a drift between them
 # is a package whose version is not the version the binary inside it prints.
@@ -48,7 +48,7 @@ cargo deny check licenses bans advisories
 # HERE and not in .github/workflows/check.yml, which is where it used to live.
 # That step ran `cargo` on the runner, and it was the last reason the runner
 # needed a toolchain of its own -- PLAN-080 backlog B7. Moving it into the gate
-# means it runs wherever the gate runs: inside localhost/mica-build-rust-check
+# means it runs wherever the gate runs: inside IMAGE_MICA_BUILD_RUST
 # under tests/rust-gate.sh, on both of the gate's callers, and for the first
 # time on a developer's machine as well.
 openapi_tmp="$(mktemp -d)"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The lifecycle producer's PREPARE hook: compile the static lifecycle
-# executable into MICA_DEB_STAGE for build-env/deb/build.sh to hand the
+# executable into MICA_DEB_STAGE for scripts/deb/build.sh to hand the
 # packaging build as its `bin` context. Everything about the compile lives in
 # scripts/build/build-deb.sh; this only says which binaries this producer owns.
 set -euo pipefail

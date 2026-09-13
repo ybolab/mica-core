@@ -46,7 +46,7 @@ registry_token() {
         REGISTRY_TOKEN="$(gh auth token 2>/dev/null || true)"
     fi
     [ "${1:-}" != --write ] || [ -n "${REGISTRY_TOKEN}" ] || {
-        echo "error: ${MICA_RELEASE_TOKEN_VAR} is unset or empty and \`gh auth token\` gave nothing. Publishing to ${OCI_HOST} needs a token with write:packages in that variable (build-env/deb/registry.env names it); publishing is CI's, whose own token has it" >&2
+        echo "error: ${MICA_RELEASE_TOKEN_VAR} is unset or empty and \`gh auth token\` gave nothing. Publishing to ${OCI_HOST} needs a token with write:packages in that variable (scripts/deb/registry.env names it); publishing is CI's, whose own token has it" >&2
         return 1
     }
 }

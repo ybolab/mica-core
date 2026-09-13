@@ -2,7 +2,7 @@
 # The apid producer's PREPARE hook: cross-compile the mica-apid executable
 # (with the built-in UI embedded), assert that nothing this producer does not
 # own was compiled with it, and leave the result in MICA_DEB_STAGE for
-# build-env/deb/build.sh to pack.
+# scripts/deb/build.sh to pack.
 set -euo pipefail
 
 bash "${MICA_DEB_REPO_ROOT}/scripts/build/build-deb.sh" \

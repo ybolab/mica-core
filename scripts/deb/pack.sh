@@ -5,11 +5,11 @@
 #   pack.sh --root <dir> --control <template> --version <v> \
 #           --arch <amd64|arm64|all> --out <dir> [--maintainer-scripts <dir>]
 #
-# Runs inside localhost/mica-build-deb:<arch> at the package's architecture:
+# Runs inside the IMAGE_MICA_BUILD_BASE image at the package's architecture:
 # dpkg-shlibdeps resolves against the libraries of the container it runs in.
-# build-env/deb/README.md is the contract this implements.
+# scripts/deb/README.md is the contract this implements.
 #
-# mica-build-side: container -- every line below runs in localhost/mica-build-deb:<arch>,
+# mica-build-side: container -- every line below runs in the IMAGE_MICA_BUILD_BASE image,
 # started by a producer Dockerfile's RUN; the architecture check further down is what
 # refuses a run that reached here any other way.
 set -euo pipefail
@@ -33,7 +33,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="${2-}"; [ -n "${ARCH}" ] || die "--arch takes amd64, arm64 or all"; shift 2 ;;
     --out) OUT="${2-}"; [ -n "${OUT}" ] || die "--out takes a directory"; shift 2 ;;
     --maintainer-scripts) SCRIPTS="${2-}"; [ -n "${SCRIPTS}" ] || die "--maintainer-scripts takes a directory"; shift 2 ;;
-    *) die "'$1' is not an option this packer takes; see build-env/deb/README.md" ;;
+    *) die "'$1' is not an option this packer takes; see scripts/deb/README.md" ;;
     esac
 done
 for pair in "root:${ROOT}" "control:${CONTROL}" "version:${VERSION}" "arch:${ARCH}" "out:${OUT}"; do
@@ -50,9 +50,9 @@ esac
 # Provenance, resolved on the host by deb/build.sh and written as the
 # Mica-Source-Repo and Mica-Source-Commit control fields. No defaults.
 [ -n "${MICA_DEB_SOURCE_REPO:-}" ] ||
-    die "MICA_DEB_SOURCE_REPO is unset. This packer records the source repository in the control file; build-env/deb/build.sh resolves it from the repository's origin and the producer Dockerfile must declare it as an ARG"
+    die "MICA_DEB_SOURCE_REPO is unset. This packer records the source repository in the control file; scripts/deb/build.sh resolves it from the repository's origin and the producer Dockerfile must declare it as an ARG"
 [ -n "${MICA_DEB_SOURCE_COMMIT:-}" ] ||
-    die "MICA_DEB_SOURCE_COMMIT is unset. This packer records the source commit in the control file; build-env/deb/build.sh resolves it from HEAD and the producer Dockerfile must declare it as an ARG"
+    die "MICA_DEB_SOURCE_COMMIT is unset. This packer records the source commit in the control file; scripts/deb/build.sh resolves it from HEAD and the producer Dockerfile must declare it as an ARG"
 [[ "${MICA_DEB_SOURCE_REPO}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
     die "MICA_DEB_SOURCE_REPO='${MICA_DEB_SOURCE_REPO}' is not a repository name (letters, digits, dot, underscore, minus)"
 [[ "${MICA_DEB_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] ||
@@ -69,7 +69,7 @@ esac
 
 CONTAINER_ARCH="$(dpkg --print-architecture)"
 if [ "${ARCH}" != all ] && [ "${ARCH}" != "${CONTAINER_ARCH}" ]; then
-    die "--arch ${ARCH} in a ${CONTAINER_ARCH} container. dpkg-shlibdeps resolves the libraries of the architecture it RUNS on, so this would record ${CONTAINER_ARCH}'s dependency versions in an ${ARCH} package and fail on the device, not here. Run this inside localhost/mica-build-deb:${ARCH}"
+    die "--arch ${ARCH} in a ${CONTAINER_ARCH} container. dpkg-shlibdeps resolves the libraries of the architecture it RUNS on, so this would record ${CONTAINER_ARCH}'s dependency versions in an ${ARCH} package and fail on the device, not here. Run this inside the ${ARCH} image of IMAGE_MICA_BUILD_BASE"
 fi
 
 mkdir -p "${OUT}"
@@ -96,7 +96,7 @@ control_field() {
 # The template, checked before anything is rendered from it.
 for f in Package Version Architecture Maintainer Section Priority Description; do
     [ -n "$(control_field "${f}" "${CONTROL}")" ] ||
-        die "--control ${CONTROL} declares no ${f}. Every field of the template is required; build-env/deb/README.md lists them and shows one"
+        die "--control ${CONTROL} declares no ${f}. Every field of the template is required; scripts/deb/README.md lists them and shows one"
 done
 if grep -ci '^Installed-Size:' "${CONTROL}" >/dev/null; then
     die "--control ${CONTROL} declares Installed-Size. That field is COMPUTED here from the staged tree; a written one is a number that stops matching the payload the first time the payload changes"

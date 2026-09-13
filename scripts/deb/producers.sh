@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Every Debian package producer in this repository, discovered from the tree.
 #
-#   bash build-env/deb/producers.sh
+#   bash scripts/deb/producers.sh
 #   -> micad pkgs/micad/deb/micad amd64,arm64 micad,mica-apid micad=1,mica-apid=1
 #      mqtt pkgs/micad/deb/mqtt amd64,arm64 mica-mqttd,mica-mqtt-broker mica-mqttd=0,mica-mqtt-broker=0
 #
-#   bash build-env/deb/producers.sh --dir-for <producer>
+#   bash scripts/deb/producers.sh --dir-for <producer>
 #   -> pkgs/micad/deb/micad
 #
-#   bash build-env/deb/producers.sh --instance-for <producer>@<instance>
+#   bash scripts/deb/producers.sh --instance-for <producer>@<instance>
 #   -> boards/cx3576/board.env      (the FOR_EACH file the instance is; empty for a plain producer)
 #
-#   bash build-env/deb/producers.sh --control-for <producer>
+#   bash scripts/deb/producers.sh --control-for <producer>
 #   -> boards/cx3576/package/control   (CONTROL_DIR of the producer.env, else <dir>/control)
 #
 # Five space-separated fields, sorted by producer name:
@@ -26,13 +26,13 @@
 #
 # A producer is a directory anywhere in the tree holding both a Dockerfile and a
 # producer.env. This is the only discovery; every other script reads it. The
-# convention is documented in build-env/deb/README.md.
+# convention is documented in scripts/deb/README.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 [ -e "${REPO_ROOT}/Makefile" ] || {
-    echo "error: ${REPO_ROOT}/Makefile does not exist. build-env/deb/producers.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
+    echo "error: ${REPO_ROOT}/Makefile does not exist. scripts/deb/producers.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
     exit 1
 }
 
@@ -57,7 +57,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash build-env/deb/producers.sh [--dir-for <producer> | --instance-for <producer> | --control-for <producer>]" >&2
+        echo "usage: bash scripts/deb/producers.sh [--dir-for <producer> | --instance-for <producer> | --control-for <producer>]" >&2
         exit 1
         ;;
     esac
@@ -87,7 +87,7 @@ for env_file in ${ENVS[@]+"${ENVS[@]}"}; do
     # Readers split the output on spaces.
     case "${producer}" in
     *[[:space:]]*)
-        echo "error: the producer directory ${rel} has a name containing whitespace. build-env/deb/producers.sh emits space-separated fields and every reader splits on that, so such a name would be read as a different producer entirely" >&2
+        echo "error: the producer directory ${rel} has a name containing whitespace. scripts/deb/producers.sh emits space-separated fields and every reader splits on that, so such a name would be read as a different producer entirely" >&2
         exit 1
         ;;
     esac
@@ -157,7 +157,7 @@ for env_file in ${ENVS[@]+"${ENVS[@]}"}; do
         case "${a}" in
         amd64 | arm64 | all) ;;
         *)
-            echo "error: ${rel}/producer.env declares ARCHES entry '${a}'. The only values are amd64, arm64 and all; amd64 and arm64 are what build-env/images.env pins a mica-build-deb for, and 'all' is an architecture-independent package that is a valid member of every pool" >&2
+            echo "error: ${rel}/producer.env declares ARCHES entry '${a}'. The only values are amd64, arm64 and all; amd64 and arm64 are what the IMAGE_MICA_BUILD_BASE index carries, and 'all' is an architecture-independent package that is a valid member of every pool" >&2
             exit 1
             ;;
         esac
@@ -186,7 +186,7 @@ if [ "${#ROWS[@]}" -eq 0 ] && [ "${pins}" -gt 0 ]; then
     exit 0
 fi
 [ "${#ROWS[@]}" -gt 0 ] || {
-    echo "error: no package producer was found anywhere under ${REPO_ROOT}. Every caller of this script would then have an empty set to work over: \`make os-debs\` would build nothing and build-env/deb/package-gate.sh would assert nothing, and both would report success. A producer is a directory holding BOTH a Dockerfile and a producer.env; see build-env/deb/README.md" >&2
+    echo "error: no package producer was found anywhere under ${REPO_ROOT}. Every caller of this script would then have an empty set to work over: \`make os-debs\` would build nothing and scripts/deb/package-gate.sh would assert nothing, and both would report success. A producer is a directory holding BOTH a Dockerfile and a producer.env; see scripts/deb/README.md" >&2
     exit 1
 }
 
@@ -209,7 +209,7 @@ if [ -n "${DIR_FOR}" ]; then
         echo "${dir}"
         exit 0
     done
-    echo "error: '${DIR_FOR}' is not a producer this repository defines. Discovered: $(printf '%s\n' "${ROWS[@]}" | cut -d' ' -f1 | tr '\n' ' ')-- a producer is a directory holding both a Dockerfile and a producer.env, and its NAME is that directory's basename; see build-env/deb/README.md" >&2
+    echo "error: '${DIR_FOR}' is not a producer this repository defines. Discovered: $(printf '%s\n' "${ROWS[@]}" | cut -d' ' -f1 | tr '\n' ' ')-- a producer is a directory holding both a Dockerfile and a producer.env, and its NAME is that directory's basename; see scripts/deb/README.md" >&2
     exit 1
 fi
 

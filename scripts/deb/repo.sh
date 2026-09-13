@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Index one architecture's package pool: Packages, SHA256SUMS and a manifest.
 #
-#   bash build-env/deb/repo.sh --arch <amd64|arm64>
+#   bash scripts/deb/repo.sh --arch <amd64|arm64>
 #
 #   reads   _out/debs/<arch>/pool/*.deb
 #   writes  _out/debs/<arch>/{Packages,SHA256SUMS,manifest.txt}
 #
 #   MICA_POOL_DIR overrides _out/debs (the parent of the per-architecture pools).
 #
-# Everything written is read out of the archives, inside localhost/mica-build-deb.
+# Everything written is read out of the archives, inside the IMAGE_MICA_BUILD_BASE image.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
 for p in "${REPO_ROOT}/Makefile" "${FROM_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. build-env/deb/repo.sh derives REPO_ROOT as two levels above itself; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. scripts/deb/repo.sh derives REPO_ROOT as two levels above itself; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -30,7 +30,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash build-env/deb/repo.sh --arch <amd64|arm64>" >&2
+        echo "usage: bash scripts/deb/repo.sh --arch <amd64|arm64>" >&2
         exit 1
         ;;
     esac
@@ -44,7 +44,7 @@ amd64 | arm64) ;;
 esac
 
 command -v docker >/dev/null 2>&1 || {
-    echo "error: docker is required and not on PATH. dpkg-scanpackages and dpkg-deb run inside localhost/mica-build-deb rather than on the host, which is what keeps the host free of a Debian toolchain" >&2
+    echo "error: docker is required and not on PATH. dpkg-scanpackages and dpkg-deb run inside the IMAGE_MICA_BUILD_BASE image rather than on the host, which is what keeps the host free of a Debian toolchain" >&2
     exit 1
 }
 
@@ -67,20 +67,20 @@ case "$(uname -m)" in
 x86_64) IMAGE_ARCH=amd64 ;;
 aarch64 | arm64) IMAGE_ARCH=arm64 ;;
 *)
-    echo "error: $(uname -m) is not an architecture build-env/images.env builds a mica-build-deb for, so there is no container to run dpkg-scanpackages in" >&2
+    echo "error: $(uname -m) is not an architecture the IMAGE_MICA_BUILD_BASE index carries, so there is no container to run dpkg-scanpackages in" >&2
     exit 1
     ;;
 esac
-mapfile -t FROM_ARGS < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_DEB=LOCAL_MICA_BUILD_DEB)
+mapfile -t FROM_ARGS < <(bash "${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_DEB=IMAGE_MICA_BUILD_BASE)
 [ "${#FROM_ARGS[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mica-build-deb:${IMAGE_ARCH} (see its message above); it is built by \`make build-env\`" >&2
+    echo "error: scripts/build/from.sh did not yield IMAGE_MICA_BUILD_BASE (see its message above); build-env/images.env is the pinned release asset (make deps)" >&2
     exit 1
 }
 IMAGE="${FROM_ARGS[1]#MICA_BUILD_DEB=}"
 
 # Only _out/debs/<arch> is mounted.
 # mica-build-side: container-block -- the index is written by the dpkg inside
-# localhost/mica-build-deb, which records its own version in /etc/mica-build/deb.env
+# the IMAGE_MICA_BUILD_BASE image, which records its own versions in /etc/mica-build/base.env
 # and is read back by the block below
 docker run --rm \
     --label ai-agent=true \
@@ -90,12 +90,13 @@ docker run --rm \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail
-        [ -f /etc/mica-build/deb.env ] || {
-            echo "error: this image carries no /etc/mica-build/deb.env, so what indexed this repository cannot be read back out of it" >&2
+        [ -f /etc/mica-build/base.env ] || {
+            echo "error: this image carries no /etc/mica-build/base.env, so what indexed this repository cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mica-build/deb.env
-        echo "repo.sh: indexing ${MICA_DEB_ARCH} with dpkg ${MICA_BUILD_DPKG} from ${MICA_BUILD_IMAGE}"
+        # Read by key, not sourced: base.env records values with shell metacharacters unquoted.
+        record() { sed -n "s/^$1=//p" /etc/mica-build/base.env; }
+        echo "repo.sh: indexing ${MICA_DEB_ARCH} with dpkg $(record MICA_BUILD_DPKG) from $(record MICA_BUILD_IMAGE)"
 
         # Sorted, not readdir order.
         mapfile -t debs < <(cd pool && find . -maxdepth 1 -type f -name "*.deb" -printf "%f\n" | LC_ALL=C sort)
@@ -123,14 +124,14 @@ docker run --rm \
         (printf "pool/%s\n" "${debs[@]}" | xargs -r sha256sum) >SHA256SUMS
 
         {
-            echo "# The local package pool for ${MICA_DEB_ARCH}, read out of the archives by build-env/deb/repo.sh."
+            echo "# The local package pool for ${MICA_DEB_ARCH}, read out of the archives by scripts/deb/repo.sh."
             echo "# Regenerated whenever the pool changes; never edited by hand."
             printf "#package\tversion\tarchitecture\tinstalled-size\tsha256\tfile\tsource-repo\tsource-commit\n"
             for d in "${debs[@]}"; do
                 repo="$(dpkg-deb --field "pool/${d}" Mica-Source-Repo)"
                 commit="$(dpkg-deb --field "pool/${d}" Mica-Source-Commit)"
                 [ -n "${repo}" ] && [ -n "${commit}" ] || {
-                    echo "error: pool/${d} carries no Mica-Source-Repo/Mica-Source-Commit control fields. build-env/deb/pack.sh writes both into every archive; one without them was packed by something else" >&2
+                    echo "error: pool/${d} carries no Mica-Source-Repo/Mica-Source-Commit control fields. scripts/deb/pack.sh writes both into every archive; one without them was packed by something else" >&2
                     exit 1
                 }
                 printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \

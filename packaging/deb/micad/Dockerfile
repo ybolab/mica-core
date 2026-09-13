@@ -3,7 +3,7 @@
 # The micad producer: the `micad` package -- /usr/bin/micad, its unit and its
 # D-Bus policy. mica-apid is its own producer (packaging/deb/apid).
 #
-#   make os-deb-micad   ->  build-env/deb/build.sh --producer micad --arch <amd64|arm64>
+#   make os-deb-micad   ->  scripts/deb/build.sh --producer micad --arch <amd64|arm64>
 #
 # This file only STAGES and PACKS. The binary was cross-compiled on an amd64
 # Rust builder by this producer's PREPARE hook and arrives through the `bin`
@@ -11,9 +11,9 @@
 # context is this producer's own directory. This
 # stage runs at the TARGET architecture because dpkg-shlibdeps resolves an
 # ELF's dependencies against the libraries of the container it runs in, and
-# build-env/deb/pack.sh refuses the mismatch by name.
+# scripts/deb/pack.sh refuses the mismatch by name.
 #
-# No default for the base, for the reason build-env/deb/Dockerfile gives: a
+# No default for the base, per RULES.md of mica-build-env: a
 # driver that failed to pass the argument would otherwise build from a floating
 # tag.
 ARG MICA_BUILD_DEB
@@ -21,7 +21,7 @@ ARG MICA_BUILD_DEB
 FROM ${MICA_BUILD_DEB} AS pack
 
 # pack.sh comes over as a named context rather than out of the image. It is the
-# packaging CONTRACT, shared by every producer, and build-env/deb/README.md
+# packaging CONTRACT, shared by every producer, and scripts/deb/README.md
 # requires this shape: an edit to the packer then takes effect without
 # rebuilding the whole builder family.
 COPY --from=packer pack.sh /usr/local/bin/pack.sh
@@ -34,7 +34,7 @@ COPY --from=bin micad /in/bin/
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
-# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+# Provenance, written into the control file by pack.sh; see scripts/deb/README.md.
 ARG MICA_DEB_SOURCE_REPO
 ARG MICA_DEB_SOURCE_COMMIT
 

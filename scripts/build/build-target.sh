@@ -6,14 +6,14 @@
 #   bash scripts/build/build-target.sh aarch64-unknown-linux-gnu aarch64
 #   bash scripts/build/build-target.sh x86_64-unknown-linux-gnu  x86-64
 #
-# The compiler is localhost/mica-build-rust's, not the host's, so docker is the
+# The compiler is IMAGE_MICA_BUILD_RUST's, not the host's, so docker is the
 # one thing the host needs: no rustup, no cross linker, no target std. What
 # compiled these binaries is a value build-env/images.env records.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 WORKSPACE="$(pwd)"
 REPO_ROOT="${WORKSPACE}"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
 
 TARGET="${1:?usage: build-target.sh <rust-target> <elf-arch>}"
 ELF_ARCH="${2:?usage: build-target.sh <rust-target> <elf-arch>}"
@@ -29,7 +29,7 @@ for p in "${WORKSPACE}/Cargo.toml" "${FROM_SH}"; do
 done
 
 command -v docker >/dev/null 2>&1 || {
-    echo "error: docker is required and not on PATH. This build runs inside localhost/mica-build-rust rather than on the host's cargo, which is what makes the compiler a value recorded in build-env/images.env instead of whatever the machine happens to have" >&2
+    echo "error: docker is required and not on PATH. This build runs inside IMAGE_MICA_BUILD_RUST rather than on the host's cargo, which is what makes the compiler a value recorded in build-env/images.env instead of whatever the machine happens to have" >&2
     exit 1
 }
 
@@ -45,13 +45,11 @@ x86_64-*) IMAGE_ARCH=amd64 ;;
     ;;
 esac
 
-# The image, out of images.env, and refused by name if it is missing or is the
-# wrong architecture -- docker reports the first as a failed pull from a
-# registry called `localhost` and the second as a manifest error, neither of
-# which names `make build-env`.
-mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST=LOCAL_MICA_BUILD_RUST)
+# The image, out of images.env, and refused by name if it is missing or is not
+# a digest pin.
+mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST=IMAGE_MICA_BUILD_RUST)
 [ "${#FROM_ARGS[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mica-build-rust (see its message above)" >&2
+    echo "error: scripts/build/from.sh did not yield IMAGE_MICA_BUILD_RUST (see its message above)" >&2
     exit 1
 }
 IMAGE="${FROM_ARGS[1]#MICA_BUILD_RUST=}"
@@ -106,7 +104,7 @@ fi
 # to assert against; a composed root has never carried the binaries it produces.
 # They come out of the micad and mica-apid packages, whose archives carry the
 # commit they were built from in their Mica-Source-Commit control field
-# (build-env/deb/pack.sh), and rootfs/build.sh reads that field into
+# (scripts/deb/pack.sh), and rootfs/build.sh reads that field into
 # `_out/<board>/micad-build.txt`. A record from here would name the commit of a
 # build whose output nothing installs, and would be indistinguishable from one
 # that named the build that did. See RFCT-356.
@@ -146,7 +144,7 @@ done < <(sed -n 's/^members = \[\(.*\)\]/\1/p' "${WORKSPACE}/Cargo.toml" | tr ',
 
 # `--network host` is not used and is not needed: cargo fetches through the
 # container's default network, and the only thing bound in is this repository.
-# mica-build-side: container-block -- the compiler is localhost/mica-build-rust's,
+# mica-build-side: container-block -- the compiler is IMAGE_MICA_BUILD_RUST's,
 # recorded in that image's /etc/mica-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
@@ -167,7 +165,7 @@ docker run --rm \
         # The image records what it is; this reads it back and prints it, so the
         # build log answers "which rustc compiled this" without anyone having to
         # know which image was current. An image with no record is one that
-        # cannot answer that, and build-env/build.sh refuses to tag one.
+        # cannot answer that, and mica-build-env publishes none.
         [ -f /etc/mica-build/rust.env ] || {
             echo "error: this image carries no /etc/mica-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
             exit 1

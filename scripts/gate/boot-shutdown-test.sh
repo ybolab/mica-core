@@ -10,9 +10,10 @@ case "${1:-}" in
 esac
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 case "$(uname -m)" in x86_64) ;; *) echo 'This fixture runner requires the pinned amd64 build container' >&2; exit 1;; esac
-IMAGE=$(bash "$REPO/build-env/from.sh" --arch=amd64 --ref LOCAL_MICA_BUILD_RUST_CHECK)
+IMAGE=$(bash "$REPO/scripts/build/from.sh" --arch=amd64 --ref IMAGE_MICA_BUILD_RUST)
 HOST_REPO=$REPO
 case "$REPO" in /root/*) HOST_REPO="/srv/station/root/${REPO#/root/}";; /work/*) HOST_REPO="/srv/station/work/${REPO#/work/}";; esac
+docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull --quiet "$IMAGE" >/dev/null
 docker image inspect --format '{{.Id}}' "$IMAGE"
 # The target directory is this suite's own; the crate cache is the one every
 # other cargo run in this repository fills (scripts/gate/rust-gate.sh, scripts/build/build-deb.sh),

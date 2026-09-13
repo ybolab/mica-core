@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The pool version, in one place, for every producer in the repository.
 #
-#   bash build-env/deb/version.sh
+#   bash scripts/deb/version.sh
 #   -> 0.1.0+git9671c7cf2d4d-1          a clean tree
 #   -> 0.1.0+git9671c7cf2d4d.dirty-1    a tree with uncommitted changes
 #
@@ -14,13 +14,13 @@ REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 VERSION_FILE="${REPO_ROOT}/VERSION"
 for p in "${REPO_ROOT}/Makefile" "${VERSION_FILE}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. build-env/deb/version.sh derives the repository as two levels above itself and reads its VERSION file; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. scripts/deb/version.sh derives the repository as two levels above itself and reads its VERSION file; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
 
 [ "$#" -eq 0 ] || {
-    echo "usage: bash build-env/deb/version.sh    (no arguments; there is one pool and it has one version)" >&2
+    echo "usage: bash scripts/deb/version.sh    (no arguments; there is one pool and it has one version)" >&2
     exit 1
 }
 

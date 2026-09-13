@@ -5,25 +5,24 @@
 # mica-deploy and mica-lifecycle. Heavy lifting stays in the scripts;
 # this file only routes.
 
-# THE SOURCE DEPENDENCY, before anything else: build-env/ (mica-build-env) is
-# the substrate every target reaches through. It is fetched at its pin
-# (deps/sources/mica-build-env.json) by tools/deps.sh and is gitignored, so a
-# fresh clone has none. `make deps` is the one target that may run without it.
+# THE RELEASE PIN, before anything else: build-env/ holds the mica-build-env
+# release every image reference resolves through (build-env/images.env). It is
+# fetched and verified at its pin (deps/build-env.json) by
+# scripts/build/build-env.sh and is gitignored, so a fresh clone has none.
+# `make deps` is the one target that may run without it.
 ifeq ($(filter deps,$(MAKECMDGOALS)),)
-ifeq ($(wildcard build-env/from.sh),)
-$(error build-env/ is empty: the build substrate is fetched at its pin from ybolab/mica-build-env. Run: make deps)
+ifeq ($(wildcard build-env/images.env),)
+$(error build-env/ is empty: the mica-build-env release is fetched at its pin. Run: make deps)
 endif
 endif
 
 MICA_ARCH ?= arm64
 
-.PHONY: help deps deps-check deps-bump build-env rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults deb pool package-gate preflight publish lint check
+.PHONY: help deps deps-check rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults deb pool package-gate preflight publish lint check
 
 help:
-	@echo "  deps                fetch build-env/ at its pin (deps/sources/); deps-check reads without downloading"
-	@echo "  deps-bump           rewrite the pin from the newest source artifact (DEP_TAG=build-<commit12> picks one)"
-	@echo "  build-env           the builder images, from the pins in build-env/images.env"
-	@echo "  rust-gate           scripts/build/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
+	@echo "  deps                fetch and verify the mica-build-env release at its pin (deps/build-env.json) into build-env/; deps-check verifies build-env/ without the network"
+	@echo "  rust-gate           scripts/build/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned IMAGE_MICA_BUILD_RUST"
 	@echo "  dbus-policy-test    prove the shipped micad D-Bus policy is root-only against a real dbus-daemon (needs dbus-daemon on the host)"
 	@echo "  apid-ui-build-contract-test  the built-in SPA builds as ignored production assets in the pinned Bun image"
 	@echo "  deb                 every producer for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
@@ -36,14 +35,9 @@ help:
 	@echo "  check               everything that runs from the pinned images: lint, apid-ui-build-contract-test, rust-gate, boot-shutdown-test, file-transaction-faults"
 
 deps:
-	bash tools/deps.sh fetch
+	bash scripts/build/build-env.sh fetch
 deps-check:
-	bash tools/deps.sh fetch --check
-deps-bump:
-	bash tools/deps.sh bump mica-build-env $(if $(DEP_TAG),--tag "$(DEP_TAG)")
-
-build-env:
-	bash build-env/build.sh
+	bash scripts/build/build-env.sh check
 
 rust-gate:
 	bash scripts/gate/rust-gate.sh
@@ -62,37 +56,37 @@ apid-ui-build-contract-test:
 	bash crates/mica-apid/ui/run.sh
 
 preflight:
-	bash build-env/deb/preflight.sh
+	bash scripts/deb/preflight.sh
 
 deb: preflight
-	bash build-env/deb/build.sh --producer micad --arch $(MICA_ARCH)
-	bash build-env/deb/build.sh --producer apid --arch $(MICA_ARCH)
-	bash build-env/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
-	bash build-env/deb/build.sh --producer sftp --arch $(MICA_ARCH)
-	bash build-env/deb/build.sh --producer deploy --arch $(MICA_ARCH)
-	bash build-env/deb/build.sh --producer lifecycle --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer micad --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer apid --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer sftp --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer deploy --arch $(MICA_ARCH)
+	bash scripts/deb/build.sh --producer lifecycle --arch $(MICA_ARCH)
 
 pool: preflight
-	bash build-env/deb/build.sh --producer micad --arch amd64
-	bash build-env/deb/build.sh --producer apid --arch amd64
-	bash build-env/deb/build.sh --producer mqtt --arch amd64
-	bash build-env/deb/build.sh --producer sftp --arch amd64
-	bash build-env/deb/build.sh --producer deploy --arch amd64
-	bash build-env/deb/build.sh --producer lifecycle --arch amd64
-	bash build-env/deb/build.sh --producer micad --arch arm64
-	bash build-env/deb/build.sh --producer apid --arch arm64
-	bash build-env/deb/build.sh --producer mqtt --arch arm64
-	bash build-env/deb/build.sh --producer sftp --arch arm64
-	bash build-env/deb/build.sh --producer deploy --arch arm64
-	bash build-env/deb/build.sh --producer lifecycle --arch arm64
-	bash build-env/deb/repo.sh --arch amd64
-	bash build-env/deb/repo.sh --arch arm64
+	bash scripts/deb/build.sh --producer micad --arch amd64
+	bash scripts/deb/build.sh --producer apid --arch amd64
+	bash scripts/deb/build.sh --producer mqtt --arch amd64
+	bash scripts/deb/build.sh --producer sftp --arch amd64
+	bash scripts/deb/build.sh --producer deploy --arch amd64
+	bash scripts/deb/build.sh --producer lifecycle --arch amd64
+	bash scripts/deb/build.sh --producer micad --arch arm64
+	bash scripts/deb/build.sh --producer apid --arch arm64
+	bash scripts/deb/build.sh --producer mqtt --arch arm64
+	bash scripts/deb/build.sh --producer sftp --arch arm64
+	bash scripts/deb/build.sh --producer deploy --arch arm64
+	bash scripts/deb/build.sh --producer lifecycle --arch arm64
+	bash scripts/deb/repo.sh --arch amd64
+	bash scripts/deb/repo.sh --arch arm64
 
 package-gate:
-	bash build-env/deb/package-gate.sh
+	bash scripts/deb/package-gate.sh
 
 publish:
-	bash build-env/deb/publish.sh
+	bash scripts/deb/publish.sh
 
 lint:
 	bash scripts/gate/shell-lint.sh

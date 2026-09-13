@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Rust gate: scripts/build/check.sh, UNMODIFIED, inside localhost/mica-build-rust-check
+# The Rust gate: scripts/build/check.sh, UNMODIFIED, inside IMAGE_MICA_BUILD_RUST
 # -- the VERSION agreement, `cargo fmt --all --check`, clippy at `-D warnings`,
 # nextest, doctests, `cargo deny check licenses bans advisories` and the
 # OpenAPI document against `apid --openapi`. The built-in UI is built first
@@ -12,19 +12,19 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-for p in "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/build-env/from.sh"; do
+for p in "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/build-env/images.env"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. scripts/gate/rust-gate.sh derives the repository as two levels above itself; build-env/ is the mica-build-env source pin (make deps)" >&2
+        echo "error: ${p} does not exist. scripts/gate/rust-gate.sh derives the repository as two levels above itself; build-env/images.env is the verified mica-build-env release asset (make deps)" >&2
         exit 1
     }
 done
 [ -x "${REPO_ROOT}/scripts/build/check.sh" ] || { echo "error: ${REPO_ROOT}/scripts/build/check.sh is missing or not executable; this gate runs that script and defines no gate of its own" >&2; exit 1; }
-command -v docker >/dev/null 2>&1 || { echo "error: docker is required and not on PATH; the gate runs in the pinned rust-check image" >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "error: docker is required and not on PATH; the gate runs in the pinned Rust image" >&2; exit 1; }
 
 IMAGE_ARCH=amd64
-mapfile -t FROM < <(bash "${REPO_ROOT}/build-env/from.sh" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST_CHECK=LOCAL_MICA_BUILD_RUST_CHECK)
-[ "${#FROM[@]}" -eq 2 ] || { echo "error: build-env/from.sh did not yield localhost/mica-build-rust-check:${IMAGE_ARCH} (see its message above); it is built by \`make build-env\`" >&2; exit 1; }
-IMAGE="${FROM[1]#MICA_BUILD_RUST_CHECK=}"
+mapfile -t FROM < <(bash "${REPO_ROOT}/scripts/build/from.sh" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST=IMAGE_MICA_BUILD_RUST)
+[ "${#FROM[@]}" -eq 2 ] || { echo "error: scripts/build/from.sh did not yield IMAGE_MICA_BUILD_RUST (see its message above)" >&2; exit 1; }
+IMAGE="${FROM[1]#MICA_BUILD_RUST=}"
 
 APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
 bash "${REPO_ROOT}/crates/mica-apid/ui/build.sh"
@@ -48,11 +48,11 @@ docker run --rm \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail
-        [ -f /etc/mica-build/rust-check.env ] || {
-            echo "error: this image carries no /etc/mica-build/rust-check.env, so what ran this gate cannot be read back out of it" >&2
+        [ -f /etc/mica-build/rust.env ] || {
+            echo "error: this image carries no /etc/mica-build/rust.env, so what ran this gate cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mica-build/rust-check.env
+        . /etc/mica-build/rust.env
         echo "gate: micad with rustc ${MICA_BUILD_RUSTC}, clippy ${MICA_BUILD_CLIPPY}, rustfmt ${MICA_BUILD_RUSTFMT}, nextest ${MICA_BUILD_NEXTEST}, deny ${MICA_BUILD_DENY} from ${MICA_BUILD_IMAGE}"
         bash scripts/build/check.sh
     '

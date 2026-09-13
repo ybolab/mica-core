@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish the archives this repository built as its pool artifacts.
 #
-#   bash build-env/deb/publish.sh [--pool <dir>] [--arch <amd64|arm64>]
+#   bash scripts/deb/publish.sh [--pool <dir>] [--arch <amd64|arm64>]
 #
 #   reads   <pool>/<arch>/pool/*.deb     (default pool: _out/debs, both arches)
 #   writes  <registry>/<this repository>:pool.<arch>.build-<commit12>,
@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
     --pool) POOL_ROOT="${2-}"; [ -n "${POOL_ROOT}" ] || { echo "error: --pool takes a directory" >&2; exit 1; }; shift 2 ;;
     --arch) [ -n "${2-}" ] || { echo "error: --arch takes amd64 or arm64" >&2; exit 1; }; ARCHES=("$2"); shift 2 ;;
-    *) echo "usage: bash build-env/deb/publish.sh [--pool <dir>] [--arch <amd64|arm64>]" >&2; exit 1 ;;
+    *) echo "usage: bash scripts/deb/publish.sh [--pool <dir>] [--arch <amd64|arm64>]" >&2; exit 1 ;;
     esac
 done
 for a in "${ARCHES[@]}"; do

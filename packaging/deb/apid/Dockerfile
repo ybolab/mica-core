@@ -3,7 +3,7 @@
 # The apid producer: the `mica-apid` package -- /usr/bin/mica-apid, its own
 # executable, apid.service and the committed OpenAPI document.
 #
-#   build-env/deb/build.sh --producer apid --arch <amd64|arm64>
+#   scripts/deb/build.sh --producer apid --arch <amd64|arm64>
 #
 # The shape is packaging/deb/micad/Dockerfile's: this file only STAGES and
 # PACKS; the binary was cross-compiled by this producer's PREPARE hook and
@@ -26,7 +26,7 @@ COPY --from=bin openapi.json /in/openapi.json
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
-# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+# Provenance, written into the control file by pack.sh; see scripts/deb/README.md.
 ARG MICA_DEB_SOURCE_REPO
 ARG MICA_DEB_SOURCE_COMMIT
 

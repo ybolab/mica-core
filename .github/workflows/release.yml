@@ -3,10 +3,11 @@ name: release
 # package this repository builds, both architectures -- to the one package
 # named after this repository, by this workflow's own token:
 # ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>. The assembly pins it
-# through deps/packages/. Sources are public, so `make deps` needs no token;
+# through deps/packages/. The release is public, so `make deps` needs no token;
 # publish.sh reads what it pushed back anonymously and fails while the package
-# is not public. The arm64 archives are cross-compiled by the pinned Rust
-# image and packed in the arm64 packaging image under emulation.
+# is not public. The arm64 archives are cross-compiled by the pinned
+# IMAGE_MICA_BUILD_RUST and packed in the arm64 image of IMAGE_MICA_BUILD_BASE
+# under emulation; both are public indexes of the mica-build-env release.
 on:
   push:
     branches: [main]
@@ -24,15 +25,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch the build substrate at its pin
+      - name: The mica-build-env release at its pin
         run: make deps
       - name: Emulation for the arm64 packaging image
         uses: docker/setup-qemu-action@v3
-      - name: Builder images, both architectures
-        run: |
-          set -euo pipefail
-          make build-env
-          MICA_BUILD_PLATFORM=linux/arm64 make build-env
       - name: Prepare the check container network
         run: docker network inspect traefik >/dev/null 2>&1 || docker network create --label ai-agent=true traefik
       - name: Lint, the UI build contract and the Rust gate

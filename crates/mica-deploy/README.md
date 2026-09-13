@@ -3,11 +3,10 @@
 Native boot and update tools for current signed file deployments. This workspace
 contains `mica-runkit` (reached as `init` and `shutdown`) and `mica-deploy`; it accepts no earlier
 disk, metadata or package format. It is a repository of its own, standing on
-the `mica-build-env` substrate fetched at its pin into `build-env/`:
+the `mica-build-env` release fetched and verified at its pin into `build-env/`:
 
 ```
-make deps            # build-env/ at deps/sources/mica-build-env.json
-make build-env       # the builder images
+make deps            # build-env/ at deps/build-env.json
 make check           # lint, the Rust gate, the shutdown suite, the IO fault suite
 make pool            # mica-deploy and mica-lifecycle, both architectures, indexed
 make package-gate    # the gate over that pool

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The mqtt producer's PREPARE hook: cross-compile mica-mqttd and mica-mqtt-broker's binaries, assert that
 # nothing this producer does not own was compiled with them, and leave the
-# result in MICA_DEB_STAGE for build-env/deb/build.sh to pack.
+# result in MICA_DEB_STAGE for scripts/deb/build.sh to pack.
 #
 # THE CRATE LIST LIVES HERE, per producer, because it is the one thing about
 # this producer that no key in producer.env could describe: it is an input to a

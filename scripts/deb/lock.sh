@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The lock's only writer, and its reader for every other script.
 #
-#   bash build-env/deb/lock.sh --rows [--arch <amd64|arm64>]
+#   bash scripts/deb/lock.sh --rows [--arch <amd64|arm64>]
 #       print the validated pins as rows (all, or the ones that pool holds)
-#   bash build-env/deb/lock.sh --bump <component> [--tag <build-...>] [--version <v>] [--package <p> ...]
+#   bash scripts/deb/lock.sh --bump <component> [--tag <build-...>] [--version <v>] [--package <p> ...]
 #       rewrite <component>'s rows from one of its pool artifacts and print the diff
 #
 # --bump reads the --tag artifacts (else the newest build-<commit12>, by the
@@ -23,7 +23,7 @@ COMPONENT=""
 TAG=""
 VERSION=""
 PACKAGES=()
-USAGE="usage: bash build-env/deb/lock.sh --rows [--arch <a>] | --bump <component> [--tag <build-...>] [--version <v>] [--package <p> ...]"
+USAGE="usage: bash scripts/deb/lock.sh --rows [--arch <a>] | --bump <component> [--tag <build-...>] [--version <v>] [--package <p> ...]"
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --rows) MODE=rows; shift ;;
@@ -175,7 +175,7 @@ done <"${WORK}/rows.tsv"
 if [ "${#PACKAGES[@]}" -eq 0 ]; then
     for file in "${NEW}"/*.json; do
         [ -e "${file}" ] || continue
-        [ "$(jq -r '.repository' "${file}")" != "${COMPONENT}" ] || grep -q "^$(basename "${file}" .json)	" "${WORK}/rows.tsv" || rm -f "${file}"
+        [ "$(jq -r '.repository' "${file}")" != "${COMPONENT}" ] || grep -c "^$(basename "${file}" .json)	" "${WORK}/rows.tsv" >/dev/null || rm -f "${file}"
     done
 fi
 LOCK_DIR="${NEW}" lock_rows >/dev/null

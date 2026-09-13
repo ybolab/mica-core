@@ -2,8 +2,8 @@
 # EVERY input `make os-debs` needs and does not have, reported in ONE run,
 # before any container is started.
 #
-#   bash build-env/deb/preflight.sh
-#   bash build-env/deb/preflight.sh --producer board-cx3576
+#   bash scripts/deb/preflight.sh
+#   bash scripts/deb/preflight.sh --producer board-cx3576
 #
 # It reports missing inputs; it never produces them. Producers come from
 # producers.sh, images from from.sh, and artefacts from each PREPARE hook in
@@ -13,11 +13,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-FROM_SH="${REPO_ROOT}/build-env/from.sh"
+FROM_SH="${REPO_ROOT}/scripts/build/from.sh"
 PRODUCERS_SH="${HERE}/producers.sh"
 for p in "${REPO_ROOT}/Makefile" "${FROM_SH}" "${PRODUCERS_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. build-env/deb/preflight.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. scripts/deb/preflight.sh derives the repository as two levels above itself; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -31,7 +31,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash build-env/deb/preflight.sh [--producer <name>]" >&2
+        echo "usage: bash scripts/deb/preflight.sh [--producer <name>]" >&2
         exit 1
         ;;
     esac
@@ -43,7 +43,7 @@ case "$(uname -m)" in
 x86_64) HOST_ARCH=amd64 ;;
 aarch64 | arm64) HOST_ARCH=arm64 ;;
 *)
-    echo "error: $(uname -m) is not an architecture build-env/images.env builds a mica-build-deb for, so there is no container any producer here could pack in" >&2
+    echo "error: $(uname -m) is not an architecture the IMAGE_MICA_BUILD_BASE index carries, so there is no container any producer here could pack in" >&2
     exit 1
     ;;
 esac
@@ -140,8 +140,8 @@ The hook is the producer's own half of its build: it is what produces the payloa
 the packing step copies, so without it the build stages nothing."
     fi
 
-    # The base images; every producer packs in mica-build-deb, so it is always added.
-    keys="LOCAL_MICA_BUILD_DEB"
+    # The base images; every producer packs in IMAGE_MICA_BUILD_BASE, so it is always added.
+    keys="IMAGE_MICA_BUILD_BASE"
     for entry in ${from_images}; do
         keys="${keys} ${entry#*=}"
     done

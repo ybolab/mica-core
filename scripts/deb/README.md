@@ -1,22 +1,29 @@
-# `mica-build-deb` -- the Debian package substrate
+# The Debian package scripts
 
-Six things live here, and together they are the contract every package producer
-in this repository is written against:
+This repository's own copy of the `deb/` scripts of mica-build-env v0.0.1,
+which RULES.md names as the reference implementation of its package rules.
+The packing image is the published `IMAGE_MICA_BUILD_BASE` of that release,
+pinned by digest in the verified `build-env/images.env`
+(`scripts/build/build-env.sh`); no image is built here. `fetch.sh` and
+`source.sh` were not copied: this repository imports no pool and locks no
+source, so the sections below that describe them are the reference text only.
+
+These are the contract every package producer in this repository is written
+against:
 
 | File | Runs | Produces |
 | --- | --- | --- |
-| `Dockerfile` | `make build-env` | `localhost/mica-build-deb:<arch>` |
-| `pack.sh` | inside that image, at the **target** architecture | one `.deb` |
+| `pack.sh` | inside `IMAGE_MICA_BUILD_BASE`, at the **target** architecture | one `.deb` |
 | `repo.sh` | on the host | `Packages`, `SHA256SUMS`, `manifest.txt` |
 | `producers.sh` | on the host | the producer set, discovered from the tree |
 | `build.sh` | on the host | one producer's archives, for one architecture |
 | `version.sh` | on the host | the one version the whole pool carries |
 
-The image carries `dpkg-dev` and no compiler. What a package contains is
-produced by the pinned language builders (`mica-build-c`, `mica-build-go`,
-`mica-build-rust`); this image only wraps an already-staged tree. It records
-what it resolved in `/etc/mica-build/deb.env`, which is how a producer answers
-"what packaged this".
+The image carries `dpkg-dev` and no Rust compiler. What a package contains is
+produced by the pinned language builder (`IMAGE_MICA_BUILD_RUST`); this image
+only wraps an already-staged tree. It records what it resolved in
+`/etc/mica-build/base.env`, which is how a producer answers "what packaged
+this".
 
 ## The producer convention
 
@@ -52,7 +59,7 @@ substitution, safe to source and to parse.
 | `ARCHES` | yes | `amd64`, `arm64`, or `all` -- see below |
 | `ENABLEMENT` | yes | `<package>=<count>` per package; see below |
 | `BUILD_CONTEXTS` | no | `<name>=<repo-relative path>`, passed as `--build-context` |
-| `FROM_IMAGES` | no | `<build-arg name>=<images.env key>`, resolved by `build-env/from.sh`. The packer image is always supplied; `FROM_IMAGES` declares additional bases only |
+| `FROM_IMAGES` | no | `<build-arg name>=<images.env key>`, resolved by `scripts/build/from.sh`. The packer image is always supplied; `FROM_IMAGES` declares additional bases only |
 | `BUILD_ARGS` | no | extra `<name>=<value>` build arguments |
 | `PREPARE` | no | a script in the producer directory, run on the host before the build |
 | `PREFLIGHT` | no | `1` if that hook honours `MICA_DEB_PREFLIGHT=1`; see below |
@@ -77,7 +84,7 @@ RAUC). The named key's value -- a leading `v` is stripped -- replaces the
 workspace prefix in the version, so the archive is
 `<upstream>+git<commit><dirty>-1` instead of `0.1.0+git<commit><dirty>-1`. The
 prefix says *what* is packaged and the stamp says *which commit* packaged it:
-`build-env/deb/package-gate.sh` asserts one stamp across the pool while
+`scripts/deb/package-gate.sh` asserts one stamp across the pool while
 prefixes differ per package, and `rootfs/build.sh` matches the stamp
 against the tree it composes from. Producer-scoped -- it applies to every
 package in `PACKAGES` -- so a producer must not mix an upstream repack with a
@@ -114,7 +121,7 @@ rebuilding the builder family.
 `make os-debs` builds the discovered producers in sequence and each checks its
 own inputs when its turn comes, so a missing input surfaced **after** the
 producers ahead of it had been packed, named one file, and the next one was
-learned on the next attempt. `build-env/deb/preflight.sh` runs first -- it is
+learned on the next attempt. `scripts/deb/preflight.sh` runs first -- it is
 a prerequisite of `os-debs` and the target `make os-deb-preflight` -- and
 reports all of them together: every `BUILD_CONTEXTS` path, every `PREPARE` hook
 file, every base image `FROM_IMAGES` and the packer resolve to, and whatever a
@@ -175,7 +182,7 @@ mutated until the run goes red.
 
 Create the directory. Nothing else: `make os-deb-<producer>` is a pattern rule
 resolved against `producers.sh`, `make os-debs` loops over the same list, and
-`build-env/deb/package-gate.sh` reads it too. There is no driver to register a
+`scripts/deb/package-gate.sh` reads it too. There is no driver to register a
 case in and no `Makefile` target to add.
 
 ### `ENABLEMENT` -- what the archive cannot tell you
@@ -223,11 +230,11 @@ refuse; `Provides` and `Conflicts` do nothing of the kind.
 ## `producers.sh`
 
 ```
-bash build-env/deb/producers.sh
+bash scripts/deb/producers.sh
   micad pkgs/micad/deb/micad amd64,arm64 micad,mica-apid micad=1,mica-apid=1
   mqtt pkgs/micad/deb/mqtt amd64,arm64 mica-mqttd,mica-mqtt-broker mica-mqttd=0,mica-mqtt-broker=0
 
-bash build-env/deb/producers.sh --dir-for mqtt
+bash scripts/deb/producers.sh --dir-for mqtt
   pkgs/micad/deb/mqtt
 ```
 
@@ -253,12 +260,12 @@ a build, and the gate is what enforces it.
 ## `build.sh`
 
 ```
-bash build-env/deb/build.sh --producer <name> --arch <amd64|arm64|all>
+bash scripts/deb/build.sh --producer <name> --arch <amd64|arm64|all>
 ```
 
 The one driver. It resolves the producer through `producers.sh`, reads its
 `producer.env`, runs the `PREPARE` hook, selects a buildx builder, resolves
-`FROM_IMAGES` through `build-env/from.sh`, clears this producer's own
+`FROM_IMAGES` through `scripts/build/from.sh`, clears this producer's own
 archives out of every pool it writes, runs the build and then checks what
 actually landed on disk.
 
@@ -287,7 +294,7 @@ out empty rather than short one package, and no other producer is reached.
 ## `version.sh`
 
 ```
-bash build-env/deb/version.sh
+bash scripts/deb/version.sh
   0.1.0+git9671c7cf2d4d-1          a clean tree
   0.1.0+git9671c7cf2d4d.dirty-1    a tree with uncommitted changes
 ```
@@ -356,7 +363,7 @@ COPY --from=packer pack.sh /usr/local/bin/pack.sh
 ```
 
 ```
-docker buildx build --build-context packer=build-env/deb ...
+docker buildx build --build-context packer=scripts/deb ...
 ```
 
 ### `SOURCE_DATE_EPOCH`
@@ -462,7 +469,7 @@ Description: mos D-Bus to MQTT application bridge
 ## `repo.sh`
 
 ```
-bash build-env/deb/repo.sh --arch <amd64|arm64>
+bash scripts/deb/repo.sh --arch <amd64|arm64>
 ```
 
 Reads `_out/debs/<arch>/pool/*.deb` and writes, beside the pool:
@@ -492,7 +499,7 @@ version, `SHA256SUMS` and `manifest.txt` are sorted by filename, and no
 timestamp is written beyond what the archives already carry.
 
 The host has no `dpkg`, so the work happens in a container. `repo.sh` runs the
-**host** architecture's `mica-build-deb`, not `--arch`'s: reading control fields
+**host** architecture's image, not `--arch`'s: reading control fields
 and hashing bytes is architecture-neutral, and a host with no binfmt
 registration cannot execute a foreign-architecture image at all -- which would
 leave the `arm64` pool unindexable on the machine that just produced it.
@@ -509,7 +516,7 @@ the pool artifact of the repository that built it. Anything else -- an
 archive no producer emits and no pin names, a pinned archive at another
 digest, a built-here archive at another stamp -- is refused by name. The rule
 is implemented once, in `rootfs/runtime/source-lineage.py`; `rootfs/build.sh`,
-`build-env/deb/package-gate.sh` and `build/src/release-manifest.ts` apply it
+`scripts/deb/package-gate.sh` and `build/src/release-manifest.ts` apply it
 to the pool, the gate and the release respectively.
 
 A pin is one JSON file per package, in the shape of the Debian pins under
@@ -581,7 +588,7 @@ packages named:
 cd /srv/ybolab/mica/micad
 MICA_POOL_DIR=/srv/ybolab/mica/mica/_out/debs make os-debs   # dirty stamp, into the assembly's pool
 cd /srv/ybolab/mica/mica
-bash build-env/deb/repo.sh --arch amd64
+bash scripts/deb/repo.sh --arch amd64
 MICA_POOL_UNLOCKED="micad mica-apid" MICA_BOARD=x64 bash rootfs/build.sh
 ```
 

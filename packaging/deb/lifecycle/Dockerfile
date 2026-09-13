@@ -12,7 +12,7 @@ COPY --from=bin mica-runkit /in/
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
-# Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
+# Provenance, written into the control file by pack.sh; see scripts/deb/README.md.
 ARG MICA_DEB_SOURCE_REPO
 ARG MICA_DEB_SOURCE_COMMIT
 

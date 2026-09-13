@@ -2,9 +2,9 @@ target/
 target-deb/
 _out/
 
-# The build substrate, fetched at its pin by tools/deps.sh from the releases
-# of ybolab/mica-build-env (deps/sources/mica-build-env.json); never edited
-# in place, never committed here.
+# The mica-build-env release, fetched and verified at its pin
+# (deps/build-env.json) by scripts/build/build-env.sh; never edited in place,
+# never committed here.
 /build-env/
 
 # Repository-local scratch the packaging driver bind-mounts into containers,

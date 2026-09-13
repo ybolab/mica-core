@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-13 22:40 [progress]
+
+Built on the mica-build-env v0.0.1 release (`20260913-2200-build-env-release-v0.0.1`).
+`deps/build-env.json` pins the version and the sha256 of its `SHA256SUMS`;
+`make deps` (`scripts/build/build-env.sh`) downloads the release assets and
+refuses them unless both hashes match. The Rust gate, the builds, the
+boot/shutdown and IO fault suites run in the published `IMAGE_MICA_BUILD_RUST`,
+the UI build and the packing in `IMAGE_MICA_BUILD_BASE`, both by digest; no
+`LOCAL_MICA_BUILD_*` image is built or named. The scripts that run are this
+repository's own copies of the release reference implementation
+(`scripts/build/from.sh`, `scripts/deb/`); `tools/deps.sh` and the source pin
+are gone, and CI no longer builds images. The independent mica-apid upgrade
+is a proposal only (`docs/plan/20260913-2230-independent-apid-upgrade.md`).
+Not yet published.
+
 ## 2026-09-13 21:20 [progress]
 
 mica-apid is its own executable and producer; micad no longer carries apid.
