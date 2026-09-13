@@ -1,7 +1,8 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: mos
 Comment: One copyright file for every package this producer family emits --
- micad, mica-apid, mica-mqttd and mica-mqtt-broker -- installed per package as
+ micad, mica-apid, mica-mqttd, mica-mqtt-broker, mica-sftp-server, mica-deploy
+ and mica-lifecycle -- installed per package as
  /usr/share/doc/<package>/copyright so that no two packages own one path.
  .
  The statically linked Rust dependencies of those binaries are not an open

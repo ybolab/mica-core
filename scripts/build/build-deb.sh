@@ -81,7 +81,7 @@ for b in ${BINS}; do BINARIES+=("${b}"); done
 # its prepare.sh, and the complement is what the independence assertion looks
 # for -- so a fifth binary added here is checked without any producer being
 # edited.
-ALL_BINARIES=(micad apid mica-mqttd mica-mqtt-broker mica-mqtt-reference mica-sftp-server)
+ALL_BINARIES=(micad apid mica-mqttd mica-mqtt-broker mica-mqtt-reference mica-sftp-server mica-deploy mica-runkit)
 
 # A crate this workspace does not build would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never
@@ -144,6 +144,16 @@ MICA_BUILD_COMMIT="${MICA_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
 # producer never asked for. Gitignored through .gitignore.
 TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
 RELEASE_DIR="${TARGET_DIR}/${TRIPLE}/release"
+# mica-runkit is the one static executable (init and shutdown of the kernel's
+# early userspace), built into its own target directory so its static
+# rustflags never reach a dynamic binary's cache.
+release_binary() {
+    if [ "$1" = mica-runkit ]; then
+        printf '%s/runkit-static/%s/release/%s\n' "${TARGET_DIR}" "${TRIPLE}" "$1"
+    else
+        printf '%s/%s\n' "${RELEASE_DIR}" "$1"
+    fi
+}
 
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${TARGET_DIR}"
@@ -206,11 +216,38 @@ docker run --rm \
         # --locked makes Cargo.lock the decision and refuses a build that would
         # quietly update it.
         bins=""
-        for b in ${BINS}; do bins="${bins} --bin ${b}"; done
-        # shellcheck disable=SC2086
-        cargo build --release --locked --target "${TARGET}" ${bins}
+        for b in ${BINS}; do
+            [ "${b}" = mica-runkit ] || bins="${bins} --bin ${b}"
+        done
+        if [ -n "${bins}" ]; then
+            # shellcheck disable=SC2086
+            cargo build --release --locked --target "${TARGET}" ${bins}
+        fi
         for name in ${BINS}; do
-            bin="${CARGO_TARGET_DIR}/${TARGET}/release/${name}"
+            if [ "${name}" = mica-runkit ]; then
+                # The GNU static route, for this binary only: target-specific
+                # rustflags leave host build scripts and every other binary
+                # dynamic, and the separate target directory keeps the caches
+                # apart.
+                env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
+                    CARGO_TARGET_DIR="${CARGO_TARGET_DIR}/runkit-static" \
+                    cargo build --release --locked --target "${TARGET}" --bin "${name}" \
+                    --config "target.${TARGET}.rustflags=[\"-C\",\"target-feature=+crt-static\",\"-C\",\"strip=symbols\"]"
+                bin="${CARGO_TARGET_DIR}/runkit-static/${TARGET}/release/${name}"
+                # A flag is not proof. GNU x64 static PIE has a dynamic
+                # relocation section, which is permitted only without
+                # DT_NEEDED, RPATH/RUNPATH and PT_INTERP.
+                readelf -W -l "${bin}" > "${bin}.program-headers"
+                readelf -W -d "${bin}" > "${bin}.dynamic"
+                if grep -Ec "^[[:space:]]*INTERP[[:space:]]" "${bin}.program-headers" >/dev/null \
+                    || grep -Ec "\(NEEDED\)|\(RPATH\)|\(RUNPATH\)" "${bin}.dynamic" >/dev/null; then
+                    echo "error: ${name} is not a standalone static ELF" >&2
+                    exit 1
+                fi
+                sha256sum "${bin}" Cargo.lock
+            else
+                bin="${CARGO_TARGET_DIR}/${TARGET}/release/${name}"
+            fi
             [ -f "${bin}" ] || { echo "error: ${name} was not produced by the build" >&2; exit 1; }
             got="$(file -b "${bin}")"
             case "${got}" in
@@ -225,13 +262,13 @@ docker run --rm \
 # scan below would pass over a directory the build never wrote -- an "is absent"
 # assertion over an empty tree reports green forever.
 for name in "${BINARIES[@]}"; do
-    [ -f "${RELEASE_DIR}/${name}" ] || {
-        echo "error: ${RELEASE_DIR}/${name} does not exist after the build. The compile reported success, so this is the export or the target directory and not the compiler" >&2
+    [ -f "$(release_binary "${name}")" ] || {
+        echo "error: $(release_binary "${name}") does not exist after the build. The compile reported success, so this is the export or the target directory and not the compiler" >&2
         exit 1
     }
 done
 
-# INDEPENDENCE, asserted rather than described. `cargo build -p micad` is
+# INDEPENDENCE, asserted rather than described. `cargo build --bin micad` is
 # the intent; this is the evidence, and it is what a later gate can point at. A
 # binary here means the producer boundary leaked -- a stale target directory
 # reused, or a -p list that grew.
@@ -251,7 +288,7 @@ echo "build-deb: ${TARGET_DIR} holds ${BINARIES[*]} and none of ${EXCLUDED[*]}"
 # directory is gigabytes of intermediates, and buildx would walk all of it to
 # find two files.
 for name in "${BINARIES[@]}"; do
-    cp "${RELEASE_DIR}/${name}" "${STAGE}/${name}"
+    cp "$(release_binary "${name}")" "${STAGE}/${name}"
 done
 echo "build-deb: staged ${BINARIES[*]} into ${STAGE}"
 

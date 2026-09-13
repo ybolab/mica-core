@@ -1,7 +1,8 @@
 # mica-core: micad, the management daemon of Mica OS, and what ships beside it --
-# apid with its built-in UI, mica-mqttd, mica-mqtt-broker and the sftp-server
-# dropbear runs -- packed as the Debian packages micad, mica-apid, mica-mqttd,
-# mica-mqtt-broker and mica-sftp-server. Heavy lifting stays in the scripts;
+# apid with its built-in UI, mica-mqttd, mica-mqtt-broker, the sftp-server
+# dropbear runs, mica-deploy and the static mica-runkit -- packed as the Debian
+# packages micad, mica-apid, mica-mqttd, mica-mqtt-broker, mica-sftp-server,
+# mica-deploy and mica-lifecycle. Heavy lifting stays in the scripts;
 # this file only routes.
 
 # THE SOURCE DEPENDENCY, before anything else: build-env/ (mica-build-env) is
@@ -16,7 +17,7 @@ endif
 
 MICA_ARCH ?= arm64
 
-.PHONY: help deps deps-check deps-bump build-env rust-gate dbus-policy-test apid-ui-build-contract-test deb pool package-gate preflight publish lint check
+.PHONY: help deps deps-check deps-bump build-env rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults deb pool package-gate preflight publish lint check
 
 help:
 	@echo "  deps                fetch build-env/ at its pin (deps/sources/); deps-check reads without downloading"
@@ -30,7 +31,9 @@ help:
 	@echo "  package-gate        the package gate over this repository's pool"
 	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (CI publishes; a developer machine does not)"
 	@echo "  lint                shell hygiene of the tree"
-	@echo "  check               everything that runs from the pinned images: lint, apid-ui-build-contract-test, rust-gate"
+	@echo "  boot-shutdown-test  the native shutdown suite and the UAPI translation unit (BOOT_SHUTDOWN_ARM_ABI=1 adds the aarch64 compiler)"
+	@echo "  file-transaction-faults  mica-deploy's transaction code, interrupted before and after each observed IO"
+	@echo "  check               everything that runs from the pinned images: lint, apid-ui-build-contract-test, rust-gate, boot-shutdown-test, file-transaction-faults"
 
 deps:
 	bash tools/deps.sh fetch
@@ -48,6 +51,12 @@ rust-gate:
 dbus-policy-test:
 	bash scripts/gate/dbus-policy-test.sh
 
+boot-shutdown-test:
+	bash scripts/gate/boot-shutdown-test.sh $(if $(BOOT_SHUTDOWN_ARM_ABI),--arm-abi)
+
+file-transaction-faults:
+	bash scripts/gate/file-ab-faults/run.sh
+
 apid-ui-build-contract-test:
 	bash scripts/gate/apid-ui-build-contract-test.sh
 	bash crates/mica-apid/ui/run.sh
@@ -59,14 +68,20 @@ deb: preflight
 	bash build-env/deb/build.sh --producer micad --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer sftp --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer deploy --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer lifecycle --arch $(MICA_ARCH)
 
 pool: preflight
 	bash build-env/deb/build.sh --producer micad --arch amd64
 	bash build-env/deb/build.sh --producer mqtt --arch amd64
 	bash build-env/deb/build.sh --producer sftp --arch amd64
+	bash build-env/deb/build.sh --producer deploy --arch amd64
+	bash build-env/deb/build.sh --producer lifecycle --arch amd64
 	bash build-env/deb/build.sh --producer micad --arch arm64
 	bash build-env/deb/build.sh --producer mqtt --arch arm64
 	bash build-env/deb/build.sh --producer sftp --arch arm64
+	bash build-env/deb/build.sh --producer deploy --arch arm64
+	bash build-env/deb/build.sh --producer lifecycle --arch arm64
 	bash build-env/deb/repo.sh --arch amd64
 	bash build-env/deb/repo.sh --arch arm64
 
@@ -79,4 +94,4 @@ publish:
 lint:
 	bash scripts/gate/shell-lint.sh
 
-check: lint apid-ui-build-contract-test rust-gate
+check: lint apid-ui-build-contract-test rust-gate boot-shutdown-test file-transaction-faults

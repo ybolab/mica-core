@@ -1,7 +1,7 @@
 # The lifecycle producer: mica-runkit, static, packed as mica-lifecycle. Same
-# shape as deb/deploy/Dockerfile; the binary arrives through the `bin`
+# shape as packaging/deb/deploy/Dockerfile; the binary arrives through the `bin`
 # context prepare.sh staged, already proven static and of
-# this architecture by hack/build-deb.sh.
+# this architecture by scripts/build/build-deb.sh.
 ARG MICA_BUILD_DEB
 FROM ${MICA_BUILD_DEB} AS pack
 COPY --from=packer pack.sh /usr/local/bin/pack.sh

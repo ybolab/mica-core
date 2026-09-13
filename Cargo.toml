@@ -66,7 +66,7 @@ axum-server = { version = "0.7", default-features = false, features = ["tls-rust
 # advisory (RUSTSEC-2024-0436) that `deny.toml` makes an error. `context_path`
 # composes the same document without it.
 utoipa = "5.5"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 argon2 = "0.5"
 bcrypt = "0.19"

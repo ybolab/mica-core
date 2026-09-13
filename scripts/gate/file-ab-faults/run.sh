@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the actual native transactions with faults at every observed IO boundary.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 command -v docker >/dev/null
 image=$(bash build-env/from.sh --arch=amd64 --ref LOCAL_MICA_BUILD_RUST_CHECK)
 work=$(mktemp -d "$PWD/_out/io-faults.XXXXXX")
@@ -15,10 +15,10 @@ docker run --rm --label ai-agent=true --network traefik \
     -v "$PWD/_out/cargo/git:/usr/local/cargo/git" \
     -w /src -e CARGO_TARGET_DIR=/target --entrypoint /bin/bash "$image" -ceu '
     command -v cc
-    cc -std=c11 -Wall -Wextra -Werror -shared -fPIC /src/gate/file-ab-faults/io-fault.c -ldl -o /evidence/io-fault.so
+    cc -std=c11 -Wall -Wextra -Werror -shared -fPIC /src/scripts/gate/file-ab-faults/io-fault.c -ldl -o /evidence/io-fault.so
     export MICA_TEST_FAULT_SHIM=/evidence/io-fault.so
     export MICA_TEST_FAULT_EVIDENCE=/evidence
-    cargo test --locked --test io_faults -- --ignored --test-threads=1 --nocapture
+    cargo test --locked -p mica-deploy --test io_faults -- --ignored --test-threads=1 --nocapture
     '
 # mica-build-side: host
 echo "IO fault evidence: $work"
