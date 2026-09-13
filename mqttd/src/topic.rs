@@ -43,8 +43,8 @@ impl Application {
     pub(crate) fn from_enrollment(bus_name: &str) -> anyhow::Result<Self> {
         zbus::names::WellKnownName::try_from(bus_name)
             .map_err(|error| anyhow::anyhow!("not a valid D-Bus service name: {error}"))?;
-        let parsed = mos_busname::parse(bus_name)
-            .ok_or_else(|| anyhow::anyhow!("not a com.mos.<class>[.<suffix>] service name"))?;
+        let parsed = mica_busname::parse(bus_name)
+            .ok_or_else(|| anyhow::anyhow!("not a com.mica.<class>[.<suffix>] service name"))?;
         if !valid_topic_segment(parsed.class) {
             anyhow::bail!("class is not a safe MQTT topic segment");
         }
@@ -68,7 +68,7 @@ impl Application {
 /// The three topic segments between the verb and the item path.
 ///
 /// `class` is the admitted application's class: the third component of
-/// `com.mos.<class>[.<suffix>]`. `instance` is the service's
+/// `com.mica.<class>[.<suffix>]`. `instance` is the service's
 /// `/DeviceInstance`, or `0` when a non-conforming application omits one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
@@ -192,14 +192,14 @@ pub fn valid_item_path(path: &str) -> bool {
     zbus::zvariant::ObjectPath::try_from(path).is_ok()
 }
 
-/// The `class` a `com.mos.*` bus name declares, or `None` when the name is not
-/// one: the third component of `com.mos.<class>[.<suffix>]`.
+/// The `class` a `com.mica.*` bus name declares, or `None` when the name is not
+/// one: the third component of `com.mica.<class>[.<suffix>]`.
 ///
-/// The rule itself lives in [`mos_busname`] and only there. mosd's service
+/// The rule itself lives in [`mica_busname`] and only there. micad's service
 /// registry derives the same class from the same names, and a second copy
 /// here would be a second rule that could classify a service differently.
 pub fn class_of(bus_name: &str) -> Option<&str> {
-    mos_busname::parse(bus_name).map(|name| name.class)
+    mica_busname::parse(bus_name).map(|name| name.class)
 }
 
 /// The `/DeviceInstance` an item map declares, or `0` when it declares none.

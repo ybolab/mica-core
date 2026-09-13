@@ -1,4 +1,4 @@
-//! Minimal async facade over the mosd settings/state API.
+//! Minimal async facade over the micad settings/state API.
 //!
 //! Handlers depend on this trait so tests can substitute an in-memory fake
 //! for the D-Bus client.
@@ -18,14 +18,14 @@ impl std::fmt::Display for TaskNotFound {
 
 impl std::error::Error for TaskNotFound {}
 
-/// mosd answered a task read, but the payload did not match the public task
+/// micad answered a task read, but the payload did not match the public task
 /// record. This is a daemon-side 500, distinct from a transport outage.
 #[derive(Debug)]
 pub struct InvalidTaskPayload(pub serde_json::Error);
 
 impl std::fmt::Display for InvalidTaskPayload {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "invalid task payload from mosd: {}", self.0)
+        write!(formatter, "invalid task payload from micad: {}", self.0)
     }
 }
 
@@ -35,9 +35,9 @@ impl std::error::Error for InvalidTaskPayload {
     }
 }
 
-/// The mosd operations apid needs, JSON in and out.
+/// The micad operations apid needs, JSON in and out.
 ///
-/// The power actions are here rather than executed locally because mosd owns
+/// The power actions are here rather than executed locally because micad owns
 /// every system action: apid never spawns a process and never talks to
 /// systemd itself.
 #[async_trait::async_trait]
@@ -58,10 +58,10 @@ pub trait SettingsApi: Send + Sync {
         self.get_state("network").await
     }
     /// Time-synchronization status observed from timesyncd, classified by
-    /// mosd. Read-only: there is deliberately no method beside it that could
+    /// micad. Read-only: there is deliberately no method beside it that could
     /// pause or stop synchronization.
     async fn get_time_status(&self) -> anyhow::Result<Value>;
-    /// Storage status observed by mosd: the fixed tiers, their space and
+    /// Storage status observed by micad: the fixed tiers, their space and
     /// check evidence, the physical media and the low-space policy.
     ///
     /// Read-only, and deliberately alone: there is no method here that
@@ -69,11 +69,11 @@ pub trait SettingsApi: Send + Sync {
     /// by the image assembler and a management API that could rewrite it
     /// would be a remote destructive surface with no product use.
     async fn get_storage_status(&self) -> anyhow::Result<Value>;
-    /// The system-information surface mosd assembles (PLAN-052): machine id,
+    /// The system-information surface micad assembles (PLAN-052): machine id,
     /// board, kernel, release, image version with git stamp and build date,
     /// installed packages, booted slot and uptime. Read-only.
     async fn get_system_info(&self) -> anyhow::Result<Value>;
-    /// Board telemetry observed by mosd (PLAN-052): thermal, watchdog and
+    /// Board telemetry observed by micad (PLAN-052): thermal, watchdog and
     /// reset reason, absence explicit. Read-only.
     async fn get_telemetry(&self) -> anyhow::Result<Value>;
     /// The OBSERVED network state (PLAN-052): link/carrier, addresses, DHCP
@@ -82,13 +82,13 @@ pub trait SettingsApi: Send + Sync {
     /// view and from the desired `network` settings. Read-only.
     async fn get_observed_network(&self) -> anyhow::Result<Value>;
     /// Failure evidence for the diagnostic snapshot (PLAN-052): failed units
-    /// and a bounded journal excerpt, bounded by mosd. Read-only.
+    /// and a bounded journal excerpt, bounded by micad. Read-only.
     async fn get_failure_evidence(&self) -> anyhow::Result<Value>;
-    /// Ask mosd to reboot the appliance.
+    /// Ask micad to reboot the appliance.
     async fn reboot(&self) -> anyhow::Result<()>;
-    /// Ask mosd to power the appliance off.
+    /// Ask micad to power the appliance off.
     async fn power_off(&self) -> anyhow::Result<()>;
-    /// Ask mosd to set a TRANSIENT root password, cleared on the next boot.
+    /// Ask micad to set a TRANSIENT root password, cleared on the next boot.
     ///
     /// Deliberately not a `set_settings` call: a password that reached the
     /// settings tree would be persisted, re-applied on the next boot and
@@ -99,17 +99,17 @@ pub trait SettingsApi: Send + Sync {
     ///
     /// Deliberately not a `set_settings` call, and for a stronger reason than
     /// the transient password's: the settings tree holds no key to write. The
-    /// private half never leaves mosd and there is no accessor that returns
+    /// private half never leaves micad and there is no accessor that returns
     /// one, so the only thing this call can hand back is the public half.
     async fn rotate_wireguard_key(&self, iface: &str) -> anyhow::Result<String>;
-    /// The complete update state (`GetUpdateState`): mosd reads native deployment records and
+    /// The complete update state (`GetUpdateState`): micad reads native deployment records and
     /// re-derives the lifecycle before answering, so this is never stale.
     async fn get_update_state(&self) -> anyhow::Result<Value>;
-    /// Ask mosd to run an update metadata check on a background task.
+    /// Ask micad to run an update metadata check on a background task.
     async fn check_update(&self) -> anyhow::Result<()>;
-    /// Ask mosd to download the selected deployment objects on a background task.
+    /// Ask micad to download the selected deployment objects on a background task.
     async fn fetch_update(&self) -> anyhow::Result<()>;
-    /// Ask mosd to install a verified deployment by its authenticated ID.
+    /// Ask micad to install a verified deployment by its authenticated ID.
     /// Background progress lands in the update state.
     async fn install_update(&self, deployment_id: &str) -> anyhow::Result<()>;
     async fn confirm_deployment(&self, deployment_id: &str) -> anyhow::Result<()>;
@@ -119,10 +119,10 @@ pub trait SettingsApi: Send + Sync {
     /// recorded override.
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
 
-    /// Ask mosd to merge `patch` into `/mos/config/updates.json` and write
+    /// Ask micad to merge `patch` into `/mos/config/updates.json` and write
     /// it; answers the document as saved.
     ///
-    /// Deliberately not a file apid opens. mosd owns that document and is its
+    /// Deliberately not a file apid opens. micad owns that document and is its
     /// only writer (PLAN-070 §5.2.7, PLAN-071 §3), so one fact has one writer
     /// all the way down to the filesystem — and the validation that decides
     /// what may be written is the same code the reader runs, in the same
@@ -157,19 +157,19 @@ struct AccessHold {
 pub struct FakeSettings {
     tree: std::sync::Mutex<Value>,
     state: std::sync::Mutex<Value>,
-    /// What `get_time_status` answers; the shape mosd's `status_json` serves.
+    /// What `get_time_status` answers; the shape micad's `status_json` serves.
     time_status: std::sync::Mutex<Value>,
-    /// What `get_storage_status` answers; the shape mosd's storage
+    /// What `get_storage_status` answers; the shape micad's storage
     /// `status_json` serves.
     storage_status: std::sync::Mutex<Value>,
-    /// What `get_system_info` answers; the shape mosd's `info_json` serves.
+    /// What `get_system_info` answers; the shape micad's `info_json` serves.
     system_info: std::sync::Mutex<Value>,
-    /// What `get_telemetry` answers; the shape mosd's `telemetry_json` serves.
+    /// What `get_telemetry` answers; the shape micad's `telemetry_json` serves.
     telemetry: std::sync::Mutex<Value>,
-    /// What `get_observed_network` answers; the shape mosd's `observed_json`
+    /// What `get_observed_network` answers; the shape micad's `observed_json`
     /// serves.
     observed_network: std::sync::Mutex<Value>,
-    /// What `get_failure_evidence` answers; the shape mosd's failure
+    /// What `get_failure_evidence` answers; the shape micad's failure
     /// evidence serves.
     failure_evidence: std::sync::Mutex<Value>,
     /// When set, every PLAN-052 diagnostic read sleeps this long before
@@ -199,7 +199,7 @@ pub struct FakeSettings {
     update_log: std::sync::Mutex<Vec<String>>,
     /// When set, every update action fails with a `zbus` `MethodError` of
     /// this fdo name and message — how a route test provokes the 409/422
-    /// mappings the real mosd produces.
+    /// mappings the real micad produces.
     update_refusal: std::sync::Mutex<Option<(&'static str, String)>>,
     /// When armed, the first reads of the `access` subtree rendezvous before
     /// they are answered. See [`AccessHold`].
@@ -232,7 +232,7 @@ impl FakeSettings {
                 "kernel": { "available": true, "release": "6.1.0-fake", "version": "#1" },
                 "release": { "available": false, "detail": "fake" },
                 "system": { "available": false, "detail": "fake" },
-                "daemon": { "name": "mosd", "version": "0.1.0", "commit": null },
+                "daemon": { "name": "micad", "version": "0.1.0", "commit": null },
                 "packages": { "available": false, "detail": "fake" },
                 "slot": { "available": false, "detail": "fake" },
                 "uptime": { "available": true, "seconds": 7 },
@@ -278,7 +278,7 @@ impl FakeSettings {
         self.update_log.lock().unwrap().clone()
     }
 
-    /// Make every subsequent update action fail as mosd would: a bus
+    /// Make every subsequent update action fail as micad would: a bus
     /// `MethodError` under fdo `name` carrying `message`.
     pub fn refuse_updates(&self, name: &'static str, message: &str) {
         *self.update_refusal.lock().unwrap() = Some((name, message.to_string()));
@@ -288,7 +288,7 @@ impl FakeSettings {
     fn update_call(&self, call: &str) -> anyhow::Result<()> {
         self.update_log.lock().unwrap().push(call.to_string());
         if let Some((name, message)) = self.update_refusal.lock().unwrap().clone() {
-            let reply_to = zbus::message::Message::method_call("/com/mos/mosd", "CheckUpdate")
+            let reply_to = zbus::message::Message::method_call("/com/mos/micad", "CheckUpdate")
                 .expect("a well-formed method call")
                 .build(&())
                 .expect("an empty body serialises");
@@ -443,13 +443,13 @@ impl FakeSettings {
 
 /// Split `path` the way the real store splits it.
 ///
-/// [`mosd_settings::path_segments`] and not `str::split('.')`: a quoted
+/// [`micad_settings::path_segments`] and not `str::split('.')`: a quoted
 /// segment carries a dot as an ordinary character, so a fake that split
 /// unconditionally would put a VLAN write at the two keys `"eth0` and `100"`
 /// and let a route test assert the write "arrived".
 #[cfg(test)]
 fn fake_segments(path: &str) -> anyhow::Result<Vec<String>> {
-    mosd_settings::path_segments(path).ok_or_else(|| anyhow::anyhow!("malformed path: `{path}`"))
+    micad_settings::path_segments(path).ok_or_else(|| anyhow::anyhow!("malformed path: `{path}`"))
 }
 
 #[cfg(test)]
@@ -580,7 +580,7 @@ impl SettingsApi for FakeSettings {
         // A distinct answer per call, so a test can tell a fresh rotation from
         // a cached one. Base64 of 32 bytes, the shape a real public key has.
         let count = self.rotations.lock().unwrap().len();
-        let public_key = mosd_settings::encode_base64_nopad(&[count as u8; 32]);
+        let public_key = micad_settings::encode_base64_nopad(&[count as u8; 32]);
         self.rotations
             .lock()
             .unwrap()
@@ -591,7 +591,7 @@ impl SettingsApi for FakeSettings {
     async fn get_update_state(&self) -> anyhow::Result<Value> {
         // The fake's "refreshed" state is whatever the test seeded under the
         // live-state `update` key — the route's job is transport, not
-        // derivation, which mosd's own tests own.
+        // derivation, which micad's own tests own.
         self.update_log
             .lock()
             .unwrap()
@@ -634,7 +634,7 @@ impl SettingsApi for FakeSettings {
     async fn set_update_config(&self, patch: &Value) -> anyhow::Result<Value> {
         self.update_call(&format!("config {patch}"))?;
         // The patch echoed as the document, which is what merging it over an
-        // empty one produces. The merge itself is mosd's and is tested there:
+        // empty one produces. The merge itself is micad's and is tested there:
         // this route's job is the transport, the authority and the audit, and
         // a fake that re-implemented the precedence would be a second answer
         // to a question the library already answers once.

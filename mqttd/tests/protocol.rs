@@ -15,19 +15,19 @@ use async_trait::async_trait;
 use rumqttc::{AsyncClient, MqttOptions};
 use serde_json::{Value as Json, json};
 
-use mos_mqttd::bridge::{Bridge, Effects, Publication};
-use mos_mqttd::config::{Mode, Timings};
-use mos_mqttd::enrollment::Enrollment;
-use mos_mqttd::item::Item;
-use mos_mqttd::runtime::{ReconnectBackoff, apply};
-use mos_mqttd::source::{ItemSource, WriteOutcome};
-use mos_mqttd::topic::{self, Address, Request};
-use mos_mqttd::transport::Transport;
+use mica_mqttd::bridge::{Bridge, Effects, Publication};
+use mica_mqttd::config::{Mode, Timings};
+use mica_mqttd::enrollment::Enrollment;
+use mica_mqttd::item::Item;
+use mica_mqttd::runtime::{ReconnectBackoff, apply};
+use mica_mqttd::source::{ItemSource, WriteOutcome};
+use mica_mqttd::topic::{self, Address, Request};
+use mica_mqttd::transport::Transport;
 
 /// The device identity supplied as root-rendered runtime configuration.
 const DEVICE: &str = "abc123";
 /// One exact service enrolled by its application package.
-const APPLICATION_SERVICE: &str = "com.mos.sensor.abc123";
+const APPLICATION_SERVICE: &str = "com.mica.sensor.abc123";
 /// The class [`APPLICATION_SERVICE`] must publish under.
 const APPLICATION_CLASS: &str = "sensor";
 const CLASS: &str = APPLICATION_CLASS;
@@ -723,7 +723,7 @@ fn mqtt_topic_identity_and_item_path_inputs_are_strict() {
 #[test]
 fn multiple_applications_share_one_device_liveness_protocol() {
     let sensor = application();
-    let meter = application_named("com.mos.meter.abc123");
+    let meter = application_named("com.mica.meter.abc123");
     let mut bridge = Bridge::new(DEVICE, Mode::Full, Timings::default());
     bridge.upsert_service(
         secs(0),
@@ -773,7 +773,7 @@ fn multiple_applications_share_one_device_liveness_protocol() {
 #[test]
 fn a_class_instance_collision_fails_closed_for_publication_and_control() {
     let first = application();
-    let second = application_named("com.mos.sensor.second");
+    let second = application_named("com.mica.sensor.second");
     let items = BTreeMap::from([
         ("/DeviceInstance".to_string(), Item::new(json!(0))),
         ("/Enabled".to_string(), Item::writable(json!(true))),
@@ -798,7 +798,7 @@ fn a_class_instance_collision_fails_closed_for_publication_and_control() {
         "an ambiguous write must not reach either application"
     );
 
-    let restored = bridge.on_service_vanished(secs(5), "com.mos.sensor.second");
+    let restored = bridge.on_service_vanished(secs(5), "com.mica.sensor.second");
     assert!(
         restored
             .publications
@@ -814,7 +814,7 @@ fn an_application_topic_round_trips() {
     let address = Address {
         device_id: DEVICE.to_string(),
         class: topic::class_of(APPLICATION_SERVICE)
-            .expect("a com.mos.* bus name")
+            .expect("a com.mica.* bus name")
             .to_string(),
         instance: 0,
     };
@@ -845,13 +845,13 @@ fn an_application_topic_round_trips() {
     );
 }
 
-/// `ext` is an ordinary direct class now; only the bare `com.mos` namespace
+/// `ext` is an ordinary direct class now; only the bare `com.mica` namespace
 /// has no class.
 #[test]
 fn direct_name_classification_has_no_extension_special_case() {
-    assert_eq!(topic::class_of("com.mos.ext"), Some("ext"));
-    assert_eq!(topic::class_of("com.mos.ext.sensor"), Some("ext"));
-    assert_eq!(topic::class_of("com.mos"), None);
+    assert_eq!(topic::class_of("com.mica.ext"), Some("ext"));
+    assert_eq!(topic::class_of("com.mica.ext.sensor"), Some("ext"));
+    assert_eq!(topic::class_of("com.mica"), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +906,7 @@ fn the_first_reconnect_delay_is_not_zero() {
 /// immediately. No broker, no network, no skip.
 #[tokio::test]
 async fn rumqttc_reconnects_with_no_delay_of_its_own() {
-    let mut options = MqttOptions::new("mos-mqttd-backoff-premise", "127.0.0.1", 1);
+    let mut options = MqttOptions::new("mica-mqttd-backoff-premise", "127.0.0.1", 1);
     options.set_keep_alive(Duration::from_secs(30));
     let (_client, mut eventloop) = AsyncClient::new(options, 8);
 
@@ -959,7 +959,7 @@ impl ItemSource for Hung {
 
 #[tokio::test]
 async fn a_hung_application_is_bounded_by_the_call_timeout() {
-    let source = mos_mqttd::source::Bounded::new(Hung, Duration::from_millis(50));
+    let source = mica_mqttd::source::Bounded::new(Hung, Duration::from_millis(50));
     let application = application();
 
     let started = std::time::Instant::now();

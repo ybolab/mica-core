@@ -227,15 +227,15 @@ function payload(path: string, method: string): unknown {
     return { taskId: 'task-e2e' }
   }
   if (path === '/api/v1/session') return { state: 'authenticated', csrfToken: 'e2e-csrf' }
-  if (path === '/api/v1/health') return { apid: 'ok', mosd: 'ok', checkedAt: 183900 }
-  if (path === '/api/v1/meta') return { api: 'v1', settingsSchemaVersion: 4, daemon: 'mosd 0.1.0' }
+  if (path === '/api/v1/health') return { apid: 'ok', micad: 'ok', checkedAt: 183900 }
+  if (path === '/api/v1/meta') return { api: 'v1', settingsSchemaVersion: 4, daemon: 'micad 0.1.0' }
   if (path === '/api/v1/system/info') return {
     machineId: { available: true, id: '4f2e9c1a7b3d4e5f' },
     board: { available: true, model: 'mos-cm4 rev 2', source: 'device-tree' },
     kernel: { available: true, release: '6.6.52-mos', version: '#1 SMP' },
     release: { available: true, name: 'mos', versionId: '2026.08.2', imageVersion: '2026.08.2', prettyName: 'mos 2026.08.2' },
-    system: { available: true, version: '2026.08.2', package: 'mos-system', buildDate: '2026-08-19' },
-    daemon: { available: true, name: 'mosd', version: '0.1.0', commit: 'a3f9c1e' },
+    system: { available: true, version: '2026.08.2', package: 'mica-system', buildDate: '2026-08-19' },
+    daemon: { available: true, name: 'micad', version: '0.1.0', commit: 'a3f9c1e' },
     packages: { available: true, count: 214, mosCount: 12, entries: [] },
     slot: { available: true, booted: 'A', bootname: 'rootfs.0', bootStatus: 'good', primary: true },
     uptime: { available: true, seconds: 1231932 },

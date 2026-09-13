@@ -15,14 +15,14 @@ function information(overrides: Partial<SystemInformation> = {}): SystemInformat
     system: {
       ...available,
       version: '2026.09.0',
-      package: 'mos-system',
+      package: 'mica-system',
       gitStamp: { commit: 'abc1234', dirty: false, consistent: true, stamps: ['abc1234'] },
       commitDate: { available: true, date: '2026-09-01T12:34:56+08:00' },
       fileEpoch: { available: true, epoch: 1_577_836_800, date: '2020-01-01T00:00:00Z' },
     },
-    daemon: { ...available, name: 'mosd', version: '0.4.1', commit: 'abc1234' },
+    daemon: { ...available, name: 'micad', version: '0.4.1', commit: 'abc1234' },
     packages: { ...available, count: 2, mosCount: 1, entries: [
-      { name: 'mos-system', version: '2026.09.0', architecture: 'arm64', mos: true },
+      { name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mos: true },
       { name: 'busybox', version: '1.36.1', architecture: 'arm64', mos: false },
     ] },
     deployment: { ...available, id: 'a'.repeat(64), version: '2026.09.0', confirmed: true },
@@ -49,7 +49,7 @@ describe('system information', () => {
 
     expect(await screen.findByText('7f1c2ad0f0e4')).toBeTruthy()
     expect(screen.getByText('Radxa CM3576 · device-tree')).toBeTruthy()
-    expect(screen.getByText('2026.09.0 · mos-system · git abc1234 (consistent)')).toBeTruthy()
+    expect(screen.getByText('2026.09.0 · mica-system · git abc1234 (consistent)')).toBeTruthy()
     expect(screen.getByText('2026-09-01T12:34:56+08:00')).toBeTruthy()
     expect(screen.getByText(`${'a'.repeat(64)} · 2026.09.0`)).toBeTruthy()
     expect(screen.getByText('1d 2h 3m')).toBeTruthy()
@@ -78,14 +78,14 @@ describe('system information', () => {
       '/api/v1/system/info': information({
         system: {
           ...base.system,
-          commitDate: { available: false, detail: '/usr/share/mos/release-identity.env states no COMMIT_DATE' },
+          commitDate: { available: false, detail: '/usr/share/mica/release-identity.env states no COMMIT_DATE' },
         },
       }),
       '/api/v1/system/telemetry': telemetryAbsent,
     })
     renderPanel(<InformationPanel />)
 
-    expect(await screen.findByText('Unavailable — /usr/share/mos/release-identity.env states no COMMIT_DATE')).toBeTruthy()
+    expect(await screen.findByText('Unavailable — /usr/share/mica/release-identity.env states no COMMIT_DATE')).toBeTruthy()
     // The pinned file epoch is the same instant in every image ever built; it
     // must never stand in for the date the image's source was committed.
     expect(screen.queryByText('2020-01-01T00:00:00Z')).toBeNull()
@@ -105,13 +105,13 @@ describe('system information', () => {
   it('reports an unreadable manifest with its reason', async () => {
     stubFetch({
       '/api/v1/system/info': information({
-        packages: { available: false, detail: '/usr/share/mos/packages.tsv is not readable' },
+        packages: { available: false, detail: '/usr/share/mica/packages.tsv is not readable' },
       }),
       '/api/v1/system/telemetry': telemetryAbsent,
     })
     renderPanel(<InformationPanel />)
 
-    expect(await screen.findByText('Unavailable — /usr/share/mos/packages.tsv is not readable')).toBeTruthy()
+    expect(await screen.findByText('Unavailable — /usr/share/mica/packages.tsv is not readable')).toBeTruthy()
     expect(screen.queryByRole('table')).toBeNull()
   })
 
@@ -124,7 +124,7 @@ describe('system information', () => {
           mosCount: 12,
           truncated: true,
           malformedRows: 3,
-          entries: [{ name: 'mos-system', version: '2026.09.0', architecture: 'arm64', mos: true }],
+          entries: [{ name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mos: true }],
         },
       }),
       '/api/v1/system/telemetry': telemetryAbsent,
@@ -136,10 +136,10 @@ describe('system information', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/system/info': () => jsonResponse({ error: { message: 'mosd is not reachable' } }, 503) })
+    stubFetch({ '/api/v1/system/info': () => jsonResponse({ error: { message: 'micad is not reachable' } }, 503) })
     renderPanel(<InformationPanel />)
 
-    expect(await screen.findByText('mosd is not reachable')).toBeTruthy()
+    expect(await screen.findByText('micad is not reachable')).toBeTruthy()
   })
 })
 

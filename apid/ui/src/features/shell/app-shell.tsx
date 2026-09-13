@@ -47,7 +47,7 @@ export function AppShell() {
   })
   const refresh = () => void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'session' })
 
-  const state = connectionState({ isError: health.isError, failureCount: health.failureCount, mosd: health.data?.mosd })
+  const state = connectionState({ isError: health.isError, failureCount: health.failureCount, micad: health.data?.micad })
   const freshness = fetching ? t('shell.refreshing') : freshnessLabel(health.dataUpdatedAt, t)
   const release = information.data?.release
   const releaseLabel = release?.available ? release.imageVersion ?? release.versionId ?? release.name ?? '—' : '—'

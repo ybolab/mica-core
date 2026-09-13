@@ -15,7 +15,7 @@ pub fn now_unix() -> u64 {
 
 /// Write `contents` to `path` atomically: a temporary file in the same
 /// directory, fsynced, renamed over the target, then the directory entry
-/// fsynced. Mirrors `mosd/mosd/src/transient.rs`'s `write_atomically`, minus
+/// fsynced. Mirrors `micad/micad/src/transient.rs`'s `write_atomically`, minus
 /// the ownership handling apid (which runs and stays root) does not need.
 ///
 /// Same directory because `rename` is only atomic within one filesystem; the

@@ -31,7 +31,7 @@ use axum::routing::put;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
-use mosd_settings::{
+use micad_settings::{
     ApiToken, AuthorizedKey, ClaimChannel, ClaimSettings, IfaceKind, IfaceSettings,
     MIN_ADMIN_PASSWORD_LEN, ResetTier, SettingsError, WifiNetwork, WireguardPeer,
     parse_authorized_key, quote_path_segment, validate_api_tokens, validate_authorized_keys,
@@ -75,18 +75,18 @@ pub struct AppState {
     /// `TaskChanged` subscription is live.
     task_registry: Arc<TaskRegistry>,
     /// The baked public metadata, addressed by its MANIFEST rather than by
-    /// its directory: `/usr/share/mos/meta/updates/manifest.json` on a
+    /// its directory: `/usr/share/mica/meta/updates/manifest.json` on a
     /// device, a temporary tree in tests.
     ///
     /// One path and not two, because
     /// `provisioning_api::api_v1_provisioning_status` reads layer 1 twice —
     /// once to digest the baked tree, once through
-    /// `mosd_settings::configuration` to resolve the effective policy — and
+    /// `micad_settings::configuration` to resolve the effective policy — and
     /// a device that answered those from two different trees in one response
     /// would be reporting a configuration no device has. The directory walked
     /// for digests is derived from this file, so they cannot diverge.
     ///
-    /// The default is [`mosd_settings::configuration::DEFAULT_MANIFEST_PATH`]
+    /// The default is [`micad_settings::configuration::DEFAULT_MANIFEST_PATH`]
     /// itself rather than a copy of its text: the tree already carries that
     /// literal once, and a second spelling of it here would agree with the
     /// first until somebody moved the file.
@@ -107,7 +107,7 @@ pub struct AppState {
     diagnostics: Arc<SnapshotStore>,
     /// Serialises snapshot collection. One at a time: a second request while
     /// one runs is refused (409) rather than queued, because each one reads
-    /// every mosd surface and the second would only repeat the first.
+    /// every micad surface and the second would only repeat the first.
     collecting: Arc<tokio::sync::Mutex<()>>,
     /// The ONE physical-presence seam (`docs/design/recovery.md` §4), keyed by
     /// the [`PRESENCE_CAPABILITY`] board capability. Every presence-gated
@@ -142,13 +142,13 @@ impl AppState {
             access_cache: Arc::new(AccessCache::new()),
             task_registry: Arc::new(TaskRegistry::new()),
             meta_manifest: Arc::new(std::path::PathBuf::from(
-                mosd_settings::configuration::DEFAULT_MANIFEST_PATH,
+                micad_settings::configuration::DEFAULT_MANIFEST_PATH,
             )),
             updates_path: Arc::new(std::path::PathBuf::from(
-                mosd_settings::configuration::DEFAULT_UPDATES_PATH,
+                micad_settings::configuration::DEFAULT_UPDATES_PATH,
             )),
             fleet_path: Arc::new(std::path::PathBuf::from(
-                mosd_settings::configuration::DEFAULT_FLEET_PATH,
+                micad_settings::configuration::DEFAULT_FLEET_PATH,
             )),
             diagnostics: Arc::new(SnapshotStore::at_default()),
             collecting: Arc::new(tokio::sync::Mutex::new(())),
@@ -191,7 +191,7 @@ impl AppState {
                     );
                     task.outcome = Some("interrupted".to_string());
                     task.message = Some(
-                        "mosd restarted or rolled over its bounded task history before this apply's terminal signal was retained; startup reconciliation converges persisted settings"
+                        "micad restarted or rolled over its bounded task history before this apply's terminal signal was retained; startup reconciliation converges persisted settings"
                             .to_string(),
                     );
                 }
@@ -203,7 +203,7 @@ impl AppState {
         Ok(task)
     }
 
-    /// The bounded task history from the live signal mirror, or from mosd's
+    /// The bounded task history from the live signal mirror, or from micad's
     /// live-state snapshot while the subscription is unavailable.
     async fn task_records(&self) -> anyhow::Result<Vec<TaskRecord>> {
         if let Some(tasks) = self.task_registry.list() {
@@ -265,7 +265,7 @@ impl AppState {
     ///
     /// Test-only for the bundle root's reason: the shipped location is fixed
     /// and nothing configures it. It takes the manifest and derives the tree,
-    /// which is also the shape `MOSD_META_MANIFEST_PATH` gives the mosd side.
+    /// which is also the shape `MOSD_META_MANIFEST_PATH` gives the micad side.
     #[cfg(test)]
     pub fn with_meta_manifest(mut self, manifest: impl Into<std::path::PathBuf>) -> Self {
         self.meta_manifest = Arc::new(manifest.into());
@@ -366,7 +366,7 @@ const V1_HEALTH_PATH: &str = "/v1/health";
 /// `checkedAt`.
 ///
 /// One bus call answers both questions §2.4 case 3 asks. It proves the round
-/// trip — mosd serves this key by reading `/proc/uptime` at request time
+/// trip — micad serves this key by reading `/proc/uptime` at request time
 /// (`docs/design/api.md` §2.2 item 3), so a value coming back means a real
 /// exchange happened and not that a cached flag was read — and the value it
 /// returns is the only clock on this appliance a health answer may be stamped
@@ -490,7 +490,7 @@ const V1_SETUP_PATH: &str = "/v1/setup";
 /// A fixed path on the time status's reasoning, and the whole of this
 /// surface: there is no sibling constant here that applies, re-applies,
 /// returns or clears a provisioning document. The document is the channel for
-/// a device with NO network — it is applied by mosd from a boot medium or a
+/// a device with NO network — it is applied by micad from a boot medium or a
 /// stick before anything is listening — so an HTTP route that applied one
 /// would be a second, differently-trusted write path for the same thing. The
 /// handler is [`crate::provisioning_api::api_v1_provisioning_status`].
@@ -577,13 +577,13 @@ pub(crate) const SETTINGS_SPELLINGS: (&str, &str, &str) =
 pub(crate) const STATE_SPELLINGS: (&str, &str, &str) =
     (V1_STATE_PREFIX, V1_STATE_ROUTE, V1_STATE_DOC);
 
-/// The error names mosd maps its `SettingsError` onto, and the five rows of
+/// The error names micad maps its `SettingsError` onto, and the five rows of
 /// §2.4's table that name one. The first two are interface-scoped: the fdo
 /// vocabulary has no name that separates a missing dot-path or a read-only
-/// one from a bad value, so mosd coins its own for those and keeps the
+/// one from a bad value, so micad coins its own for those and keeps the
 /// standard names for everything else.
-const MOSD_NOT_FOUND: &str = "com.mos.mosd1.Error.NotFound";
-const MOSD_READ_ONLY: &str = "com.mos.mosd1.Error.ReadOnly";
+const MOSD_NOT_FOUND: &str = "com.mica.micad1.Error.NotFound";
+const MOSD_READ_ONLY: &str = "com.mica.micad1.Error.ReadOnly";
 const FDO_INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 const FDO_IO_ERROR: &str = "org.freedesktop.DBus.Error.IOError";
 const FDO_FAILED: &str = "org.freedesktop.DBus.Error.Failed";
@@ -783,7 +783,7 @@ fn api_router() -> Router<AppState> {
 /// and second opinions drift.
 ///
 /// `source` is `"apid"`: the router made this decision and no bus call was
-/// made, so there is nothing mosd could be asked about it. There is no `path`
+/// made, so there is nothing micad could be asked about it. There is no `path`
 /// member for the same reason the not-found envelope has none — a wrong method
 /// names no settings dot-path.
 ///
@@ -833,8 +833,8 @@ impl ApiError {
         Self::new(code, message, "apid")
     }
 
-    pub(crate) fn mosd(code: &'static str, message: String) -> Self {
-        Self::new(code, message, "mosd")
+    pub(crate) fn micad(code: &'static str, message: String) -> Self {
+        Self::new(code, message, "micad")
     }
 
     fn new(code: &'static str, message: String, source: &'static str) -> Self {
@@ -902,7 +902,7 @@ pub(crate) struct SessionLoginRequest {
     responses(
         (status = 200, description = "Setup and browser authentication state", body = SessionStatus),
         (status = 500, description = "The access settings could not be read", body = ApiError),
-        (status = 503, description = "mosd is unavailable", body = ApiError),
+        (status = 503, description = "micad is unavailable", body = ApiError),
     ),
 )]
 pub(crate) async fn api_v1_session_status(
@@ -1329,7 +1329,7 @@ pub(crate) async fn api_v1_ui_upload(
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|length| length > mos_ui_bundle::MAX_COMPRESSED_BYTES)
+        .is_some_and(|length| length > mica_ui_bundle::MAX_COMPRESSED_BYTES)
     {
         return ui_upload_refusal(
             &state,
@@ -1420,7 +1420,7 @@ pub(crate) async fn api_v1_ui_upload(
             }
         };
         compressed = compressed.saturating_add(chunk.len() as u64);
-        if compressed > mos_ui_bundle::MAX_COMPRESSED_BYTES {
+        if compressed > mica_ui_bundle::MAX_COMPRESSED_BYTES {
             let _ = tokio::fs::remove_file(&upload).await;
             return ui_upload_refusal(
                 &state,
@@ -1457,7 +1457,7 @@ pub(crate) async fn api_v1_ui_upload(
 
     let inspect_path = upload.clone();
     let info =
-        match tokio::task::spawn_blocking(move || mos_ui_bundle::inspect(&inspect_path)).await {
+        match tokio::task::spawn_blocking(move || mica_ui_bundle::inspect(&inspect_path)).await {
             Ok(Ok(info)) => info,
             Ok(Err(err)) => {
                 let _ = tokio::fs::remove_file(&upload).await;
@@ -1534,7 +1534,7 @@ pub(crate) async fn api_v1_ui_upload(
     let installed = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
         let generation = store.next_generation()?;
         let staging = store.staging_dir(generation);
-        let extraction = mos_ui_bundle::extract(&upload_for_install, &staging);
+        let extraction = mica_ui_bundle::extract(&upload_for_install, &staging);
         if let Err(err) = extraction {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(err);
@@ -1883,7 +1883,7 @@ pub(crate) async fn api_versions() -> Response {
 /// namespace-wide version could not be bumped without rewriting every document
 /// across renames with no transaction between them. This member therefore
 /// reports the STATE document's version — the one document that is still one
-/// document — and it is read live from `mosd_settings` rather than copied,
+/// document — and it is read live from `micad_settings` rather than copied,
 /// which is the property §2.1 of `docs/design/api.md` actually asks for.
 #[utoipa::path(
     get,
@@ -1901,7 +1901,7 @@ pub(crate) async fn api_v1_meta(_credential: ApiCredential) -> Response {
         StatusCode::OK,
         ApiMeta {
             api: CURRENT_VERSION,
-            settings_schema_version: mosd_settings::STATE_SCHEMA_VERSION,
+            settings_schema_version: micad_settings::STATE_SCHEMA_VERSION,
             daemon: "apid",
         },
     )
@@ -1912,7 +1912,7 @@ pub(crate) async fn api_v1_meta(_credential: ApiCredential) -> Response {
 // absent one.
 /// The body of `GET /api/v1/health`.
 ///
-/// `apid` and `mosd` are always present. `checkedAt` is present only on the
+/// `apid` and `micad` are always present. `checkedAt` is present only on the
 /// reachable answer and `detail` only on the unreachable one.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1925,7 +1925,7 @@ pub(crate) struct ApiHealth {
     // Two values and no third: a health answer that needs a taxonomy is not
     // one a monitor can act on.
     /// `"ok"` when the probe completed, `"unreachable"` when it did not.
-    mosd: &'static str,
+    micad: &'static str,
     // Uptime and not a wall-clock stamp: there is no trusted wall clock in
     // this crate, and `SessionStore` is monotonic `Instant` throughout.
     /// Whole seconds since boot, at the moment the probe answered.
@@ -1937,34 +1937,34 @@ pub(crate) struct ApiHealth {
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
     // PLAN-076 B4 on the health path. `detail` above is unbounded by
-    // construction -- it is whatever zbus, the kernel or mosd said -- so a
-    // monitor that wanted to distinguish "mosd is not there" from "mosd
+    // construction -- it is whatever zbus, the kernel or micad said -- so a
+    // monitor that wanted to distinguish "micad is not there" from "micad
     // answered nonsense" had to match on that text. This is the closed
     // alternative, present exactly when `detail` is.
     /// Which class of failure the probe hit, from a fixed set:
-    /// `mosd_unreachable` (the call could not be made or was refused),
-    /// `mosd_timeout` (the bounded call expired), `mosd_bad_answer` (mosd
+    /// `micad_unreachable` (the call could not be made or was refused),
+    /// `micad_timeout` (the bounded call expired), `micad_bad_answer` (micad
     /// replied with something that is not the documented shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<&'static str>,
 }
 
-/// The bounded call to mosd expired.
-const HEALTH_MOSD_TIMEOUT: &str = "mosd_timeout";
-/// The call could not be made, or mosd refused it.
-const HEALTH_MOSD_UNREACHABLE: &str = "mosd_unreachable";
-/// mosd answered, and what it answered is not the documented shape.
-const HEALTH_MOSD_BAD_ANSWER: &str = "mosd_bad_answer";
+/// The bounded call to micad expired.
+const HEALTH_MOSD_TIMEOUT: &str = "micad_timeout";
+/// The call could not be made, or micad refused it.
+const HEALTH_MOSD_UNREACHABLE: &str = "micad_unreachable";
+/// micad answered, and what it answered is not the documented shape.
+const HEALTH_MOSD_BAD_ANSWER: &str = "micad_bad_answer";
 
 // Never serve this from `access_cache`: that cache answers from apid's own
-// memory, so a health route reading it would report mosd healthy for as long
+// memory, so a health route reading it would report micad healthy for as long
 // as the last fill survived. `GetState("uptime")` is the probe because it is
 // one call, cheap, and also yields `checkedAt`.
 /// Report whether this appliance is manageable.
 ///
-/// Answers **200 in every state**, including when mosd is unreachable — a
+/// Answers **200 in every state**, including when micad is unreachable — a
 /// failure is reported in the body, never as a status code, so it cannot be
-/// confused with this endpoint being down. mosd's state is determined by one
+/// confused with this endpoint being down. micad's state is determined by one
 /// live bus call per request.
 ///
 /// Authenticated. For plain listener liveness use the unauthenticated
@@ -1975,7 +1975,7 @@ const HEALTH_MOSD_BAD_ANSWER: &str = "mosd_bad_answer";
     context_path = API,
     tag = "diagnostics",
     responses(
-        (status = 200, description = "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `mosd_unreachable`, `mosd_timeout` or `mosd_bad_answer` — beside the free-text `detail`; the code is the member to match on", body = ApiHealth),
+        (status = 200, description = "Whether this appliance is manageable. **200 in both states**: a dead micad is reported as `micad: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `micad_unreachable`, `micad_timeout` or `micad_bad_answer` — beside the free-text `detail`; the code is the member to match on", body = ApiHealth),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
@@ -1984,8 +1984,8 @@ pub(crate) async fn api_v1_health(
     _credential: ApiCredential,
     State(state): State<AppState>,
 ) -> Response {
-    let (mosd, checked_at, detail, code) = match state.api.get_state(HEALTH_PROBE_PATH).await {
-        // Any answer that is not the number of seconds mosd documents is
+    let (micad, checked_at, detail, code) = match state.api.get_state(HEALTH_PROBE_PATH).await {
+        // Any answer that is not the number of seconds micad documents is
         // classified with the failures rather than reported as health. `ok`
         // has to mean "the round trip completed and produced a usable answer";
         // a state key that came back the wrong shape did not.
@@ -1995,7 +1995,7 @@ pub(crate) async fn api_v1_health(
                 "unreachable",
                 None,
                 Some(format!(
-                    "mosd answered GetState(\"{HEALTH_PROBE_PATH}\") with {value}, which is not a count of seconds"
+                    "micad answered GetState(\"{HEALTH_PROBE_PATH}\") with {value}, which is not a count of seconds"
                 )),
                 Some(HEALTH_MOSD_BAD_ANSWER),
             ),
@@ -2019,7 +2019,7 @@ pub(crate) async fn api_v1_health(
         StatusCode::OK,
         ApiHealth {
             apid: "ok",
-            mosd,
+            micad,
             checked_at,
             detail,
             code,
@@ -2027,7 +2027,7 @@ pub(crate) async fn api_v1_health(
     )
 }
 
-/// The body of a resource `GET`: the value at the dot-path, as mosd holds it.
+/// The body of a resource `GET`: the value at the dot-path, as micad holds it.
 ///
 // `privateKey` is on the redaction list as a fail-closed guard: no shipped
 // schema has such a field yet.
@@ -2068,10 +2068,10 @@ pub(crate) struct TaskAccepted {
         (status = 200, description = "The value at the dot-path, redacted", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 404, description = "The dot-path does not exist (`settings_not_found`)", body = ApiError),
-        (status = 422, description = "mosd rejected the dot-path (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "micad rejected the dot-path (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2089,11 +2089,11 @@ pub(crate) async fn api_v1_settings(
 /// admits its paths on one ground: each value's validity *"depends on nothing
 /// else in the tree"*. A hostname, which `valid_hostname` decides on its own;
 /// four switches, which accept either boolean value; and the two `time`
-/// values, whose rules ([`mosd_settings::validate_timezone_name`] and
-/// [`mosd_settings::validate_ntp_servers`]) are each self-contained — stated
+/// values, whose rules ([`micad_settings::validate_timezone_name`] and
+/// [`micad_settings::validate_ntp_servers`]) are each self-contained — stated
 /// once, in the crate that owns the model, and only CALLED here, so this
 /// surface cannot drift from what `Settings::set` enforces. Anything
-/// relational is handled by resource routes or mosd's reconcilers. In
+/// relational is handled by resource routes or micad's reconcilers. In
 /// particular, a Wi-Fi client switch does not promise association or resolve
 /// a station/AP interface conflict; clients must inspect the apply state.
 #[derive(Clone, Copy)]
@@ -2102,9 +2102,9 @@ enum ScalarShape {
     Hostname,
     /// A JSON boolean, and nothing else.
     Flag,
-    /// A JSON string [`mosd_settings::validate_timezone_name`] accepts.
+    /// A JSON string [`micad_settings::validate_timezone_name`] accepts.
     Timezone,
-    /// A JSON array of strings [`mosd_settings::validate_ntp_servers`]
+    /// A JSON array of strings [`micad_settings::validate_ntp_servers`]
     /// accepts, written whole — the dot-path syntax has no array indexing.
     NtpServers,
 }
@@ -2115,8 +2115,8 @@ enum ScalarShape {
 /// An allowlist rather than a passthrough, and the reason is measured rather
 /// than stylistic. `Settings::set`'s documented contract is *"Missing
 /// intermediate map entries are created (e.g. setting `network.eth1.dhcp`
-/// creates `eth1`)"* (`Settings::set` in `pkgs/mosd/mosd-settings/src/model.rs`), so a
-/// `PUT` to a mistyped path handed straight through to mosd does not fail —
+/// creates `eth1`)"* (`Settings::set` in `micad-settings/src/model.rs`), so a
+/// `PUT` to a mistyped path handed straight through to micad does not fail —
 /// it grows a new subtree, of whatever kind the schema defaults to, and the
 /// reconciler is the first thing to notice. That exact failure is reachable on
 /// `POST /network/peers/add`, where adding a peer to an
@@ -2172,7 +2172,7 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
             let zone = value
                 .as_str()
                 .ok_or_else(|| "this setting is text: the body is a JSON string".to_string())?;
-            mosd_settings::validate_timezone_name(zone)
+            micad_settings::validate_timezone_name(zone)
         }
         ScalarShape::NtpServers => {
             let servers: Vec<String> = value
@@ -2186,7 +2186,7 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
                 .ok_or_else(|| {
                     "this setting is a list: the body is a JSON array of server strings".to_string()
                 })?;
-            mosd_settings::validate_ntp_servers(&servers)
+            micad_settings::validate_ntp_servers(&servers)
         }
     }
 }
@@ -2199,7 +2199,7 @@ fn check_scalar(shape: ScalarShape, value: &Value) -> Result<(), String> {
 /// edit in apid. A hand-written list would be a second opinion about a schema
 /// that already exists, and second opinions drift.
 fn is_settings_root(root: &str) -> bool {
-    serde_json::to_value(mosd_settings::Settings::default())
+    serde_json::to_value(micad_settings::Settings::default())
         .is_ok_and(|tree| tree.get(root).is_some())
 }
 
@@ -2236,7 +2236,7 @@ fn settings_write_refusal(path: &str) -> Response {
     if path == "." {
         return refused(WRITABLE_SETTINGS_NOTICE.to_string());
     }
-    let Some(segments) = mosd_settings::path_segments(path) else {
+    let Some(segments) = micad_settings::path_segments(path) else {
         return api_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::apid(
@@ -2300,10 +2300,10 @@ pub(crate) struct SettingsWrite(Value);
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "The dot-path names no root the settings schema has (`settings_not_found`)", body = ApiError),
         (status = 409, description = "A dot-path that exists and that this route does not write (`settings_read_only`)", body = ApiError),
-        (status = 422, description = "The body carries the redaction sentinel, or is the wrong shape for this setting, or the dot-path is malformed (`validation_failed`); or mosd rejected the write (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The body carries the redaction sentinel, or is the wrong shape for this setting, or the dot-path is malformed (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2355,7 +2355,7 @@ pub(crate) async fn api_v1_settings_write(
         Err(err) => return bus_api_error(&err, Some(&path)),
     };
     state.audit.record("settings-write", "accepted", &source);
-    // No `access_cache` invalidation, and that is not an omission: mosd emits
+    // No `access_cache` invalidation, and that is not an omission: micad emits
     // `SettingsChanged` for the path it wrote and the subscription drops the
     // cache for anything under `access`, which is exactly what the `access.ssh`
     // form path already relies on. The token routes invalidate by hand because
@@ -2364,7 +2364,7 @@ pub(crate) async fn api_v1_settings_write(
     api_response(StatusCode::ACCEPTED, TaskAccepted { task_id })
 }
 
-/// List mosd's bounded apply-task history, oldest first.
+/// List micad's bounded apply-task history, oldest first.
 #[utoipa::path(
     get,
     path = V1_TASKS_PATH,
@@ -2373,9 +2373,9 @@ pub(crate) async fn api_v1_settings_write(
     responses(
         (status = 200, description = "The bounded apply-task history, oldest first", body = Vec<TaskRecord>),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd returned an invalid task record or failed to answer (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad returned an invalid task record or failed to answer (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2400,9 +2400,9 @@ pub(crate) async fn api_v1_tasks_list(
         (status = 200, description = "The latest known task record", body = TaskRecord),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 404, description = "No retained task has this id (`task_not_found`)", body = ApiError),
-        (status = 500, description = "mosd returned an invalid task record or failed to answer (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad returned an invalid task record or failed to answer (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2432,10 +2432,10 @@ pub(crate) async fn api_v1_task(
         (status = 200, description = "The value at the dot-path, redacted", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 404, description = "The dot-path does not resolve (`settings_not_found`)", body = ApiError),
-        (status = 422, description = "mosd rejected the dot-path (`settings_rejected`); a dot-path that does not resolve is the 404 above", body = ApiError),
-        (status = 500, description = "mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "micad rejected the dot-path (`settings_rejected`); a dot-path that does not resolve is the 404 above", body = ApiError),
+        (status = 500, description = "micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2450,7 +2450,7 @@ pub(crate) async fn api_v1_state(
 
 /// Read the time-synchronization status.
 ///
-/// Observed from timesyncd at request time and classified by mosd:
+/// Observed from timesyncd at request time and classified by micad:
 /// `synchronized` (timedate1 reports a bounded clock error, which it computes
 /// as `adjtimex().maxerror < 16 s` — not "a reply arrived"), `polling` (a
 /// server is selected and packets are being exchanged, and that bound is not
@@ -2472,9 +2472,9 @@ pub(crate) async fn api_v1_state(
     responses(
         (status = 200, description = "The classified status with the evidence it rests on: the selected server, the kernel's synchronized bit, and the last sample with its offset and a `correction` member telling a clock step from ordinary drift", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2492,7 +2492,7 @@ pub(crate) async fn api_v1_time_status(
 
 /// Read the storage status.
 ///
-/// Observed by mosd at request time: the firmware/ESP, SYSTEM and DATA partitions
+/// Observed by micad at request time: the firmware/ESP, SYSTEM and DATA partitions
 /// with its device, size, mount and read-only state, its space accounting
 /// including the filesystem's reserved pool, and whatever the system recorded
 /// about its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,
@@ -2517,9 +2517,9 @@ pub(crate) async fn api_v1_time_status(
     responses(
         (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2540,7 +2540,7 @@ pub(crate) async fn api_v1_storage_status(
 /// One read answers what this device is: the machine id, the board, the
 /// kernel, the distribution release, the image version with its git stamp
 /// and build date, every installed package with its version (from the
-/// shipped manifest), the authenticated running deployment and the uptime. mosd assembles it at
+/// shipped manifest), the authenticated running deployment and the uptime. micad assembles it at
 /// request time from the seams that already carry each fact; nothing is
 /// restated. Every member carries `available`, and an absent fact says why.
 #[utoipa::path(
@@ -2551,9 +2551,9 @@ pub(crate) async fn api_v1_storage_status(
     responses(
         (status = 200, description = "The surface: `machineId`, `board`, `kernel`, `release`, `system` (version, `gitStamp`, `commitDate`, `fileEpoch`), `daemon`, `packages`, `deployment`, `uptime`; each an object carrying `available`", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2582,9 +2582,9 @@ pub(crate) async fn api_v1_system_info(
     responses(
         (status = 200, description = "`thermal`, `watchdog` and `reset`, each carrying `available`; `reset.reason` is `watchdog`, `kernel-crash` or `unknown`, with the evidence beside it", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2616,9 +2616,9 @@ pub(crate) async fn api_v1_system_telemetry(
     responses(
         (status = 200, description = "`interfaces`, `defaultRoutes`, `dns`, `wifi` and `capabilities`, each carrying `available` or `supported`; absent evidence carries the reason", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to observe (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2739,7 +2739,7 @@ pub(crate) async fn api_v1_diagnostics_list(
 
 /// Collect a diagnostic snapshot.
 ///
-/// Reads every mosd surface the schema names — system information,
+/// Reads every micad surface the schema names — system information,
 /// telemetry, failure evidence, storage, time, observed network, live
 /// state — under a per-section timeout inside one deadline, assembles the
 /// versioned snapshot, redacts it against the allowlist schema (a field the
@@ -2917,7 +2917,7 @@ pub(crate) async fn api_v1_diagnostics_delete(
 /// The body of a successful key rotation: the public half, and nothing else.
 ///
 /// There is no `privateKey` member here and there will not be one. The private
-/// half never leaves mosd — there is no read-back route for the private key,
+/// half never leaves micad — there is no read-back route for the private key,
 /// ever; not redacted-on-read, nonexistent — so this struct is the whole of
 /// what a rotation can answer.
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -2927,13 +2927,13 @@ pub(crate) struct WireguardRotation {
     public_key: String,
 }
 
-// `iface` goes to mosd unexamined: mosd owns the "declared entry of kind
+// `iface` goes to micad unexamined: micad owns the "declared entry of kind
 // wireguard" rule and raises a distinct error name for each half of it. A
 // second copy of that rule here could disagree with the first.
 /// Rotate a WireGuard interface's private key.
 ///
 /// An action rather than a settings write: the private key lives in a
-/// mode-0640 file on STATE that the settings tree does not describe. mosd
+/// mode-0640 file on STATE that the settings tree does not describe. micad
 /// draws a new key, tears down the device holding the old one and reconciles.
 ///
 /// Answers **200** with the new public key — the tunnel is already running on
@@ -2952,9 +2952,9 @@ pub(crate) struct WireguardRotation {
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "The name is not a declared `network` entry (`settings_not_found`); the URL names no interface to rotate", body = ApiError),
         (status = 422, description = "The entry exists and is not a WireGuard one (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "mosd failed to rotate (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad failed to rotate (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -2966,7 +2966,7 @@ pub(crate) async fn api_v1_wireguard_rotate(
     match state.api.rotate_wireguard_key(&iface).await {
         Ok(public_key) => api_response(StatusCode::OK, WireguardRotation { public_key }),
         // §2.4's `path` is the settings dot-path at fault, and this failure has
-        // one: the entry whose kind mosd refused.
+        // one: the entry whose kind micad refused.
         Err(err) => bus_api_error(&err, Some(&iface_settings_path(&iface))),
     }
 }
@@ -3030,9 +3030,9 @@ pub(crate) struct MintedToken {
     responses(
         (status = 200, description = "The stored tokens: `id`, `name` and `created`, never the digest and never the plaintext", body = Vec<ApiTokenSummary>),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3078,9 +3078,9 @@ pub(crate) async fn api_v1_tokens_list(
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "The device already holds the maximum number of tokens (`token_limit_reached`); revoke one first", body = ApiError),
         (status = 422, description = "The name is empty, over 256 bytes, or holds a control character (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), no free id was drawn (`mint_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), no free id was drawn (`mint_failed`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3104,18 +3104,18 @@ pub(crate) async fn api_v1_tokens_mint(
     };
     // The cap is answered here and not only by the store. The validator makes
     // a full list a hard refusal, and without this check the caller meets that
-    // refusal as a failed write -- a 500 about mosd -- rather than as an answer
+    // refusal as a failed write -- a 500 about micad -- rather than as an answer
     // about the request they made. 409 and not 422: the body is well formed and
     // nothing about it is wrong, and what refuses it is the collection's
     // current state, which is the condition §2.4 already spends 409 on.
-    if tokens.len() >= mosd_settings::MAX_TOKENS {
+    if tokens.len() >= micad_settings::MAX_TOKENS {
         return api_response(
             StatusCode::CONFLICT,
             ApiError::apid(
                 "token_limit_reached",
                 format!(
                     "this device already holds the maximum of {} API tokens; revoke one before minting another",
-                    mosd_settings::MAX_TOKENS
+                    micad_settings::MAX_TOKENS
                 ),
             )
             .at(API_TOKENS_PATH),
@@ -3168,9 +3168,9 @@ pub(crate) async fn api_v1_tokens_mint(
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "No stored token carries that id (`settings_not_found`). Well-formed and absent, which is a different answer from malformed", body = ApiError),
         (status = 422, description = "The id is not a token id at all (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a token list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3183,7 +3183,7 @@ pub(crate) async fn api_v1_tokens_revoke(
     // An id that is not an id could never name
     // an entry, so a 404 here would send the caller looking for a token they
     // deleted instead of at the URL they typed.
-    if !mosd_settings::is_api_token_id(&id) {
+    if !micad_settings::is_api_token_id(&id) {
         return api_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::apid(
@@ -3279,7 +3279,7 @@ fn parse_tokens(access: &Value) -> Result<Vec<ApiToken>, serde_json::Error> {
 /// names it as a cost inherited from the tree, and the alternative is a locking
 /// scheme this codebase does not have.
 async fn write_tokens(state: &AppState, tokens: &[ApiToken]) -> Result<(), Box<Response>> {
-    // The same validator mosd runs, so a list this route accepts is one the
+    // The same validator micad runs, so a list this route accepts is one the
     // store will accept too. Its message names an entry index and never echoes
     // a digest or an id.
     if let Err(err) = validate_api_tokens(tokens) {
@@ -3379,7 +3379,7 @@ pub(crate) struct AddedAuthorizedKey {
 
 /// One known WiFi network, in both directions.
 ///
-// Held field-for-field against `mosd_settings::WifiNetwork` by a test, so a
+// Held field-for-field against `micad_settings::WifiNetwork` by a test, so a
 // field added to the model cannot go undocumented here.
 ///
 /// `psk` differs by direction. On the way **in** it is the pre-shared key. On
@@ -3465,7 +3465,7 @@ async fn api_stored_keys(state: &AppState) -> Result<Vec<AuthorizedKey>, Box<Res
 ///
 /// The API's own writer and not [`write_key_list`], which answers a re-rendered
 /// pane at 422 and a redirect on success. The **validator** is the same one:
-/// `validate_authorized_keys` is what mosd's sshd reconciler runs before it
+/// `validate_authorized_keys` is what micad's sshd reconciler runs before it
 /// renders the file, so a list either surface accepts is a list the reconciler
 /// accepts too.
 async fn api_write_keys(state: &AppState, keys: &[AuthorizedKey]) -> Result<(), Box<Response>> {
@@ -3496,9 +3496,9 @@ async fn api_write_keys(state: &AppState, keys: &[AuthorizedKey]) -> Result<(), 
     responses(
         (status = 200, description = "The stored keys, each with the fingerprint that is its `DELETE` path segment, and the notice every client of this collection is told", body = AuthorizedKeyList),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3520,7 +3520,7 @@ pub(crate) async fn api_v1_ssh_keys_list(
 
 // The line is parsed exactly as submitted, untrimmed: surrounding whitespace
 // is one of the things the parser exists to reject, and trimming here would
-// accept a line mosd would not.
+// accept a line micad would not.
 /// Authorize one SSH public key.
 ///
 /// The key line is validated as submitted; a malformed line is **422**.
@@ -3540,10 +3540,10 @@ pub(crate) async fn api_v1_ssh_keys_list(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "A stored key already carries that public key (`key_exists`), or the device already holds the maximum number of keys (`key_limit_reached`); the collection's current state is what refuses the request, not the body", body = ApiError),
-        (status = 422, description = "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or mosd rejected the write (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3597,16 +3597,16 @@ pub(crate) async fn api_v1_ssh_keys_add(
             .at(SSH_KEYS_PATH),
         );
     }
-    // The cap, answered from `mosd_settings::MAX_KEYS` exactly as the token
+    // The cap, answered from `micad_settings::MAX_KEYS` exactly as the token
     // mint answers its own from `MAX_TOKENS`.
-    if keys.len() >= mosd_settings::MAX_KEYS {
+    if keys.len() >= micad_settings::MAX_KEYS {
         return api_response(
             StatusCode::CONFLICT,
             ApiError::apid(
                 "key_limit_reached",
                 format!(
                     "this device already holds the maximum of {} authorized keys; remove one first",
-                    mosd_settings::MAX_KEYS
+                    micad_settings::MAX_KEYS
                 ),
             )
             .at(SSH_KEYS_PATH),
@@ -3644,9 +3644,9 @@ pub(crate) async fn api_v1_ssh_keys_add(
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "No stored key has that fingerprint (`settings_not_found`). Well-formed and absent, which is a different answer from malformed", body = ApiError),
         (status = 422, description = "The path segment is not a fingerprint at all (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3702,8 +3702,8 @@ async fn stored_networks(state: &AppState) -> Result<Vec<WifiNetwork>, Box<Respo
     };
     // No absent-is-empty branch, unlike the two `access` lists above, and the
     // difference is in the model rather than in the route: `networks` carries
-    // no `skip_serializing_if`, so mosd's serialization of the typed tree
-    // always has it, and a dot-path that does not resolve is mosd's own
+    // no `skip_serializing_if`, so micad's serialization of the typed tree
+    // always has it, and a dot-path that does not resolve is micad's own
     // `NotFound` -- a 404 through `bus_api_error`, not an empty list.
     serde_json::from_value(value).map_err(|err| {
         Box::new(api_response(
@@ -3720,11 +3720,11 @@ async fn stored_networks(state: &AppState) -> Result<Vec<WifiNetwork>, Box<Respo
 /// Write a rewritten network list.
 ///
 /// There is no apid-side validator to run first, and that is a measured
-/// statement rather than an omission. mosd's own write path is
+/// statement rather than an omission. micad's own write path is
 /// `Settings::set`, which validates by deserializing the candidate tree
-/// (`Settings::set` in `pkgs/mosd/mosd-settings/src/model.rs`) -- so the typed
-/// `WifiNetwork` this route deserializes into IS the validator mosd runs — plus
-/// `mosd_settings::validate_wifi_psk`, which M6 lifted out of the station
+/// (`Settings::set` in `micad-settings/src/model.rs`) -- so the typed
+/// `WifiNetwork` this route deserializes into IS the validator micad runs — plus
+/// `micad_settings::validate_wifi_psk`, which M6 lifted out of the station
 /// reconciler's renderer so that the crate holding the model states its own
 /// field's rule, which was out of reach while it lived in the binary crate.
 async fn write_networks(state: &AppState, networks: &[WifiNetwork]) -> Result<(), Box<Response>> {
@@ -3747,9 +3747,9 @@ async fn write_networks(state: &AppState, networks: &[WifiNetwork]) -> Result<()
     responses(
         (status = 200, description = "The stored networks, in stored order, each `psk` replaced by `\"<redacted>\"`", body = Vec<WifiNetworkEntry>),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3793,10 +3793,10 @@ pub(crate) async fn api_v1_wifi_networks_list(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "A stored network already carries that SSID (`ssid_exists`); the SSID is this collection's identity, so the entry is not replaced silently", body = ApiError),
-        (status = 422, description = "The body carries the redaction sentinel, is not a network the settings model holds, or carries a `psk` outside IEEE 802.11i's 8..63 characters that is not a 64-digit hex PMK either (`validation_failed`); or mosd rejected the write (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The body carries the redaction sentinel, is not a network the settings model holds, or carries a `psk` outside IEEE 802.11i's 8..63 characters that is not a 64-digit hex PMK either (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3842,10 +3842,10 @@ pub(crate) async fn api_v1_wifi_networks_add(
     };
     // The pre-shared key's own bounds, run here for the first time. They could
     // not be run before: they lived inside
-    // `encode_psk`, a private function of the `mosd` binary crate's station
+    // `encode_psk`, a private function of the `micad` binary crate's station
     // reconciler, so a key outside IEEE 802.11i's range was accepted, stored,
     // and refused later by the renderer with the error visible only in live
-    // state. M6 lifted them into `mosd-settings` beside the typed model and
+    // state. M6 lifted them into `micad-settings` beside the typed model and
     // the reconciler now calls the lifted copy, so this is the same rule and
     // not a second one — which is what M5 refused to write, and rightly: a
     // second copy could disagree with the first.
@@ -3853,7 +3853,7 @@ pub(crate) async fn api_v1_wifi_networks_add(
     // After the shape check and not before it, unlike the sentinel: this is a
     // rule about one field of a network, so there has to be a network first.
     if let Some(psk) = &network.psk
-        && let Err(message) = mosd_settings::validate_wifi_psk(psk)
+        && let Err(message) = micad_settings::validate_wifi_psk(psk)
     {
         return api_response(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -3915,9 +3915,9 @@ pub(crate) async fn api_v1_wifi_networks_add(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "No stored network carries that SSID (`settings_not_found`)", body = ApiError),
-        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored list could not be read as a network list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -3955,9 +3955,9 @@ pub(crate) async fn api_v1_wifi_networks_remove(
 // addressing of its own, and no port may be claimed by two bridges -- so they
 // are properties of the whole tree and not of the entry being written. The
 // settings setter validates only that the tree still deserializes
-// (`Settings::set` in `pkgs/mosd/mosd-settings/src/model.rs`), and the reconciler that
+// (`Settings::set` in `micad-settings/src/model.rs`), and the reconciler that
 // does enforce them runs *after* the save with its verdict deliberately not
-// propagated to the caller (`MosdService::write_setting` in `pkgs/mosd/mosd/src/bus.rs`). A raw
+// propagated to the caller (`MosdService::write_setting` in `micad/src/bus.rs`). A raw
 // passthrough therefore answers 204 to a bridge naming a port that does not
 // exist and leaves the device's networking broken, with the only evidence in a
 // later state read. These routes run [`validate_entries`] over the candidate
@@ -3972,8 +3972,8 @@ pub(crate) async fn api_v1_wifi_networks_remove(
 // `deny_unknown_fields` refuses a body that invents it.
 
 // These four structs exist for `openapi.json` and are never deserialized
-// from: the routes parse into `mosd_settings`' own types, which are the
-// validator mosd runs. A test holds each one against the model field for
+// from: the routes parse into `micad_settings`' own types, which are the
+// validator micad runs. A test holds each one against the model field for
 // field.
 /// `static` addressing.
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -4291,8 +4291,8 @@ pub(crate) struct ObservedInterface {
         (status = 200, description = "Configured interfaces and the current systemd-networkd observation", body = NetworkOverview),
         (status = 401, description = "No API credential was supplied", body = ApiError),
         (status = 500, description = "The configured network map could not be read", body = ApiError),
-        (status = 503, description = "mosd is unavailable", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out", body = ApiError),
+        (status = 503, description = "micad is unavailable", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out", body = ApiError),
     ),
 )]
 pub(crate) async fn api_v1_network_read(
@@ -4366,10 +4366,10 @@ pub(crate) async fn api_v1_network_read(
         (status = 400, description = "The body is not JSON (`request_invalid`)", body = ApiError),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 422, description = "The body is not a map of interfaces, a key is not an interface name, an entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses it -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected the write (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The body is not a map of interfaces, a key is not an interface name, an entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses it -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4435,10 +4435,10 @@ pub(crate) async fn api_v1_network_write(
         (status = 400, description = "The body is not JSON (`request_invalid`)", body = ApiError),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 422, description = "The name is not an interface name, the body is not an interface, the entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses the resulting map (`validation_failed`); or mosd rejected the write (`settings_rejected`)", body = ApiError),
-        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The name is not an interface name, the body is not an interface, the entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses the resulting map (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4503,9 +4503,9 @@ pub(crate) async fn api_v1_network_iface_write(
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "No `network` entry has that name (`settings_not_found`). Well-formed and absent, which is a different answer from malformed", body = ApiError),
         (status = 422, description = "The name is not an interface name, or removing the entry breaks a relational rule -- a bridge still lists it as a port, a VLAN still names it as a parent (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4548,7 +4548,7 @@ pub(crate) async fn api_v1_network_iface_remove(
 ///   runs that and confirms it. Here the read is the guard, and it happens
 ///   before anything is written.
 /// - **422** when the entry exists and is not of kind `wireguard`. The same
-///   split mosd's rotate-key now makes: a well-formed identifier naming a real
+///   split micad's rotate-key now makes: a well-formed identifier naming a real
 ///   entry of the wrong kind is a bad argument and not an absent resource.
 /// - **422** when the name is not an interface name at all, from
 ///   [`check_iface_name`].
@@ -4624,9 +4624,9 @@ async fn api_write_peers(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 404, description = "No `network` entry has that name (`settings_not_found`)", body = ApiError),
         (status = 422, description = "The name is not an interface name, or the entry is not a WireGuard one (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4673,9 +4673,9 @@ pub(crate) async fn api_v1_peers_list(
         (status = 404, description = "No `network` entry has that name (`settings_not_found`); nothing is written", body = ApiError),
         (status = 409, description = "A stored peer already carries that public key (`peer_exists`); the key is this collection's identity, so the entry is not replaced silently", body = ApiError),
         (status = 422, description = "The name is not an interface name, the entry is not a WireGuard one, or the peer is one the reconciler would refuse -- a public key that is not 32 bytes of base64, an allowed IP that is not a CIDR, an endpoint that is not `host:port` (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4747,9 +4747,9 @@ pub(crate) async fn api_v1_peers_add(
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 404, description = "No `network` entry has that name, or no peer of it carries that key (`settings_not_found`)", body = ApiError),
         (status = 422, description = "The interface name is not one, the entry is not a WireGuard one, or the path segment is not a WireGuard public key at all (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -4787,7 +4787,7 @@ pub(crate) async fn api_v1_peers_remove(
 }
 
 /// One answer shape for both roots: the value redacted, or §2.4's envelope
-/// classified from what mosd said.
+/// classified from what micad said.
 fn resource_response(value: anyhow::Result<Value>, path: &str) -> Response {
     match value {
         Ok(value) => api_response(StatusCode::OK, ResourceValue(redact::redact(value, path))),
@@ -4795,12 +4795,12 @@ fn resource_response(value: anyhow::Result<Value>, path: &str) -> Response {
     }
 }
 
-/// §2.4's table, applied to a failed mosd call.
+/// §2.4's table, applied to a failed micad call.
 ///
-/// The classification is translated and the message is not. mosd maps its
+/// The classification is translated and the message is not. micad maps its
 /// `SettingsError` onto five error names — two interface-scoped, three fdo —
 /// and zbus carries the name back, so the distinction exists all the way to
-/// here and only apid can lose it; the message is mosd's own words because no
+/// here and only apid can lose it; the message is micad's own words because no
 /// phrasing apid could pre-write would say which field was wrong.
 ///
 /// The concrete `zbus::Error` is recovered by downcast: `bus_client.rs`
@@ -4813,11 +4813,11 @@ fn resource_response(value: anyhow::Result<Value>, path: &str) -> Response {
 /// is no dot-path at fault to report. Every route that does name one passes
 /// `Some`, and the classification above is shared rather than copied.
 pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response {
-    tracing::warn!(error = %err, path = path.unwrap_or_default(), "mosd call failed");
+    tracing::warn!(error = %err, path = path.unwrap_or_default(), "micad call failed");
     let (status, error) = if err.downcast_ref::<InvalidTaskPayload>().is_some() {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::mosd("mosd_failed", format!("{err:#}")),
+            ApiError::micad("micad_failed", format!("{err:#}")),
         )
     } else if err
         .downcast_ref::<crate::bus_client::MosdCallTimeout>()
@@ -4825,7 +4825,7 @@ pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response
     {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            ApiError::apid("mosd_timeout", format!("{err:#}")),
+            ApiError::apid("micad_timeout", format!("{err:#}")),
         )
     } else {
         match err.downcast_ref::<zbus::Error>() {
@@ -4836,28 +4836,28 @@ pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response
                 match name.as_str() {
                     MOSD_NOT_FOUND => (
                         StatusCode::NOT_FOUND,
-                        ApiError::mosd("settings_not_found", message),
+                        ApiError::micad("settings_not_found", message),
                     ),
                     MOSD_READ_ONLY => (
                         StatusCode::CONFLICT,
-                        ApiError::mosd("settings_read_only", message),
+                        ApiError::micad("settings_read_only", message),
                     ),
                     FDO_INVALID_ARGS => (
                         StatusCode::UNPROCESSABLE_ENTITY,
-                        ApiError::mosd("settings_rejected", message),
+                        ApiError::micad("settings_rejected", message),
                     ),
                     FDO_IO_ERROR => (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        ApiError::mosd("settings_io", message),
+                        ApiError::micad("settings_io", message),
                     ),
                     FDO_FAILED => (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        ApiError::mosd("mosd_failed", message),
+                        ApiError::micad("micad_failed", message),
                     ),
-                    _ => mosd_unreachable(err),
+                    _ => micad_unreachable(err),
                 }
             }
-            _ => mosd_unreachable(err),
+            _ => micad_unreachable(err),
         }
     };
     // Omitted rather than nulled or emptied when there is none: the member
@@ -4879,13 +4879,13 @@ pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response
     response
 }
 
-/// Task lookup has the same transport classifications as other mosd calls,
+/// Task lookup has the same transport classifications as other micad calls,
 /// but its missing item is not a missing settings path.
 fn task_api_error(err: &anyhow::Error, id: &str) -> Response {
     if is_task_not_found(err) {
         return api_response(
             StatusCode::NOT_FOUND,
-            ApiError::mosd("task_not_found", format!("task not found: `{id}`")),
+            ApiError::micad("task_not_found", format!("task not found: `{id}`")),
         );
     }
     bus_api_error(err, None)
@@ -4903,10 +4903,10 @@ fn is_task_not_found(err: &anyhow::Error) -> bool {
 /// §2.4's last row, which is exhaustive over everything the three above do not
 /// name: the call could not be made at all. `source` is apid because this is a
 /// statement about this server rather than about the request.
-fn mosd_unreachable(err: &anyhow::Error) -> (StatusCode, ApiError) {
+fn micad_unreachable(err: &anyhow::Error) -> (StatusCode, ApiError) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        ApiError::apid("mosd_unreachable", format!("{err:#}")),
+        ApiError::apid("micad_unreachable", format!("{err:#}")),
     )
 }
 
@@ -5032,7 +5032,7 @@ async fn bearer_is_stored(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 /// The `access` subtree: from the gate's cache when it is provably fresh, and
-/// from mosd otherwise.
+/// from micad otherwise.
 ///
 /// The generation is snapshotted BEFORE the direct read so a change signalled
 /// while the read was in flight discards the fill rather than caching a
@@ -5099,12 +5099,12 @@ const HOSTNAME_RULES: &str =
 /// was already over the floor before this function existed. Named rather than
 /// inlined so the comparison, and not only the number, has one spelling.
 ///
-/// The number itself is [`mosd_settings::MIN_ADMIN_PASSWORD_LEN`] and no
+/// The number itself is [`micad_settings::MIN_ADMIN_PASSWORD_LEN`] and no
 /// longer a copy of it. apid used to state its own `MIN_PASSWORD_BYTES = 8`
-/// beside mosd's, with a comment in each naming the other; two statements of
+/// beside micad's, with a comment in each naming the other; two statements of
 /// one rule agree with each other right up until one of them moves, and the
 /// thing they would disagree about is whether a credential this device
-/// accepts is one it will keep accepting. `mosd-settings` is the crate both
+/// accepts is one it will keep accepting. `micad-settings` is the crate both
 /// binaries link, so it is where the bound lives.
 fn password_under_floor(password: &str) -> bool {
     password.len() < MIN_ADMIN_PASSWORD_LEN
@@ -5157,7 +5157,7 @@ fn valid_hostname(name: &str) -> bool {
 /// DHCP off with an empty address is an interface with **no** addressing, not
 /// an error. It used to be one, and it stopped being one when bridges became
 /// expressible: a bridge port *must* carry neither `dhcp` nor `static`
-/// (`validate_network` in `pkgs/mosd/mosd/src/reconciler/network.rs`), and it must be a
+/// (`validate_network` in `micad/src/reconciler/network.rs`), and it must be a
 /// declared entry before a bridge may name it, so a pane that insisted on an
 /// address made a bridge unbuildable through the form. An address that is
 /// present and not a CIDR is still refused.
@@ -5197,7 +5197,7 @@ fn iface_settings_path(iface: &str) -> String {
 /// True when `value` parses as an IP address with an optional `/prefix`.
 ///
 /// An echo of the reconciler's `is_ip_or_cidr`
-/// (`is_ip_or_cidr` in `pkgs/mosd/mosd/src/reconciler/network.rs`), for the reason
+/// (`is_ip_or_cidr` in `micad/src/reconciler/network.rs`), for the reason
 /// `validate_static` states about the address field: apid checks on its write
 /// path so the operator gets a readable error, and the reconciler checks again
 /// because the settings file is writable without apid. Deliberately not
@@ -5221,7 +5221,7 @@ fn is_ip_or_cidr(value: &str) -> bool {
 /// True when `value` is the `host:port` a peer's `endpoint` has to be.
 ///
 /// The same echo, of `is_host_port`
-/// (`is_host_port` in `pkgs/mosd/mosd/src/reconciler/network.rs`).
+/// (`is_host_port` in `micad/src/reconciler/network.rs`).
 fn is_host_port(value: &str) -> bool {
     let Some((host, port)) = value.rsplit_once(':') else {
         return false;
@@ -5246,15 +5246,15 @@ const WIREGUARD_KEY_LEN: usize = 44;
 
 /// Whether `value` is the base64 X25519 key a peer's `publicKey` has to be.
 ///
-/// The echo of `wgkeys::is_key` (`pkgs/mosd/mosd/src/wgkeys.rs`),
+/// The echo of `wgkeys::is_key` (`micad/src/wgkeys.rs`),
 /// which decodes with the standard alphabet's *padded* spelling; the length
-/// test is what pins that, because [`mosd_settings::decode_base64`] also
+/// test is what pins that, because [`micad_settings::decode_base64`] also
 /// accepts the unpadded form and an echo that accepted more than the boundary
 /// would hand the operator a form error from the daemon instead of from the
 /// field.
 fn is_wireguard_key(value: &str) -> bool {
     value.len() == WIREGUARD_KEY_LEN
-        && mosd_settings::decode_base64(value).is_some_and(|bytes| bytes.len() == 32)
+        && micad_settings::decode_base64(value).is_some_and(|bytes| bytes.len() == 32)
 }
 
 /// The reconciler's peer rules, echoed for a readable form error.
@@ -5290,7 +5290,7 @@ fn validate_peers(iface: &str, peers: &[WireguardPeer]) -> Result<(), String> {
 /// The reconciler's relational rules, echoed over the whole candidate subtree.
 ///
 /// Echoed and not forked. `validate_network`
-/// (`validate_network` in `pkgs/mosd/mosd/src/reconciler/network.rs`) stays the boundary
+/// (`validate_network` in `micad/src/reconciler/network.rs`) stays the boundary
 /// — it runs on every apply, including the ones that never went through apid —
 /// and this runs first so the operator reads which field is wrong instead of a
 /// 502 from a failed bus call.
@@ -5424,10 +5424,10 @@ const SETUP_TOKEN_NAME: &str = "first-run setup";
         (status = 201, description = "The device is configured; the body carries a newly minted API token, which is not recoverable afterwards", body = SetupToken),
         (status = 400, description = "The body is not JSON (`request_invalid`)", body = ApiError),
         (status = 409, description = "The device already has an admin password, so it is not in setup mode (`already_configured`). Change the password with `POST /api/v1/actions/change-password`", body = ApiError),
-        (status = 422, description = "The body is not this shape, the password is under 8 bytes, the hostname is not a hostname, a `network` key is not an interface name, a static address is not IPv4 CIDR notation, or a relational rule refuses the resulting map -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected a write (`settings_rejected`). Nothing is written on any of them", body = ApiError),
-        (status = 500, description = "Hashing the password failed (`hash_failed`), the stored token list could not be read (`settings_invalid`), no free token id was drawn (`mint_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 422, description = "The body is not this shape, the password is under 8 bytes, the hostname is not a hostname, a `network` key is not an interface name, a static address is not IPv4 CIDR notation, or a relational rule refuses the resulting map -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or micad rejected a write (`settings_rejected`). Nothing is written on any of them", body = ApiError),
+        (status = 500, description = "Hashing the password failed (`hash_failed`), the stored token list could not be read (`settings_invalid`), no free token id was drawn (`mint_failed`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -5444,20 +5444,20 @@ pub(crate) async fn api_v1_setup(
     };
     // THE CLAIM IS ONE STEP. From here to the `access` write below is a
     // check-then-act -- the read decides the device is unclaimed, the write is
-    // what claims it -- and nothing underneath makes the pair atomic: mosd
+    // what claims it -- and nothing underneath makes the pair atomic: micad
     // serialises each `SetSettings` under its own write lock but offers no
     // compare-and-set, so two requests that both read an unclaimed tree both
     // write one. It is not a race that is hard to win. The window is the
     // argon2id hash below plus two bus round trips, and it was measured on the
     // shipped path with no test seam in it: two concurrent requests against a
-    // real mosd over a real bus produced two 201s and two working
+    // real micad over a real bus produced two 201s and two working
     // administrator sessions in 200 of 200 runs, on a device that kept one
     // token and the last password written.
     //
     // The guard is here, in apid, because apid is the only claimant for as
     // long as the device can be asked: [`claim_status`] names the two writers
-    // that can create the first `access.webAdmin`, and the other one -- mosd's
-    // provisioning-document importer -- finishes before mosd requests its bus
+    // that can create the first `access.webAdmin`, and the other one -- micad's
+    // provisioning-document importer -- finishes before micad requests its bus
     // name. It is held across the hash and every write rather than released
     // after the check, because the hash is the widest part of the window. The
     // loser therefore waits out the winner's claim, re-reads a claimed tree
@@ -5638,7 +5638,7 @@ pub(crate) async fn api_v1_setup(
     // The claim itself, as ONE write of the whole `access` subtree.
     //
     // The credential, the record of how the device was claimed and the minted
-    // token are three keys of one subtree and they commit together. mosd turns
+    // token are three keys of one subtree and they commit together. micad turns
     // one `SetSettings` into one `Settings::set` and one `Store::save`, and
     // `Store::save` commits by rename -- which is
     // `docs/design/provisioning.md` §4.1.3's argument, held here by the same
@@ -5662,7 +5662,7 @@ pub(crate) async fn api_v1_setup(
         hash: minted.hash,
         created: device_clock_seconds(),
     });
-    // The same validator mosd runs, so a list this route accepts is one the
+    // The same validator micad runs, so a list this route accepts is one the
     // store will accept too -- [`write_tokens`]'s check, which the whole-subtree
     // write does not go through.
     if let Err(err) = validate_api_tokens(&tokens) {
@@ -5809,7 +5809,7 @@ pub(crate) struct ClaimStatus {
 /// claimed and always was; this adds the part it cannot state. A claim through
 /// `POST /api/v1/setup` writes `access.claim` in the same save as the
 /// credential, so its record is read back verbatim. A claim by provisioning
-/// document writes no record — mosd's importer is the one writer that does not,
+/// document writes no record — micad's importer is the one writer that does not,
 /// deliberately — and is recognised by the absence:
 ///
 /// - only two writers can create the FIRST `access.webAdmin` on a device that
@@ -5922,7 +5922,7 @@ async fn rotation_required(state: &AppState) -> bool {
         (status = 200, description = "How the device was claimed and whether its credential must be rotated", body = ClaimStatus),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "The access settings could not be read", body = ApiError),
-        (status = 503, description = "mosd is unavailable (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 503, description = "micad is unavailable (`micad_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -5961,7 +5961,7 @@ pub(crate) const PRESENCE_CAPABILITY: &str = "recovery.presence";
 ///
 /// A refusal has no door to record, so it records none. The success and
 /// aborted lines carry `credential-recovery-<mechanism>` instead
-/// (`mosd_settings::credential_recovery_event`), which is what makes "which
+/// (`micad_settings::credential_recovery_event`), which is what makes "which
 /// door was used" greppable.
 const CREDENTIAL_RECOVERY_EVENT: &str = "credential-recovery";
 
@@ -6097,12 +6097,12 @@ pub(crate) trait Presence: Send + Sync {
     fn spend(&self) -> anyhow::Result<()>;
 }
 
-/// The shipped reader: the assertion mosd left after mapping a board-declared
+/// The shipped reader: the assertion micad left after mapping a board-declared
 /// physical recovery action, published back on the channel that action named.
 ///
-/// **This crate never CREATES a marker.** mosd writes it, from an intent that
+/// **This crate never CREATES a marker.** micad writes it, from an intent that
 /// arrived on the kernel command line before Linux ran
-/// (`mosd_settings::Declaration::map_intent`); there is no route, no settings
+/// (`micad_settings::Declaration::map_intent`); there is no route, no settings
 /// path and no line in apid that creates it, so an API that could set it would
 /// have to be written first — which is the change §4 forbids. apid reads it,
 /// and [`Presence::spend`] takes it away once it has authorized its one
@@ -6112,7 +6112,7 @@ pub(crate) struct MarkerPresence {
     declaration: PathBuf,
     /// The assertion this process spent, if it has spent one.
     ///
-    /// **The marker itself, not a flag.** mosd re-maps the command line if it
+    /// **The marker itself, not a flag.** micad re-maps the command line if it
     /// restarts inside a boot, so a bare "something was spent" bit would
     /// refuse the fresh assertion that restart wrote; an assertion carries a
     /// deadline, so the one that was spent is identifiable.
@@ -6123,15 +6123,15 @@ pub(crate) struct MarkerPresence {
     /// presence window is told that presence "is not asserted", which is the
     /// wrong sentence for someone who is standing at the device having just
     /// asserted it. It also keeps the bound if the unlink fails.
-    spent: std::sync::Mutex<Option<mosd_settings::PresenceMarker>>,
+    spent: std::sync::Mutex<Option<micad_settings::PresenceMarker>>,
 }
 
 impl MarkerPresence {
     /// The shipped reader. Two paths and no syscall until something asserts.
     pub(crate) fn at_default() -> Self {
         Self::at(
-            mosd_settings::presence_marker_path(),
-            mosd_settings::declaration_path(),
+            micad_settings::presence_marker_path(),
+            micad_settings::declaration_path(),
         )
     }
 
@@ -6146,7 +6146,7 @@ impl MarkerPresence {
     }
 
     /// Whether `marker` is the assertion this process already spent.
-    fn is_spent(&self, marker: &mosd_settings::PresenceMarker) -> bool {
+    fn is_spent(&self, marker: &micad_settings::PresenceMarker) -> bool {
         self.spent
             .lock()
             .expect("the spent-assertion lock is never held across a panic")
@@ -6171,14 +6171,14 @@ impl Presence for MarkerPresence {
         // nothing an operator could have done, and telling them presence is
         // merely "not asserted" would send them looking for a door that does
         // not exist.
-        let declaration = mosd_settings::Declaration::read(&self.declaration);
+        let declaration = micad_settings::Declaration::read(&self.declaration);
         match &declaration {
-            mosd_settings::Declaration::None => return Err(NoPresence::BoardDeclaresNone),
-            mosd_settings::Declaration::Unreadable(reason) => {
+            micad_settings::Declaration::None => return Err(NoPresence::BoardDeclaresNone),
+            micad_settings::Declaration::Unreadable(reason) => {
                 tracing::warn!(%reason, "the board's recovery declaration could not be read");
                 return Err(NoPresence::DeclarationUnreadable);
             }
-            mosd_settings::Declaration::Actions(_) => {}
+            micad_settings::Declaration::Actions(_) => {}
         }
 
         let bytes = std::fs::read(&self.marker).map_err(|err| {
@@ -6195,7 +6195,7 @@ impl Presence for MarkerPresence {
                 NoPresence::Malformed
             }
         })?;
-        let marker: mosd_settings::PresenceMarker =
+        let marker: micad_settings::PresenceMarker =
             serde_json::from_slice(&bytes).map_err(|_| NoPresence::Malformed)?;
         // A marker that is still on the filesystem because the unlink failed
         // is still spent. Checked before the mechanism and the deadline: what
@@ -6252,9 +6252,9 @@ impl Presence for MarkerPresence {
         // Remembered BEFORE the unlink, and from the file rather than from the
         // `Assertion` in hand: an `Assertion` carries no deadline, and the
         // deadline is what distinguishes the assertion that was spent from a
-        // later one written by a mosd that restarted inside this boot.
+        // later one written by a micad that restarted inside this boot.
         if let Ok(bytes) = std::fs::read(&self.marker)
-            && let Ok(marker) = serde_json::from_slice::<mosd_settings::PresenceMarker>(&bytes)
+            && let Ok(marker) = serde_json::from_slice::<micad_settings::PresenceMarker>(&bytes)
         {
             *self
                 .spent
@@ -6290,7 +6290,7 @@ pub(crate) struct ResetStaged {
     #[schema(value_type = String, example = "configuration")]
     tier: ResetTier,
     /// When it runs. Always `next-boot`: §2.2 requires a reset to be an intent
-    /// record plus an idempotent apply, and mosd applies it before anything
+    /// record plus an idempotent apply, and micad applies it before anything
     /// else on the next boot.
     applies: &'static str,
 }
@@ -6331,10 +6331,10 @@ fn presence_refusal(reason: &NoPresence) -> Response {
 
 /// Stage a reset tier.
 ///
-/// **This route stages; mosd applies.** §2.2 requires a reset to be an intent
+/// **This route stages; micad applies.** §2.2 requires a reset to be an intent
 /// record plus an idempotent apply, so the whole of this handler's write is
 /// ONE `SetSettings("reset")` — one `Store::save` — after which a power loss
-/// leaves the device either not asked or asked, never half-reset. mosd carries
+/// leaves the device either not asked or asked, never half-reset. micad carries
 /// the tier out before anything else on the next boot and clears the record.
 ///
 /// **Authority, per §2.2.** Tiers 1 and 2 are authenticated management
@@ -6360,9 +6360,9 @@ fn presence_refusal(reason: &NoPresence) -> Response {
         (status = 403, description = "The tier requires physical presence at the device and none is asserted (`presence_required`)", body = ApiError),
         (status = 409, description = "The device was claimed with a bootstrap credential that has not been rotated (`rotation_required`)", body = ApiError),
         (status = 422, description = "The body is not this shape, or names no tier this device implements (`validation_failed`)", body = ApiError),
-        (status = 500, description = "mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -6376,7 +6376,7 @@ pub(crate) async fn api_v1_reset(
         Ok(request) => request,
         Err(response) => return *response,
     };
-    let event = mosd_settings::reset_event(request.tier);
+    let event = micad_settings::reset_event(request.tier);
 
     // Presence BEFORE the write and before anything else this handler does, so
     // a refused tier 3 is exactly a refused tier 3: nothing staged, nothing
@@ -6454,7 +6454,7 @@ pub(crate) async fn api_v1_reset(
 /// **An unclaimed device is refused**, pointing at `POST /api/v1/setup`. There
 /// is nothing to recover on a device that has no credential, and minting one
 /// here would be a third channel that can claim a device —
-/// `mosd_settings::ClaimChannel` has exactly two members and says why.
+/// `micad_settings::ClaimChannel` has exactly two members and says why.
 ///
 /// **One rotation per presence assertion** (§5.4). The assertion is read and
 /// spent inside one guard, so a second request — concurrent, or later inside
@@ -6477,9 +6477,9 @@ pub(crate) async fn api_v1_reset(
         (status = 200, description = "A new credential was minted and published on the channel that proved presence; the body carries no secret", body = CredentialRecovered),
         (status = 403, description = "Physical presence is not asserted, has expired or has already been spent by a rotation (`presence_required`), or the caller is authenticated and must use `POST /api/v1/actions/change-password` instead (`authenticated_session`)", body = ApiError),
         (status = 409, description = "The device has no administrator credential to recover; claim it with `POST /api/v1/setup` (`not_claimed`)", body = ApiError),
-        (status = 500, description = "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -6533,15 +6533,15 @@ pub(crate) async fn api_v1_recovery_credential(
     // landed last, so an operator could not tell which console line was real
     // by reading down.
     //
-    // **Here rather than under the marker or in mosd**, on `api_v1_setup`'s
+    // **Here rather than under the marker or in micad**, on `api_v1_setup`'s
     // reading: this route is the only thing in the tree that spends an
-    // assertion, `POST /api/v1/reset` only reads one, and mosd has finished
+    // assertion, `POST /api/v1/reset` only reads one, and micad has finished
     // writing the marker before apid can answer a request at all. A second
     // spender would move the guard rather than add one.
     //
     // **The hold is bounded**, which is what makes a lock on an
     // unauthenticated route acceptable: `bus_client`'s `MOSD_CALL_TIMEOUT`
-    // bounds each mosd call, the hash is one argon2id, and the publish is a
+    // bounds each micad call, the hash is one argon2id, and the publish is a
     // write to the console the BOARD declared. Once one rotation has
     // succeeded, every further request takes an uncontended lock, reads a
     // spent assertion and is refused before reaching the hash.
@@ -6559,7 +6559,7 @@ pub(crate) async fn api_v1_recovery_credential(
             return presence_refusal(&reason);
         }
     };
-    let event = &mosd_settings::credential_recovery_event(&assertion.mechanism);
+    let event = &micad_settings::credential_recovery_event(&assertion.mechanism);
 
     let access = match state.api.get_settings(ACCESS_PATH).await {
         Ok(value) => value,
@@ -6755,7 +6755,7 @@ enum PasswordChangeError {
     TooShort,
     /// Hashing the new password failed.
     Hashing(anyhow::Error),
-    /// A mosd call failed.
+    /// A micad call failed.
     Bus(anyhow::Error),
 }
 
@@ -6909,9 +6909,9 @@ pub(crate) struct ChangePasswordRequest {
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "The browser CSRF token is invalid (`csrf_invalid`), or the current password does not verify (`wrong_password`)", body = ApiError),
         (status = 422, description = "The new password is shorter than 8 characters (`validation_failed`)", body = ApiError),
-        (status = 500, description = "Hashing failed (`hashing_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "Hashing failed (`hashing_failed`), or micad failed to answer (`settings_io`, `micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -6976,8 +6976,8 @@ pub(crate) async fn api_v1_change_password(
 
 /// The `network` settings subtree, as a map of typed entries.
 ///
-/// Parsed into `mosd_settings` types rather than read out of the JSON by key,
-/// so the pane renders exactly the schema mosd deserializes and a field this
+/// Parsed into `micad_settings` types rather than read out of the JSON by key,
+/// so the pane renders exactly the schema micad deserializes and a field this
 /// file misspells is a compile error rather than a blank input.
 type NetworkEntries = std::collections::BTreeMap<String, IfaceSettings>;
 
@@ -7003,7 +7003,7 @@ fn peers_settings_path(iface: &str) -> String {
 
 // Power pane
 
-/// A power action the pane can request of mosd.
+/// A power action the pane can request of micad.
 #[derive(Clone, Copy)]
 enum PowerAction {
     Reboot,
@@ -7020,7 +7020,7 @@ impl PowerAction {
     }
 }
 
-/// Return acceptance only after mosd admits the power request.
+/// Return acceptance only after micad admits the power request.
 ///
 /// The bounded bus call reports policy refusals and dispatch failures. Its
 /// success means shutdown was requested, not that the machine has restarted.
@@ -7041,7 +7041,7 @@ async fn power_accepted(state: &AppState, action: PowerAction, source: &str) -> 
             tracing::warn!(action = action.confirm_token(), error = %err, "power action refused");
             return api_response(
                 StatusCode::CONFLICT,
-                ApiError::mosd(
+                ApiError::micad(
                     "power_refused",
                     message.clone().unwrap_or_else(|| name.to_string()),
                 ),
@@ -7066,13 +7066,13 @@ async fn power_accepted(state: &AppState, action: PowerAction, source: &str) -> 
     context_path = API,
     tag = "actions",
     responses(
-        (status = 202, description = "mosd admitted the reboot request; completion is not reported over this connection"),
+        (status = 202, description = "micad admitted the reboot request; completion is not reported over this connection"),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 409, description = "mosd refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
-        (status = 500, description = "mosd failed to dispatch the power action (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)", body = ApiError),
+        (status = 409, description = "micad refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
+        (status = 500, description = "micad failed to dispatch the power action (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "The bounded micad call timed out; the outcome is not confirmed (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -7094,13 +7094,13 @@ pub(crate) async fn api_v1_reboot(
     context_path = API,
     tag = "actions",
     responses(
-        (status = 202, description = "mosd admitted the power-off request; completion is not reported over this connection"),
+        (status = 202, description = "micad admitted the power-off request; completion is not reported over this connection"),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
-        (status = 409, description = "mosd refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
-        (status = 500, description = "mosd failed to dispatch the power action (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)", body = ApiError),
+        (status = 409, description = "micad refused the power action (`power_refused`); the message states the policy or permission reason", body = ApiError),
+        (status = 500, description = "micad failed to dispatch the power action (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "The bounded micad call timed out; the outcome is not confirmed (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -7128,12 +7128,12 @@ const SSH_KEYS_PATH: &str = "access.ssh.authorizedKeys";
 /// sentence renders, so a later refactor cannot quietly drop it.
 const ROOT_KEY_NOTICE: &str = "Every authorized key is a root key.";
 
-/// Shortest transient password accepted, in bytes; mosd's own floor.
+/// Shortest transient password accepted, in bytes; micad's own floor.
 const MIN_TRANSIENT_PASSWORD_BYTES: usize = 8;
 
 /// Longest transient password accepted, in bytes.
 ///
-/// The 72 is not arbitrary, and it is deliberately tighter than mosd's own
+/// The 72 is not arbitrary, and it is deliberately tighter than micad's own
 /// bound: the transient password is hashed with bcrypt, and bcrypt reads only
 /// the first 72 bytes of its input and silently ignores the rest. Accepting a
 /// 100-character password would therefore mean the first 72 characters of it
@@ -7147,7 +7147,7 @@ const MAX_TRANSIENT_PASSWORD_BYTES: usize = 72;
 ///
 /// `SHA256:` followed by the unpadded base64 of the SHA-256 digest of the
 /// decoded blob — the string `ssh-keygen -lf` prints, and the same value
-/// mosd's sshd reconciler publishes. It is recomputed here rather than read
+/// micad's sshd reconciler publishes. It is recomputed here rather than read
 /// from the published state because the pane has to map the fingerprint an
 /// operator clicks back onto the stored entry a removal rewrites, and the
 /// published list carries no such handle. A test pins it against fingerprints
@@ -7156,10 +7156,10 @@ const MAX_TRANSIENT_PASSWORD_BYTES: usize = 72;
 /// `None` when the line has no blob or the blob does not decode.
 fn ssh_fingerprint(key: &str) -> Option<String> {
     let blob = key.split(' ').nth(1)?;
-    let decoded = mosd_settings::decode_base64(blob)?;
+    let decoded = micad_settings::decode_base64(blob)?;
     Some(format!(
         "SHA256:{}",
-        mosd_settings::encode_base64_nopad(&Sha256::digest(&decoded))
+        micad_settings::encode_base64_nopad(&Sha256::digest(&decoded))
     ))
 }
 
@@ -7240,9 +7240,9 @@ pub(crate) struct TransientRootPasswordRequest {
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 422, description = "The password is shorter than 8 bytes, longer than 72, or contains a NUL, newline or carriage return (`validation_failed`); the message states the bound and never the password", body = ApiError),
-        (status = 500, description = "mosd failed to set it (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running", body = ApiError),
+        (status = 500, description = "micad failed to set it (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]

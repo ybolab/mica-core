@@ -170,7 +170,7 @@ function ApplyStrip({ taskId, onDismiss }: { taskId: string; onDismiss: () => vo
     queryFn: () => api<TaskRecord>(`/api/v1/tasks/${encodeURIComponent(taskId)}`),
     refetchInterval: (query) => query.state.data?.status === 'finished' ? false : 1_000,
   })
-  const connection = connectionState({ isError: health.isError, failureCount: health.failureCount, mosd: health.data?.mosd })
+  const connection = connectionState({ isError: health.isError, failureCount: health.failureCount, micad: health.data?.micad })
   const stage = applyStage(task.data, connection)
   const settled = stage === 'applied' || stage === 'failed'
   return (

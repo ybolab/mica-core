@@ -23,7 +23,7 @@ function status(overrides: Partial<StorageStatus> = {}): StorageStatus {
       sharedCapacityTier: 'data',
       detail: '/mos and /srv are binds of the DATA filesystem',
       binds: [
-        { name: 'mos', mount: '/mos', source: '/mnt/data/mos', owner: 'system', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
+        { name: 'mos', mount: '/mos', source: '/mnt/data/mica', owner: 'system', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
         { name: 'srv', mount: '/srv', source: '/mnt/data/srv', owner: 'user', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
       ],
     },
@@ -84,7 +84,7 @@ describe('storage status', () => {
           sharedCapacityTier: 'data',
           detail: '/mos and /srv are binds of the DATA filesystem',
           binds: [
-            { name: 'mos', mount: '/mos', source: '/mnt/data/mos', owner: 'system', readiness: 'degraded', mounted: true, readOnly: true, sourceOnData: true, probe: { attempted: false, reason: 'the mount is read-only' } },
+            { name: 'mos', mount: '/mos', source: '/mnt/data/mica', owner: 'system', readiness: 'degraded', mounted: true, readOnly: true, sourceOnData: true, probe: { attempted: false, reason: 'the mount is read-only' } },
             { name: 'srv', mount: '/srv', source: '/srv', owner: 'user', readiness: 'unavailable', mounted: true, sourceOnData: false, probe: { attempted: true, passed: false, error: 'EROFS' } },
           ],
         },
@@ -132,9 +132,9 @@ describe('storage status', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/storage/status': () => jsonResponse({ error: { message: 'mosd is not reachable' } }, 503) })
+    stubFetch({ '/api/v1/storage/status': () => jsonResponse({ error: { message: 'micad is not reachable' } }, 503) })
     renderPanel(<StoragePanel />)
 
-    expect(await screen.findByText('mosd is not reachable')).toBeTruthy()
+    expect(await screen.findByText('micad is not reachable')).toBeTruthy()
   })
 })

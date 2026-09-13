@@ -1,5 +1,5 @@
 //! the proxy's `SettingsChanged` member, received over a real
-//! private bus from a fake mosd that emits it exactly as the real one does —
+//! private bus from a fake micad that emits it exactly as the real one does —
 //! and the watcher semantics on top: the subscription going live marks
 //! the cache synchronised, an access-touching change invalidates it, an
 //! unrelated change does not, and the stream lapsing drops the cache back to
@@ -55,12 +55,12 @@ fn dbus_daemon() -> PathBuf {
     })
 }
 
-/// Just enough of `com.mos.mosd1` for this module: the settings read a cache
-/// fill uses, and a write that emits `SettingsChanged` the way the real mosd
+/// Just enough of `com.mica.micad1` for this module: the settings read a cache
+/// fill uses, and a write that emits `SettingsChanged` the way the real micad
 /// does — after the write, with the dot-path and the JSON value.
 struct FakeMosd;
 
-#[zbus::interface(name = "com.mos.mosd1")]
+#[zbus::interface(name = "com.mica.micad1")]
 impl FakeMosd {
     async fn get_settings(&self, path: &str) -> zbus::fdo::Result<String> {
         match path {
@@ -143,13 +143,13 @@ async fn the_settings_changed_subscription_feeds_the_access_cache() {
 
     let _server = zbus::connection::Builder::address(address.as_str())
         .expect("bus address")
-        .name("com.mos.mosd")
+        .name("com.mica.micad")
         .expect("well-known name")
-        .serve_at("/com/mos/mosd", FakeMosd)
-        .expect("serve com.mos.mosd1")
+        .serve_at("/com/mos/micad", FakeMosd)
+        .expect("serve com.mica.micad1")
         .build()
         .await
-        .expect("fake mosd on the private bus");
+        .expect("fake micad on the private bus");
     let watcher_connection = zbus::connection::Builder::address(address.as_str())
         .expect("bus address")
         .build()
@@ -194,7 +194,7 @@ async fn the_settings_changed_subscription_feeds_the_access_cache() {
     // real client, over the real bus.
     let client = BusSettings::with_connection(&writer_connection)
         .await
-        .expect("mosd client");
+        .expect("micad client");
     let generation = cache.generation();
     let access = client.get_settings("access").await.expect("access subtree");
     cache.fill(generation, access);

@@ -30,7 +30,7 @@ interface RollbackResponse {
 export function RollbackPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  // The same query key the update pane reads: mosd derives the eligibility
+  // The same query key the update pane reads: micad derives the eligibility
   // once, and this pane must not ask a second time and get a second answer.
   const status = useQuery({ queryKey: ['update-state'], queryFn: () => api<RollbackStateDoc>('/api/v1/update') })
   const rollback = useMutation({

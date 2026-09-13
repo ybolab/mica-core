@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${HERE}/../../../.." && pwd)"
+REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 BUILD_ROOT="${REPO_ROOT}/_out/apid-ui"
 OUTPUT="${BUILD_ROOT}/dist"
 RUN_CHECKS=0
@@ -11,12 +11,12 @@ case "${1-}" in
 "") ;;
 --check) RUN_CHECKS=1 ;;
 *)
-    echo "usage: bash pkgs/mosd/apid/ui/build.sh [--check]" >&2
+    echo "usage: bash apid/ui/build.sh [--check]" >&2
     exit 1
     ;;
 esac
 [ "$#" -le 1 ] || {
-    echo "usage: bash pkgs/mosd/apid/ui/build.sh [--check]" >&2
+    echo "usage: bash apid/ui/build.sh [--check]" >&2
     exit 1
 }
 

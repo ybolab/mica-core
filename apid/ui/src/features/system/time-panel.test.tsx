@@ -78,10 +78,10 @@ describe('time synchronization status', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/time/status': () => jsonResponse({ error: { message: 'mosd timed out' } }, 504) })
+    stubFetch({ '/api/v1/time/status': () => jsonResponse({ error: { message: 'micad timed out' } }, 504) })
     renderPanel(<SyncStatusPanel />)
 
-    expect(await screen.findByText('mosd timed out')).toBeTruthy()
+    expect(await screen.findByText('micad timed out')).toBeTruthy()
   })
 })
 

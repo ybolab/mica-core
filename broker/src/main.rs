@@ -1,7 +1,7 @@
-//! `mos-mqtt-broker` — the MQTT broker the device serves locally.
+//! `mica-mqtt-broker` — the MQTT broker the device serves locally.
 //!
 //! This is rumqttd used as a library, not as its own daemon. It reads the
-//! three-key file mosd renders into `/run/mos/mqtt-broker.toml`, builds a
+//! three-key file micad renders into `/run/mica/mqtt-broker.toml`, builds a
 //! [`rumqttd::Config`] in code, and blocks in [`rumqttd::Broker::start`].
 //!
 //! Building the config in code rather than handing rumqttd its own TOML is the
@@ -25,16 +25,16 @@ mod config;
 
 /// The MQTT broker for mos application item trees and local clients.
 #[derive(Debug, Parser)]
-#[command(name = "mos-mqtt-broker", version)]
+#[command(name = "mica-mqtt-broker", version)]
 struct Args {
-    /// The mos-owned broker configuration, rendered by mosd from the `mqtt`
+    /// The mos-owned broker configuration, rendered by micad from the `mqtt`
     /// settings subtree before this unit is started.
     #[arg(long)]
     config: PathBuf,
 
     /// The credentials file, read only when `auth_enabled` is true. An
     /// argument rather than a constant so tests never read the host's.
-    #[arg(long, default_value = "/var/lib/mos/mqtt-broker-users.toml")]
+    #[arg(long, default_value = "/var/lib/mica/mqtt-broker-users.toml")]
     users: PathBuf,
 }
 
@@ -145,7 +145,7 @@ fn broker_config(listen: SocketAddr, auth: Option<HashMap<String, String>>) -> r
         external_auth: None,
         // A subscriber may create a filter the router has not seen published
         // yet. The item tree is discovered at runtime, so a client that
-        // subscribes before mosd has published a service cannot be made to
+        // subscribes before micad has published a service cannot be made to
         // wait for it.
         dynamic_filters: true,
     };
@@ -161,7 +161,7 @@ fn broker_config(listen: SocketAddr, auth: Option<HashMap<String, String>>) -> r
     // stays up serving whichever half won.
     //
     // v4 is the half that has to survive: the only client in the image is
-    // mos-mqttd, which connects through rumqttc's top-level `AsyncClient`, and
+    // mica-mqttd, which connects through rumqttc's top-level `AsyncClient`, and
     // that is the 3.1.1 surface. On a boot where v5 wins the race the bridge
     // cannot reach the broker at all.
     //
@@ -202,7 +202,7 @@ fn broker_config(listen: SocketAddr, auth: Option<HashMap<String, String>>) -> r
         // open an HTTP listener, and a broker that opened a second network
         // socket on an appliance is a second thing to attack and a second
         // thing to explain. `cluster` and `bridge` have no meaning on a single
-        // device -- the bridge in this image is mos-mqttd, which is a client.
+        // device -- the bridge in this image is mica-mqttd, which is a client.
         v5: None,
         ws: None,
         cluster: None,
@@ -247,7 +247,7 @@ mod tests {
         let v4 = config
             .v4
             .as_ref()
-            .expect("v4 is the listener mos-mqttd speaks, and it must be served");
+            .expect("v4 is the listener mica-mqttd speaks, and it must be served");
         assert_eq!(
             v4.len(),
             1,
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(settings.name, "mos");
         assert_eq!(
             settings.listen, listen,
-            "the listener binds what mosd rendered"
+            "the listener binds what micad rendered"
         );
 
         // Each of these is a second `bind()` or a second thread if it is ever
@@ -341,7 +341,7 @@ mod tests {
     }
 
     /// End to end: start the broker the way `main` does and connect to it with
-    /// the client mos-mqttd uses.
+    /// the client mica-mqttd uses.
     ///
     /// `rumqttc::Client` is the MQTT 3.1.1 surface -- rumqttc's 5.0 support
     /// lives in a separate `rumqttc::v5` module that the bridge does not use.
@@ -422,16 +422,16 @@ mod tests {
         });
         wait_until_listening(listen);
 
-        let options = mos_mqttd::runtime::mqtt_options(&mos_mqttd::runtime::Settings {
+        let options = mica_mqttd::runtime::mqtt_options(&mica_mqttd::runtime::Settings {
             device_id: "test-device".into(),
             applications_dir: dir.path().join("applications"),
             broker_host: listen.ip().to_string(),
             broker_port: listen.port(),
             client_id: "authenticated-bridge-test".into(),
             credentials_file: credentials,
-            mode: mos_mqttd::config::Mode::ReadOnly,
+            mode: mica_mqttd::config::Mode::ReadOnly,
             session_bus: true,
-            timings: mos_mqttd::config::Timings::default(),
+            timings: mica_mqttd::config::Timings::default(),
         })
         .unwrap();
         // Bound to a name, not to `_`: dropping the client closes the request

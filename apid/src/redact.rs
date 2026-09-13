@@ -3,7 +3,7 @@
 //!
 //! `docs/design/api.md` §2.2 states the rule for the settings root, where
 //! `GetSettings("access")` would otherwise hand the admin password hash to any
-//! authenticated caller. It is applied to the live-state root as well: mosd's
+//! authenticated caller. It is applied to the live-state root as well: micad's
 //! state tree is untyped and written by reconcilers, so nothing stops the same
 //! field names appearing there, and a denylist that covers one root while the
 //! other serves them verbatim is a hole with a tested-looking lid.

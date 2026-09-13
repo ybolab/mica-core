@@ -1,4 +1,4 @@
-//! End-to-end test: private `dbus-daemon --session` + real `mosd` + real
+//! End-to-end test: private `dbus-daemon --session` + real `micad` + real
 //! `apid`, driven over HTTPS/HTTP with a real client.
 //!
 //! Everything lives in tempdirs on ephemeral ports; `MOSD_DRY_RUN=1` keeps
@@ -50,19 +50,19 @@ fn find_mosd() -> anyhow::Result<PathBuf> {
         .parent()
         .and_then(|deps| deps.parent())
         .context("test executable has no target profile directory")?
-        .join("mosd");
+        .join("micad");
     anyhow::ensure!(
         candidate.exists(),
-        "mosd binary not found at {}; build it with `cargo build -p mosd` or set MOSD_BIN",
+        "micad binary not found at {}; build it with `cargo build -p micad` or set MOSD_BIN",
         candidate.display()
     );
     Ok(candidate)
 }
 
 #[zbus::proxy(
-    interface = "com.mos.mosd1",
-    default_service = "com.mos.mosd",
-    default_path = "/com/mos/mosd"
+    interface = "com.mica.micad1",
+    default_service = "com.mica.micad",
+    default_path = "/com/mos/micad"
 )]
 trait Mosd {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
@@ -149,9 +149,9 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
 
     let dir = tempfile::tempdir()?;
     let settings_path = dir.path().join("settings.toml");
-    // The `/mos/config/` namespace mosd reads its configuration from. It must
+    // The `/mos/config/` namespace micad reads its configuration from. It must
     // exist before the daemon starts: an absent namespace is the DATA medium
-    // being gone, and mosd refuses to start rather than render a configuration
+    // being gone, and micad refuses to start rather than render a configuration
     // nobody chose (PLAN-070 §5.2.6).
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir)?;
@@ -200,7 +200,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
         }
     })
     .await
-    .context("mosd did not come up on the private bus")?;
+    .context("micad did not come up on the private bus")?;
 
     let admin = http_client(true)?;
     let anonymous = http_client(false)?;
@@ -296,7 +296,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
     assert_eq!(response.status(), StatusCode::OK);
     let health = response_json(response).await?;
     assert_eq!(health["apid"], "ok");
-    assert_eq!(health["mosd"], "ok");
+    assert_eq!(health["micad"], "ok");
 
     let response = anonymous
         .get(format!("{https_base}/api/v1/health"))
@@ -417,7 +417,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
         }
     })
     .await
-    .context("reboot action never reached mosd")?;
+    .context("reboot action never reached micad")?;
 
     // Logout is itself a CSRF-protected API mutation; login returns a new token.
     let response = admin
@@ -673,10 +673,10 @@ async fn a_poured_document_is_adopted_and_its_secret_reaches_no_served_record() 
         }
     })
     .await
-    .context("mosd did not come up on the private bus")?;
+    .context("micad did not come up on the private bus")?;
 
     // **Clause 1.** The daemon adopted the hand-written document, secrets and
-    // all: the bus surface is mosd's own tree with no redactor in front of it,
+    // all: the bus surface is micad's own tree with no redactor in front of it,
     // so this is the device genuinely holding the key. Everything below is
     // about it not leaving.
     let tree: serde_json::Value = serde_json::from_str(&proxy.get_settings("").await?)?;

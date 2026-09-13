@@ -1,7 +1,7 @@
-//! zbus client for mosd, implementing [`SettingsApi`].
+//! zbus client for micad, implementing [`SettingsApi`].
 //!
-//! APID uses only the `com.mos.mosd1` management interface. Application item
-//! trees may use direct `com.mos.<class>[.<suffix>]` service names, but enter
+//! APID uses only the `com.mica.micad1` management interface. Application item
+//! trees may use direct `com.mica.<class>[.<suffix>]` service names, but enter
 //! MQTT only through exact package-owned enrollment and policy.
 
 use std::future::Future;
@@ -20,7 +20,7 @@ use crate::config::BusKind;
 use crate::settings_api::{InvalidTaskPayload, SettingsApi};
 use crate::task_registry::{TaskRecord, TaskRegistry};
 
-/// Upper bound for one connection attempt or method call to mosd.
+/// Upper bound for one connection attempt or method call to micad.
 ///
 /// Five seconds is deliberately a fault-containment bound rather than normal
 /// flow control: queued writes return promptly, while reads and actions get a
@@ -32,7 +32,7 @@ const MOSD_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Kept as a concrete error inside `anyhow` so the HTTP boundary can separate
 /// "the outcome was not confirmed" (504) from "the daemon was unreachable"
 /// (503). In particular, dropping the future does not cancel work already
-/// accepted by mosd.
+/// accepted by micad.
 #[derive(Debug)]
 pub(crate) struct MosdCallTimeout {
     operation: &'static str,
@@ -58,9 +58,9 @@ impl MosdCallTimeout {
 }
 
 #[zbus::proxy(
-    interface = "com.mos.mosd1",
-    default_service = "com.mos.mosd",
-    default_path = "/com/mos/mosd"
+    interface = "com.mica.micad1",
+    default_service = "com.mica.micad",
+    default_path = "/com/mos/micad"
 )]
 trait Mosd {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
@@ -88,11 +88,11 @@ trait Mosd {
     fn set_reboot_override(&self, seconds: u32) -> zbus::Result<String>;
 
     fn set_update_config(&self, patch_json: &str) -> zbus::Result<String>;
-    /// Emitted by mosd after every successful settings write, with the
+    /// Emitted by micad after every successful settings write, with the
     /// changed dot-path and its new JSON-encoded value. The subscriber
     /// ([`watch_settings_changed`]) feeds the auth gate's access cache: the
     /// events invalidate it, which is what makes caching anything read from
-    /// mosd sound at all.
+    /// micad sound at all.
     #[zbus(signal)]
     fn settings_changed(&self, path: &str, value_json: &str) -> zbus::Result<()>;
     /// Emitted on every apply-task lifecycle transition.
@@ -105,7 +105,7 @@ trait Mosd {
 /// trip per unauthenticated request — the fallback is correct, just costly.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 
-/// Keep `cache` honest against mosd's `SettingsChanged` for the daemon's
+/// Keep `cache` honest against micad's `SettingsChanged` for the daemon's
 /// lifetime: subscribe, mark the cache synchronised while the stream is
 /// live, and on any lapse drop it back to direct reads and dial again.
 ///
@@ -134,7 +134,7 @@ pub async fn watch_settings_changed(bus: BusKind, cache: Arc<AccessCache>) {
     }
 }
 
-/// Keep the task registry synchronised from mosd's `TaskChanged` stream.
+/// Keep the task registry synchronised from micad's `TaskChanged` stream.
 /// A lapse immediately disables memory reads; callers fall back to `GetTask`
 /// until a fresh subscription is established.
 pub async fn watch_tasks(bus: BusKind, registry: Arc<TaskRegistry>, audit: Arc<Audit>) {
@@ -205,8 +205,8 @@ pub(crate) async fn watch_task_connection(
     anyhow::bail!("the TaskChanged stream ended")
 }
 
-/// Lazily-connected mosd client. The proxy is built on first use and cached;
-/// any call error drops the cache so the next request reconnects. mosd not
+/// Lazily-connected micad client. The proxy is built on first use and cached;
+/// any call error drops the cache so the next request reconnects. micad not
 /// being up yet therefore surfaces as per-request errors (502 pages), never
 /// as an apid crash.
 pub struct BusSettings {
@@ -242,7 +242,7 @@ impl BusSettings {
         };
         let proxy = tokio::time::timeout(MOSD_CALL_TIMEOUT, connect)
             .await
-            .map_err(|_| MosdCallTimeout::new("connect to mosd", MOSD_CALL_TIMEOUT))??;
+            .map_err(|_| MosdCallTimeout::new("connect to micad", MOSD_CALL_TIMEOUT))??;
 
         let mut cached = self.proxy.lock().await;
         if let Some(existing) = cached.as_ref() {
@@ -280,7 +280,7 @@ impl BusSettings {
 #[cfg(test)]
 impl BusSettings {
     /// Client that talks over `connection` instead of dialling for itself, for
-    /// the tests that serve a fake mosd on a private bus.
+    /// the tests that serve a fake micad on a private bus.
     ///
     /// The proxy cache is seeded, so no connect is ever attempted. A failed
     /// call still empties the cache exactly as in production, and the next
@@ -381,7 +381,7 @@ impl SettingsApi for BusSettings {
 
     async fn set_transient_root_password(&self, password: &str) -> anyhow::Result<String> {
         let proxy = self.proxy().await?;
-        // The error is returned as mosd raised it. mosd's own contract is
+        // The error is returned as micad raised it. micad's own contract is
         // that no message it raises here carries the password, and nothing
         // is added to it on the way back.
         self.call(
@@ -391,7 +391,7 @@ impl SettingsApi for BusSettings {
         .await
     }
 
-    /// The answer is mosd's, verbatim: the base64 public half of the key it
+    /// The answer is micad's, verbatim: the base64 public half of the key it
     /// just drew. There is no private half in the reply and no method on this
     /// proxy that would fetch one.
     async fn rotate_wireguard_key(&self, iface: &str) -> anyhow::Result<String> {

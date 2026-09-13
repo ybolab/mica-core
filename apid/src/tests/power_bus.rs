@@ -1,6 +1,6 @@
 //! What APID's power pane puts on the management bus.
 //!
-//! This module serves a fake `com.mos.mosd1` on a private session bus and
+//! This module serves a fake `com.mica.micad1` on a private session bus and
 //! drives the real router through the real [`BusSettings`]. It pins that
 //! reboot and power-off use dedicated system-management methods; APID never
 //! writes application item trees.
@@ -16,8 +16,8 @@ use crate::bus_client::BusSettings;
 use crate::settings_api::SettingsApi;
 
 /// The system-management interface location.
-const MOSD_PATH: &str = "/com/mos/mosd";
-const MOSD_NAME: &str = "com.mos.mosd";
+const MOSD_PATH: &str = "/com/mos/micad";
+const MOSD_NAME: &str = "com.mica.micad";
 
 const PASSWORD: &str = "hunter2secret";
 
@@ -58,7 +58,7 @@ fn dbus_daemon() -> PathBuf {
     })
 }
 
-/// What the fake mosd was asked to do, in call order.
+/// What the fake micad was asked to do, in call order.
 #[derive(Clone, Default)]
 struct Recorder {
     calls: Arc<Mutex<Vec<String>>>,
@@ -84,13 +84,13 @@ fn walk(root: &Value, path: &str) -> Option<Value> {
         .cloned()
 }
 
-/// `com.mos.mosd1`: enough for authentication and the two power methods.
+/// `com.mica.micad1`: enough for authentication and the two power methods.
 struct FakeMosd {
     tree: Value,
     recorder: Recorder,
 }
 
-#[zbus::interface(name = "com.mos.mosd1")]
+#[zbus::interface(name = "com.mica.micad1")]
 impl FakeMosd {
     async fn get_settings(&self, path: &str) -> zbus::fdo::Result<String> {
         walk(&self.tree, path)
@@ -107,7 +107,7 @@ impl FakeMosd {
     }
 }
 
-/// A fake mosd on a private bus, and everything needed to talk to it.
+/// A fake micad on a private bus, and everything needed to talk to it.
 struct Fake {
     /// The connection apid's client rides. Held here so it outlives every
     /// client minted from it.
@@ -125,11 +125,11 @@ impl Fake {
     async fn client(&self) -> BusSettings {
         BusSettings::with_connection(&self.connection)
             .await
-            .expect("mosd proxy")
+            .expect("micad proxy")
     }
 }
 
-/// Start a private session bus with a fake mosd on it. Panics when
+/// Start a private session bus with a fake micad on it. Panics when
 /// `dbus-daemon` is not installed rather than skipping — see the module docs.
 async fn fake() -> Fake {
     let dbus_daemon = dbus_daemon();
@@ -161,10 +161,10 @@ async fn fake() -> Fake {
                 recorder: recorder.clone(),
             },
         )
-        .expect("serve com.mos.mosd1")
+        .expect("serve com.mica.micad1")
         .build()
         .await
-        .expect("fake mosd on the private bus");
+        .expect("fake micad on the private bus");
     let connection = zbus::connection::Builder::address(address.as_str())
         .expect("bus address")
         .build()

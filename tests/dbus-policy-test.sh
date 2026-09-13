@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Live-bus tests for the shipped mosd D-Bus policy.
+# Live-bus tests for the shipped micad D-Bus policy.
 #
-#   bash pkgs/mosd/tests/dbus-policy-test.sh
+#   bash tests/dbus-policy-test.sh
 #
-# The policy claims com.mos.mosd is reachable only by root. Reading XML back
+# The policy claims com.mica.micad is reachable only by root. Reading XML back
 # proves nothing about what dbus-daemon does with it, so this harness stands up
 # real dbus-daemons whose configurations include the shipped file verbatim,
 # owns the name from a root connection, and drives root and non-root clients.
 # Every guard is exercised in both directions: a refusal-only suite would pass
 # against a policy that denied everything, including root.
 #
-# The last section repeats the live checks specifically as the mos-mqttd uid
+# The last section repeats the live checks specifically as the mica-mqttd uid
 # and audits every repository policy fragment: mqttd may receive exact Item1
 # grants from application packages, but no policy may grant it any access to
-# com.mos.mosd.
+# com.mica.micad.
 #
 # Needs root (to drop to uid 65534 with setpriv) plus dbus-daemon and python3.
 # It fails loudly when it cannot run rather than skipping: a skipped case that
@@ -21,9 +21,9 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "${HERE}/../../.." && pwd)
-POLICY="${REPO_ROOT}/pkgs/mosd/dist/com.mos.mosd.conf"
-NAME=com.mos.mosd
+REPO_ROOT=$(cd "${HERE}/.." && pwd)
+POLICY="${REPO_ROOT}/dist/com.mica.micad.conf"
+NAME=com.mica.micad
 
 [ -f "${POLICY}" ] || { echo "no ${POLICY} to test" >&2; exit 1; }
 for tool in dbus-daemon setpriv python3; do
@@ -88,8 +88,8 @@ LITTLE = ord('l')
 METHOD_CALL, METHOD_RETURN, ERROR, SIGNAL = 1, 2, 3, 4
 # Header field code -> its variant type. Only the codes this client uses.
 FIELD_TYPE = {1: 'o', 2: 's', 3: 's', 4: 's', 5: 'u', 6: 's', 7: 's', 8: 'g'}
-PATH = '/com/mos/mosd'
-IFACE = 'com.mos.mosd1'
+PATH = '/com/mos/micad'
+IFACE = 'com.mica.micad1'
 
 
 def pad(buf, n):
@@ -389,18 +389,18 @@ cat >"${BUS_CONF}" <<XML
            send_interface="org.freedesktop.DBus"/>
   </policy>
 
-  <!-- TEST SCAFFOLDING, not part of anything shipped. com.mos.control is a
-       deliberately OPEN name and com.mos.unprivileged is a deliberately ownable
+  <!-- TEST SCAFFOLDING, not part of anything shipped. com.mica.control is a
+       deliberately OPEN name and com.mica.unprivileged is a deliberately ownable
        one. They are the controls: without them "nobody was refused" cannot be
        told apart from "the unprivileged connection never worked", and every
        refusal below would be indistinguishable from a broken harness. -->
   <policy user="root">
-    <allow own="com.mos.control"/>
+    <allow own="com.mica.control"/>
   </policy>
   <policy context="default">
-    <allow own="com.mos.unprivileged"/>
-    <allow send_destination="com.mos.control"/>
-    <allow receive_sender="com.mos.control"/>
+    <allow own="com.mica.unprivileged"/>
+    <allow send_destination="com.mica.control"/>
+    <allow receive_sender="com.mica.control"/>
   </policy>
 
   <include>${POLICY}</include>
@@ -416,10 +416,10 @@ done
 [ -S "${SOCK}" ] || { echo "dbus-daemon did not create ${SOCK}" >&2; exit 1; }
 chmod 0777 "${SOCK}"
 
-# Own com.mos.mosd (the name under test) and com.mos.control (the open control)
+# Own com.mica.micad (the name under test) and com.mica.control (the open control)
 # from two SEPARATE root connections. One connection owning both would defeat
 # the control outright: receive_sender= matches on the sending CONNECTION's
-# names, so a deny on com.mos.mosd would suppress the control name's signals too.
+# names, so a deny on com.mica.micad would suppress the control name's signals too.
 start_server() {
     local name=$1 log=$2
     setsid python3 "${CLIENT}" serve "${SOCK}" "${name}" SettingsChanged >"${log}" 2>&1 &
@@ -431,8 +431,8 @@ start_server() {
     head -n1 "${log}"
 }
 
-owned_mosd=$(start_server "${NAME}" "${WORK}/server-mosd.log")
-owned_ctl=$(start_server com.mos.control "${WORK}/server-ctl.log")
+owned_mosd=$(start_server "${NAME}" "${WORK}/server-micad.log")
+owned_ctl=$(start_server com.mica.control "${WORK}/server-ctl.log")
 
 as_root() { python3 "${CLIENT}" "$@" 2>&1 | tail -n1; }
 as_nobody() {
@@ -453,11 +453,11 @@ echo
 check "root owns ${NAME} (the daemon's own identity)" "OWNED" "${owned_mosd}"
 check "root owns the control name" "OWNED" "${owned_ctl}"
 check "nobody can connect and own an unrestricted name" "OWNED" \
-    "$(as_nobody own "${SOCK}" com.mos.unprivileged)"
+    "$(as_nobody own "${SOCK}" com.mica.unprivileged)"
 check "nobody can call an unrestricted name" "OK" \
-    "$(as_nobody call "${SOCK}" com.mos.control)"
+    "$(as_nobody call "${SOCK}" com.mica.control)"
 check "nobody can receive a signal from an unrestricted name" "GOT" \
-    "$(as_nobody recv "${SOCK}" com.mos.control SettingsChanged 3)"
+    "$(as_nobody recv "${SOCK}" com.mica.control SettingsChanged 3)"
 echo
 
 # --- 1. send: non-root refused, root permitted -------------------------------
@@ -477,7 +477,7 @@ check "root RECEIVE of SettingsChanged from ${NAME} is permitted" "GOT" \
 echo
 
 # --- 3. own: non-root refused ------------------------------------------------
-# The permitted direction is check 0's "root owns com.mos.mosd": the name is
+# The permitted direction is check 0's "root owns com.mica.micad": the name is
 # owned by a root connection for the entire run, which is the only reason any
 # of the send and receive cases above have anything to talk to.
 check "non-root OWN of ${NAME} is refused" \
@@ -486,10 +486,10 @@ check "non-root OWN of ${NAME} is refused" \
 
 
 
-# --- 4. the MQTT bridge has zero mosd access -------------------------------
-# The bridge is a non-root bus client, but it is not a mosd client. Application
+# --- 4. the MQTT bridge has zero micad access -------------------------------
+# The bridge is a non-root bus client, but it is not a micad client. Application
 # packages may grant this uid exact Item1 access to their own direct service
-# names; nothing punches through com.mos.mosd.conf.
+# names; nothing punches through com.mica.micad.conf.
 MQTTD_UID=65534
 # The ungranted control uid. Distinct from MQTTD_UID because "an unprivileged
 # uid is refused" and "the granted uid is allowed" have to be two different
@@ -552,11 +552,11 @@ done
 }
 chmod 0777 "${MQTTD_SOCK}"
 
-# One root server owns com.mos.mosd and deliberately broadcasts a legacy Item1
+# One root server owns com.mica.micad and deliberately broadcasts a legacy Item1
 # signal plus a management signal. The bridge must receive neither even if a
 # future regression or hostile system service emits them.
 setsid python3 "${CLIENT}" serve "${MQTTD_SOCK}" "${NAME}" ItemsChanged \
-    com.mos.Item1 /com/mos/mosd com.mos.mosd1/SettingsChanged \
+    com.mica.Item1 /com/mos/micad com.mica.micad1/SettingsChanged \
     >"${WORK}/mqttd-server.log" 2>&1 &
 SERVER_PIDS+=($!)
 for _ in $(seq 1 50); do
@@ -581,65 +581,65 @@ check "mqttd: root can still reach ${NAME}" "OK" \
 
 echo
 # Even the former read-only exception is gone: device identity is runtime
-# configuration, not a mosd call.
+# configuration, not a micad call.
 check "mqttd: the bridge's uid CANNOT call the removed GetDeviceId member" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 GetDeviceId /com/mos/mosd)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetDeviceId /com/mos/micad)"
 
 echo
 # The network-facing bridge has no system-management read, write, action, or
 # signal surface.
-check "mqttd: the bridge's uid CANNOT call system com.mos.Item1.GetItems" \
+check "mqttd: the bridge's uid CANNOT call system com.mica.Item1.GetItems" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.Item1 GetItems /)"
-check "mqttd: the bridge's uid CANNOT call system com.mos.Item1.SetValue" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.Item1 GetItems /)"
+check "mqttd: the bridge's uid CANNOT call system com.mica.Item1.SetValue" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.Item1 SetValue /hostname)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.Reboot" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.Item1 SetValue /hostname)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.Reboot" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 Reboot)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.PowerOff" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 Reboot)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.PowerOff" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 PowerOff)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 PowerOff)"
 check "mqttd: the bridge's uid CANNOT call SetTransientRootPassword" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 SetTransientRootPassword)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.SetSettings" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 SetTransientRootPassword)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.SetSettings" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 SetSettings)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.GetState" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 SetSettings)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.GetState" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 GetState)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.ReportHealth" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetState)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.ReportHealth" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 ReportHealth)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.ForgetService" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 ReportHealth)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.ForgetService" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 ForgetService)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.RotateWireguardKey" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 ForgetService)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.RotateWireguardKey" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 RotateWireguardKey)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 RotateWireguardKey)"
 # The update members ride the same root-only interface and inherit the same
 # refusal; asserted by name anyway, because these are the members whose
 # accidental grant would be worst — a uid that can install a bundle or mark a
 # slot bad owns the device's next boot, network socket and all.
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.InstallUpdate" \
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.InstallUpdate" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 InstallUpdate)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.MarkUpdate" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 InstallUpdate)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.MarkUpdate" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 MarkUpdate)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.GetUpdateState" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 MarkUpdate)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.GetUpdateState" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 GetUpdateState)"
-check "mqttd: the bridge's uid CANNOT call com.mos.mosd1.GetSettings" \
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetUpdateState)"
+check "mqttd: the bridge's uid CANNOT call com.mica.micad1.GetSettings" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 GetSettings /com/mos/mosd)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mos/micad)"
 # SettingsChanged carries the settings VALUE, including the web admin password
 # hash. The bridge cannot receive this broadcast.
-check "mqttd: the bridge's uid CANNOT receive com.mos.mosd1.SettingsChanged" "NONE" \
+check "mqttd: the bridge's uid CANNOT receive com.mica.micad1.SettingsChanged" "NONE" \
     "$(as_mqttd recv "${MQTTD_SOCK}" "${NAME}" SettingsChanged 3)"
-check "mqttd: the bridge's uid CANNOT receive system com.mos.Item1.ItemsChanged" "NONE" \
+check "mqttd: the bridge's uid CANNOT receive system com.mica.Item1.ItemsChanged" "NONE" \
     "$(as_mqttd recv "${MQTTD_SOCK}" "${NAME}" ItemsChanged 3)"
 
 echo
@@ -667,19 +667,19 @@ check "mqttd: the bridge's uid is connected (so its refusals are policy, not aut
 check "mqttd: the control uid is connected (so its refusals are policy, not auth)" \
     "CONNECTED" \
     "$(connectivity "$(as_other call "${MQTTD_SOCK}" org.freedesktop.DBus org.freedesktop.DBus GetId /org/freedesktop/DBus)")"
-check "mqttd: another unprivileged uid CANNOT call mosd either" \
+check "mqttd: another unprivileged uid CANNOT call micad either" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_other call "${MQTTD_SOCK}" "${NAME}" com.mos.mosd1 GetSettings /com/mos/mosd)"
+    "$(as_other call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mos/micad)"
 check "mqttd: another unprivileged uid CANNOT receive SettingsChanged" "NONE" \
     "$(as_other recv "${MQTTD_SOCK}" "${NAME}" SettingsChanged 3)"
 
-# Repository-wide static audit. Application packages may name mos-mqttd, but
+# Repository-wide static audit. Application packages may name mica-mqttd, but
 # only for exact direct service destinations. No prefix ownership grant and no
-# mosd destination/sender may hide in another policy fragment.
+# micad destination/sender may hide in another policy fragment.
 check "mqttd: legacy global extension policy is absent" "ABSENT" \
-    "$([ ! -e "${REPO_ROOT}/pkgs/mosd/dist/com.mos.ext.conf" ] && echo ABSENT || echo PRESENT)"
-check "mqttd: legacy mosd exception policy is absent" "ABSENT" \
-    "$([ ! -e "${REPO_ROOT}/pkgs/mosd/dist/mos-mqttd.conf" ] && echo ABSENT || echo PRESENT)"
+    "$([ ! -e "${REPO_ROOT}/dist/com.mica.ext.conf" ] && echo ABSENT || echo PRESENT)"
+check "mqttd: legacy micad exception policy is absent" "ABSENT" \
+    "$([ ! -e "${REPO_ROOT}/dist/mica-mqttd.conf" ] && echo ABSENT || echo PRESENT)"
 
 policy_audit=$(python3 - "${REPO_ROOT}" <<'PY'
 import pathlib
@@ -697,43 +697,43 @@ for path in root.joinpath("os").rglob("*.conf"):
         continue
     for allow in tree.findall(".//allow"):
         prefix = allow.get("own_prefix")
-        if prefix == "com.mos" or (prefix and prefix.startswith("com.mos.")):
+        if prefix == "com.mica" or (prefix and prefix.startswith("com.mica.")):
             violations.append(f"{path}: prefix ownership grant {prefix}")
     for policy in tree.findall(".//policy"):
         policy_user = policy.get("user")
         for allow in policy.findall("allow"):
             owned = allow.get("own")
-            if (owned and owned.startswith("com.mos.") and
+            if (owned and owned.startswith("com.mica.") and
                     (not policy_user or policy_user == "*")):
                 violations.append(
-                    f"{path}: exact com.mos ownership grant is not scoped to one explicit user"
+                    f"{path}: exact com.mica ownership grant is not scoped to one explicit user"
                 )
-        if policy.get("user") != "mos-mqttd":
+        if policy.get("user") != "mica-mqttd":
             continue
         for allow in policy.findall("allow"):
             destination = allow.get("send_destination")
             sender = allow.get("receive_sender")
-            if destination == "com.mos.mosd" or sender == "com.mos.mosd":
-                violations.append(f"{path}: mos-mqttd reaches com.mos.mosd")
-            send_item = allow.get("send_interface") == "com.mos.Item1"
-            receive_item = allow.get("receive_interface") == "com.mos.Item1"
+            if destination == "com.mica.micad" or sender == "com.mica.micad":
+                violations.append(f"{path}: mica-mqttd reaches com.mica.micad")
+            send_item = allow.get("send_interface") == "com.mica.Item1"
+            receive_item = allow.get("receive_interface") == "com.mica.Item1"
             endpoint = destination if send_item else sender if receive_item else None
             if send_item or receive_item:
                 if (not endpoint or "*" in endpoint or
-                        not endpoint.startswith("com.mos.") or
-                        endpoint == "com.mos.mosd"):
+                        not endpoint.startswith("com.mica.") or
+                        endpoint == "com.mica.micad"):
                     violations.append(f"{path}: Item1 grant lacks a safe exact application endpoint")
                 member = allow.get("send_member") if send_item else allow.get("receive_member")
                 if not member:
                     violations.append(f"{path}: Item1 grant lacks an exact member")
-            elif ((destination and destination.startswith("com.mos.")) or
-                    (sender and sender.startswith("com.mos."))):
-                violations.append(f"{path}: mos-mqttd has non-Item1 com.mos access")
+            elif ((destination and destination.startswith("com.mica.")) or
+                    (sender and sender.startswith("com.mica."))):
+                violations.append(f"{path}: mica-mqttd has non-Item1 com.mica access")
 
 print("OK" if not violations else " | ".join(violations))
 PY
 )
-check "mqttd: all policy fragments keep exact application grants and zero mosd access" \
+check "mqttd: all policy fragments keep exact application grants and zero micad access" \
     "OK" "${policy_audit}"
 
 echo

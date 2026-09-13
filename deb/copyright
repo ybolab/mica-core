@@ -1,11 +1,11 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: mos
 Comment: One copyright file for every package this producer family emits --
- mosd, mos-apid, mos-mqttd and mos-mqtt-broker -- installed per package as
+ micad, mica-apid, mica-mqttd and mica-mqtt-broker -- installed per package as
  /usr/share/doc/<package>/copyright so that no two packages own one path.
  .
  The statically linked Rust dependencies of those binaries are not an open
- set. pkgs/mosd/deny.toml is the authority: it allows Apache-2.0, MIT,
+ set. deny.toml is the authority: it allows Apache-2.0, MIT,
  BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0 and Zlib, plus CC0-1.0 for
  tiny-keccak on one named dependency chain and for nothing else. cargo-deny
  enforces that list against the resolved graph, so a dependency under any

@@ -233,7 +233,7 @@ fn handle_application_event(
 ///
 /// The signal comes from the bus daemon, not from the named service. The
 /// runtime checks the exact enrollment before asking for an owner or creating
-/// an Item1 proxy, so an unregistered service such as mosd is observed only as
+/// an Item1 proxy, so an unregistered service such as micad is observed only as
 /// a string and is never called or subscribed to.
 fn mos_owner_rule() -> zbus::Result<MatchRule<'static>> {
     Ok(MatchRule::builder()
@@ -241,7 +241,7 @@ fn mos_owner_rule() -> zbus::Result<MatchRule<'static>> {
         .sender("org.freedesktop.DBus")?
         .interface("org.freedesktop.DBus")?
         .member("NameOwnerChanged")?
-        .arg0ns(mos_busname::PREFIX.trim_end_matches('.'))?
+        .arg0ns(mica_busname::PREFIX.trim_end_matches('.'))?
         .build())
 }
 
@@ -625,16 +625,16 @@ mod tests {
     fn the_bus_filters_discovery_to_the_mos_namespace() {
         let rule = mos_owner_rule().expect("valid mos ownership rule");
         let rendered = rule.to_string();
-        assert!(rendered.contains("arg0namespace='com.mos'"), "{rendered}");
+        assert!(rendered.contains("arg0namespace='com.mica'"), "{rendered}");
         assert!(rendered.contains("member='NameOwnerChanged'"), "{rendered}");
     }
 
     #[tokio::test]
     async fn a_stopped_current_watcher_withdraws_stale_application_state() {
-        let enrollment = crate::enrollment::Enrollment::from_names(["com.mos.sensor.example"])
+        let enrollment = crate::enrollment::Enrollment::from_names(["com.mica.sensor.example"])
             .expect("valid enrollment");
         let application = enrollment
-            .application("com.mos.sensor.example")
+            .application("com.mica.sensor.example")
             .expect("enrolled application");
         let mut bridge = Bridge::new("abc123", Mode::Full, Timings::default());
         bridge.upsert_service(
@@ -648,7 +648,7 @@ mod tests {
         bridge.on_keepalive(Duration::ZERO);
 
         let mut active = BTreeMap::from([(
-            "com.mos.sensor.example".to_string(),
+            "com.mica.sensor.example".to_string(),
             ActiveApplication {
                 owner: ":1.42".to_string(),
                 generation: 7,
@@ -660,7 +660,7 @@ mod tests {
             &mut bridge,
             &mut active,
             ApplicationEvent::WatcherStopped {
-                bus_name: "com.mos.sensor.example".to_string(),
+                bus_name: "com.mica.sensor.example".to_string(),
                 generation: 7,
                 detail: "signal stream ended".to_string(),
             },
@@ -685,7 +685,7 @@ mod tests {
     async fn a_stale_watcher_report_asks_for_no_resweep() {
         let mut bridge = Bridge::new("abc123", Mode::Full, Timings::default());
         let mut active = BTreeMap::from([(
-            "com.mos.sensor.example".to_string(),
+            "com.mica.sensor.example".to_string(),
             ActiveApplication {
                 owner: ":1.42".to_string(),
                 generation: 8,
@@ -697,7 +697,7 @@ mod tests {
             &mut bridge,
             &mut active,
             ApplicationEvent::WatcherStopped {
-                bus_name: "com.mos.sensor.example".to_string(),
+                bus_name: "com.mica.sensor.example".to_string(),
                 generation: 7,
                 detail: "signal stream ended".to_string(),
             },

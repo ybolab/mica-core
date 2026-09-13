@@ -1,4 +1,4 @@
-//! Notification-fed mirror of mosd's apply-task records.
+//! Notification-fed mirror of micad's apply-task records.
 //!
 //! The registry follows the same lockout rule as [`crate::access_cache`]: it
 //! serves only while a `TaskChanged` subscription is known live. A lapse
@@ -44,12 +44,12 @@ struct Inner {
     snapshot_loaded: bool,
     generation: u64,
     tasks: BTreeMap<String, TaskRecord>,
-    /// Task ids in mosd's oldest-first insertion order. Task ids end in an
+    /// Task ids in micad's oldest-first insertion order. Task ids end in an
     /// unpadded hexadecimal counter, so sorting the map keys would put `10`
     /// before `2` and break the collection contract.
     order: VecDeque<String>,
     /// Last records from a lapsed subscription. Never served directly; they
-    /// are used only after a direct `GetTask` confirms mosd no longer retains
+    /// are used only after a direct `GetTask` confirms micad no longer retains
     /// the id, which lets a pre-restart running record become interrupted.
     stale: BTreeMap<String, TaskRecord>,
 }

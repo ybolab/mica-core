@@ -16,7 +16,7 @@
 use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
 use hmac::{Hmac, Mac};
-use mosd_settings::ApiToken;
+use micad_settings::ApiToken;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -60,7 +60,7 @@ const SECRET_BYTES: usize = 32;
 /// Redraws allowed before a mint gives up on finding a free id.
 ///
 /// A bound rather than an unbounded loop: the stored list is capped at
-/// `mosd_settings::MAX_TOKENS`, so with 32 bits of id the chance of even one
+/// `micad_settings::MAX_TOKENS`, so with 32 bits of id the chance of even one
 /// collision is negligible and the chance of eight in a row is not a number
 /// worth writing down. It exists so that a future narrower id cannot turn a
 /// mint into a hang.
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(parsed.secret.len(), SECRET_BYTES * 2);
         assert_eq!(parsed.id, minted.id);
         assert_eq!(minted.wire, format!("mos_{}_{}", parsed.id, parsed.secret));
-        assert!(mosd_settings::is_api_token_id(&minted.id));
+        assert!(micad_settings::is_api_token_id(&minted.id));
 
         assert!(verify(&[stored(&minted, "ci-deploy")], &minted.wire));
     }

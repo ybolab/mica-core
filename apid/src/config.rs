@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-/// Which message bus to reach `mosd` on.
+/// Which message bus to reach `micad` on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusKind {
     /// The system bus (production default).
@@ -20,7 +20,7 @@ pub struct Config {
     pub http_addr: String,
     /// Directory holding the certificate and key material (`APID_STATE_DIR`).
     pub state_dir: PathBuf,
-    /// Bus to reach `mosd` on (`APID_BUS`).
+    /// Bus to reach `micad` on (`APID_BUS`).
     pub bus: BusKind,
 }
 
@@ -36,7 +36,7 @@ impl Config {
         let http_addr =
             std::env::var("APID_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:80".to_string());
         let state_dir = PathBuf::from(
-            std::env::var("APID_STATE_DIR").unwrap_or_else(|_| "/var/lib/mos/apid".to_string()),
+            std::env::var("APID_STATE_DIR").unwrap_or_else(|_| "/var/lib/mica/apid".to_string()),
         );
         let bus = match std::env::var("APID_BUS").as_deref() {
             Err(_) | Ok("system") => BusKind::System,

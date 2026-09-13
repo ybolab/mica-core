@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Compile one producer's crates out of the mosd workspace, prove the producer
+# Compile one producer's crates out of the micad workspace, prove the producer
 # boundary held, and stage the binaries for packaging.
 #
-#   bash pkgs/mosd/hack/build-deb.sh --producer mosd --crates "mosd apid" \
+#   bash hack/build-deb.sh --producer micad --crates "micad apid" \
 #        --arch amd64 --stage <dir>
 #
 # WHY THIS FILE STILL EXISTS. Every producer in this repository is built by
 # build-env/deb/build.sh from its producer.env, and this is not a second
-# driver: it is the mosd workspace's PREPARE hook implementation, reached
-# through pkgs/mosd/deb/<producer>/prepare.sh. What it does -- cross-compile
+# driver: it is the micad workspace's PREPARE hook implementation, reached
+# through deb/<producer>/prepare.sh. What it does -- cross-compile
 # a named set of crates and then assert that NOTHING ELSE was compiled with them
 # -- is a claim about a cargo build, and no key in producer.env describes a
 # cargo build. The generic driver packs what it is handed; this decides what it
@@ -22,11 +22,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "${HERE}/.." && pwd)"
-REPO_ROOT="$(cd "${WORKSPACE}/../.." && pwd)"
+REPO_ROOT="${WORKSPACE}"
 FROM_SH="${REPO_ROOT}/build-env/from.sh"
 for p in "${WORKSPACE}/Cargo.toml" "${FROM_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. pkgs/mosd/hack/build-deb.sh derives the workspace as its own directory's parent and the repository as three levels above that; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. hack/build-deb.sh derives the workspace as its own directory's parent, which is the repository; build-env/ is the mica-build-env source pin (make deps), and a missing one is refused here rather that; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash pkgs/mosd/hack/build-deb.sh --producer <name> --crates \"<crate> ...\" --arch <amd64|arm64> --stage <dir>" >&2
+        echo "usage: bash hack/build-deb.sh --producer <name> --crates \"<crate> ...\" --arch <amd64|arm64> --stage <dir>" >&2
         exit 1
         ;;
     esac
@@ -81,7 +81,7 @@ for c in ${CRATES}; do BINARIES+=("${c}"); done
 # its prepare.sh, and the complement is what the independence assertion looks
 # for -- so a fifth binary added here is checked without any producer being
 # edited.
-ALL_BINARIES=(mosd apid mos-mqttd mos-mqtt-broker mos-mqtt-reference)
+ALL_BINARIES=(micad apid mica-mqttd mica-mqtt-broker mica-mqtt-reference)
 
 # A crate this workspace does not build would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never
@@ -131,7 +131,7 @@ COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD)"
 DIRTY=""
 [ -z "$(git -C "${REPO_ROOT}" status --porcelain)" ] || DIRTY="-dirty"
 # The commit the binaries themselves report, the same value and the same
-# resolution pkgs/mosd/hack/build-target.sh uses -- mosd and apid answer
+# resolution hack/build-target.sh uses -- micad and apid answer
 # --version with `<name> <crate version> (<commit>)`, and verify's smoke
 # runner checks that against what the build embedded. This is NOT the package
 # version: that is build-env/deb/version.sh's, and it is one rule for the
@@ -139,9 +139,9 @@ DIRTY=""
 MOS_BUILD_COMMIT="${MOS_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
 
 # Producer-private, so this producer has its own cache key and its own output
-# directory: sharing pkgs/mosd/target/ with build-target.sh would let a
+# directory: sharing target/ with build-target.sh would let a
 # four-binary build satisfy the independence assertion below with binaries this
-# producer never asked for. Gitignored through pkgs/mosd/.gitignore.
+# producer never asked for. Gitignored through .gitignore.
 TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
 RELEASE_DIR="${TARGET_DIR}/${TRIPLE}/release"
 
@@ -184,7 +184,7 @@ docker run --rm \
     -v "${TARGET_DIR}:/target" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \
     -v "${CARGO_CACHE}/git:/usr/local/cargo/git" \
-    -w /src/pkgs/mosd \
+    -w /src \
     -e "TARGET=${TRIPLE}" \
     -e "ELF_ARCH=${ELF_ARCH}" \
     -e "CRATES=${BINARIES[*]}" \
@@ -229,7 +229,7 @@ for name in "${BINARIES[@]}"; do
     }
 done
 
-# INDEPENDENCE, asserted rather than described. `cargo build -p mosd -p apid` is
+# INDEPENDENCE, asserted rather than described. `cargo build -p micad -p apid` is
 # the intent; this is the evidence, and it is what a later gate can point at. A
 # binary here means the producer boundary leaked -- a stale target directory
 # reused, or a -p list that grew.
@@ -240,7 +240,7 @@ for name in "${EXCLUDED[@]}"; do
     done < <(find "${TARGET_DIR}" -type f -name "${name}")
 done
 if [ -n "${stray}" ]; then
-    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. Each producer compiles only its own crates into its own CARGO_TARGET_DIR; see pkgs/mosd/deb/README.md" >&2
+    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. Each producer compiles only its own crates into its own CARGO_TARGET_DIR; see deb/README.md" >&2
     exit 1
 fi
 echo "build-deb: ${TARGET_DIR} holds ${BINARIES[*]} and none of ${EXCLUDED[*]}"
@@ -255,7 +255,7 @@ echo "build-deb: staged ${BINARIES[*]} into ${STAGE}"
 
 # NO BUILD RECORD IS WRITTEN HERE ANY MORE. The commit these binaries report is
 # the commit pack.sh writes into the archive's Mos-Source-Commit control field,
-# and rootfs/build.sh reads it out of the mosd archive it installs to write
-# _out/<board>/mosd-build.txt for verify/src/smoke.ts. One source of the fact,
+# and rootfs/build.sh reads it out of the micad archive it installs to write
+# _out/<board>/micad-build.txt for verify/src/smoke.ts. One source of the fact,
 # carried inside the archive, so a package fetched from the registry has it
 # exactly as a package built here does.

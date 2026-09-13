@@ -1,7 +1,7 @@
 //! The OpenAPI document describing apid's `/api` surface.
 //!
 //! Generated from the handlers rather than written beside them, and committed
-//! as `mosd/apid/openapi.json`. `--openapi` prints it and a test asserts the
+//! as `micad/apid/openapi.json`. `--openapi` prints it and a test asserts the
 //! committed copy is exactly what this module produces, so the spec cannot
 //! describe a route the code does not serve or miss one it does.
 

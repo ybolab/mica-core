@@ -1,8 +1,8 @@
 //! Positive, package-owned enrollment for the MQTT application-data plane.
 //!
-//! Each file name in `/usr/lib/mos/mqtt-applications.d` is one exact D-Bus
+//! Each file name in `/usr/lib/mica/mqtt-applications.d` is one exact D-Bus
 //! service name. File contents are ignored. The application package that owns
-//! that service also owns the exact D-Bus policy grant for `mos-mqttd`.
+//! that service also owns the exact D-Bus policy grant for `mica-mqttd`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 use crate::topic::Application;
 
 /// The management service is never an MQTT application-data source.
-const MOSD_SERVICE: &str = "com.mos.mosd";
+const MOSD_SERVICE: &str = "com.mica.micad";
 
 /// The exact services admitted to MQTT.
 #[derive(Debug, Clone, Default)]
@@ -26,7 +26,7 @@ impl Enrollment {
     /// # Errors
     ///
     /// Returns an error for an invalid mos service name or for
-    /// `com.mos.mosd`, which is structurally excluded from MQTT even if a
+    /// `com.mica.micad`, which is structurally excluded from MQTT even if a
     /// package accidentally creates a manifest with that name.
     pub fn from_names<I, S>(names: I) -> anyhow::Result<Self>
     where

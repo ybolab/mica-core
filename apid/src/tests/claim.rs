@@ -3,7 +3,7 @@
 //! bootstrap credential.
 //!
 //! What a provisioning document MEANS — validation, idempotence, its own claim
-//! gate — is mosd's contract and is tested in `mosd/src/provisioning_doc.rs`.
+//! gate — is micad's contract and is tested in `micad/src/provisioning_doc.rs`.
 //! What is here is apid's half: the state a claim leaves behind, and the
 //! bound apid enforces from it.
 
@@ -70,7 +70,7 @@ async fn access_of(fake: &FakeSettings) -> serde_json::Value {
 /// token reach the bus as ONE write of ONE subtree.
 ///
 /// The assertion is the write LIST and not the resulting tree, because the
-/// resulting tree looks identical whether it took one write or three. mosd
+/// resulting tree looks identical whether it took one write or three. micad
 /// turns one `SetSettings` into one `Store::save`, so "one write here" is
 /// exactly "one commit point on the device".
 #[tokio::test]
@@ -266,7 +266,7 @@ impl SettingsApi for InterruptOnce {
 ///
 /// The identity assertion is `provisioning.deviceId`, which is what
 /// "without cloning identity" is about: it is drawn once by
-/// `mosd/src/identity.rs` and the claim never touches it, so a claim driven
+/// `micad/src/identity.rs` and the claim never touches it, so a claim driven
 /// twice must leave the same one. The credential assertion is the token list,
 /// because a claim that retried by appending would leave TWO tokens that both
 /// authenticate and only one of which the caller was ever told about.
@@ -466,7 +466,7 @@ async fn no_claim_surface_emits_the_password() {
 /// the channel and the moment each of them can honestly name.
 ///
 /// There is one route that answers "how was this device claimed", and it
-/// answers for both. The document channel writes no record of its own — mosd's
+/// answers for both. The document channel writes no record of its own — micad's
 /// importer is the one writer that does not — and is read off the evidence P1
 /// already persists, so there is no second field that could disagree with
 /// `access.webAdmin` about whether the device is claimed.
@@ -714,14 +714,14 @@ async fn a_route_claim_is_not_bound_by_the_rotation() {
 /// The claim is a check-then-act. `POST /api/v1/setup` reads `access` to
 /// decide the device is still unclaimed, and writes `access` to claim it;
 /// between the two sit the validators, the argon2id hash and the optional
-/// hostname and network writes. mosd serialises each `SetSettings` under its
+/// hostname and network writes. micad serialises each `SetSettings` under its
 /// own write lock but offers no compare-and-set, so nothing below apid made
 /// that pair one step: two requests that both read an unclaimed tree both
 /// wrote one, the second silently replacing the first administrator's
 /// credential while apid handed each of them a session.
 ///
 /// **Measured on the shipped path before it was fixed**, not inferred from the
-/// seam below: real mosd over a real private session bus, real apid over TLS,
+/// seam below: real micad over a real private session bus, real apid over TLS,
 /// two concurrent `POST /api/v1/setup` requests per iteration and no
 /// instrumentation anywhere in the handler — 200 of 200 iterations issued two
 /// 201s, and every session so issued read protected settings.

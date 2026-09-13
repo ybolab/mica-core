@@ -490,7 +490,7 @@ mod tests {
 
     /// The other direction. A suite that only proves refusals passes just as
     /// well against a function that refuses everything — the discipline
-    /// `pkgs/mosd/tests/dbus-policy-test.sh` documents for the D-Bus policy.
+    /// `tests/dbus-policy-test.sh` documents for the D-Bus policy.
     #[test]
     fn ordinary_paths_resolve() {
         let f = fixture();

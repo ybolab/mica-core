@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "mos-ui-pack",
+    name = "mica-ui-pack",
     about = "Build and inspect deterministic mos UI packages"
 )]
 struct Cli {
@@ -42,16 +42,16 @@ fn main() -> anyhow::Result<()> {
             immutable_dir,
             api_versions,
         } => {
-            let manifest = mos_ui_bundle::PackageManifest {
+            let manifest = mica_ui_bundle::PackageManifest {
                 schema_version: 1,
                 name,
                 version,
                 immutable_dir,
                 api_versions,
             };
-            mos_ui_bundle::pack_with_manifest(&source, &output, &manifest)?
+            mica_ui_bundle::pack_with_manifest(&source, &output, &manifest)?
         }
-        Command::Inspect { package } => mos_ui_bundle::inspect(&package)?,
+        Command::Inspect { package } => mica_ui_bundle::inspect(&package)?,
     };
     println!("{}", serde_json::to_string_pretty(&info)?);
     Ok(())

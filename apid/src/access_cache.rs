@@ -3,7 +3,7 @@
 //! Every request the gate cannot short-circuit on a session cookie needs the
 //! `access` subtree to decide between setup mode and a login redirect, and it
 //! used to fetch it with a `GetSettings` round trip per request — against the
-//! one mutex mosd holds over both trees, on a listener that is public by
+//! one mutex micad holds over both trees, on a listener that is public by
 //! construction. This cache serves that read from apid's memory instead, so
 //! unauthenticated traffic stops contending with settings writes.
 //!

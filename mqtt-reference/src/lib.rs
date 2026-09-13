@@ -1,4 +1,4 @@
-//! The deliberately small `com.mos.Item1` service used to prove the MQTT
+//! The deliberately small `com.mica.Item1` service used to prove the MQTT
 //! application boundary on a real image.
 //!
 //! It is an application, not bridge infrastructure: it owns one exact
@@ -17,7 +17,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Str, Value};
 
 /// Exact package enrollment and systemd `BusName=` for this reference only.
-pub const BUS_NAME: &str = "com.mos.mqttsample.reference";
+pub const BUS_NAME: &str = "com.mica.mqttsample.reference";
 /// The Item1 tree root, where discovery and change signals are served.
 pub const ROOT_PATH: &str = "/";
 /// The bounded, writable example used by the full-mode hardware proof.
@@ -139,7 +139,7 @@ pub async fn serve_system() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[zbus::interface(name = "com.mos.Item1")]
+#[zbus::interface(name = "com.mica.Item1")]
 impl Root {
     /// Whole-tree discovery. This is intentionally a snapshot only; the
     /// bridge publishes it after a client opens the documented keepalive
@@ -154,7 +154,7 @@ impl Root {
     async fn items_changed(emitter: &SignalEmitter<'_>, items: &Items) -> zbus::Result<()>;
 }
 
-#[zbus::interface(name = "com.mos.Item1")]
+#[zbus::interface(name = "com.mica.Item1")]
 impl Item {
     /// Read one item's current value from its addressed object path.
     async fn get_value(&self) -> zbus::fdo::Result<OwnedValue> {
@@ -245,11 +245,11 @@ fn item_attributes(path: &str, setpoint: i64) -> Option<HashMap<String, OwnedVal
 
 fn value_for(path: &str, setpoint: i64) -> Option<OwnedValue> {
     Some(match path {
-        "/Mgmt/ProcessName" => string_value("mos-mqtt-reference"),
+        "/Mgmt/ProcessName" => string_value("mica-mqtt-reference"),
         "/Mgmt/ProcessVersion" => string_value(env!("CARGO_PKG_VERSION")),
         "/Mgmt/Connection" => string_value("connected"),
         "/DeviceInstance" => OwnedValue::from(1_i64),
-        "/ProductId" => string_value("mos-mqtt-reference"),
+        "/ProductId" => string_value("mica-mqtt-reference"),
         "/ProductName" => string_value("mos MQTT reference"),
         "/Connected" => OwnedValue::from(true),
         "/Example/ReadOnly" => string_value("ready"),

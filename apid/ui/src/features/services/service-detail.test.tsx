@@ -18,7 +18,7 @@ describe('the simulated terminal window', () => {
     renderRoute(<SimulationProvider><TerminalWindow open onClose={() => {}} /></SimulationProvider>)
 
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText(/systemctl --no-pager status mosd/)).toBeTruthy()
+    expect(within(dialog).getByText(/systemctl --no-pager status micad/)).toBeTruthy()
     expect(within(dialog).getByText(/accepts no input/)).toBeTruthy()
     expect(within(dialog).getByRole('button', { name: 'End session' })).toBeTruthy()
   })

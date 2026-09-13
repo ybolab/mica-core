@@ -4,7 +4,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "${HERE}/.." && pwd)"
-REPO_ROOT="$(cd "${WORKSPACE}/../.." && pwd)"
+REPO_ROOT="${WORKSPACE}"
 cd "${WORKSPACE}"
 export PATH="$HOME/.cargo/bin:$PATH"
 
@@ -55,10 +55,10 @@ openapi_tmp="$(mktemp -d)"
 trap 'rm -rf "${openapi_tmp}"' EXIT
 cargo run --locked -p apid -- --openapi >"${openapi_tmp}/openapi.json"
 diff -u apid/openapi.json "${openapi_tmp}/openapi.json" || {
-    echo "error: pkgs/mosd/apid/openapi.json is not what apid --openapi prints." >&2
-    echo "       Regenerate it from pkgs/mosd/:" >&2
+    echo "error: apid/openapi.json is not what apid --openapi prints." >&2
+    echo "       Regenerate it from :" >&2
     echo "         bash apid/ui/build.sh" >&2
-    echo '         MOS_APID_UI_DIST_DIR="$PWD/../../_out/apid-ui/dist" cargo run -p apid -- --openapi > apid/openapi.json' >&2
+    echo '         MOS_APID_UI_DIST_DIR="$PWD/_out/apid-ui/dist" cargo run -p apid -- --openapi > apid/openapi.json' >&2
     exit 1
 }
 echo "apid/openapi.json matches apid --openapi"

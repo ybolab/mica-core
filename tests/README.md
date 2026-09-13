@@ -1,6 +1,6 @@
-# mosd workspace tests
+# micad workspace tests
 
-This directory owns tests that exercise more than one mosd crate or require a
+This directory owns tests that exercise more than one micad crate or require a
 running OS image. It is deliberately separate from Cargo's crate-local test
 layout:
 
@@ -16,7 +16,7 @@ layout:
   against `apid/openapi.json`. See `apid-api/README.md` and
   `apid-api/HARNESS.md` before running it.
 - `dbus-policy-test.sh` starts isolated D-Bus daemons and verifies the shipped
-  mosd policy plus the MQTT bridge's zero-mosd boundary in both the permitted
+  micad policy plus the MQTT bridge's zero-micad boundary in both the permitted
   and refused directions. It also audits all repository policy fragments for
   prefix and wildcard grants. It requires root, `dbus-daemon`, `setpriv`, and
   Python 3.

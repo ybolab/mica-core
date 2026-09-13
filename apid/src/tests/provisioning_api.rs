@@ -1,7 +1,7 @@
 //! Route tests for the provisioning-document status (`provisioning_api.rs`):
 //! transport, authentication, the read-only surface and what it must never
 //! serve. What a document MEANS — validation, idempotence, the claim gate — is
-//! mosd's contract, tested in `mosd/src/provisioning_doc.rs`.
+//! micad's contract, tested in `micad/src/provisioning_doc.rs`.
 
 use std::collections::BTreeSet;
 
@@ -13,7 +13,7 @@ use super::*;
 
 const STATUS_PATH: &str = "/api/v1/provisioning/status";
 
-/// The baked manifest, in the shape `mosd_settings::configuration` accepts.
+/// The baked manifest, in the shape `micad_settings::configuration` accepts.
 ///
 /// Every field of that struct is required — it carries no serde defaults — so
 /// a shortened fixture would not parse, the reader would fall back to the code
@@ -34,7 +34,7 @@ const BAKED_MANIFEST: &str = r#"{
 "#;
 
 /// A device with the baked tree every device has, which is what this route
-/// reads on every request. A build host has no `/usr/share/mos/meta`, so
+/// reads on every request. A build host has no `/usr/share/mica/meta`, so
 /// without this the reading tests below never reach the handler at all.
 ///
 /// The tree is the production shape: the manifest and nothing beside it.
@@ -401,7 +401,7 @@ async fn unreadable_and_invalid_utf8_fleet_documents_fail_closed() {
 }
 
 /// A device that applied a document from the boot medium, and was claimed by
-/// it. The digest is the one mosd would have recorded; the secrets the
+/// it. The digest is the one micad would have recorded; the secrets the
 /// document carried live where they belong and are not in this subtree.
 fn applied_tree() -> serde_json::Value {
     let mut tree = configured_tree("hunter2secret");
@@ -735,7 +735,7 @@ async fn the_provisioning_surface_is_read_only() {
 #[tokio::test]
 async fn the_status_serves_no_secret_from_either_subtree_it_reads() {
     let mut tree = applied_tree();
-    // A secret-named field inside the subtree this route reads. mosd's schema
+    // A secret-named field inside the subtree this route reads. micad's schema
     // has none, and this is the fail-closed half of that: the day one appears,
     // the redactor already covers it rather than it being served in the clear
     // until somebody remembers this route.

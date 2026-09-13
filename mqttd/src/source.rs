@@ -1,4 +1,4 @@
-//! The application side of the bridge: `com.mos.Item1` reads, signals and
+//! The application side of the bridge: `com.mica.Item1` reads, signals and
 //! writes on explicitly enrolled application services.
 
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +46,7 @@ pub trait ItemSource: Send + Sync {
 /// An application is a third-party process, and a bus call to one has no
 /// bound of its own: zbus waits for the reply indefinitely. One application
 /// that accepts a call and never answers must not hold the heartbeat and
-/// every other application with it. mosd's registry probe applies the same
+/// every other application with it. micad's registry probe applies the same
 /// figure for the same reason.
 pub const APPLICATION_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -175,8 +175,8 @@ pub fn batch_of(
         .collect()
 }
 
-/// The tree-wide half of `com.mos.Item1`, served at `/` by each application.
-#[zbus::proxy(interface = "com.mos.Item1", default_path = "/")]
+/// The tree-wide half of `com.mica.Item1`, served at `/` by each application.
+#[zbus::proxy(interface = "com.mica.Item1", default_path = "/")]
 pub trait ItemTree {
     fn get_items(&self) -> zbus::Result<HashMap<String, HashMap<String, OwnedValue>>>;
 
@@ -227,7 +227,7 @@ impl ItemSource for BusSource {
             &self.connection,
             application.bus_name(),
             path,
-            "com.mos.Item1",
+            "com.mica.Item1",
         )
         .await
         {

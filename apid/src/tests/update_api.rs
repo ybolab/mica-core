@@ -1,6 +1,6 @@
 //! Route tests for the update cluster (`update_api.rs`): transport,
 //! authentication, the 409/422 mappings and the verified-deployment resolution.
-//! What the states and policies MEAN is mosd's contract, tested in mosd.
+//! What the states and policies MEAN is micad's contract, tested in micad.
 
 use axum::http::StatusCode;
 use serde_json::json;
@@ -40,7 +40,7 @@ async fn the_state_read_answers_mosd_verbatim_and_requires_a_credential() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     assert!(
         fake.update_calls().is_empty(),
-        "an unauthenticated read must not reach mosd"
+        "an unauthenticated read must not reach micad"
     );
 
     let response = bearer(&router, "GET", UPDATE_PATH, &token).await;
@@ -62,7 +62,7 @@ async fn check_and_fetch_are_post_only_202_admissions() {
         assert_eq!(response.status(), StatusCode::ACCEPTED, "{path}");
         assert!(
             fake.update_calls().contains(&call.to_string()),
-            "{path} must reach mosd as `{call}`, got {:?}",
+            "{path} must reach micad as `{call}`, got {:?}",
             fake.update_calls()
         );
 
@@ -87,7 +87,7 @@ async fn a_policy_refusal_is_answered_409_with_mosds_reason() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "policy_refused");
-    assert_eq!(body["error"]["source"], "mosd");
+    assert_eq!(body["error"]["source"], "micad");
     assert!(
         body["error"]["message"]
             .as_str()
@@ -135,7 +135,7 @@ async fn native_identity_refusals_keep_the_bus_validation_code() {
     );
 }
 
-/// A seeded state document whose `rollback` object is what mosd's
+/// A seeded state document whose `rollback` object is what micad's
 /// `rollback_eligibility` would have written for a permitted rollback.
 fn permitted_rollback() -> serde_json::Value {
     json!({"boot":{"deploymentId":"a".repeat(64)},
@@ -168,7 +168,7 @@ async fn a_permitted_rollback_uses_the_native_atomic_action_and_names_the_next_s
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     assert!(
         fake.update_calls().is_empty(),
-        "an unauthenticated rollback must not reach mosd"
+        "an unauthenticated rollback must not reach micad"
     );
 
     let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
@@ -191,7 +191,7 @@ async fn a_permitted_rollback_uses_the_native_atomic_action_and_names_the_next_s
 #[tokio::test]
 async fn every_guard_refusal_is_a_409_carrying_its_own_reason() {
     // Every reason `rollback_eligibility` produces, each with the state
-    // document mosd writes for it.
+    // document micad writes for it.
     let cases = [
         ("candidate_pending", json!(null)),
         ("running_not_confirmed", json!(null)),
@@ -227,7 +227,7 @@ async fn a_verdict_this_surface_does_not_know_is_refused_rather_than_renamed() {
     for update in [
         json!({ "rollback": { "target": "rootfs.1", "permitted": false, "reason": "gremlins" } }),
         json!({ "lifecycle": { "state": "idle" } }),
-        // Permitted with no resolved target is a shape mosd cannot write; if
+        // Permitted with no resolved target is a shape micad cannot write; if
         // it ever appears, it must not be acted on.
         json!({ "rollback": { "target": null, "permitted": true, "reason": null } }),
     ] {
@@ -253,7 +253,7 @@ async fn a_native_rollback_failure_after_precheck_is_reported_without_claiming_s
     );
     let response = bearer(&router, "POST", ROLLBACK_PATH, &token).await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(body_json(response).await["error"]["code"], "mosd_failed");
+    assert_eq!(body_json(response).await["error"]["code"], "micad_failed");
 }
 
 #[tokio::test]
@@ -272,7 +272,7 @@ async fn a_rollback_from_a_browser_session_needs_its_csrf_token() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(
         fake.update_calls().is_empty(),
-        "a CSRF-refused rollback must not reach mosd"
+        "a CSRF-refused rollback must not reach micad"
     );
 }
 
@@ -319,7 +319,7 @@ async fn a_session_mutation_without_csrf_is_403() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(
         fake.update_calls().is_empty(),
-        "a CSRF-refused mutation must not reach mosd"
+        "a CSRF-refused mutation must not reach micad"
     );
 }
 
@@ -357,7 +357,7 @@ async fn every_native_deployment_mutation_requires_a_credential_and_browser_csrf
 
 const CONFIG_PATH: &str = "/api/v1/update/config";
 
-/// The write route: administrator authority, the patch forwarded to mosd
+/// The write route: administrator authority, the patch forwarded to micad
 /// verbatim, and the saved document answered.
 #[tokio::test]
 async fn the_config_write_takes_a_credential_and_hands_the_patch_to_mosd() {
@@ -368,7 +368,7 @@ async fn the_config_write_takes_a_credential_and_hands_the_patch_to_mosd() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     assert!(
         fake.update_calls().is_empty(),
-        "an unauthenticated write must not reach mosd"
+        "an unauthenticated write must not reach micad"
     );
 
     let response = bearer_json(&router, "POST", CONFIG_PATH, &token, &patch.to_string()).await;
@@ -381,7 +381,7 @@ async fn the_config_write_takes_a_credential_and_hands_the_patch_to_mosd() {
     );
 }
 
-/// The refusals mosd produces, mapped: a rejected patch is the request's
+/// The refusals micad produces, mapped: a rejected patch is the request's
 /// fault (422) and an unreadable document on the device is not (409).
 #[tokio::test]
 async fn the_config_write_maps_the_refusals_and_names_the_offending_field() {
@@ -426,7 +426,7 @@ async fn the_config_write_maps_the_refusals_and_names_the_offending_field() {
     assert_eq!(body_json(response).await["error"]["code"], "policy_refused");
 }
 
-/// A body that is not JSON is the envelope's 400 and never reaches mosd.
+/// A body that is not JSON is the envelope's 400 and never reaches micad.
 #[tokio::test]
 async fn the_config_write_refuses_a_body_that_is_not_json() {
     let (router, fake, token) = update_app(json!({}));

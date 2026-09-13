@@ -8,7 +8,7 @@
 //!   section under a per-section timeout inside one overall deadline, and a
 //!   section that does not answer is recorded absent with the reason; the
 //!   snapshot is produced whatever the sources do. Every section's size is
-//!   bounded at its source (mosd caps the journal, the manifest, the unit
+//!   bounded at its source (micad caps the journal, the manifest, the unit
 //!   list), and [`SnapshotStore::publish`] refuses a snapshot above
 //!   [`MAX_SNAPSHOT_BYTES`] outright.
 //! - **Redaction fails closed.** [`redact_snapshot`] walks the assembled
@@ -52,7 +52,7 @@ pub const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 /// The whole collection's deadline.
 pub const COLLECTION_DEADLINE: Duration = Duration::from_secs(20);
 /// One section's timeout, inside the deadline. Above the bus client's own
-/// 5 s bound so a mosd timeout keeps its own classification.
+/// 5 s bound so a micad timeout keeps its own classification.
 pub const SECTION_TIMEOUT: Duration = Duration::from_secs(6);
 /// The most bytes any one string in a snapshot keeps.
 pub const MAX_TEXT_BYTES: usize = 1024;
@@ -142,7 +142,7 @@ use Rule::Scalar as S;
 
 /// The whole snapshot schema, version [`REDACTION_SCHEMA_VERSION`].
 ///
-/// Every member mosd or apid produces is named here or it does not ship.
+/// Every member micad or apid produces is named here or it does not ship.
 /// Hardware addresses, SSIDs and BSSIDs are the personally identifying
 /// network fields the contract redacts; IP addresses, routes and DNS servers
 /// are the troubleshooting evidence it keeps.
@@ -188,7 +188,7 @@ fn schema() -> Rule {
         ("version", S),
         ("package", S),
         ("gitStamp", git_stamp),
-        // The two times mosd's system_info reports, which are different facts:
+        // The two times micad's system_info reports, which are different facts:
         // `commitDate` is when the source was committed, `fileEpoch` is the
         // pinned SOURCE_DATE_EPOCH every file in the image carries. A key that
         // is not named here is DROPPED from every snapshot without a word, so
@@ -893,7 +893,7 @@ pub struct Collected {
     pub report: CollectionReport,
 }
 
-/// Assembles a snapshot from the mosd surfaces.
+/// Assembles a snapshot from the micad surfaces.
 pub struct Collector<'a> {
     api: &'a dyn SettingsApi,
     deadline: Duration,
@@ -1361,14 +1361,14 @@ mod tests {
                 "kernel": { "available": true, "release": "6.1.115-mos", "version": "#1 SMP" },
                 "release": { "available": true, "id": "debian" },
                 "system": {
-                    "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "mosd",
+                    "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "micad",
                     "gitStamp": { "available": true, "commit": "00b674ec0ffe", "dirty": false, "revision": "1", "consistent": true, "stamps": ["git00b674ec0ffe-1"] },
                     "commitDate": { "available": true, "date": "2026-09-02T00:00:00Z" },
                     "fileEpoch": { "available": true, "epoch": 1577836800, "date": "2020-01-01T00:00:00Z" },
                 },
-                "daemon": { "name": "mosd", "version": "0.1.0", "commit": "00b674ec0ffe" },
+                "daemon": { "name": "micad", "version": "0.1.0", "commit": "00b674ec0ffe" },
                 "packages": { "available": true, "count": 2, "mosCount": 1, "malformedRows": 0, "truncated": false,
-                    "entries": [{ "name": "mosd", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true },
+                    "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true },
                                 { "name": "systemd", "version": "257.7-1", "architecture": "arm64", "mos": false }] },
                 "deployment": { "available": true, "id": "a".repeat(64), "confirmed": true },
                 "uptime": { "available": true, "seconds": 4242 },
@@ -1406,7 +1406,7 @@ mod tests {
                             "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 }, "pressure": "warning",
                             "check": { "recorded": true, "unit": "systemd-fsck@dev-mmcblk0p11.service", "activeState": "inactive", "result": "success", "exitStatus": 0 } }],
                 "namespaces": { "sharedCapacityTier": "data", "detail": "one pool",
-                    "binds": [{ "name": "mos", "mount": "/mos", "source": "/mnt/data/mos", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
+                    "binds": [{ "name": "mos", "mount": "/mos", "source": "/mnt/data/mica", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
                 "media": [{ "name": "mmcblk0", "kind": "emmc", "sizeBytes": 32000000000u64, "model": "DG4032", "rotational": false,
                             "health": { "supported": true, "source": "sysfs", "raw": { "lifeTime": "0x01 0x01", "preEolInfo": "0x01" }, "lifetimeEstimates": [{ "raw": "0x01", "usedPercentMin": 0, "usedPercentMax": 10 }], "preEol": "normal" } }],
                 "policy": { "warningPercent": 80, "warningClearPercent": 75, "criticalPercent": 90, "criticalClearPercent": 85, "watchedTiers": ["data"] },

@@ -132,9 +132,9 @@ describe('observed network state', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/network/status': () => jsonResponse({ error: { message: 'mosd is not reachable' } }, 503) })
+    stubFetch({ '/api/v1/network/status': () => jsonResponse({ error: { message: 'micad is not reachable' } }, 503) })
     renderPanel(<ObservedNetworkPanel />)
 
-    expect(await screen.findByText('mosd is not reachable')).toBeTruthy()
+    expect(await screen.findByText('micad is not reachable')).toBeTruthy()
   })
 })

@@ -1,4 +1,4 @@
-# Package producers for the mosd workspace
+# Package producers for the micad workspace
 
 A **producer** is a subset of this Cargo workspace compiled and packaged on its
 own. It has its own crate list, its own `CARGO_TARGET_DIR`, its own control
@@ -6,14 +6,14 @@ templates and its own archives, and it emits nothing outside that set:
 
 | Producer | Compiles | Emits |
 | --- | --- | --- |
-| `mosd` | `mosd`, `apid` | `mosd`, `mos-apid` |
-| `mqtt` | `mos-mqttd`, `mos-mqtt-broker` | `mos-mqttd`, `mos-mqtt-broker` |
+| `micad` | `micad`, `apid` | `micad`, `mica-apid` |
+| `mqtt` | `mica-mqttd`, `mica-mqtt-broker` | `mica-mqttd`, `mica-mqtt-broker` |
 
 Both are built by the repository's one generic driver, which discovers them:
 
 ```
-make os-deb-mosd
-  -> bash build-env/deb/build.sh --producer mosd --arch <amd64|arm64>
+make os-deb-micad
+  -> bash build-env/deb/build.sh --producer micad --arch <amd64|arm64>
   -> _out/debs/<arch>/pool/<package>_<version>_<arch>.deb
 ```
 
@@ -32,13 +32,13 @@ rather than about the package -- so a producer's independence is asserted and
 not merely intended: after the compile, `build-deb.sh` fails by name if any
 binary the producer does not own is present in its target directory. That is
 also why the target directory is producer-private
-(`pkgs/mosd/target-deb/<producer>/`, gitignored) rather than shared with
-`pkgs/mosd/hack/build-target.sh`'s `target/`: a shared one would let a
+(`target-deb/<producer>/`, gitignored) rather than shared with
+`hack/build-target.sh`'s `target/`: a shared one would let a
 four-binary build satisfy the assertion with binaries nobody asked for.
 
 ## Adding a producer
 
-Create `pkgs/mosd/deb/<producer>/` holding `producer.env`, a `Dockerfile`,
+Create `deb/<producer>/` holding `producer.env`, a `Dockerfile`,
 `control/<package>.control` per package, and a `prepare.sh` naming the crates it
 compiles. Nothing else: there is no register to add a case to, and no `make`
 target to write -- `make os-deb-<producer>` is a pattern rule resolved against
@@ -57,9 +57,9 @@ repository. Each producer reaches it through its own `prepare.sh`, which is
 where the crate list lives.
 
 The unit files reach the Dockerfile through the `BUILD_CONTEXTS` each
-`producer.env` names, because they are not all in one directory: `mosd.service`
-and `apid.service` are in `dist/`, while `mos-mqttd.service` and
-`mos-mqtt-broker.service` sit beside their own crates in `mqttd/dist/` and
+`producer.env` names, because they are not all in one directory: `micad.service`
+and `apid.service` are in `dist/`, while `mica-mqttd.service` and
+`mica-mqtt-broker.service` sit beside their own crates in `mqttd/dist/` and
 `broker/dist/`. The `mqtt` producer therefore takes two of them,
 `mqttd-dist` and `broker-dist`, rather than one pointed at their only common
 parent -- which is the workspace root, cargo target trees and all. The shared
@@ -123,8 +123,8 @@ other, and that is the property worth keeping.
 ## Enablement is package-owned
 
 A package that ships a unit ships the `multi-user.target.wants` symlink that
-starts it, as a **file in its payload**. `mosd` owns
-`/etc/systemd/system/multi-user.target.wants/mosd.service` and `mos-apid` owns
+starts it, as a **file in its payload**. `micad` owns
+`/etc/systemd/system/multi-user.target.wants/micad.service` and `mica-apid` owns
 `apid.service`. Installing the package is what makes the daemon run.
 
 No maintainer script is involved and nothing calls `systemctl enable` --
@@ -139,16 +139,16 @@ but this root filesystem is an immutable dm-verity squashfs and nothing in it is
 edited. A `DEBIAN/conffiles` entry would promise a merge that cannot happen.
 
 A package that must NOT start on its own ships no such link, and the `mqtt`
-producer is that case: `mosd` renders `/run/mos/mqtt-broker.toml` and
-`/run/mos/mqttd-device.env` from the settings tree and starts both units from
+producer is that case: `micad` renders `/run/mica/mqtt-broker.toml` and
+`/run/mica/mqttd-device.env` from the settings tree and starts both units from
 `mqtt.enabled`, so a symlink in either payload would start a broker nobody
-asked for, before mosd has rendered anything for it to read. Both units keep
+asked for, before micad has rendered anything for it to read. Both units keep
 their `[Install]` section so `systemctl enable` stays meaningful on a writable
 root; neither postinst calls it.
 
 ## Maintainer scripts
 
-`mos-mqttd` and `mos-mqtt-broker` each carry a `postinst` that creates their
+`mica-mqttd` and `mica-mqtt-broker` each carry a `postinst` that creates their
 pinned service account (uid/gid 970 and 969). The account moved here out of the
 retired rootfs account scripts, into the package that owns it. `postinst` and
 not `preinst`, because no path in either payload is owned by those accounts:
@@ -162,27 +162,27 @@ anybody else. `useradd`, `groupadd` and `chage` come from `passwd`, which both
 packages declare in `Depends`: `dpkg-shlibdeps` cannot see a program `exec`ed
 by name.
 
-## `mosd` depends on `mos-system`
+## `micad` depends on `mica-system`
 
-`mosd.service` declares `RequiresMountsFor=/var/lib/mos /mos`, and both paths
-are bind-mount targets: `var-lib-mos.mount` and the `/var/lib/mos` mountpoint
+`micad.service` declares `RequiresMountsFor=/var/lib/mica /mos`, and both paths
+are bind-mount targets: `var-lib-mica.mount` and the `/var/lib/mica` mountpoint
 directory are two halves of one mechanism, as are `mos.mount` and `/mos`, so
-one package owns all four. That package is `mos-system`
-(`rootfs/packages-src/system`), and `mosd` names it in `Depends` rather than
+one package owns all four. That package is `mica-system`
+(`rootfs/packages-src/system`), and `micad` names it in `Depends` rather than
 shipping the directories itself.
 
 `/mos` joined that line with PLAN-070 §5.2: system configuration lives in
-`/mos/config` on DATA, so a mosd that started before the mount would come up on
-schema defaults. The ordering also puts mosd after `mos-data-layout.service`,
+`/mos/config` on DATA, so a micad that started before the mount would come up on
+schema defaults. The ordering also puts micad after `mica-data-layout.service`,
 which runs `Before=mos.mount` and is what creates `/mos/config` at its declared
 `0700`.
 
-The dependency is UNVERSIONED -- `mos-system` is not built from this
-workspace's commit and pins nothing to it -- and it is declared once. `mos-apid`
-inherits it through its exact-version dependency on `mosd`, and so do both MQTT
+The dependency is UNVERSIONED -- `mica-system` is not built from this
+workspace's commit and pins nothing to it -- and it is declared once. `mica-apid`
+inherits it through its exact-version dependency on `micad`, and so do both MQTT
 packages; no other control template mentions it.
 
-`mos-system` is not in this pool and will not be until that workstream lands.
+`mica-system` is not in this pool and will not be until that workstream lands.
 That is expected: it is an EXTERNAL name to these producers, the same as
 `passwd`, and the gate below classifies it as one. Installing these four
 packages into a clean root is therefore the composer's check and not this
@@ -200,7 +200,7 @@ unique non-directory file ownership across the four packages with no `Replaces`
 escape; the fields and the `Depends` closure, with every local dependency
 pinned to the exact version the pool was built at; a non-empty
 `/usr/share/doc/<package>/copyright` in each; the enablement asymmetry
-described above -- one `multi-user.target.wants` symlink in each mosd-family
+described above -- one `multi-user.target.wants` symlink in each micad-family
 payload, none in either MQTT payload; no `DEBIAN/conffiles`; and `sh -n` over
 every maintainer script, which the pipefail lint does not cover because these
 are `#!/bin/sh` and never enable it.

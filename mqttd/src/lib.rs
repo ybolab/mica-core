@@ -1,9 +1,9 @@
-//! `mos-mqttd` — the MQTT application-data bridge.
+//! `mica-mqttd` — the MQTT application-data bridge.
 //!
-//! The bridge discovers only exact `com.mos.*` names installed in its
+//! The bridge discovers only exact `com.mica.*` names installed in its
 //! package-owned enrollment directory and knows their `GetItems`,
 //! `ItemsChanged` and `SetValue` application surface. It never calls or
-//! subscribes to mosd. Device identity arrives as runtime configuration, so no
+//! subscribes to micad. Device identity arrives as runtime configuration, so no
 //! system setting, state, signal, method or action becomes an MQTT item.
 //!
 //! # The protocol is the mos-native grammar, and only that

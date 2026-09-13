@@ -106,8 +106,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "hmac",
- "mos-ui-bundle",
- "mosd-settings",
+ "mica-ui-bundle",
+ "micad-settings",
  "rand 0.8.7",
  "rcgen",
  "reqwest",
@@ -1620,6 +1620,110 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-busname"
+version = "0.1.0"
+
+[[package]]
+name = "mica-mqtt-broker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "mica-mqttd",
+ "rumqttc",
+ "rumqttd",
+ "serde",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mica-mqtt-reference"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "mica-mqttd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures-util",
+ "mica-busname",
+ "rumqttc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "mica-ui-bundle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
+name = "micad"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "base64 0.22.1",
+ "bcrypt",
+ "chrono",
+ "hex",
+ "mica-busname",
+ "micad-settings",
+ "ring",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "x25519-dalek",
+ "zbus",
+]
+
+[[package]]
+name = "micad-settings"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml 0.9.12+spec-1.1.0",
+ "url",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1640,110 +1744,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mos-busname"
-version = "0.1.0"
-
-[[package]]
-name = "mos-mqtt-broker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "mos-mqttd",
- "rumqttc",
- "rumqttd",
- "serde",
- "tempfile",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "mos-mqtt-reference"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "mos-mqttd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures-util",
- "mos-busname",
- "rumqttc",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "mos-ui-bundle"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "zip",
-]
-
-[[package]]
-name = "mosd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "async-trait",
- "base64 0.22.1",
- "bcrypt",
- "chrono",
- "hex",
- "mos-busname",
- "mosd-settings",
- "ring",
- "rustix",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "x25519-dalek",
- "zbus",
-]
-
-[[package]]
-name = "mosd-settings"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "toml 0.9.12+spec-1.1.0",
- "url",
 ]
 
 [[package]]

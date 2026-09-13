@@ -1,8 +1,8 @@
 //! apid — appliance API daemon; the web dashboard is what it serves.
 //!
 //! Serves the management web interface over HTTPS with a self-signed
-//! certificate and talks to `mosd` exclusively over D-Bus
-//! (`com.mos.mosd` / `/com/mos/mosd` / `com.mos.mosd1`).
+//! certificate and talks to `micad` exclusively over D-Bus
+//! (`com.mica.micad` / `/com/mos/micad` / `com.mica.micad1`).
 //!
 //! Configuration is taken from the environment:
 //!
@@ -10,7 +10,7 @@
 //! - `APID_HTTP_ADDR` — HTTP listen address, redirect-only (default
 //!   `0.0.0.0:80`).
 //! - `APID_STATE_DIR` — certificate and key storage, the persisted
-//!   login-backoff counters and the audit ring (default `/var/lib/mos/apid`).
+//!   login-backoff counters and the audit ring (default `/var/lib/mica/apid`).
 //! - `APID_BUS` — `system` (default) or `session`; same semantics as
 //!   `MOSD_BUS`.
 //!
@@ -67,11 +67,11 @@ fn main() -> anyhow::Result<()> {
     // the async body in `serve`: the answer is given before the tokio runtime
     // is built, before the ring crypto provider is installed, before
     // `Config::from_env`, before the state dir exists and before any key is
-    // generated. There is nothing above it. `mosd/mosd/src/main.rs` carries
+    // generated. There is nothing above it. `micad/micad/src/main.rs` carries
     // the same handler and the long form of the shared reasoning.
     //
     // An unrecognised argv falls through to the daemon: apid is started by
-    // systemd with no arguments (mosd/dist/apid.service).
+    // systemd with no arguments (micad/dist/apid.service).
     if wants_version(std::env::args().skip(1)) {
         println!("{}", version_line());
         return Ok(());
@@ -97,7 +97,7 @@ const UNKNOWN_COMMIT: &str = "unknown";
 /// Whether an argv (argv[1..]) is asking for the version.
 ///
 /// `-V` as well as `--version`, so the four binaries this repository ships
-/// answer one question one way: `mos-mqttd` and `mos-mqtt-broker` get the pair
+/// answer one question one way: `mica-mqttd` and `mica-mqtt-broker` get the pair
 /// from clap's `#[command(version)]`. It is the same flag, not a second one.
 fn wants_version(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter()
@@ -125,12 +125,12 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
 
 /// The one line `--version` prints: `apid <version> (<commit>)`.
 ///
-/// The version is `mosd/apid/Cargo.toml`'s `[package] version` by way of
+/// The version is `micad/apid/Cargo.toml`'s `[package] version` by way of
 /// Cargo's own `CARGO_PKG_VERSION`, which is the same file
 /// `verify/src/smoke-pins.ts` reads to decide what this binary must report:
 /// one value, two readers, no copy.
 ///
-/// The commit is `MOS_BUILD_COMMIT`, passed in by `mosd/hack/build-target.sh`
+/// The commit is `MOS_BUILD_COMMIT`, passed in by `micad/hack/build-target.sh`
 /// from the host. Not discovered here and no `build.rs`: inside
 /// `localhost/mos-build-rust` with that build's own mount, `git rev-parse
 /// HEAD` exits 128, because the checkout is a git worktree and `/src/.git`
@@ -166,7 +166,7 @@ async fn serve() -> anyhow::Result<()> {
     let state = routes::AppState::new(api, signing_key).with_persistence(&config.state_dir);
     // The SettingsChanged watcher that keeps the gate's access cache honest;
     // until it reports a live subscription the gate reads the bus directly,
-    // so a mosd that is not up yet costs latency, never staleness.
+    // so a micad that is not up yet costs latency, never staleness.
     tokio::spawn(bus_client::watch_settings_changed(
         config.bus,
         state.access_cache().clone(),
@@ -195,7 +195,7 @@ async fn serve() -> anyhow::Result<()> {
     // bind and after `APID_LISTENING` is printed, and the outcome is a state
     // this function holds rather than an error it returns. Note the absence of
     // `?`: every step above this line propagates, and under
-    // `Restart=on-failure` (`pkgs/mosd/dist/apid.service`) a propagated error is
+    // `Restart=on-failure` (`dist/apid.service`) a propagated error is
     // a crash loop with no listener bound. A bundle must not be able to stop
     // apid from listening, so `discover` has no error variant to propagate.
     let bundle_state = startup::discover(state.bundles().clone(), state.audit().clone()).await;
@@ -280,7 +280,7 @@ mod version_tests {
     /// It is asked of the whole argv, not only of the first element.
     #[test]
     fn the_flag_is_found_wherever_it_appears() {
-        assert!(wants_version(argv(&["--state-dir", "/var/lib/mos", "-V"])));
+        assert!(wants_version(argv(&["--state-dir", "/var/lib/mica", "-V"])));
     }
 
     /// The second flag, held to the same rule, and the two do not answer for
@@ -291,7 +291,7 @@ mod version_tests {
         assert!(wants_openapi(argv(&["--openapi"])));
         assert!(wants_openapi(argv(&[
             "--state-dir",
-            "/var/lib/mos",
+            "/var/lib/mica",
             "--openapi"
         ])));
         assert!(!wants_version(argv(&["--openapi"])));
@@ -333,7 +333,7 @@ mod version_tests {
 
     /// The shape, not the values.
     ///
-    /// No assertion here that the version equals `mosd/apid/Cargo.toml`:
+    /// No assertion here that the version equals `micad/apid/Cargo.toml`:
     /// `CARGO_PKG_VERSION` is that file, so the comparison would be a value
     /// against itself. It is made from outside instead, by
     /// `verify/src/smoke-pins.ts`, which parses the manifest independently.

@@ -1,0 +1,27 @@
+Package: mica-mqtt-broker
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: mos build <mos@example.invalid>
+Section: admin
+Priority: optional
+Depends: micad (= @VERSION@), passwd, ${shlibs:Depends}
+Description: mos MQTT broker
+ An rumqttd broker, TCP only and MQTT 3.1.1, listening on the address the
+ device itself is configured with. The listen address, the port and the auth
+ flag are deliberately absent from the unit: micad renders all three from the
+ mqtt settings subtree into /run/mica/mqtt-broker.toml before starting it.
+ .
+ The dependency on micad is pinned to the exact version for that reason -- micad
+ renders the only configuration this broker has and owns its lifecycle -- and
+ the two are built from one workspace commit.
+ .
+ passwd is needed by the postinst, which creates the pinned mica-mqtt-broker
+ service account with useradd, groupadd and chage. The uid is pinned rather
+ than dynamic because /var/lib/mica/mqtt-broker-users.toml on STATE outlives
+ every start of the unit and has to be owned by this service and nothing else.
+ dpkg-shlibdeps cannot see a program that is exec'd by name, so the dependency
+ is written out here.
+ .
+ The unit ships DISABLED: no multi-user.target.wants symlink is in this
+ payload and nothing enables it. mqtt.enabled is the master switch and micad
+ starts the broker from it.

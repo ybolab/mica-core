@@ -75,7 +75,7 @@ describe('facts the device could not observe', () => {
           { name: 'DATA', present: false, mounted: false, check: { recorded: false } },
           { name: 'STATE', present: true, mounted: false, check: { recorded: true, unit: 'fsck', exitStatus: 1 } },
         ],
-        namespaces: { sharedCapacityTier: 'DATA', binds: [{ name: 'state', mount: '/var/lib/mos', owner: 'mosd', readiness: 'ready', mounted: true, sourceOnData: false, source: '/tmp/state', sourceIsDirectory: false, readOnly: true, probe: { attempted: false, reason: 'tier absent' } }] },
+        namespaces: { sharedCapacityTier: 'DATA', binds: [{ name: 'state', mount: '/var/lib/mica', owner: 'micad', readiness: 'ready', mounted: true, sourceOnData: false, source: '/tmp/state', sourceIsDirectory: false, readOnly: true, probe: { attempted: false, reason: 'tier absent' } }] },
         media: [{ name: 'mmcblk0', health: { supported: false, reason: 'no eMMC health page', source: 'sysfs', lifetimeEstimates: [] } }],
         lifecycle: { discard: 'supported', secureErase: 'unsupported' },
       },

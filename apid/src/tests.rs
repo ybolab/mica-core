@@ -2,7 +2,7 @@
 //! backend; no network or bus daemon involved.
 //!
 //! The exceptions are [`power_bus`] and [`settings_signal`], which drive the
-//! real D-Bus client against a fake mosd on a private bus, because what they
+//! real D-Bus client against a fake micad on a private bus, because what they
 //! assert lives below the fake backend's trait.
 
 mod broken_classes;
@@ -79,7 +79,7 @@ async fn body_string(response: Response<axum::body::Body>) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-// A bounded call is not an ordinary connectivity failure: mosd may still be
+// A bounded call is not an ordinary connectivity failure: micad may still be
 // applying a write after apid gives the request back, so the response must
 // say "not confirmed" (504) rather than "unreachable" (503).
 #[tokio::test]
@@ -94,7 +94,7 @@ async fn a_mosd_call_timeout_has_its_own_api_classification() {
     assert!(response.headers().get(RETRY_AFTER).is_none());
     let body: serde_json::Value =
         serde_json::from_str(&body_string(response).await).expect("JSON envelope");
-    assert_eq!(body["error"]["code"], "mosd_timeout");
+    assert_eq!(body["error"]["code"], "micad_timeout");
     assert_eq!(body["error"]["path"], "hostname");
     assert!(
         body["error"]["message"]
@@ -117,8 +117,8 @@ async fn an_invalid_task_payload_is_a_mosd_failure() {
     assert!(response.headers().get(RETRY_AFTER).is_none());
     let body: serde_json::Value =
         serde_json::from_str(&body_string(response).await).expect("JSON envelope");
-    assert_eq!(body["error"]["code"], "mosd_failed");
-    assert_eq!(body["error"]["source"], "mosd");
+    assert_eq!(body["error"]["code"], "micad_failed");
+    assert_eq!(body["error"]["source"], "micad");
 }
 
 async fn send(router: &Router, request: Request<Body>) -> Response<axum::body::Body> {
@@ -355,7 +355,7 @@ async fn network_api_reports_configured_and_observed_interfaces() {
     );
 }
 
-// Uptime reaches the pane from mosd's live-state tree and from nowhere else:
+// Uptime reaches the pane from micad's live-state tree and from nowhere else:
 // a backend with no `uptime` state renders the unavailable notice, where a
 // handler that still read `/proc/uptime` for itself would render a real
 // number on any Linux host.
@@ -371,15 +371,15 @@ async fn network_api_reports_configured_and_observed_interfaces() {
 // The path apid builds for a dotted name is a path the real settings model
 // accepts — the half that lived below the fake backend.
 //
-// `FakeSettings` answers for the bus, not for `mosd_settings`; this drives
-// the string apid actually sends into [`mosd_settings::Settings`], whose
+// `FakeSettings` answers for the bus, not for `micad_settings`; this drives
+// the string apid actually sends into [`micad_settings::Settings`], whose
 // `IfaceSettings` carries `deny_unknown_fields`, and records the unquoted
 // spelling the task filed as the failure it still is.
 #[test]
 fn the_dotted_iface_path_apid_builds_is_accepted_by_the_settings_model() {
     let value = json!({ "dhcp": true });
 
-    let mut settings = mosd_settings::Settings::default();
+    let mut settings = micad_settings::Settings::default();
     settings
         .set(r#"network."eth0.100""#, value.clone())
         .unwrap();
@@ -391,16 +391,16 @@ fn the_dotted_iface_path_apid_builds_is_accepted_by_the_settings_model() {
 
     // The recorded spelling: three segments, so `100` is offered as a
     // field of `IfaceSettings` and refused.
-    let err = mosd_settings::Settings::default().set("network.eth0.100", value);
+    let err = micad_settings::Settings::default().set("network.eth0.100", value);
     assert!(
-        matches!(&err, Err(mosd_settings::SettingsError::Validation { message, .. }) if message.contains("unknown field `100`")),
+        matches!(&err, Err(micad_settings::SettingsError::Validation { message, .. }) if message.contains("unknown field `100`")),
         "{err:?}"
     );
 }
 
 // SSH pane
 
-// Real `ssh-keygen` output, the same three keys `mosd/mosd/src/reconciler/
+// Real `ssh-keygen` output, the same three keys `micad/micad/src/reconciler/
 // sshd.rs` tests against, so both sides of the D-Bus boundary are exercised
 // with identical input. Public keys are not secrets; these correspond to no
 // device and the private halves were discarded at generation.
@@ -486,10 +486,13 @@ fn generated_key_line(index: u8) -> String {
         .split(' ')
         .nth(1)
         .expect("the fixture is `<type> <blob> <comment>`");
-    let mut bytes = mosd_settings::decode_base64(blob).expect("the fixture blob decodes");
+    let mut bytes = micad_settings::decode_base64(blob).expect("the fixture blob decodes");
     let last = bytes.len() - 1;
     bytes[last] = index;
-    format!("ssh-ed25519 {}", mosd_settings::encode_base64_nopad(&bytes))
+    format!(
+        "ssh-ed25519 {}",
+        micad_settings::encode_base64_nopad(&bytes)
+    )
 }
 
 // The stored key list, as JSON.
@@ -847,7 +850,7 @@ fn ui_package_bytes(api_version: &str) -> Vec<u8> {
     )
     .unwrap();
     let package = temp.path().join("uploaded.mos-ui.zip");
-    mos_ui_bundle::pack(&source, &package).unwrap();
+    mica_ui_bundle::pack(&source, &package).unwrap();
     std::fs::read(package).unwrap()
 }
 
@@ -1358,7 +1361,7 @@ const VERSIONS_BODY: &str = r#"{"versions":["v1"],"current":"v1"}"#;
 
 // The exact document §2.1's discovery table gives for `/api/v1/meta`.
 //
-// Built from `mosd_settings::STATE_SCHEMA_VERSION` rather than from a literal,
+// Built from `micad_settings::STATE_SCHEMA_VERSION` rather than from a literal,
 // which is the whole point of the field: a schema bump moves this expectation
 // and the handler together, and a hand-copied number in either is what fails.
 // The STATE document's version and not the tree's, because after PLAN-070
@@ -1366,7 +1369,7 @@ const VERSIONS_BODY: &str = r#"{"versions":["v1"],"current":"v1"}"#;
 fn meta_body() -> String {
     format!(
         r#"{{"api":"v1","settingsSchemaVersion":{},"daemon":"apid"}}"#,
-        mosd_settings::STATE_SCHEMA_VERSION
+        micad_settings::STATE_SCHEMA_VERSION
     )
 }
 
@@ -1409,7 +1412,7 @@ async fn api_versions_answers_the_served_set_without_a_session() {
 
 // The hand-off is above the gate's `GetSettings("access")` call, so the
 // question "which versions does this device serve?" is still answerable when
-// mosd is not answering.
+// micad is not answering.
 
 // §2.1's second discovery endpoint, answered for a valid session.
 #[tokio::test]
@@ -1525,7 +1528,7 @@ async fn every_other_api_path_has_one_answer_in_every_mode() {
     }
 }
 
-// `mosd/apid/openapi.json` is the bytes `apid --openapi` prints.
+// `micad/apid/openapi.json` is the bytes `apid --openapi` prints.
 //
 // A local `cargo test` failure and not only a CI one: whoever changed a route
 // is the person holding the command that regenerates the file.
@@ -1907,10 +1910,10 @@ fn mqtt_tree(enabled: bool) -> serde_json::Value {
     })
 }
 
-// The live-state subtree mosd's mqtt reconciler publishes, copied **verbatim**
+// The live-state subtree micad's mqtt reconciler publishes, copied **verbatim**
 // from the reconciler's own expectation of it.
 //
-// Source: `mosd/mosd/src/reconciler/mqtt.rs`, test
+// Source: `micad/micad/src/reconciler/mqtt.rs`, test
 // `live_state_names_both_units_and_the_config_path` -- its assertions on
 // `configPath`, `listen.address`, `listen.port`, `auth.enabled` and `units`,
 // for `settings(true, "127.0.0.1", 1883, false)`. The exact key set is pinned
@@ -1921,7 +1924,7 @@ fn mqtt_tree(enabled: bool) -> serde_json::Value {
 // reads is a test of the pane against itself: it cannot detect that it
 // disagrees with the producer, so both crates stay green while the pane
 // renders "unknown" for every value and the open-listener warning cannot fire
-// at all. This is still a second copy in a second crate -- apid and mosd talk
+// at all. This is still a second copy in a second crate -- apid and micad talk
 // over a bus and share no type -- but a named source makes the copy
 // auditable.
 //
@@ -1932,15 +1935,15 @@ const MQTT_PUBLISHED_STATE: &str = r#"{
     "enabled": true,
     "listen": { "address": "127.0.0.1", "port": 1883 },
     "auth": { "enabled": false },
-    "configPath": "/run/mos/mqtt-broker.toml",
+    "configPath": "/run/mica/mqtt-broker.toml",
     "units": [
         {
-            "unit": "mos-mqtt-broker.service",
+            "unit": "mica-mqtt-broker.service",
             "activeState": "active",
             "unitFileState": "enabled-runtime"
         },
         {
-            "unit": "mos-mqttd.service",
+            "unit": "mica-mqttd.service",
             "activeState": "active",
             "unitFileState": "enabled-runtime"
         }
@@ -1985,8 +1988,8 @@ fn mqtt_state_with_units(
     state["listen"]["address"] = json!(address);
     state["listen"]["port"] = json!(port);
     state["auth"]["enabled"] = json!(auth_enabled);
-    set_unit_state(&mut state, "mos-mqtt-broker.service", broker_state);
-    set_unit_state(&mut state, "mos-mqttd.service", bridge_state);
+    set_unit_state(&mut state, "mica-mqtt-broker.service", broker_state);
+    set_unit_state(&mut state, "mica-mqttd.service", bridge_state);
     state
 }
 
@@ -2199,8 +2202,8 @@ async fn the_settings_root_answers_the_dot_paths_value_for_a_session() {
     assert_eq!(body_string(response).await, "true");
 }
 
-// The second root, which is a different tree in mosd and so a different route
-// here (§2.2): untyped, in memory, and written only from inside mosd.
+// The second root, which is a different tree in micad and so a different route
+// here (§2.2): untyped, in memory, and written only from inside micad.
 #[tokio::test]
 async fn the_state_root_answers_the_dot_paths_value_for_a_session() {
     let (tree, token) = with_token(secret_tree("hunter2secret"));
@@ -2217,7 +2220,7 @@ async fn the_state_root_answers_the_dot_paths_value_for_a_session() {
     assert_eq!(body_string(response).await, r#""mos""#);
 }
 
-// The time-status surface (PLAN-044): authenticated, read-only, and mosd's
+// The time-status surface (PLAN-044): authenticated, read-only, and micad's
 // classification passed through rather than re-derived here.
 #[tokio::test]
 async fn the_time_status_route_answers_mosds_classification_read_only() {
@@ -2255,7 +2258,7 @@ async fn the_time_status_route_answers_mosds_classification_read_only() {
     assert_eq!(envelope(response).await["code"], "method_not_allowed");
 }
 
-// The storage surface (PLAN-049): authenticated, read-only, and mosd's
+// The storage surface (PLAN-049): authenticated, read-only, and micad's
 // observation passed through rather than re-derived here.
 #[tokio::test]
 async fn the_storage_status_route_answers_mosds_observation_read_only() {
@@ -2641,14 +2644,14 @@ async fn a_dot_path_that_names_a_secret_field_answers_the_sentinel() {
     }
 }
 
-// A `zbus::Error::MethodError` naming `name`, with `message` as the body mosd
+// A `zbus::Error::MethodError` naming `name`, with `message` as the body micad
 // sent back.
 //
 // Constructed rather than provoked: `FakeSettings` returns plain `anyhow`
-// errors, which are §2.4's `mosd_unreachable` fallback row and cannot reach
+// errors, which are §2.4's `micad_unreachable` fallback row and cannot reach
 // the other three.
 fn method_error(name: &'static str, message: &str) -> zbus::Error {
-    let reply_to = zbus::message::Message::method_call("/com/mos/mosd", "GetSettings")
+    let reply_to = zbus::message::Message::method_call("/com/mos/micad", "GetSettings")
         .expect("a well-formed method call")
         .build(&())
         .expect("an empty body serialises");
@@ -2662,12 +2665,12 @@ fn method_error(name: &'static str, message: &str) -> zbus::Error {
 // `login_submit` need to get a session as far as a route that fails.
 struct FailingSettings {
     tree: serde_json::Value,
-    /// The fdo error name mosd answered with, or `None` for a failure that
-    /// never reached mosd at all.
+    /// The fdo error name micad answered with, or `None` for a failure that
+    /// never reached micad at all.
     fdo_name: Option<&'static str>,
     /// Fail with the bounded call's own error type instead. Its own field
     /// rather than a third `fdo_name` value because a timeout is not an fdo
-    /// error at all: it is apid's, raised when mosd never answered, and the
+    /// error at all: it is apid's, raised when micad never answered, and the
     /// classification that reads it downcasts to the type rather than reading
     /// a name.
     timeout: bool,
@@ -2683,12 +2686,12 @@ impl FailingSettings {
         }
         match self.fdo_name {
             Some(name) => method_error(name, MOSD_MESSAGE).into(),
-            None => anyhow::anyhow!("no connection to mosd"),
+            None => anyhow::anyhow!("no connection to micad"),
         }
     }
 }
 
-// The text mosd is pretending to have sent, which §2.4 requires apid to carry
+// The text micad is pretending to have sent, which §2.4 requires apid to carry
 // through untouched.
 const MOSD_MESSAGE: &str = "invalid settings value at `network.eth0.100`: unknown field `100`";
 
@@ -2858,8 +2861,8 @@ fn the_zbus_error_survives_the_conversion_to_anyhow() {
     }
 }
 
-// §2.4's table, row by row: mosd classifies, apid translates the
-// classification, and mosd's message is carried through verbatim.
+// §2.4's table, row by row: micad classifies, apid translates the
+// classification, and micad's message is carried through verbatim.
 //
 // No row is route-dependent any more. fdo `InvalidArgs` was 422
 // `settings_rejected` everywhere except the live-state route, where apid
@@ -2871,12 +2874,12 @@ fn the_zbus_error_survives_the_conversion_to_anyhow() {
 async fn each_fdo_error_name_gets_its_own_envelope() {
     for (fdo_name, code, status) in [
         (
-            "com.mos.mosd1.Error.NotFound",
+            "com.mica.micad1.Error.NotFound",
             "settings_not_found",
             StatusCode::NOT_FOUND,
         ),
         (
-            "com.mos.mosd1.Error.ReadOnly",
+            "com.mica.micad1.Error.ReadOnly",
             "settings_read_only",
             StatusCode::CONFLICT,
         ),
@@ -2892,7 +2895,7 @@ async fn each_fdo_error_name_gets_its_own_envelope() {
         ),
         (
             "org.freedesktop.DBus.Error.Failed",
-            "mosd_failed",
+            "micad_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
     ] {
@@ -2908,9 +2911,9 @@ async fn each_fdo_error_name_gets_its_own_envelope() {
             );
             let error = envelope(response).await;
             assert_eq!(error["code"], code, "{fdo_name}");
-            assert_eq!(error["source"], "mosd", "{fdo_name}");
+            assert_eq!(error["source"], "micad", "{fdo_name}");
             // §2.4: apid substituting its own phrasing would hide every
-            // message mosd learns to produce.
+            // message micad learns to produce.
             assert_eq!(error["message"], MOSD_MESSAGE, "{fdo_name}");
             // §2.4's optional member, which these routes DO name.
             assert_eq!(
@@ -2945,25 +2948,25 @@ async fn an_unreachable_mosd_is_503_with_retry_after() {
                 "{fdo_name:?} at {path}"
             );
             let error = envelope(response).await;
-            assert_eq!(error["code"], "mosd_unreachable");
+            assert_eq!(error["code"], "micad_unreachable");
             assert_eq!(error["source"], "apid");
             assert!(error["message"].is_string());
         }
     }
 }
 
-// The HTML half of the same condition: a pane whose mosd call fails answers
+// The HTML half of the same condition: a pane whose micad call fails answers
 // **503 with `Retry-After`**, exactly like the API path above, so one outage
 // no longer reports as 502 on one surface and 503 on the other.
 
 // A dot-path that does not exist answers **404 `settings_not_found`**, no
-// longer 422: mosd names `SettingsError::NotFound` with its own error name
-// (`com.mos.mosd1.Error.NotFound`), so a missing path and a bad value stop
+// longer 422: micad names `SettingsError::NotFound` with its own error name
+// (`com.mica.micad1.Error.NotFound`), so a missing path and a bad value stop
 // sharing a code. The 422 assertion beside it is the control: a rejection
 // that IS a rejection still reports as one.
 #[tokio::test]
 async fn a_dot_path_that_does_not_exist_is_404_and_a_rejection_stays_422() {
-    let (router, token) = failing_app(Some("com.mos.mosd1.Error.NotFound")).await;
+    let (router, token) = failing_app(Some("com.mica.micad1.Error.NotFound")).await;
     let response = bearer(&router, "GET", "/api/v1/settings/no.such.path", &token).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let error = envelope(response).await;
@@ -2983,10 +2986,10 @@ async fn a_dot_path_that_does_not_exist_is_404_and_a_rejection_stays_422() {
 // condition -- not the 422 §2.4's table gives fdo `InvalidArgs`.
 //
 // **The status, the code and the envelope are unchanged; what carries them
-// is not.** mosd used to raise fdo `InvalidArgs` for a state path that does
+// is not.** micad used to raise fdo `InvalidArgs` for a state path that does
 // not resolve, and apid answered 404 by reading that name against a fact
 // about `GetState` -- that it had exactly one producer for it -- which was
-// true but private to this one route. mosd's `get_state` now raises
+// true but private to this one route. micad's `get_state` now raises
 // `MOSD_NOT_FOUND`, the name every other read on the bus already uses for a
 // path that names nothing, so §2.4's shared classifier answers this without a
 // special case.
@@ -2996,7 +2999,7 @@ async fn a_dot_path_that_does_not_exist_is_404_and_a_rejection_stays_422() {
 // because no rewrite is left to intercept it.
 #[tokio::test]
 async fn a_state_dot_path_that_does_not_resolve_is_404_not_422() {
-    let (router, token) = failing_app(Some("com.mos.mosd1.Error.NotFound")).await;
+    let (router, token) = failing_app(Some("com.mica.micad1.Error.NotFound")).await;
 
     let response = bearer(&router, "GET", "/api/v1/state/no.such.path", &token).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -3271,11 +3274,11 @@ const PEER_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 // A second one, distinct from [`PEER_KEY`], for the add/remove tests.
 const OTHER_PEER_KEY: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
 
-// The live-state object mosd's network reconciler publishes for `kinds_tree`,
+// The live-state object micad's network reconciler publishes for `kinds_tree`,
 // including the two fields M5 added: `kind` on every entry and `publicKey` on
 // the tunnel.
 //
-// There is no private key in it because mosd never puts one there — the state
+// There is no private key in it because micad never puts one there — the state
 // tree is served over D-Bus and over `GET /api/v1/state/network`.
 fn network_state() -> serde_json::Value {
     json!({
@@ -3312,13 +3315,13 @@ async fn kinds_app() -> (Router, Arc<FakeSettings>, String, String) {
 // The live-state reader: `kind` for every entry and `publicKey` for the
 // tunnel, which are the two fields M5 added to the per-interface object.
 
-// mosd having published no state yet is a fact the pane states, not a 502:
+// micad having published no state yet is a fact the pane states, not a 502:
 // the stored configuration is still worth showing.
 
 // One entry whose body this pane cannot read must not blank out the others.
 
 // The three virtual kinds, written through the quoted-path writer as the
-// typed bodies mosd deserializes.
+// typed bodies micad deserializes.
 
 // Saving a tunnel from the form keeps the peers the form does not carry.
 //
@@ -3338,7 +3341,7 @@ async fn kinds_app() -> (Router, Arc<FakeSettings>, String, String) {
 
 // The reconciler's cross-field rules, echoed by the pane for a readable error.
 //
-// Each row is a rule `validate_network` enforces in mosd. The pane is not the
+// Each row is a rule `validate_network` enforces in micad. The pane is not the
 // boundary — the settings file is writable without apid — so this asserts the
 // echo, and that nothing was written when it fired.
 
@@ -3382,7 +3385,7 @@ async fn kinds_app() -> (Router, Arc<FakeSettings>, String, String) {
 // router registers, what a caller sends, and what the document describes.
 const ROTATE_PATH: &str = "/api/v1/actions/wireguard/wg0/rotate-key";
 
-// §2.1's action route: mosd draws the key, and the body carries its public
+// §2.1's action route: micad draws the key, and the body carries its public
 // half and nothing else.
 #[tokio::test]
 async fn the_rotate_route_answers_the_new_public_key() {
@@ -3424,19 +3427,19 @@ async fn a_rotation_writes_nothing_to_the_settings_tree() {
     assert_eq!(fake.get_settings("network.wg0").await.unwrap(), before);
 }
 
-// §2.4's classification, inherited whole by the action route: mosd's fdo error
+// §2.4's classification, inherited whole by the action route: micad's fdo error
 // name decides the status and the code, and the envelope names the settings
 // dot-path at fault.
 #[tokio::test]
 async fn the_rotate_routes_failures_take_the_shared_envelope() {
     for (fdo_name, code, status) in [
         // the correction, on the apid side: **no apid logic
-        // changed**. mosd split its one `InvalidArgs` into a not-found for an
+        // changed**. micad split its one `InvalidArgs` into a not-found for an
         // undeclared entry and an `InvalidArgs` for one of the wrong kind, and
         // the classifier below already mapped both names. This row is the
         // proof that it did.
         (
-            Some("com.mos.mosd1.Error.NotFound"),
+            Some("com.mica.micad1.Error.NotFound"),
             "settings_not_found",
             StatusCode::NOT_FOUND,
         ),
@@ -3452,10 +3455,10 @@ async fn the_rotate_routes_failures_take_the_shared_envelope() {
         ),
         (
             Some("org.freedesktop.DBus.Error.Failed"),
-            "mosd_failed",
+            "micad_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
-        (None, "mosd_unreachable", StatusCode::SERVICE_UNAVAILABLE),
+        (None, "micad_unreachable", StatusCode::SERVICE_UNAVAILABLE),
     ] {
         let (router, token) = failing_app(fdo_name).await;
         let response = bearer_form(&router, ROTATE_PATH, &token, "").await;
@@ -3463,7 +3466,7 @@ async fn the_rotate_routes_failures_take_the_shared_envelope() {
         assert_api_headers(&response, ROTATE_PATH);
         let error = envelope(response).await;
         assert_eq!(error["code"], code, "{fdo_name:?}");
-        // The dot-path at fault is the entry whose kind mosd refused, not the
+        // The dot-path at fault is the entry whose kind micad refused, not the
         // HTTP path: §2.4's member is a settings dot-path.
         assert_eq!(error["path"], json!("network.wg0"), "{fdo_name:?}");
     }
@@ -3533,7 +3536,7 @@ async fn a_rotate_path_with_an_extra_segment_is_the_subtrees_404() {
 //
 // The consequence is what is asserted: an unauthenticated call answers §2.4's
 // envelope rather than the gate's redirect, exactly as the named interface
-// does, and mosd is what refuses the empty name.
+// does, and micad is what refuses the empty name.
 #[tokio::test]
 async fn the_empty_interface_segment_is_the_route_and_not_a_redirect() {
     const EMPTY: &str = "/api/v1/actions/wireguard//rotate-key";
@@ -3614,7 +3617,7 @@ async fn the_state_route_serves_the_kind_and_the_public_key() {
     assert_eq!(body["br0"]["kind"], json!("bridge"));
     assert_eq!(body["wg0"]["kind"], json!("wireguard"));
     assert_eq!(body["wg0"]["publicKey"], json!(PEER_KEY));
-    // No entry carries a private key, because mosd publishes none.
+    // No entry carries a private key, because micad publishes none.
     for (name, entry) in body.as_object().unwrap() {
         assert!(
             entry.get("privateKey").is_none(),
@@ -3627,7 +3630,7 @@ async fn the_state_route_serves_the_kind_and_the_public_key() {
 // declared `/api/` route does not serve.
 
 // A tree with an admin password, and a live-state tree carrying the `uptime`
-// key mosd serves at read time.
+// key micad serves at read time.
 fn health_app(uptime: u64) -> (Router, Arc<FakeSettings>) {
     let (router, fake) = test_app(configured_tree("hunter2secret"));
     fake.set_state_entry("uptime", json!(uptime));
@@ -3643,7 +3646,7 @@ fn health_app_with_token(uptime: serde_json::Value) -> (Router, Arc<FakeSettings
     (router, fake, wire)
 }
 
-// §2.4 case 3's first shape, exactly: `apid` ok, `mosd` ok, and `checkedAt`
+// §2.4 case 3's first shape, exactly: `apid` ok, `micad` ok, and `checkedAt`
 // carrying the appliance's uptime.
 //
 // `checkedAt` is asserted as a JSON **number**, which is the decision
@@ -3652,7 +3655,7 @@ fn health_app_with_token(uptime: serde_json::Value) -> (Router, Arc<FakeSettings
 // count of whole seconds. A health answer stamped any other way would be
 // stamped with a clock this appliance does not have.
 
-// The case the route exists for: mosd is dead and the answer is still **200**.
+// The case the route exists for: micad is dead and the answer is still **200**.
 //
 // A 503 here would be indistinguishable from the endpoint itself being down,
 // which is the confusion §2.4 case 3 says the route removes. The fixture is
@@ -3668,18 +3671,18 @@ async fn health_reports_an_unreachable_mosd_and_still_answers_200() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "a dead mosd is reported in the body, never as a status code"
+        "a dead micad is reported in the body, never as a status code"
     );
     assert_api_headers(&response, "/api/v1/health");
     assert_eq!(response.headers().get(RETRY_AFTER), None);
     let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
     assert_eq!(body["apid"], json!("ok"));
-    assert_eq!(body["mosd"], json!("unreachable"));
+    assert_eq!(body["micad"], json!("unreachable"));
     assert!(
         body["detail"].as_str().is_some_and(|d| !d.is_empty()),
         "the unreachable answer must say why: {body}"
     );
-    assert_eq!(body["code"], json!("mosd_unreachable"), "{body}");
+    assert_eq!(body["code"], json!("micad_unreachable"), "{body}");
     assert!(body.get("checkedAt").is_none(), "{body}");
 }
 
@@ -3687,7 +3690,7 @@ async fn health_reports_an_unreachable_mosd_and_still_answers_200() {
 // answer that carries no code at all.
 //
 // `detail` is unbounded by construction — it renders whatever zbus, the
-// kernel or mosd said — so before this the only way to tell a timeout from a
+// kernel or micad said — so before this the only way to tell a timeout from a
 // dead socket was to match on that sentence. The three cases are driven
 // through the real route rather than asserted at a mapping function, because
 // the classification reads the error's TYPE and a fixture that handed the
@@ -3699,18 +3702,18 @@ async fn the_health_route_classifies_every_failure_and_codes_none_of_the_success
     let response = bearer(&router, "GET", "/api/v1/health", &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
-    assert_eq!(body["mosd"], json!("unreachable"));
-    assert_eq!(body["code"], json!("mosd_timeout"), "{body}");
+    assert_eq!(body["micad"], json!("unreachable"));
+    assert_eq!(body["code"], json!("micad_timeout"), "{body}");
 
-    // 2. mosd answered, with something that is not a count of seconds. Not
+    // 2. micad answered, with something that is not a count of seconds. Not
     // reported as health: `ok` has to mean the round trip produced a usable
     // answer.
     let (router, _fake, token) = health_app_with_token(json!("about ninety thousand"));
     let response = bearer(&router, "GET", "/api/v1/health", &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
-    assert_eq!(body["mosd"], json!("unreachable"));
-    assert_eq!(body["code"], json!("mosd_bad_answer"), "{body}");
+    assert_eq!(body["micad"], json!("unreachable"));
+    assert_eq!(body["code"], json!("micad_bad_answer"), "{body}");
     assert!(
         body["detail"]
             .as_str()
@@ -3723,7 +3726,7 @@ async fn the_health_route_classifies_every_failure_and_codes_none_of_the_success
     let (router, _fake, token) = health_app_with_token(json!(90_061));
     let response = bearer(&router, "GET", "/api/v1/health", &token).await;
     let body: serde_json::Value = serde_json::from_str(&body_string(response).await).unwrap();
-    assert_eq!(body["mosd"], json!("ok"));
+    assert_eq!(body["micad"], json!("ok"));
     assert!(body.get("code").is_none(), "{body}");
     assert!(body.get("detail").is_none(), "{body}");
 }
@@ -3747,7 +3750,7 @@ async fn health_without_a_session_is_the_envelope_and_not_a_redirect() {
 // `/healthz` is unchanged by any of this, and this test is the pin.
 //
 // The boot health gate probes exactly this path, unauthenticated, and treats
-// any non-2xx as a failed boot (`rootfs/overlay/usr/lib/mos/mos-health`),
+// any non-2xx as a failed boot (`rootfs/overlay/usr/lib/mica/mica-health`),
 // so its path, its exemption, its status, its literal body and the fact that
 // it is not JSON are all load-bearing. §2.4 case 3 is explicit that `/healthz`
 // cannot be fixed and that the API adds a second endpoint instead — the two
@@ -3764,7 +3767,7 @@ async fn healthz_is_untouched_by_the_health_route() {
     );
     assert_eq!(body_string(response).await, "ok");
 
-    // Still `ok` with mosd dead, which is the property §2.4 case 3 calls the
+    // Still `ok` with micad dead, which is the property §2.4 case 3 calls the
     // trap and answers with a second route rather than by changing this one.
     let (failing, _) = failing_app(None).await;
     let response = get(&failing, "/healthz", None).await;
@@ -3823,7 +3826,7 @@ async fn a_wrong_method_on_a_declared_api_route_answers_the_envelope() {
         assert_api_headers(&response, &format!("{method} {path}"));
         let error = envelope(response).await;
         assert_eq!(error["code"], "method_not_allowed", "{method} {path}");
-        // apid, not mosd: the router refused this before any bus call.
+        // apid, not micad: the router refused this before any bus call.
         assert_eq!(error["source"], "apid", "{method} {path}");
         assert!(
             error["message"].is_string(),
@@ -4097,7 +4100,7 @@ async fn the_api_mints_lists_and_revokes() {
 // The cap is answered at the route, in the caller's terms.
 //
 // The store makes a full list a hard refusal, so without a check here the
-// caller meets it as a failed write — a 500 about mosd — instead of an answer
+// caller meets it as a failed write — a 500 about micad — instead of an answer
 // about the request. 409 and not 422: the body is well formed and what refuses
 // it is the collection's state.
 
@@ -4284,7 +4287,7 @@ fn writable_tree(password: &str) -> serde_json::Value {
     tree["access"]["ssh"] = json!({ "enabled": false });
     tree["container"] = json!({ "enabled": false });
     tree["mqtt"] = json!({ "enabled": false });
-    tree["wifi"] = serde_json::to_value(mosd_settings::WifiSettings::default()).unwrap();
+    tree["wifi"] = serde_json::to_value(micad_settings::WifiSettings::default()).unwrap();
     tree["time"] = json!({ "ntp": { "servers": [] }, "timezone": "UTC" });
     tree
 }
@@ -4654,7 +4657,7 @@ async fn an_absent_root_is_404_and_a_malformed_path_is_422() {
 // fails here.
 #[test]
 fn the_settings_schema_has_the_eight_roots_the_write_route_knows() {
-    let tree = serde_json::to_value(mosd_settings::Settings::default()).unwrap();
+    let tree = serde_json::to_value(micad_settings::Settings::default()).unwrap();
     let mut keys: Vec<&str> = tree
         .as_object()
         .expect("the settings tree is an object")
@@ -4772,8 +4775,8 @@ async fn a_body_of_the_wrong_shape_is_refused_and_not_written() {
 // ruling applied to a new route. The bearer-only rule is about the token
 // routes specifically, so this route matches the shipped reads instead.
 
-// A write mosd refuses is classified by §2.4's table exactly as a read is:
-// the route adds no second opinion, and mosd's own message comes through.
+// A write micad refuses is classified by §2.4's table exactly as a read is:
+// the route adds no second opinion, and micad's own message comes through.
 #[tokio::test]
 async fn a_write_mosd_refuses_carries_mosds_classification() {
     for (fdo_name, code, status) in [
@@ -4783,7 +4786,7 @@ async fn a_write_mosd_refuses_carries_mosds_classification() {
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
-            "com.mos.mosd1.Error.ReadOnly",
+            "com.mica.micad1.Error.ReadOnly",
             "settings_read_only",
             StatusCode::CONFLICT,
         ),
@@ -4805,7 +4808,7 @@ async fn a_write_mosd_refuses_carries_mosds_classification() {
         assert_eq!(response.status(), status, "{fdo_name}");
         let error = envelope(response).await;
         assert_eq!(error["code"], code, "{fdo_name}");
-        assert_eq!(error["source"], "mosd", "{fdo_name}");
+        assert_eq!(error["source"], "micad", "{fdo_name}");
         assert_eq!(error["message"], MOSD_MESSAGE, "{fdo_name}");
         assert_eq!(error["path"], json!("hostname"), "{fdo_name}");
     }
@@ -4882,7 +4885,7 @@ fn ssh_key_url(fingerprint: &str) -> String {
 //
 // The subtree is present even when the list is empty, which is what a real
 // tree looks like: `WifiClientSettings::networks` carries no
-// `skip_serializing_if`, so mosd's serialization of the typed tree always has
+// `skip_serializing_if`, so micad's serialization of the typed tree always has
 // it.
 fn wifi_tree(networks: serde_json::Value) -> serde_json::Value {
     let mut tree = configured_tree("hunter2secret");
@@ -4985,7 +4988,7 @@ async fn the_root_key_notice_is_on_the_listing_and_on_the_add() {
 
 // The add runs the parser the pane runs, and refuses the same lines: both
 // surfaces reach `parse_authorized_key`, so a line one accepts is a line the
-// other accepts and a line mosd would reject reaches neither.
+// other accepts and a line micad would reject reaches neither.
 //
 // The two answers differ in shape and not in verdict -- the API's envelope
 // carries the parser's own message, the pane re-renders itself around it.
@@ -5064,11 +5067,11 @@ async fn a_duplicate_key_is_409_and_the_stored_list_is_unchanged() {
 // The export is the one the ruling picked, and this is the other thing it
 // buys: without a readable bound, a full list reaches the caller either as the
 // shared validator's 422 -- indistinguishable from a malformed key -- or as a
-// failed write, a 500 about mosd, for a request that was never going to be
+// failed write, a 500 about micad, for a request that was never going to be
 // accepted.
 #[tokio::test]
 async fn a_full_key_list_is_409_and_names_the_bound() {
-    let full: Vec<serde_json::Value> = (0..mosd_settings::MAX_KEYS)
+    let full: Vec<serde_json::Value> = (0..micad_settings::MAX_KEYS)
         .map(|index| json!({ "key": generated_key_line(index as u8) }))
         .collect();
     let (tree, token) = with_token(ssh_tree(json!(full)));
@@ -5081,7 +5084,7 @@ async fn a_full_key_list_is_409_and_names_the_bound() {
         "POST",
         "/api/v1/ssh/authorized-keys",
         &token,
-        &json!({ "key": generated_key_line(mosd_settings::MAX_KEYS as u8) }).to_string(),
+        &json!({ "key": generated_key_line(micad_settings::MAX_KEYS as u8) }).to_string(),
     )
     .await;
 
@@ -5092,7 +5095,7 @@ async fn a_full_key_list_is_409_and_names_the_bound() {
         error["message"]
             .as_str()
             .unwrap()
-            .contains(&mosd_settings::MAX_KEYS.to_string()),
+            .contains(&micad_settings::MAX_KEYS.to_string()),
         "the refusal must name the bound: {error}"
     );
     assert!(fake.set_paths().is_empty(), "{:?}", fake.set_paths());
@@ -5399,7 +5402,7 @@ async fn a_second_network_under_one_ssid_is_refused() {
 }
 
 // A body that is not a network is 422, and the validator is the settings
-// model's own deserializer -- which is what mosd's `Settings::set` validates
+// model's own deserializer -- which is what micad's `Settings::set` validates
 // with, so a body this route accepts is one the store accepts.
 #[tokio::test]
 async fn a_body_that_is_not_a_network_is_422() {
@@ -5577,7 +5580,7 @@ fn the_openapi_document_covers_the_two_collections() {
 
 // The documented WiFi entry is the settings model's own shape.
 //
-// The route deserializes into `mosd_settings::WifiNetwork` and answers a
+// The route deserializes into `micad_settings::WifiNetwork` and answers a
 // redacted serialization of it, so `WifiNetworkEntry` is a description of
 // that type rather than a second definition of it. Without this, a field
 // added to the model would be served and undocumented.
@@ -5594,7 +5597,7 @@ fn the_wifi_schema_matches_the_settings_model() {
             .collect();
 
     // Every field present: `psk` is the one the model omits when it is absent.
-    let model = serde_json::to_value(mosd_settings::WifiNetwork {
+    let model = serde_json::to_value(micad_settings::WifiNetwork {
         ssid: "roastery".to_string(),
         psk: Some("hunter2hunter2".to_string()),
         hidden: true,
@@ -5611,7 +5614,7 @@ fn the_wifi_schema_matches_the_settings_model() {
     documented.sort();
     assert_eq!(
         documented, fields,
-        "the documented WiFi entry has drifted from `mosd_settings::WifiNetwork`"
+        "the documented WiFi entry has drifted from `micad_settings::WifiNetwork`"
     );
 }
 
@@ -6238,7 +6241,7 @@ async fn the_api_peer_add_refuses_an_undeclared_interface_where_the_pane_writes_
 }
 
 // A declared entry of the wrong kind is **422** and not 404, which is the
-// same split mosd's rotate-key now makes: the URL names a real entry, and
+// same split micad's rotate-key now makes: the URL names a real entry, and
 // what is wrong is the argument.
 #[tokio::test]
 async fn peers_on_an_interface_that_is_not_a_tunnel_are_422() {
@@ -6545,7 +6548,7 @@ async fn the_network_paths_the_router_does_not_serve_reach_the_reservation() {
 // The document describes every operation this milestone adds, with every
 // outcome each has: a client reading only `openapi.json` has to learn them.
 
-// The documented interface schema against `mosd_settings::IfaceSettings`
+// The documented interface schema against `micad_settings::IfaceSettings`
 // itself, field for field, so a field added to the model cannot go
 // undocumented here.
 //
@@ -6557,28 +6560,28 @@ fn the_network_schema_matches_the_settings_model() {
     let document: serde_json::Value =
         serde_json::from_str(&crate::openapi::document_json()).expect("the document is JSON");
 
-    let peer = mosd_settings::WireguardPeer {
+    let peer = micad_settings::WireguardPeer {
         public_key: PEER_KEY.to_string(),
         allowed_ips: vec!["10.8.0.0/24".to_string()],
         endpoint: Some("vpn.example.net:51820".to_string()),
         persistent_keepalive: Some(25),
     };
-    let iface = mosd_settings::IfaceSettings {
-        kind: mosd_settings::IfaceKind::Wireguard,
+    let iface = micad_settings::IfaceSettings {
+        kind: micad_settings::IfaceKind::Wireguard,
         dhcp: false,
-        static_: Some(mosd_settings::StaticConfig {
+        static_: Some(micad_settings::StaticConfig {
             address: "10.8.0.2/24".to_string(),
             gateway: Some("10.8.0.1".to_string()),
             dns: vec!["1.1.1.1".to_string()],
         }),
-        vlan: Some(mosd_settings::VlanConfig {
+        vlan: Some(micad_settings::VlanConfig {
             parent: "eth0".to_string(),
             id: 100,
         }),
-        bridge: Some(mosd_settings::BridgeConfig {
+        bridge: Some(micad_settings::BridgeConfig {
             ports: vec!["eth1".to_string()],
         }),
-        wireguard: Some(mosd_settings::WireguardConfig {
+        wireguard: Some(micad_settings::WireguardConfig {
             listen_port: Some(51820),
             peers: vec![peer.clone()],
         }),
@@ -6628,10 +6631,10 @@ fn the_network_schema_matches_the_settings_model() {
 // The lifted pre-shared key bound, run by the WiFi route for the first time.
 //
 // M5 could not check it: the bound lived
-// inside a private function of the `mosd` binary crate's station reconciler,
+// inside a private function of the `micad` binary crate's station reconciler,
 // so a key outside IEEE 802.11i's range was accepted, stored, and refused
 // later by the renderer with the error visible only in live state. M6 lifted
-// it into `mosd-settings` and the reconciler calls the lifted copy, so this is
+// it into `micad-settings` and the reconciler calls the lifted copy, so this is
 // the same rule and not a second one.
 #[tokio::test]
 async fn a_psk_outside_the_lifted_bounds_is_refused_by_the_wifi_route() {
@@ -6726,7 +6729,7 @@ async fn a_psk_the_renderer_cannot_quote_is_refused_by_the_wifi_route() {
             "the refusal echoed the key: {error}"
         );
     }
-    // Nothing reached mosd: a key refused here is never stored, which is the
+    // Nothing reached micad: a key refused here is never stored, which is the
     // whole point of moving the refusal to the write surface.
     assert!(fake.set_paths().is_empty(), "{:?}", fake.set_paths());
 }
@@ -6786,7 +6789,7 @@ async fn every_collection_answers_409_for_a_duplicate() {
 
 // The three actions. No state to `GET` and no idempotency to
 // promise, so every assertion below is about the status code, the call that
-// did or did not reach mosd, and what the response body does not contain.
+// did or did not reach micad, and what the response body does not contain.
 
 const REBOOT_PATH: &str = "/api/v1/actions/reboot";
 const POWEROFF_PATH: &str = "/api/v1/actions/poweroff";
@@ -6803,9 +6806,9 @@ async fn power_actions_report_admission_failures() {
         (
             Some("org.freedesktop.DBus.Error.Failed"),
             StatusCode::INTERNAL_SERVER_ERROR,
-            "mosd_failed",
+            "micad_failed",
         ),
-        (None, StatusCode::SERVICE_UNAVAILABLE, "mosd_unreachable"),
+        (None, StatusCode::SERVICE_UNAVAILABLE, "micad_unreachable"),
     ] {
         let (router, token) = failing_app(name).await;
         for path in [REBOOT_PATH, POWEROFF_PATH] {
@@ -6826,7 +6829,7 @@ async fn power_actions_report_unconfirmed_timeouts() {
     for path in [REBOOT_PATH, POWEROFF_PATH] {
         let response = bearer(&router, "POST", path, &token).await;
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(envelope(response).await["code"], "mosd_timeout");
+        assert_eq!(envelope(response).await["code"], "micad_timeout");
     }
 }
 
@@ -6845,7 +6848,7 @@ async fn power_actions_accept_only_after_mosd_dispatch() {
     }
 }
 
-// The transient password reaches mosd, is written into no setting, and is
+// The transient password reaches micad, is written into no setting, and is
 // nowhere in the tree afterwards — the API half of the property the form path
 // already holds.
 #[tokio::test]
@@ -7023,8 +7026,8 @@ async fn a_failed_transient_password_names_no_dot_path() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_api_headers(&response, TRANSIENT_PATH);
     let error = envelope(response).await;
-    assert_eq!(error["code"], "mosd_failed");
-    assert_eq!(error["source"], "mosd");
+    assert_eq!(error["code"], "micad_failed");
+    assert_eq!(error["source"], "micad");
     assert!(error.get("path").is_none(), "{error}");
 
     // A route that does name one still names it: the member is optional, not
@@ -7124,7 +7127,7 @@ fn full_setup_body() -> String {
 //
 // The wizard is not fixed, deliberately: what is left there is a bus failure
 // between two writes, and closing it needs a transactional multi-path write
-// on the bus, which is a mosd change outside this crate.
+// on the bus, which is a micad change outside this crate.
 
 // The acceptance criterion for M8, on the rule the
 // route cannot reach any other way.

@@ -28,7 +28,7 @@ export function OverviewPage() {
   const update = useQuery({ queryKey: ['update-state'], queryFn: () => api<UpdateLifecycle>('/api/v1/update'), retry: false })
   const time = useQuery({ queryKey: ['time-status'], queryFn: () => api<TimeStatus>('/api/v1/time/status'), retry: false })
 
-  const healthy = health.data?.mosd === 'ok' && health.data?.apid === 'ok'
+  const healthy = health.data?.micad === 'ok' && health.data?.apid === 'ok'
   const healthLabel = healthy ? t('overview.allResponding') : health.isPending ? t('overview.checking') : t('overview.unavailable')
   const queryError = health.error ?? network.error ?? tasks.error
 

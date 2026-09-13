@@ -6,9 +6,9 @@ export type ConnectionState = 'connected' | 'reconnecting' | 'offline'
 /// health read the shell already makes. `failureCount` is React Query's retry
 /// counter: it rises while a read is being retried and the previous answer is
 /// still on screen, which is exactly the prototype's reconnecting case.
-export function connectionState(health: { isError: boolean; failureCount: number; mosd: string | undefined }): ConnectionState {
+export function connectionState(health: { isError: boolean; failureCount: number; micad: string | undefined }): ConnectionState {
   if (health.isError) return 'offline'
-  if (health.mosd !== undefined && health.mosd !== 'ok') return 'offline'
+  if (health.micad !== undefined && health.micad !== 'ok') return 'offline'
   return health.failureCount > 0 ? 'reconnecting' : 'connected'
 }
 

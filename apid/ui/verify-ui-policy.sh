@@ -79,7 +79,7 @@ grep -q '"ui": "@/shared/components/ui"' components.json ||
 checks=$((checks + 1))
 for path in src/shared/components/ui/*.tsx; do
     name="$(basename "${path}" .tsx)"
-    printf '%s\n' "${REGISTRY_PRIMITIVES}" | grep -qx "${name}" ||
+    printf '%s\n' "${REGISTRY_PRIMITIVES}" | grep -cx "${name}" >/dev/null ||
         bad "${path} is not a shadcn registry item; primitives are added with 'bun x shadcn add', never hand-written"
 done
 

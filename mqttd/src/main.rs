@@ -1,22 +1,22 @@
-//! `mos-mqttd` — the MQTT bridge over explicitly enrolled application trees.
+//! `mica-mqttd` — the MQTT bridge over explicitly enrolled application trees.
 //!
-//! Everything the daemon does is in the library ([`mos_mqttd`]); this is the
-//! command line, the logger and the call into [`mos_mqttd::runtime::run`].
+//! Everything the daemon does is in the library ([`mica_mqttd`]); this is the
+//! command line, the logger and the call into [`mica_mqttd::runtime::run`].
 
 use clap::Parser;
-use mos_mqttd::config::{Mode, Timings};
-use mos_mqttd::runtime::{self, Settings};
+use mica_mqttd::config::{Mode, Timings};
+use mica_mqttd::runtime::{self, Settings};
 
-/// The MQTT data-publishing bridge for explicitly enrolled `com.mos.*` applications.
+/// The MQTT data-publishing bridge for explicitly enrolled `com.mica.*` applications.
 #[derive(Debug, Parser)]
-#[command(name = "mos-mqttd", version)]
+#[command(name = "mica-mqttd", version)]
 struct Args {
     /// Stable device identity used as the MQTT topic address.
     #[arg(long)]
     device_id: String,
 
     /// Package-owned directory whose file names are exact application D-Bus names.
-    #[arg(long, default_value = "/usr/lib/mos/mqtt-applications.d")]
+    #[arg(long, default_value = "/usr/lib/mica/mqtt-applications.d")]
     applications_dir: std::path::PathBuf,
 
     /// Broker host to connect to.
@@ -28,11 +28,11 @@ struct Args {
     broker_port: u16,
 
     /// Private JSON file containing the broker username and password.
-    #[arg(long, default_value = "/var/lib/mos/mqttd-credentials.json")]
+    #[arg(long, default_value = "/var/lib/mica/mqttd-credentials.json")]
     credentials_file: std::path::PathBuf,
 
     /// MQTT client id. Must be unique on the broker.
-    #[arg(long, default_value = "mos-mqttd")]
+    #[arg(long, default_value = "mica-mqttd")]
     client_id: String,
 
     /// Whether write requests reach the bus. Defaults to read-only: a bridge

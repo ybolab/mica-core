@@ -79,7 +79,7 @@
             }
           },
           "500": {
-            "description": "Hashing failed (`hashing_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "Hashing failed (`hashing_failed`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -89,7 +89,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -99,7 +99,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -121,7 +121,7 @@
         "operationId": "api_v1_poweroff",
         "responses": {
           "202": {
-            "description": "mosd admitted the power-off request; completion is not reported over this connection"
+            "description": "micad admitted the power-off request; completion is not reported over this connection"
           },
           "401": {
             "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
@@ -154,7 +154,7 @@
             }
           },
           "409": {
-            "description": "mosd refused the power action (`power_refused`); the message states the policy or permission reason",
+            "description": "micad refused the power action (`power_refused`); the message states the policy or permission reason",
             "content": {
               "application/json": {
                 "schema": {
@@ -164,7 +164,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to dispatch the power action (`mosd_failed`)",
+            "description": "micad failed to dispatch the power action (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -174,7 +174,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -184,7 +184,7 @@
             }
           },
           "504": {
-            "description": "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)",
+            "description": "The bounded micad call timed out; the outcome is not confirmed (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -206,7 +206,7 @@
         "operationId": "api_v1_reboot",
         "responses": {
           "202": {
-            "description": "mosd admitted the reboot request; completion is not reported over this connection"
+            "description": "micad admitted the reboot request; completion is not reported over this connection"
           },
           "401": {
             "description": "No stored bearer token or authenticated browser session (`not_authenticated`)",
@@ -239,7 +239,7 @@
             }
           },
           "409": {
-            "description": "mosd refused the power action (`power_refused`); the message states the policy or permission reason",
+            "description": "micad refused the power action (`power_refused`); the message states the policy or permission reason",
             "content": {
               "application/json": {
                 "schema": {
@@ -249,7 +249,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to dispatch the power action (`mosd_failed`)",
+            "description": "micad failed to dispatch the power action (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -259,7 +259,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -269,7 +269,7 @@
             }
           },
           "504": {
-            "description": "The bounded mosd call timed out; the outcome is not confirmed (`mosd_timeout`)",
+            "description": "The bounded micad call timed out; the outcome is not confirmed (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -361,7 +361,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to set it (`mosd_failed`)",
+            "description": "micad failed to set it (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -371,7 +371,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -381,7 +381,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -399,7 +399,7 @@
           "actions"
         ],
         "summary": "Rotate a WireGuard interface's private key.",
-        "description": "An action rather than a settings write: the private key lives in a\nmode-0640 file on STATE that the settings tree does not describe. mosd\ndraws a new key, tears down the device holding the old one and reconciles.\n\nAnswers **200** with the new public key — the tunnel is already running on\nit. The private half is never returned. **404** when `iface` names no\ndeclared `network` entry; **422** when the entry exists but is not of kind\n`wireguard`.",
+        "description": "An action rather than a settings write: the private key lives in a\nmode-0640 file on STATE that the settings tree does not describe. micad\ndraws a new key, tears down the device holding the old one and reconciles.\n\nAnswers **200** with the new public key — the tunnel is already running on\nit. The private half is never returned. **404** when `iface` names no\ndeclared `network` entry; **422** when the entry exists but is not of kind\n`wireguard`.",
         "operationId": "api_v1_wireguard_rotate",
         "parameters": [
           {
@@ -474,7 +474,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to rotate (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to rotate (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -484,7 +484,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -494,7 +494,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -556,7 +556,7 @@
             }
           },
           "503": {
-            "description": "mosd is unavailable (`mosd_unreachable`); carries `Retry-After`",
+            "description": "micad is unavailable (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -624,7 +624,7 @@
           "actions"
         ],
         "summary": "Collect a diagnostic snapshot.",
-        "description": "Reads every mosd surface the schema names — system information,\ntelemetry, failure evidence, storage, time, observed network, live\nstate — under a per-section timeout inside one deadline, assembles the\nversioned snapshot, redacts it against the allowlist schema (a field the\nschema does not name does not ship), and publishes it whole to the store\nor not at all. A source that does not answer is an absent member with\nthe reason; the snapshot is produced regardless. Bounded on disk: the\noldest snapshots are removed to stay under the retention caps.\n\nAnswers **201** with the stored snapshot's summary and the collection\nreport. **409** while another collection is running.",
+        "description": "Reads every micad surface the schema names — system information,\ntelemetry, failure evidence, storage, time, observed network, live\nstate — under a per-section timeout inside one deadline, assembles the\nversioned snapshot, redacts it against the allowlist schema (a field the\nschema does not name does not ship), and publishes it whole to the store\nor not at all. A source that does not answer is an absent member with\nthe reason; the snapshot is produced regardless. Bounded on disk: the\noldest snapshots are removed to stay under the retention caps.\n\nAnswers **201** with the stored snapshot's summary and the collection\nreport. **409** while another collection is running.",
         "operationId": "api_v1_diagnostics_collect",
         "responses": {
           "201": {
@@ -843,11 +843,11 @@
           "diagnostics"
         ],
         "summary": "Report whether this appliance is manageable.",
-        "description": "Answers **200 in every state**, including when mosd is unreachable — a\nfailure is reported in the body, never as a status code, so it cannot be\nconfused with this endpoint being down. mosd's state is determined by one\nlive bus call per request.\n\nAuthenticated. For plain listener liveness use the unauthenticated\n`/healthz` instead; neither answer implies the other.",
+        "description": "Answers **200 in every state**, including when micad is unreachable — a\nfailure is reported in the body, never as a status code, so it cannot be\nconfused with this endpoint being down. micad's state is determined by one\nlive bus call per request.\n\nAuthenticated. For plain listener liveness use the unauthenticated\n`/healthz` instead; neither answer implies the other.",
         "operationId": "api_v1_health",
         "responses": {
           "200": {
-            "description": "Whether this appliance is manageable. **200 in both states**: a dead mosd is reported as `mosd: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `mosd_unreachable`, `mosd_timeout` or `mosd_bad_answer` — beside the free-text `detail`; the code is the member to match on",
+            "description": "Whether this appliance is manageable. **200 in both states**: a dead micad is reported as `micad: \"unreachable\"` in the body, never as a status code. An unreachable answer carries `code` — `micad_unreachable`, `micad_timeout` or `micad_bad_answer` — beside the free-text `detail`; the code is the member to match on",
             "content": {
               "application/json": {
                 "schema": {
@@ -885,7 +885,7 @@
           "discovery"
         ],
         "summary": "Report what the caller is talking to.",
-        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mos/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `mosd_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
+        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mos/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `micad_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
         "operationId": "api_v1_meta",
         "responses": {
           "200": {
@@ -960,7 +960,7 @@
             }
           },
           "503": {
-            "description": "mosd is unavailable",
+            "description": "micad is unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -970,7 +970,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out",
+            "description": "The bounded call to micad timed out",
             "content": {
               "application/json": {
                 "schema": {
@@ -1049,7 +1049,7 @@
             }
           },
           "422": {
-            "description": "The body is not a map of interfaces, a key is not an interface name, an entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses it -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "description": "The body is not a map of interfaces, a key is not an interface name, an entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses it -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1059,7 +1059,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1069,7 +1069,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1079,7 +1079,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1131,7 +1131,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to observe (`mosd_failed`)",
+            "description": "micad failed to observe (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1141,7 +1141,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1151,7 +1151,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1237,7 +1237,7 @@
             }
           },
           "422": {
-            "description": "The name is not an interface name, the body is not an interface, the entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses the resulting map (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "description": "The name is not an interface name, the body is not an interface, the entry declares a static address that is not IPv4 CIDR notation, or a relational rule refuses the resulting map (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1247,7 +1247,7 @@
             }
           },
           "500": {
-            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)",
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1257,7 +1257,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1267,7 +1267,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1351,7 +1351,7 @@
             }
           },
           "500": {
-            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed (`settings_io`, `mosd_failed`)",
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1361,7 +1361,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1371,7 +1371,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1457,7 +1457,7 @@
             }
           },
           "500": {
-            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1467,7 +1467,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1477,7 +1477,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1598,7 +1598,7 @@
             }
           },
           "500": {
-            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1608,7 +1608,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1618,7 +1618,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1713,7 +1713,7 @@
             }
           },
           "500": {
-            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored map holds an entry this build cannot read (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1723,7 +1723,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1733,7 +1733,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1751,7 +1751,7 @@
           "resources"
         ],
         "summary": "Read what a provisioning document did to this device.",
-        "description": "Two settings reads plus the public baked configuration: the record mosd\nwrote when it last met a document, and whether an administrator credential\nexists. Nothing is observed from a medium at request time — the media are staged and read\nbefore anything is listening, so a request cannot make a device look at a\nstick.",
+        "description": "Two settings reads plus the public baked configuration: the record micad\nwrote when it last met a document, and whether an administrator credential\nexists. Nothing is observed from a medium at request time — the media are staged and read\nbefore anything is listening, so a request cannot make a device look at a\nstick.",
         "operationId": "api_v1_provisioning_status",
         "responses": {
           "200": {
@@ -1785,7 +1785,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to answer (`mosd_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value",
+            "description": "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value",
             "content": {
               "application/json": {
                 "schema": {
@@ -1795,7 +1795,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1805,7 +1805,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1823,7 +1823,7 @@
           "actions"
         ],
         "summary": "Recover the management credential: rotate, never reveal.",
-        "description": "**Presence is the authority, and the only one.** §5.2: an authenticated\nmanagement session may NOT run this flow — a session that can rotate the\ncredential it authenticated with is a session-fixation lever, and an\noperator holding a working credential needs\n`POST /api/v1/actions/change-password` rather than recovery. So the route\ntakes no credential extractor and refuses a caller that presents one.\n\n**What it does, in §5.1's order.** It MINTS a new password — it never\ndiscloses, decrypts or derives the previous secret, and there is no code\npath from here to a stored plaintext. It publishes the new one exactly\nonce, on the channel that proved presence. Only then does it commit, in ONE\nwrite of `access`: the new hash, the emptied token list, the claim record\nand the bumped generation together. Publishing first is §5.1 rule 3's\ndirection — a crash between the two must not be a self-inflicted lockout —\nso the worst outcome here is a credential the operator saw and that never\nworked, which the flow being cheap to re-run answers.\n\n**The previous credential stops working at that commit**, and so does every\nAPI token: §3's step 5 prices it, \"any client or automation holding it must\nbe re-enrolled\". Every session goes with it, for the reason a password\nchange drops them.\n\n**A device-claimed by a provisioning document is the seam P2 named.** Its\nbootstrap secret sat in plaintext on a medium, and losing it before the\nforced rotation is a §5 case rather than an `docs/design/access.md` §4.4\none. A recovery writes the claim record with the channel that claimed the\ndevice preserved and `rotationRequired` FALSE: the credential this flow\nmints was drawn by the device from `OsRng` and shown once at the device, so\nit is not a bootstrap secret, and demanding a rotation of a credential that\nwas just rotated under physical presence would be a bound with nothing left\nto protect.\n\n**An unclaimed device is refused**, pointing at `POST /api/v1/setup`. There\nis nothing to recover on a device that has no credential, and minting one\nhere would be a third channel that can claim a device —\n`mosd_settings::ClaimChannel` has exactly two members and says why.\n\n**One rotation per presence assertion** (§5.4). The assertion is read and\nspent inside one guard, so a second request — concurrent, or later inside\nthe same fifteen-minute window — finds it spent and is refused `403`\n`presence_required`, having minted, published and written nothing. The next\nrotation needs presence asserted again at the device.",
+        "description": "**Presence is the authority, and the only one.** §5.2: an authenticated\nmanagement session may NOT run this flow — a session that can rotate the\ncredential it authenticated with is a session-fixation lever, and an\noperator holding a working credential needs\n`POST /api/v1/actions/change-password` rather than recovery. So the route\ntakes no credential extractor and refuses a caller that presents one.\n\n**What it does, in §5.1's order.** It MINTS a new password — it never\ndiscloses, decrypts or derives the previous secret, and there is no code\npath from here to a stored plaintext. It publishes the new one exactly\nonce, on the channel that proved presence. Only then does it commit, in ONE\nwrite of `access`: the new hash, the emptied token list, the claim record\nand the bumped generation together. Publishing first is §5.1 rule 3's\ndirection — a crash between the two must not be a self-inflicted lockout —\nso the worst outcome here is a credential the operator saw and that never\nworked, which the flow being cheap to re-run answers.\n\n**The previous credential stops working at that commit**, and so does every\nAPI token: §3's step 5 prices it, \"any client or automation holding it must\nbe re-enrolled\". Every session goes with it, for the reason a password\nchange drops them.\n\n**A device-claimed by a provisioning document is the seam P2 named.** Its\nbootstrap secret sat in plaintext on a medium, and losing it before the\nforced rotation is a §5 case rather than an `docs/design/access.md` §4.4\none. A recovery writes the claim record with the channel that claimed the\ndevice preserved and `rotationRequired` FALSE: the credential this flow\nmints was drawn by the device from `OsRng` and shown once at the device, so\nit is not a bootstrap secret, and demanding a rotation of a credential that\nwas just rotated under physical presence would be a bound with nothing left\nto protect.\n\n**An unclaimed device is refused**, pointing at `POST /api/v1/setup`. There\nis nothing to recover on a device that has no credential, and minting one\nhere would be a third channel that can claim a device —\n`micad_settings::ClaimChannel` has exactly two members and says why.\n\n**One rotation per presence assertion** (§5.4). The assertion is read and\nspent inside one guard, so a second request — concurrent, or later inside\nthe same fifteen-minute window — finds it spent and is refused `403`\n`presence_required`, having minted, published and written nothing. The next\nrotation needs presence asserted again at the device.",
         "operationId": "api_v1_recovery_credential",
         "responses": {
           "200": {
@@ -1867,7 +1867,7 @@
             }
           },
           "500": {
-            "description": "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "Hashing the new password failed (`hash_failed`), it could not be published on the presence channel (`publish_failed`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1877,7 +1877,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1887,7 +1887,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1905,7 +1905,7 @@
           "actions"
         ],
         "summary": "Stage a reset tier.",
-        "description": "**This route stages; mosd applies.** §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, so the whole of this handler's write is\nONE `SetSettings(\"reset\")` — one `Store::save` — after which a power loss\nleaves the device either not asked or asked, never half-reset. mosd carries\nthe tier out before anything else on the next boot and clears the record.\n\n**Authority, per §2.2.** Tiers 1 and 2 are authenticated management\nactions. Tier 3 additionally requires §4 physical presence; the order it\nsits at in §3's decision tree is after credential recovery, so an operator\nwho reaches it holds a credential as well as standing at the device. There\nis no tier 4: `ResetTier` has three members, so `secure-wipe` is a body\nthis route cannot parse.\n\nA tier staged over another replaces it. Both are audited, so nothing is\nsilent, and the alternative — refusing until something un-stages the first\n— is a dead end for an operator who asked for the wrong one.",
+        "description": "**This route stages; micad applies.** §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, so the whole of this handler's write is\nONE `SetSettings(\"reset\")` — one `Store::save` — after which a power loss\nleaves the device either not asked or asked, never half-reset. micad carries\nthe tier out before anything else on the next boot and clears the record.\n\n**Authority, per §2.2.** Tiers 1 and 2 are authenticated management\nactions. Tier 3 additionally requires §4 physical presence; the order it\nsits at in §3's decision tree is after credential recovery, so an operator\nwho reaches it holds a credential as well as standing at the device. There\nis no tier 4: `ResetTier` has three members, so `secure-wipe` is a body\nthis route cannot parse.\n\nA tier staged over another replaces it. Both are audited, so nothing is\nsilent, and the alternative — refusing until something un-stages the first\n— is a dead end for an operator who asked for the wrong one.",
         "operationId": "api_v1_reset",
         "requestBody": {
           "content": {
@@ -1989,7 +1989,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1999,7 +1999,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2009,7 +2009,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2050,7 +2050,7 @@
             }
           },
           "503": {
-            "description": "mosd is unavailable",
+            "description": "micad is unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -2234,7 +2234,7 @@
             }
           },
           "422": {
-            "description": "mosd rejected the dot-path (`settings_rejected`)",
+            "description": "micad rejected the dot-path (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2244,7 +2244,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2254,7 +2254,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2264,7 +2264,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2375,7 +2375,7 @@
             }
           },
           "422": {
-            "description": "The body carries the redaction sentinel, or is the wrong shape for this setting, or the dot-path is malformed (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "description": "The body carries the redaction sentinel, or is the wrong shape for this setting, or the dot-path is malformed (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2385,7 +2385,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2395,7 +2395,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2405,7 +2405,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2477,7 +2477,7 @@
             }
           },
           "422": {
-            "description": "The body is not this shape, the password is under 8 bytes, the hostname is not a hostname, a `network` key is not an interface name, a static address is not IPv4 CIDR notation, or a relational rule refuses the resulting map -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or mosd rejected a write (`settings_rejected`). Nothing is written on any of them",
+            "description": "The body is not this shape, the password is under 8 bytes, the hostname is not a hostname, a `network` key is not an interface name, a static address is not IPv4 CIDR notation, or a relational rule refuses the resulting map -- a VLAN parent or a bridge port that is not a declared entry, a bridge port carrying addressing, a port claimed twice (`validation_failed`); or micad rejected a write (`settings_rejected`). Nothing is written on any of them",
             "content": {
               "application/json": {
                 "schema": {
@@ -2487,7 +2487,7 @@
             }
           },
           "500": {
-            "description": "Hashing the password failed (`hash_failed`), the stored token list could not be read (`settings_invalid`), no free token id was drawn (`mint_failed`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "Hashing the password failed (`hash_failed`), the stored token list could not be read (`settings_invalid`), no free token id was drawn (`mint_failed`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2497,7 +2497,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2507,7 +2507,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2559,7 +2559,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2569,7 +2569,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2579,7 +2579,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2669,7 +2669,7 @@
             }
           },
           "422": {
-            "description": "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "description": "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2679,7 +2679,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2689,7 +2689,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2699,7 +2699,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2785,7 +2785,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a key list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a key list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2795,7 +2795,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2805,7 +2805,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2878,7 +2878,7 @@
             }
           },
           "422": {
-            "description": "mosd rejected the dot-path (`settings_rejected`); a dot-path that does not resolve is the 404 above",
+            "description": "micad rejected the dot-path (`settings_rejected`); a dot-path that does not resolve is the 404 above",
             "content": {
               "application/json": {
                 "schema": {
@@ -2888,7 +2888,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2898,7 +2898,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2908,7 +2908,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2926,7 +2926,7 @@
           "resources"
         ],
         "summary": "Read the storage status.",
-        "description": "Observed by mosd at request time: the firmware/ESP, SYSTEM and DATA partitions\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; observed DATA directory usage and\nproject quotas; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
+        "description": "Observed by micad at request time: the firmware/ESP, SYSTEM and DATA partitions\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; observed DATA directory usage and\nproject quotas; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
         "operationId": "api_v1_storage_status",
         "responses": {
           "200": {
@@ -2960,7 +2960,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to observe (`mosd_failed`)",
+            "description": "micad failed to observe (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2970,7 +2970,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2980,7 +2980,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -2998,7 +2998,7 @@
           "resources"
         ],
         "summary": "Read the system-information surface.",
-        "description": "One read answers what this device is: the machine id, the board, the\nkernel, the distribution release, the image version with its git stamp\nand build date, every installed package with its version (from the\nshipped manifest), the authenticated running deployment and the uptime. mosd assembles it at\nrequest time from the seams that already carry each fact; nothing is\nrestated. Every member carries `available`, and an absent fact says why.",
+        "description": "One read answers what this device is: the machine id, the board, the\nkernel, the distribution release, the image version with its git stamp\nand build date, every installed package with its version (from the\nshipped manifest), the authenticated running deployment and the uptime. micad assembles it at\nrequest time from the seams that already carry each fact; nothing is\nrestated. Every member carries `available`, and an absent fact says why.",
         "operationId": "api_v1_system_info",
         "responses": {
           "200": {
@@ -3032,7 +3032,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to observe (`mosd_failed`)",
+            "description": "micad failed to observe (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3042,7 +3042,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3052,7 +3052,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3104,7 +3104,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to observe (`mosd_failed`)",
+            "description": "micad failed to observe (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3114,7 +3114,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3124,7 +3124,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3141,7 +3141,7 @@
         "tags": [
           "tasks"
         ],
-        "summary": "List mosd's bounded apply-task history, oldest first.",
+        "summary": "List micad's bounded apply-task history, oldest first.",
         "operationId": "api_v1_tasks_list",
         "responses": {
           "200": {
@@ -3178,7 +3178,7 @@
             }
           },
           "500": {
-            "description": "mosd returned an invalid task record or failed to answer (`mosd_failed`)",
+            "description": "micad returned an invalid task record or failed to answer (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3188,7 +3188,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3198,7 +3198,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3270,7 +3270,7 @@
             }
           },
           "500": {
-            "description": "mosd returned an invalid task record or failed to answer (`mosd_failed`)",
+            "description": "micad returned an invalid task record or failed to answer (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3280,7 +3280,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3290,7 +3290,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3308,7 +3308,7 @@
           "resources"
         ],
         "summary": "Read the time-synchronization status.",
-        "description": "Observed from timesyncd at request time and classified by mosd:\n`synchronized` (timedate1 reports a bounded clock error, which it computes\nas `adjtimex().maxerror < 16 s` — not \"a reply arrived\"), `polling` (a\nserver is selected and packets are being exchanged, and that bound is not\nreported; a device can hold this state indefinitely, so it promises no\nconvergence), `offline-degraded` (no reachable server; retries continue on\nthe pinned 30-second policy), `invalid-source` (a server answered and its\nreplies cannot be used), or `unknown` (a signal the reported state would\nrest on could not be read: timesyncd is not observable at all, or\ntimedate1 did not answer `NTPSynchronized`). `unknown` is not a claim\nabout the clock — a device nobody could query is not a device that was\nqueried and found out of sync — so the `synchronized` member is absent\nthere and `detail` names the read that went missing. Read-only: there is\nno route that pauses or stops synchronization.",
+        "description": "Observed from timesyncd at request time and classified by micad:\n`synchronized` (timedate1 reports a bounded clock error, which it computes\nas `adjtimex().maxerror < 16 s` — not \"a reply arrived\"), `polling` (a\nserver is selected and packets are being exchanged, and that bound is not\nreported; a device can hold this state indefinitely, so it promises no\nconvergence), `offline-degraded` (no reachable server; retries continue on\nthe pinned 30-second policy), `invalid-source` (a server answered and its\nreplies cannot be used), or `unknown` (a signal the reported state would\nrest on could not be read: timesyncd is not observable at all, or\ntimedate1 did not answer `NTPSynchronized`). `unknown` is not a claim\nabout the clock — a device nobody could query is not a device that was\nqueried and found out of sync — so the `synchronized` member is absent\nthere and `detail` names the read that went missing. Read-only: there is\nno route that pauses or stops synchronization.",
         "operationId": "api_v1_time_status",
         "responses": {
           "200": {
@@ -3342,7 +3342,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to observe (`mosd_failed`)",
+            "description": "micad failed to observe (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3352,7 +3352,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3362,7 +3362,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3417,7 +3417,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a token list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3427,7 +3427,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3437,7 +3437,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3537,7 +3537,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a token list (`settings_invalid`), no free id was drawn (`mint_failed`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a token list (`settings_invalid`), no free id was drawn (`mint_failed`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3547,7 +3547,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3557,7 +3557,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3643,7 +3643,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a token list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a token list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3653,7 +3653,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3663,7 +3663,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -4049,7 +4049,7 @@
           "update"
         ],
         "summary": "Read the complete update state.",
-        "description": "Reads native deployment records and the current acquisition lifecycle from\nmosd. The same response binds the rollback verdict to its retained target\nand includes check, download and installation progress.",
+        "description": "Reads native deployment records and the current acquisition lifecycle from\nmicad. The same response binds the rollback verdict to its retained target\nand includes check, download and installation progress.",
         "operationId": "api_v1_update_state",
         "responses": {
           "200": {
@@ -4083,7 +4083,7 @@
             }
           },
           "500": {
-            "description": "mosd could not read native deployment state (`mosd_failed`)",
+            "description": "micad could not read native deployment state (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4093,7 +4093,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4103,7 +4103,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4121,7 +4121,7 @@
           "update"
         ],
         "summary": "Start an update metadata check.",
-        "description": "Answers **202**: mosd admits the check and runs it on a background task;\nthe outcome lands in the state document's `lifecycle` entry.",
+        "description": "Answers **202**: micad admits the check and runs it on a background task;\nthe outcome lands in the state document's `lifecycle` entry.",
         "operationId": "api_v1_update_check",
         "responses": {
           "202": {
@@ -4168,7 +4168,7 @@
             }
           },
           "500": {
-            "description": "The update client is absent or another operation is running (`mosd_failed`)",
+            "description": "The update client is absent or another operation is running (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4178,7 +4178,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4188,7 +4188,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4206,7 +4206,7 @@
           "update"
         ],
         "summary": "Write the operator's update configuration.",
-        "description": "The one route that changes what this device does on its own: which channel\nit follows, which address it dials, whether it checks, fetches and installs\nunattended, and inside which maintenance window. It takes the same\nadministrator authority every other management write takes, and there is no\nunauthenticated or fleet-derived path to it.\n\n**apid does not write the file.** mosd owns `/mos/config/updates.json` and\nis its only writer; this route asks. The validation is therefore the same\ncode the update subsystem reads the document with, so a document that is\naccepted here is one that loads, and a rejected one is refused with the\noffending field named **before** anything is replaced. `auto` with no\nmaintenance window is refused here rather than failing closed some hours\nlater at a check the operator would have to go looking for.\n\nAnswers **200** with the document as saved.",
+        "description": "The one route that changes what this device does on its own: which channel\nit follows, which address it dials, whether it checks, fetches and installs\nunattended, and inside which maintenance window. It takes the same\nadministrator authority every other management write takes, and there is no\nunauthenticated or fleet-derived path to it.\n\n**apid does not write the file.** micad owns `/mos/config/updates.json` and\nis its only writer; this route asks. The validation is therefore the same\ncode the update subsystem reads the document with, so a document that is\naccepted here is one that loads, and a rejected one is refused with the\noffending field named **before** anything is replaced. `auto` with no\nmaintenance window is refused here rather than failing closed some hours\nlater at a check the operator would have to go looking for.\n\nAnswers **200** with the document as saved.",
         "operationId": "api_v1_update_config",
         "requestBody": {
           "content": {
@@ -4290,7 +4290,7 @@
             }
           },
           "500": {
-            "description": "mosd could not store it (`mosd_failed`)",
+            "description": "micad could not store it (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4300,7 +4300,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4310,7 +4310,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4404,7 +4404,7 @@
             }
           },
           "500": {
-            "description": "The native backend refused or failed the action (`mosd_failed`)",
+            "description": "The native backend refused or failed the action (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4414,7 +4414,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4424,7 +4424,7 @@
             }
           },
           "504": {
-            "description": "mosd timed out (`mosd_timeout`)",
+            "description": "micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4489,7 +4489,7 @@
             }
           },
           "500": {
-            "description": "The update client is absent or another operation is running (`mosd_failed`)",
+            "description": "The update client is absent or another operation is running (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4499,7 +4499,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4509,7 +4509,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4603,7 +4603,7 @@
             }
           },
           "500": {
-            "description": "The native backend refused or failed the action (`mosd_failed`)",
+            "description": "The native backend refused or failed the action (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4613,7 +4613,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4623,7 +4623,7 @@
             }
           },
           "504": {
-            "description": "mosd timed out (`mosd_timeout`)",
+            "description": "micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4641,7 +4641,7 @@
           "update"
         ],
         "summary": "Arm the bounded administrative override of the safe-to-reboot gate.",
-        "description": "Lifts health-report blocks for the TTL — never an install in flight —\nand expires on its own. Audited on both sides: this route records the\nevent, and mosd logs who armed it and until when.",
+        "description": "Lifts health-report blocks for the TTL — never an install in flight —\nand expires on its own. Audited on both sides: this route records the\nevent, and micad logs who armed it and until when.",
         "operationId": "api_v1_update_reboot_override",
         "requestBody": {
           "content": {
@@ -4715,7 +4715,7 @@
             }
           },
           "500": {
-            "description": "mosd failed to arm it (`mosd_failed`)",
+            "description": "micad failed to arm it (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4725,7 +4725,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4735,7 +4735,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`)",
+            "description": "The bounded call to micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4829,7 +4829,7 @@
             }
           },
           "500": {
-            "description": "The native backend refused or failed the action (`mosd_failed`)",
+            "description": "The native backend refused or failed the action (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4839,7 +4839,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4849,7 +4849,7 @@
             }
           },
           "504": {
-            "description": "mosd timed out (`mosd_timeout`)",
+            "description": "micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4920,7 +4920,7 @@
             }
           },
           "500": {
-            "description": "The native backend refused or failed rollback (`mosd_failed`)",
+            "description": "The native backend refused or failed rollback (`micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4930,7 +4930,7 @@
             }
           },
           "503": {
-            "description": "mosd is unreachable (`mosd_unreachable`)",
+            "description": "micad is unreachable (`micad_unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4940,7 +4940,7 @@
             }
           },
           "504": {
-            "description": "mosd timed out (`mosd_timeout`)",
+            "description": "micad timed out (`micad_timeout`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4995,7 +4995,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to answer (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or micad failed to answer (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5005,7 +5005,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -5015,7 +5015,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -5105,7 +5105,7 @@
             }
           },
           "422": {
-            "description": "The body carries the redaction sentinel, is not a network the settings model holds, or carries a `psk` outside IEEE 802.11i's 8..63 characters that is not a 64-digit hex PMK either (`validation_failed`); or mosd rejected the write (`settings_rejected`)",
+            "description": "The body carries the redaction sentinel, is not a network the settings model holds, or carries a `psk` outside IEEE 802.11i's 8..63 characters that is not a 64-digit hex PMK either (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5115,7 +5115,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5125,7 +5125,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -5135,7 +5135,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -5211,7 +5211,7 @@
             }
           },
           "500": {
-            "description": "The stored list could not be read as a network list (`settings_invalid`), or mosd failed to write (`settings_io`, `mosd_failed`)",
+            "description": "The stored list could not be read as a network list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5221,7 +5221,7 @@
             }
           },
           "503": {
-            "description": "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`",
+            "description": "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`",
             "content": {
               "application/json": {
                 "schema": {
@@ -5231,7 +5231,7 @@
             }
           },
           "504": {
-            "description": "The bounded call to mosd timed out (`mosd_timeout`); the operation may still be running",
+            "description": "The bounded call to micad timed out (`micad_timeout`); the operation may still be running",
             "content": {
               "application/json": {
                 "schema": {
@@ -5361,10 +5361,10 @@
       },
       "ApiHealth": {
         "type": "object",
-        "description": "The body of `GET /api/v1/health`.\n\n`apid` and `mosd` are always present. `checkedAt` is present only on the\nreachable answer and `detail` only on the unreachable one.",
+        "description": "The body of `GET /api/v1/health`.\n\n`apid` and `micad` are always present. `checkedAt` is present only on the\nreachable answer and `detail` only on the unreachable one.",
         "required": [
           "apid",
-          "mosd"
+          "micad"
         ],
         "properties": {
           "apid": {
@@ -5385,7 +5385,7 @@
               "string",
               "null"
             ],
-            "description": "Which class of failure the probe hit, from a fixed set:\n`mosd_unreachable` (the call could not be made or was refused),\n`mosd_timeout` (the bounded call expired), `mosd_bad_answer` (mosd\nreplied with something that is not the documented shape)."
+            "description": "Which class of failure the probe hit, from a fixed set:\n`micad_unreachable` (the call could not be made or was refused),\n`micad_timeout` (the bounded call expired), `micad_bad_answer` (micad\nreplied with something that is not the documented shape)."
           },
           "detail": {
             "type": [
@@ -5394,7 +5394,7 @@
             ],
             "description": "Why the probe did not complete, in the words of whatever refused it."
           },
-          "mosd": {
+          "micad": {
             "type": "string",
             "description": "`\"ok\"` when the probe completed, `\"unreachable\"` when it did not."
           }
@@ -5989,7 +5989,7 @@
           },
           "bakedDigests": {
             "type": "object",
-            "description": "SHA-256 by relative path under `/usr/share/mos/meta/`.",
+            "description": "SHA-256 by relative path under `/usr/share/mica/meta/`.",
             "additionalProperties": {
               "type": "string"
             },
@@ -6029,7 +6029,7 @@
         }
       },
       "RebootOverride": {
-        "description": "The armed override, as mosd recorded it."
+        "description": "The armed override, as micad recorded it."
       },
       "RebootOverrideRequest": {
         "type": "object",
@@ -6071,7 +6071,7 @@
         "properties": {
           "applies": {
             "type": "string",
-            "description": "When it runs. Always `next-boot`: §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, and mosd applies it before anything\nelse on the next boot."
+            "description": "When it runs. Always `next-boot`: §2.2 requires a reset to be an intent\nrecord plus an idempotent apply, and micad applies it before anything\nelse on the next boot."
           },
           "tier": {
             "type": "string",
@@ -6081,7 +6081,7 @@
         }
       },
       "ResourceValue": {
-        "description": "The body of a resource `GET`: the value at the dot-path, as mosd holds it.\n\nAny JSON value: a dot-path can name a subtree, an array or a scalar.\n\nSecrets are replaced by the string `\"<redacted>\"`, which a client can\nreceive anywhere inside the body. Every field named `psk`, `passwordHash`,\n`password_hash`, `hash` or `privateKey` carries the sentinel instead of its\nvalue, at any depth and inside arrays, and so does the whole body when the\ndot-path names one of those fields directly.\n\nThe sentinel is read-only: writing it back is refused at **422** rather\nthan stored, because storing it would destroy the credential."
+        "description": "The body of a resource `GET`: the value at the dot-path, as micad holds it.\n\nAny JSON value: a dot-path can name a subtree, an array or a scalar.\n\nSecrets are replaced by the string `\"<redacted>\"`, which a client can\nreceive anywhere inside the body. Every field named `psk`, `passwordHash`,\n`password_hash`, `hash` or `privateKey` carries the sentinel instead of its\nvalue, at any depth and inside arrays, and so does the whole body when the\ndot-path names one of those fields directly.\n\nThe sentinel is read-only: writing it back is refused at **422** rather\nthan stored, because storing it would destroy the credential."
       },
       "RollbackResponse": {
         "type": "object",
@@ -6591,13 +6591,13 @@
         }
       },
       "UpdateConfig": {
-        "description": "The operator's update document as mosd saved it: the layer-2 keys and\nnothing resolved.\n\nA key the operator never set is **absent** and one they set to `null` is\n**`null`**; both mean \"take the baked default\" and they are still two\ndifferent statements about the document. The resolved values — what this\ndevice will actually dial and follow — are `GET /api/v1/update`'s\n`lifecycle.policy` and `GET /api/v1/provisioning/status`'s `effective`."
+        "description": "The operator's update document as micad saved it: the layer-2 keys and\nnothing resolved.\n\nA key the operator never set is **absent** and one they set to `null` is\n**`null`**; both mean \"take the baked default\" and they are still two\ndifferent statements about the document. The resolved values — what this\ndevice will actually dial and follow — are `GET /api/v1/update`'s\n`lifecycle.policy` and `GET /api/v1/provisioning/status`'s `effective`."
       },
       "UpdateConfigWrite": {
         "description": "The body of the update-configuration write: a **patch**, not a document.\n\nA key this body omits is left exactly as it is on the device; a key set to\n`null` clears an operator override so the baked default applies again; a\nkey with a value overrides it. That is what makes the write safe from a\nconsole: a client that sent the whole resolved document back would pin the\nimage's defaults into the operator's layer and the device would stop\nfollowing its image, which nobody asked for.\n\nAccepted keys: `policy` (`off`/`check`/`auto`), `checkIntervalMinutes`,\n`rebootPolicy` (`manual`/`window`), `source.url`, `source.channel`,\n`network`, `maintenance` and `rebootGate`. Anything else — including a\ntrust anchor under any name, at any depth — is **422** naming the key: the\naddress this device dials is the operator's, what it will accept is baked\ninto the image, and no body may move that line."
       },
       "UpdateState": {
-        "description": "The update state document, verbatim from mosd: `lifecycle` (state machine,\npolicy, reboot gate), per-slot status, `booted_slot`, `primary`,\n`pending_not_confirmed`, `rollback`, `install` and `last_mark`.\n\n`rollback` is the one place slot state is offered as a decision: mosd's\n`rollback_eligibility` resolves the alternate slot, says whether a manual\nrollback is permitted, and names the refusal otherwise. There is no second\nread route for it — this document is the single writer of that fact."
+        "description": "The update state document, verbatim from micad: `lifecycle` (state machine,\npolicy, reboot gate), per-slot status, `booted_slot`, `primary`,\n`pending_not_confirmed`, `rollback`, `install` and `last_mark`.\n\n`rollback` is the one place slot state is offered as a decision: micad's\n`rollback_eligibility` resolves the alternate slot, says whether a manual\nrollback is permitted, and names the refusal otherwise. There is no second\nread route for it — this document is the single writer of that fact."
       },
       "VlanParameters": {
         "type": "object",
@@ -6714,7 +6714,7 @@
       },
       "WireguardRotation": {
         "type": "object",
-        "description": "The body of a successful key rotation: the public half, and nothing else.\n\nThere is no `privateKey` member here and there will not be one. The private\nhalf never leaves mosd — there is no read-back route for the private key,\never; not redacted-on-read, nonexistent — so this struct is the whole of\nwhat a rotation can answer.",
+        "description": "The body of a successful key rotation: the public half, and nothing else.\n\nThere is no `privateKey` member here and there will not be one. The private\nhalf never leaves micad — there is no read-back route for the private key,\never; not redacted-on-read, nonexistent — so this struct is the whole of\nwhat a rotation can answer.",
         "required": [
           "publicKey"
         ],

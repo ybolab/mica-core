@@ -2,8 +2,8 @@
 //! JSONL line per security-relevant action, mirrored to tracing so the
 //! (volatile) journal tells the same story.
 //!
-//! **The ring itself is `mosd_settings`'s**, because apid is not its only
-//! writer: mosd records what a board-declared physical recovery action did at
+//! **The ring itself is `micad_settings`'s**, because apid is not its only
+//! writer: micad records what a board-declared physical recovery action did at
 //! boot (`docs/design/recovery.md` §4), before apid serves anything. The line
 //! shape, the cap and the rotation are stated once there; what is here is
 //! apid's sink — the journal mirror, the per-process lock and the peer address
@@ -18,7 +18,7 @@
 //! **Every event this sink records is an operator's**, because every route
 //! that reaches it is behind the credential extractor. That is what makes the
 //! actor a constant here rather than a parameter threaded through fifty call
-//! sites, and it is the half of PLAN-071 §3's distinction apid owns: mosd
+//! sites, and it is the half of PLAN-071 §3's distinction apid owns: micad
 //! records the same update event names under `policy` when the automatic
 //! driver did the work.
 
@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use axum::extract::FromRequestParts;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::request::Parts;
-use mosd_settings::{ACTOR_OPERATOR, append_audit_line, audit_line};
+use micad_settings::{ACTOR_OPERATOR, append_audit_line, audit_line};
 
 /// Append-only audit sink.
 pub struct Audit {
@@ -62,8 +62,8 @@ impl Audit {
     ///
     /// Every route on this surface is behind the credential extractor, so the
     /// actor is [`ACTOR_OPERATOR`] — the distinction PLAN-071 §3 requires is
-    /// against mosd's automatic driver, which records the same event names
-    /// under [`mosd_settings::ACTOR_POLICY`]. [`Self::record_as`] is for the
+    /// against micad's automatic driver, which records the same event names
+    /// under [`micad_settings::ACTOR_POLICY`]. [`Self::record_as`] is for the
     /// one apid event no operator asked for.
     ///
     /// A failed write is logged and swallowed, deliberately: §6's ideal is
@@ -116,7 +116,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Source {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use mosd_settings::{AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES};
+    use micad_settings::{AUDIT_LOG, AUDIT_LOG_PREVIOUS, AUDIT_ROTATE_BYTES};
 
     use super::*;
 

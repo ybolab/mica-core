@@ -1,4 +1,4 @@
-//! Authenticated signed deployment actions through mosd.
+//! Authenticated signed deployment actions through micad.
 //! Every mutation is POST-only and uses the shared credential, CSRF and audit gates.
 
 use axum::Json;
@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::Value;
 
-use mosd_settings::{
+use micad_settings::{
     REQUESTED, UPDATE_CHECK_EVENT, UPDATE_CONFIG_EVENT, UPDATE_FETCH_EVENT, UPDATE_INSTALL_EVENT,
 };
 
@@ -26,15 +26,15 @@ pub(crate) const V1_UPDATE_ROLLBACK_PATH: &str = "/v1/update/rollback";
 pub(crate) const V1_UPDATE_REBOOT_OVERRIDE_PATH: &str = "/v1/update/reboot-override";
 pub(crate) const V1_UPDATE_CONFIG_PATH: &str = "/v1/update/config";
 
-/// The D-Bus error name mosd's update surface refuses policy-forbidden
+/// The D-Bus error name micad's update surface refuses policy-forbidden
 /// actions with. Not in `routes.rs`'s table: only this cluster produces it.
 const FDO_ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 
-/// The update state document, verbatim from mosd: `lifecycle` (state machine,
+/// The update state document, verbatim from micad: `lifecycle` (state machine,
 /// policy, reboot gate), per-slot status, `booted_slot`, `primary`,
 /// `pending_not_confirmed`, `rollback`, `install` and `last_mark`.
 ///
-/// `rollback` is the one place slot state is offered as a decision: mosd's
+/// `rollback` is the one place slot state is offered as a decision: micad's
 /// `rollback_eligibility` resolves the alternate slot, says whether a manual
 /// rollback is permitted, and names the refusal otherwise. There is no second
 /// read route for it — this document is the single writer of that fact.
@@ -58,13 +58,13 @@ fn update_bus_error(err: &anyhow::Error) -> Response {
         if name.as_str() == FDO_ACCESS_DENIED {
             return api_response(
                 StatusCode::CONFLICT,
-                ApiError::mosd("policy_refused", message),
+                ApiError::micad("policy_refused", message),
             );
         }
         if name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs" {
             return api_response(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                ApiError::mosd("validation_failed", message),
+                ApiError::micad("validation_failed", message),
             );
         }
     }
@@ -82,7 +82,7 @@ fn body_rejection(rejection: axum::extract::rejection::JsonRejection) -> Respons
 /// Read the complete update state.
 ///
 /// Reads native deployment records and the current acquisition lifecycle from
-/// mosd. The same response binds the rollback verdict to its retained target
+/// micad. The same response binds the rollback verdict to its retained target
 /// and includes check, download and installation progress.
 #[utoipa::path(
     get,
@@ -92,9 +92,9 @@ fn body_rejection(rejection: axum::extract::rejection::JsonRejection) -> Respons
     responses(
         (status = 200, description = "Authenticated native deployment state: `boot` (running deployment and kernel/root IDs, content verification and Secure Boot), `state` (current, fallback, candidate, failed deployment IDs and highestGeneration), `deployments` (version, generation, components and remaining trials), `rollback` (permitted, target and reason), `install`, `last_action`, and `lifecycle` (acquisition progress, workspace, policy and reboot gate). A failure carries a closed code beside its detail: `unknown`, `client-spawn-failed`, `client-exit-failure`, `client-output-unparseable`, `unverified-deployment-path`, `no-source-configured`, `policy-not-loaded`, `probe-failed`, `policy-invalid`, `network-offline`, `network-metered`, `client-unavailable`, `deployment-discarded`, `check-refused`, `no-newer-release`, `fetch-refused`, `clock-untrusted`, `outside-window`, `deployment-status-unknown`, `reboot-pending`, `workspace-unready`, `recheck-failed`, `recheck-refused`, `superseded`, `install-refused`, `reboot-gate-closed`, `install-in-flight`, `health-blocking`. Rollback reasons: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`. Failed deployment IDs and the generation floor are enforced by the native backend for every install.", body = UpdateState),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd could not read native deployment state (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad could not read native deployment state (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -110,7 +110,7 @@ pub(crate) async fn api_v1_update_state(
 
 /// Start an update metadata check.
 ///
-/// Answers **202**: mosd admits the check and runs it on a background task;
+/// Answers **202**: micad admits the check and runs it on a background task;
 /// the outcome lands in the state document's `lifecycle` entry.
 #[utoipa::path(
     post,
@@ -122,9 +122,9 @@ pub(crate) async fn api_v1_update_state(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "The update policy refused it: offline mode, no configured source, or an unreadable policy file (`policy_refused`)", body = ApiError),
-        (status = 500, description = "The update client is absent or another operation is running (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The update client is absent or another operation is running (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -156,9 +156,9 @@ pub(crate) async fn api_v1_update_check(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "The update policy refused it: offline mode, a metered link without `meteredAllowsFetch`, no configured source, or an unreadable policy file (`policy_refused`)", body = ApiError),
-        (status = 500, description = "The update client is absent or another operation is running (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The update client is absent or another operation is running (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -212,9 +212,9 @@ fn deployment_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<St
         (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
         (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
     ))]
 pub(crate) async fn api_v1_update_install(
@@ -253,9 +253,9 @@ pub(crate) async fn api_v1_update_install(
         (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
         (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
     ))]
 pub(crate) async fn api_v1_update_confirm(
@@ -294,9 +294,9 @@ pub(crate) async fn api_v1_update_confirm(
         (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "Operator policy refused the action (`policy_refused`)", body = ApiError),
         (status = 422, description = "Deployment identity or acquisition path is invalid (`validation_failed`)", body = ApiError),
-        (status = 500, description = "The native backend refused or failed the action (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed the action (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
     ))]
 pub(crate) async fn api_v1_update_reject(
@@ -354,9 +354,9 @@ fn rollback_reason_code(reason: Option<&str>) -> &'static str {
         (status = 401, description = "Authentication required (`not_authenticated`)", body = ApiError),
         (status = 403, description = "Browser CSRF token required (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "Native state refuses rollback: `candidate_pending`, `running_not_confirmed`, `no_usable_fallback`, or `rollback_refused`", body = ApiError),
-        (status = 500, description = "The native backend refused or failed rollback (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "mosd is unreachable (`mosd_unreachable`)", body = ApiError),
-        (status = 504, description = "mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "The native backend refused or failed rollback (`micad_failed`)", body = ApiError),
+        (status = 503, description = "micad is unreachable (`micad_unreachable`)", body = ApiError),
+        (status = 504, description = "micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "POST required (`method_not_allowed`)", body = ApiError),
     ))]
 pub(crate) async fn api_v1_update_rollback(
@@ -426,7 +426,7 @@ pub(crate) struct RebootOverrideRequest {
     seconds: u32,
 }
 
-/// The armed override, as mosd recorded it.
+/// The armed override, as micad recorded it.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RebootOverride(Value);
@@ -435,7 +435,7 @@ pub(crate) struct RebootOverride(Value);
 ///
 /// Lifts health-report blocks for the TTL — never an install in flight —
 /// and expires on its own. Audited on both sides: this route records the
-/// event, and mosd logs who armed it and until when.
+/// event, and micad logs who armed it and until when.
 #[utoipa::path(
     post,
     path = V1_UPDATE_REBOOT_OVERRIDE_PATH,
@@ -448,9 +448,9 @@ pub(crate) struct RebootOverride(Value);
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 422, description = "A TTL of zero or above the granted ceiling (`validation_failed`)", body = ApiError),
-        (status = 500, description = "mosd failed to arm it (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to arm it (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -475,7 +475,7 @@ pub(crate) async fn api_v1_update_reboot_override(
     }
 }
 
-/// The operator's update document as mosd saved it: the layer-2 keys and
+/// The operator's update document as micad saved it: the layer-2 keys and
 /// nothing resolved.
 ///
 /// A key the operator never set is **absent** and one they set to `null` is
@@ -513,7 +513,7 @@ pub(crate) struct UpdateConfigWrite(Value);
 /// administrator authority every other management write takes, and there is no
 /// unauthenticated or fleet-derived path to it.
 ///
-/// **apid does not write the file.** mosd owns `/mos/config/updates.json` and
+/// **apid does not write the file.** micad owns `/mos/config/updates.json` and
 /// is its only writer; this route asks. The validation is therefore the same
 /// code the update subsystem reads the document with, so a document that is
 /// accepted here is one that loads, and a rejected one is refused with the
@@ -535,9 +535,9 @@ pub(crate) struct UpdateConfigWrite(Value);
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "The document already on the device does not load, so there is no base to change; nothing was written (`policy_refused`)", body = ApiError),
         (status = 422, description = "The patch names a key this document does not have, a trust anchor, or a value the reader would refuse — `auto` with no maintenance window, a window that is not `HH:MM` (`validation_failed`)", body = ApiError),
-        (status = 500, description = "mosd could not store it (`mosd_failed`)", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad could not store it (`micad_failed`)", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -561,7 +561,7 @@ pub(crate) async fn api_v1_update_config(
 }
 
 /// The empty 202 the three long-running admissions answer: accepted, running
-/// on mosd's background task, outcome via the state document.
+/// on micad's background task, outcome via the state document.
 fn accepted() -> Response {
     use axum::http::header::CACHE_CONTROL;
     use axum::response::IntoResponse;

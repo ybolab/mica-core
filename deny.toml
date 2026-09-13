@@ -1,4 +1,4 @@
-# cargo-deny 0.19.x configuration for the mosd workspace.
+# cargo-deny 0.19.x configuration for the micad workspace.
 
 [licenses]
 # All workspace crates are publish = false; skip license checks for them.

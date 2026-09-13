@@ -64,8 +64,8 @@ export function TerminalWindow({ open, onClose }: { open: boolean; onClose: () =
   )
 }
 
-const TRANSCRIPT = `mos@device:~$ systemctl --no-pager status mosd
-● mosd.service - mos settings daemon
+const TRANSCRIPT = `mos@device:~$ systemctl --no-pager status micad
+● micad.service - mos settings daemon
    Active: active (running)
    Tasks: 8 (limit: 3834)
 mos@device:~$ `

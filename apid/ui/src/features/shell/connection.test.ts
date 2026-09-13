@@ -3,25 +3,25 @@ import { connectionState, freshnessAge } from './connection'
 
 describe('shell connection state', () => {
   it('is connected while the daemon answers ok', () => {
-    expect(connectionState({ isError: false, failureCount: 0, mosd: 'ok' })).toBe('connected')
+    expect(connectionState({ isError: false, failureCount: 0, micad: 'ok' })).toBe('connected')
   })
 
   it('is reconnecting while a read is retrying and the previous answer still stands', () => {
-    expect(connectionState({ isError: false, failureCount: 2, mosd: 'ok' })).toBe('reconnecting')
+    expect(connectionState({ isError: false, failureCount: 2, micad: 'ok' })).toBe('reconnecting')
   })
 
   it('is offline once the read has failed outright', () => {
-    expect(connectionState({ isError: true, failureCount: 3, mosd: 'ok' })).toBe('offline')
+    expect(connectionState({ isError: true, failureCount: 3, micad: 'ok' })).toBe('offline')
   })
 
   /// A daemon that answers but reports itself unwell is not a transport
   /// problem, so it must not read as a retry that might still succeed.
   it('is offline when the daemon answers and reports itself not ok', () => {
-    expect(connectionState({ isError: false, failureCount: 0, mosd: 'degraded' })).toBe('offline')
+    expect(connectionState({ isError: false, failureCount: 0, micad: 'degraded' })).toBe('offline')
   })
 
   it('is connected before the first answer arrives', () => {
-    expect(connectionState({ isError: false, failureCount: 0, mosd: undefined })).toBe('connected')
+    expect(connectionState({ isError: false, failureCount: 0, micad: undefined })).toBe('connected')
   })
 })
 

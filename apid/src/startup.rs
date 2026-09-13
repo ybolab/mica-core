@@ -11,7 +11,7 @@
 //! outcome — an unreadable disk, a garbage manifest, an absent `/mos/ui` — to
 //! be a [`BundleState`] the daemon holds. `main` propagates every earlier
 //! start-up step with `?` and the unit is `Restart=on-failure`
-//! (`pkgs/mosd/dist/apid.service`), so an error out of here is a crash loop with
+//! (`dist/apid.service`), so an error out of here is a crash loop with
 //! no listener bound.
 //!
 //! Two of §6.1's five classes are detected here, and both are detected at
@@ -223,7 +223,7 @@ fn pick_up_staged(store: &Store, audit: &crate::audit::Audit, served: &[&str]) {
                 "custom-ui",
                 "activated",
                 "local",
-                mosd_settings::ACTOR_DEVICE,
+                micad_settings::ACTOR_DEVICE,
             );
         }
         Err(err) => tracing::warn!(

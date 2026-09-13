@@ -27,7 +27,7 @@ export const zhCN: Translation = {
   },
   root: {
     connecting: '正在连接设备…',
-    unavailable: '管理 API 当前不可用。请在 mosd 就绪后重试。',
+    unavailable: '管理 API 当前不可用。请在 micad 就绪后重试。',
   },
   simulation: {
     title: '模拟界面',
@@ -123,7 +123,7 @@ export const zhCN: Translation = {
       steps: { saved: '已保存', applying: '应用中', reconnecting: '重新连接中', applied: '已应用' },
       body: {
         saved: '设备已接受变更并加入队列。',
-        applying: 'mosd 正在协调该接口。',
+        applying: 'micad 正在协调该接口。',
         reconnecting: '应用过程中设备停止响应。如果这次变更改动了当前浏览器所用的地址，这是预期行为。',
         applied: '设备报告该接口已协调完成。',
         failed: '设备拒绝或无法完成该变更，此前的配置仍然生效。',
@@ -147,7 +147,7 @@ export const zhCN: Translation = {
       clientDisabled: '已停用 Wi-Fi 客户端。',
       added: '网络 {{name}} 已保存。',
       removed: '网络 {{name}} 已删除。',
-      enabled: 'Wi-Fi 客户端', add: '添加 Wi-Fi 网络', addCopy: '凭据由 mosd 保存，后续读取时会隐藏。', security: '安全', credential: '凭据', auto: '自动连接', wpa: 'WPA-PSK', saved: '已保存 · 不回显', noCredential: '无', priorityValue: '优先级 {{priority}}', client: 'Wi-Fi 客户端', hidden: '隐藏 SSID', priority: '优先级', password: '密码', open: '开放网络', empty: '没有保存 Wi-Fi 网络。', remove: '移除 {{name}}', removeCopy: '忘记 {{name}}？设备之后将不再自动连接此网络。' },
+      enabled: 'Wi-Fi 客户端', add: '添加 Wi-Fi 网络', addCopy: '凭据由 micad 保存，后续读取时会隐藏。', security: '安全', credential: '凭据', auto: '自动连接', wpa: 'WPA-PSK', saved: '已保存 · 不回显', noCredential: '无', priorityValue: '优先级 {{priority}}', client: 'Wi-Fi 客户端', hidden: '隐藏 SSID', priority: '优先级', password: '密码', open: '开放网络', empty: '没有保存 Wi-Fi 网络。', remove: '移除 {{name}}', removeCopy: '忘记 {{name}}？设备之后将不再自动连接此网络。' },
     wireguard: {
       added: '对端已添加。',
       removed: '对端已删除。',
@@ -206,7 +206,7 @@ export const zhCN: Translation = {
     details: '接口详情', detailsDescription: '运行与载波状态来自实时观测，不根据配置推断。',
     index: '索引 {{index}}', mtu: 'MTU {{mtu}}', notObserved: '未观测', addressFallback: '地址',
     noInterfaces: '没有报告或配置任何接口。', configuredMap: '配置映射',
-    configuredMapDescription: 'mosd 存储的期望状态。变更只通过类型化的 /api/v1/network 路由接受。',
+    configuredMapDescription: 'micad 存储的期望状态。变更只通过类型化的 /api/v1/network 路由接受。',
     summary: { notConfigured: '未配置', physical: '物理接口', dhcp: 'DHCP', static: '静态地址', noAddressing: '未配置地址', value: '{{kind}} · {{method}}' },
   },
   services: {
@@ -346,7 +346,7 @@ export const zhCN: Translation = {
         description: '镜像构建、守护进程、签名部署和单调运行时间。',
         system: '系统镜像',
         commitDate: '源提交日期',
-        daemon: 'mosd',
+        daemon: 'micad',
         deployment: '部署',
         primary: '主槽位',
         uptime: '运行时间',

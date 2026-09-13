@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["mosd", "mosd-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference"]
+members = ["micad", "micad-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference"]
 
 [workspace.package]
 edition = "2024"
@@ -14,8 +14,8 @@ unsafe_code = "forbid"
 all = { level = "warn", priority = -1 }
 
 [workspace.dependencies]
-# The one `com.mos.*` bus-name rule, shared by every consumer of it.
-mos-busname = { path = "busname" }
+# The one `com.mica.*` bus-name rule, shared by every consumer of it.
+mica-busname = { path = "busname" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,7 +28,7 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing = "0.1"
 # env-filter, so RUST_LOG still works. It pulls in regex (~1 MB in the
 # binary), and that is the right trade on a device with no shell and no
-# package manager: the journal is the only way to see what mosd did, and a
+# package manager: the journal is the only way to see what micad did, and a
 # fixed compile-time level means a field problem cannot be looked at more
 # closely without a new image.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -53,7 +53,7 @@ tough = { version = "=0.18.0", default-features = false }
 axum = "0.8"
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 # The OpenAPI document is generated from the handlers and committed as
-# `mosd/apid/openapi.json`, so the spec cannot describe a route the code does
+# `micad/apid/openapi.json`, so the spec cannot describe a route the code does
 # not serve. Each route's path is one constant, read by the axum declaration
 # and by the `utoipa::path` attribute that documents it.
 #

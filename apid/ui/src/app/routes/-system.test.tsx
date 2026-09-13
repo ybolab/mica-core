@@ -183,7 +183,7 @@ describe('update status panel', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
       lifecycle: {
         state: 'idle',
-        client: { available: false, reason: '/usr/bin/mos-deploy is not present on this image' },
+        client: { available: false, reason: '/usr/bin/mica-deploy is not present on this image' },
         reboot_gate: { safe: true, reasons: [] },
       },
     })))

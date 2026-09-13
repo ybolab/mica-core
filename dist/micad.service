@@ -1,0 +1,43 @@
+[Unit]
+Description=mos management daemon
+After=dbus.service
+# main.rs deliberately hard-fails when STATE is unwritable; without this
+# ordering that policy can race the mount, and Restart=on-failure under the
+# default start-rate limit would park the daemon in "failed" on a slow disk.
+#
+# /mos is here for a second, stronger reason (PLAN-070 section 5.2.6): system
+# configuration lives in /mos/config on DATA, so a device whose DATA pool does
+# not mount has no configuration at all. Without this ordering micad would come
+# up on schema defaults -- DHCP on every interface, sshd off -- and look fine
+# to everything except the operator who configured a static address. micad
+# refuses to start in that case and names the mount; this line is what keeps
+# the refusal from firing on a slow disk that was going to mount anyway.
+RequiresMountsFor=/var/lib/mica /mos
+
+[Service]
+Type=dbus
+BusName=com.mica.micad
+ExecStart=/usr/bin/micad
+Restart=on-failure
+
+# Sandboxing for a root daemon. micad must keep root and broad file access —
+# it rewrites /etc/shadow, renders under /etc/ssh and /run/systemd/network,
+# and owns STATE — so ProtectSystem= and a capability bounding set are not
+# candidates. Everything below is: micad execs nothing setuid, touches no
+# home, needs no realtime, maps nothing writable-executable, and speaks only
+# unix/netlink/inet sockets (zbus, sd-notify, reconciler bus calls).
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

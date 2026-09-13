@@ -2,8 +2,8 @@
 //!
 //! Neither format is rumqttd's. rumqttd reads a large TOML of its own with a
 //! router section, per-listener sections and a console block; none of that is
-//! a decision anyone operating a device should have to make. What mosd renders
-//! into `/run/mos/mqtt-broker.toml` is three keys, and this module is the only
+//! a decision anyone operating a device should have to make. What micad renders
+//! into `/run/mica/mqtt-broker.toml` is three keys, and this module is the only
 //! thing that reads them. The rumqttd `Config` is then built programmatically
 //! in `main`, so the values that are not configurable stay out of reach.
 
@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 /// The whole of the mos-owned broker configuration.
 ///
-/// All three keys are required. mosd renders this file from the `mqtt`
+/// All three keys are required. micad renders this file from the `mqtt`
 /// settings subtree immediately before it starts the unit, so a missing key
 /// means the renderer is broken rather than the operator being terse, and
 /// guessing a default would hide that.
@@ -124,7 +124,7 @@ listen_port = 1883
 auth_enabled = false
 "#,
         )
-        .expect("the shape mosd renders must parse");
+        .expect("the shape micad renders must parse");
         assert_eq!(
             cfg,
             BrokerConfig {
@@ -184,7 +184,7 @@ grafana = "s3cret"
         // A path under the temp directory that nothing ever creates, made
         // unique per process so a concurrent run cannot make this flake.
         let path = std::env::temp_dir()
-            .join(format!("mos-mqtt-broker-absent-{}", std::process::id()))
+            .join(format!("mica-mqtt-broker-absent-{}", std::process::id()))
             .join("mqtt-broker-users.toml");
         assert!(!path.exists(), "the test must not read a real file");
         let users = load_users(&path).expect("an absent credentials file must not fail");

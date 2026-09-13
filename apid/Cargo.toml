@@ -17,8 +17,8 @@ axum-server = { workspace = true }
 chrono = { workspace = true }
 hmac = { workspace = true }
 futures-util = { workspace = true }
-mos-ui-bundle = { path = "../ui-bundle" }
-mosd-settings = { path = "../mosd-settings" }
+mica-ui-bundle = { path = "../ui-bundle" }
+micad-settings = { path = "../micad-settings" }
 rand = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }

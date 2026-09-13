@@ -1,10 +1,10 @@
-//! `mos-busname` — the one rule that turns a `com.mos.*` service name into
+//! `mica-busname` — the one rule that turns a `com.mica.*` service name into
 //! the `<class>` shared by the service registry and MQTT addressing.
 //!
 //! Every service uses one grammar:
 //!
 //! ```text
-//! com.mos.<class>[.<suffix>]
+//! com.mica.<class>[.<suffix>]
 //! ```
 //!
 //! A service name identifies a process endpoint. It does not say whether the
@@ -15,9 +15,9 @@
 #![forbid(unsafe_code)]
 
 /// The prefix every mos service name carries.
-pub const PREFIX: &str = "com.mos.";
+pub const PREFIX: &str = "com.mica.";
 
-/// A parsed `com.mos.*` service name, borrowing from the source string.
+/// A parsed `com.mica.*` service name, borrowing from the source string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BusName<'a> {
     /// The third dotted component and the MQTT class when the service is
@@ -27,18 +27,18 @@ pub struct BusName<'a> {
     pub suffix: Option<&'a str>,
 }
 
-/// Parse `bus_name` under `com.mos.<class>[.<suffix>]`.
+/// Parse `bus_name` under `com.mica.<class>[.<suffix>]`.
 ///
-/// Returns `None` for names outside `com.mos.`, the bare namespace, or a name
+/// Returns `None` for names outside `com.mica.`, the bare namespace, or a name
 /// containing an empty component. Whenever this returns `Some`, both the
 /// class and every suffix component are non-empty.
 ///
 /// ```
-/// let service = mos_busname::parse("com.mos.sensor.abc123").expect("a mos name");
+/// let service = mica_busname::parse("com.mica.sensor.abc123").expect("a mos name");
 /// assert_eq!(service.class, "sensor");
 /// assert_eq!(service.suffix, Some("abc123"));
 ///
-/// assert_eq!(mos_busname::parse("com.example.sensor"), None);
+/// assert_eq!(mica_busname::parse("com.example.sensor"), None);
 /// ```
 pub fn parse(bus_name: &str) -> Option<BusName<'_>> {
     let rest = bus_name.strip_prefix(PREFIX)?;
@@ -62,31 +62,31 @@ mod tests {
 
     #[test]
     fn every_service_carries_its_class_in_the_third_component() {
-        assert_eq!(parse("com.mos.mosd"), service("mosd", None));
+        assert_eq!(parse("com.mica.micad"), service("micad", None));
         assert_eq!(
-            parse("com.mos.sensor.abc123"),
+            parse("com.mica.sensor.abc123"),
             service("sensor", Some("abc123"))
         );
-        assert_eq!(parse("com.mos.sensor.a.b"), service("sensor", Some("a.b")));
+        assert_eq!(parse("com.mica.sensor.a.b"), service("sensor", Some("a.b")));
     }
 
     #[test]
     fn ext_has_no_namespace_semantics() {
-        assert_eq!(parse("com.mos.ext"), service("ext", None));
-        assert_eq!(parse("com.mos.ext.sensor"), service("ext", Some("sensor")));
-        assert_eq!(parse("com.mos.extra"), service("extra", None));
+        assert_eq!(parse("com.mica.ext"), service("ext", None));
+        assert_eq!(parse("com.mica.ext.sensor"), service("ext", Some("sensor")));
+        assert_eq!(parse("com.mica.extra"), service("extra", None));
     }
 
     #[test]
     fn names_outside_the_grammar_are_refused() {
         for name in [
-            "com.mos.",
-            "com.mos",
+            "com.mica.",
+            "com.mica",
             "com.example.foo",
             "",
-            "com.mos.sensor.",
-            "com.mos..sensor",
-            "com.mos.ext.",
+            "com.mica.sensor.",
+            "com.mica..sensor",
+            "com.mica.ext.",
         ] {
             assert_eq!(parse(name), None, "{name}");
         }

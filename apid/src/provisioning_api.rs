@@ -7,7 +7,7 @@
 //! its own.
 //!
 //! **There is exactly one route here and it is a GET.** The write side of this
-//! capability is a file on a boot medium or a stick, applied by mosd before
+//! capability is a file on a boot medium or a stick, applied by micad before
 //! anything is listening, and that is deliberate — a document is the channel
 //! for a device with NO network, so an HTTP route that applied one would be a
 //! second, differently-trusted write path for the same thing. There is
@@ -28,7 +28,7 @@
 //! borrow the baked half's argument for it either** (PLAN-070 §8's last
 //! paragraph forbids exactly that). `/mos/config/` is credential material and
 //! is never returned whole; what is returned is
-//! [`mosd_settings::configuration::provisioning_status`]'s projection over
+//! [`micad_settings::configuration::provisioning_status`]'s projection over
 //! six named update and fleet fields, built key by key rather than serialized from the
 //! document. A key the projection does not name cannot reach a caller however
 //! the schema grows — which is the allowlist argument again, applied to a
@@ -42,7 +42,7 @@ use anyhow::{Context, Result, ensure};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
-use mosd_settings::configuration;
+use micad_settings::configuration;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -79,7 +79,7 @@ pub(crate) struct ProvisioningStatus {
     unclaimed: bool,
     /// The public configuration baked into the verity root, as read.
     baked: Value,
-    /// SHA-256 by relative path under `/usr/share/mos/meta/`.
+    /// SHA-256 by relative path under `/usr/share/mica/meta/`.
     baked_digests: BTreeMap<String, String>,
     /// What the operator wrote in `/mos/config/updates.json`, projected onto
     /// `update.source`, `update.channel` and `update.policy` and nothing else.
@@ -177,7 +177,7 @@ fn read_baked_files(root: &Path, at: &Path, files: &mut BTreeMap<String, Vec<u8>
 
 /// Read what a provisioning document did to this device.
 ///
-/// Two settings reads plus the public baked configuration: the record mosd
+/// Two settings reads plus the public baked configuration: the record micad
 /// wrote when it last met a document, and whether an administrator credential
 /// exists. Nothing is observed from a medium at request time — the media are staged and read
 /// before anything is listening, so a request cannot make a device look at a
@@ -190,9 +190,9 @@ fn read_baked_files(root: &Path, at: &Path, files: &mut BTreeMap<String, Vec<u8>
     responses(
         (status = 200, description = "Import history and claim state, the public baked manifest with SHA-256 digests by baked file path, and the operator and effective readings of `update.source`, `update.channel` and `update.policy` beside the baked `fleet` pair. The secret-bearing import document is never returned.", body = ProvisioningStatus),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "mosd failed to answer (`mosd_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value", body = ApiError),
-        (status = 503, description = "The call to mosd could not be made (`mosd_unreachable`); carries `Retry-After`", body = ApiError),
-        (status = 504, description = "The bounded call to mosd timed out (`mosd_timeout`)", body = ApiError),
+        (status = 500, description = "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value", body = ApiError),
+        (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
+        (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),
     ),
 )]
@@ -223,13 +223,13 @@ pub(crate) async fn api_v1_provisioning_status(
         Err(err) => {
             return api_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                ApiError::mosd("baked_configuration_unavailable", format!("{err:#}")),
+                ApiError::micad("baked_configuration_unavailable", format!("{err:#}")),
             );
         }
     };
     // F9's operator/effective half, through the library resolver rather than
-    // a second reader here (RFCT-313 owns it; apid links `mosd-settings` and
-    // cannot link the `mosd` binary). One resolver is the whole point: this
+    // a second reader here (RFCT-313 owns it; apid links `micad-settings` and
+    // cannot link the `micad` binary). One resolver is the whole point: this
     // route and the update path answering differently about the same device is
     // the failure the arrangement exists to prevent.
     //
@@ -253,7 +253,7 @@ pub(crate) async fn api_v1_provisioning_status(
             Err(err) => {
                 return api_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiError::mosd("configuration_unavailable", format!("{err:#}")),
+                    ApiError::micad("configuration_unavailable", format!("{err:#}")),
                 );
             }
         };

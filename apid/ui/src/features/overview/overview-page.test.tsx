@@ -6,7 +6,7 @@ import { OverviewPage } from './overview-page'
 const FIVE_MINUTES_AGO = new Date(Date.now() - 5 * 60_000).toISOString()
 
 const routes = {
-  '/api/v1/health': { apid: 'ok', mosd: 'ok', checkedAt: 183_900 },
+  '/api/v1/health': { apid: 'ok', micad: 'ok', checkedAt: 183_900 },
   '/api/v1/system/info': {
     machineId: { available: true, id: '4f2e9c1a7b3d4e5f' },
     uptime: { available: true, seconds: 1_231_932 },
@@ -50,7 +50,7 @@ describe('the overview', () => {
   })
 
   it('says the read failed rather than showing an empty console', async () => {
-    stubFetch({ ...routes, '/api/v1/health': () => jsonResponse({ error: { message: 'mosd is not answering' } }, 503) })
+    stubFetch({ ...routes, '/api/v1/health': () => jsonResponse({ error: { message: 'micad is not answering' } }, 503) })
     renderRoute(<OverviewPage />)
 
     expect(await screen.findByText('The request could not be completed.')).toBeTruthy()

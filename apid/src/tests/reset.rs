@@ -2,8 +2,8 @@
 //! one write each one makes, and the secret that appears on exactly one
 //! channel.
 //!
-//! What a tier DOES to the device is mosd's contract and is tested in
-//! `mosd/src/reset.rs`, against §2.1's table cell for cell. What is here is
+//! What a tier DOES to the device is micad's contract and is tested in
+//! `micad/src/reset.rs`, against §2.1's table cell for cell. What is here is
 //! apid's half: who may ask, what gets committed, and what the trail records.
 
 use std::sync::Arc;

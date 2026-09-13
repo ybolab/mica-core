@@ -25,7 +25,7 @@ export interface Meta {
 
 export interface Health {
   apid: string
-  mosd: string
+  micad: string
   checkedAt?: number
   detail?: string
 }

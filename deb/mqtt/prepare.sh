@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The mqtt producer's PREPARE hook: cross-compile mos-mqttd and mos-mqtt-broker's binaries, assert that
+# The mqtt producer's PREPARE hook: cross-compile mica-mqttd and mica-mqtt-broker's binaries, assert that
 # nothing this producer does not own was compiled with them, and leave the
 # result in MOS_DEB_STAGE for build-env/deb/build.sh to pack.
 #
@@ -8,8 +8,8 @@
 # cargo build, not to a docker build. That is what a PREPARE hook is for.
 set -euo pipefail
 
-exec bash "${MOS_DEB_REPO_ROOT}/pkgs/mosd/hack/build-deb.sh" \
+exec bash "${MOS_DEB_REPO_ROOT}/hack/build-deb.sh" \
     --producer "${MOS_DEB_PRODUCER}" \
-    --crates "mos-mqttd mos-mqtt-broker" \
+    --crates "mica-mqttd mica-mqtt-broker" \
     --arch "${MOS_DEB_ARCH}" \
     --stage "${MOS_DEB_STAGE}"

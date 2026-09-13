@@ -49,7 +49,7 @@ async fn unauthenticated(router: &Router, method: &str, path: &str) -> StatusCod
     status
 }
 
-// The system-information surface: authenticated, read-only, mosd's
+// The system-information surface: authenticated, read-only, micad's
 // assembly passed through rather than re-derived here, and the live
 // denylist applied on the way out like every other read.
 #[tokio::test]
@@ -59,9 +59,9 @@ async fn the_system_info_route_answers_mosds_surface_read_only() {
     fake.set_system_info(json!({
         "machineId": { "available": true, "id": "0123456789abcdef0123456789abcdef" },
         "board": { "available": false, "detail": "no device-tree model" },
-        "system": { "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "mosd",
+        "system": { "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "micad",
                     "gitStamp": { "available": true, "commit": "00b674ec0ffe", "dirty": false, "consistent": true } },
-        "packages": { "available": true, "count": 1, "entries": [{ "name": "mosd", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true }] },
+        "packages": { "available": true, "count": 1, "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true }] },
         "slot": { "available": true, "booted": "rootfs.0" },
         "uptime": { "available": true, "seconds": 99 },
         // A field the live denylist covers must not pass through this
@@ -76,7 +76,7 @@ async fn the_system_info_route_answers_mosds_surface_read_only() {
     assert_eq!(info["machineId"]["id"], "0123456789abcdef0123456789abcdef");
     assert_eq!(info["board"]["available"], false);
     assert_eq!(info["system"]["gitStamp"]["commit"], "00b674ec0ffe");
-    assert_eq!(info["packages"]["entries"][0]["name"], "mosd");
+    assert_eq!(info["packages"]["entries"][0]["name"], "micad");
     assert_eq!(info["slot"]["booted"], "rootfs.0");
     assert_eq!(info["uptime"]["seconds"], 99);
     assert_eq!(info["hash"], crate::redact::REDACTED);
@@ -159,7 +159,7 @@ async fn the_telemetry_and_network_status_routes_are_read_only_observations() {
     }
 }
 
-// mosd failures on the three reads travel under §2.4's classification like
+// micad failures on the three reads travel under §2.4's classification like
 // every other bus read.
 #[tokio::test]
 async fn the_three_reads_classify_a_mosd_failure() {
@@ -173,7 +173,7 @@ async fn the_three_reads_classify_a_mosd_failure() {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
         assert_eq!(
             envelope(response).await["code"],
-            "mosd_unreachable",
+            "micad_unreachable",
             "{path}"
         );
     }
@@ -414,7 +414,7 @@ async fn a_concurrent_collection_is_refused_not_queued() {
 
 // Sources that do not answer do not stop the snapshot: every section is
 // recorded absent with the reason, the snapshot is still published, and the
-// request returns within the bound rather than hanging on mosd.
+// request returns within the bound rather than hanging on micad.
 #[tokio::test]
 async fn a_snapshot_is_still_published_when_no_source_answers() {
     let (tree, token) = with_token(secret_tree("hunter2secret"));

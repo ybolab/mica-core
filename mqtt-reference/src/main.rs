@@ -1,4 +1,4 @@
-//! `mos-mqtt-reference` command-line entry point.
+//! `mica-mqtt-reference` command-line entry point.
 
 #![forbid(unsafe_code)]
 
@@ -6,7 +6,7 @@ use clap::Parser;
 
 /// A reference-only Item1 application for the packaged MQTT bridge proof.
 #[derive(Debug, Parser)]
-#[command(name = "mos-mqtt-reference", version)]
+#[command(name = "mica-mqtt-reference", version)]
 struct Args {}
 
 #[tokio::main]
@@ -18,5 +18,5 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    mos_mqtt_reference::serve_system().await
+    mica_mqtt_reference::serve_system().await
 }

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::StreamExt;
-use mos_mqtt_reference::{
+use mica_mqtt_reference::{
     BUS_NAME, ITEM_PATHS, Items, REFUSED_OUT_OF_RANGE, REFUSED_READ_ONLY, ROOT_PATH,
     SETPOINT_INITIAL, SETPOINT_MAX, SETPOINT_MIN, SETPOINT_PATH, start,
 };
@@ -110,7 +110,7 @@ async fn item_tree_is_bounded_and_changes_only_after_an_accepted_write() -> anyh
     let _reference = start(bus.connection().await?).await?;
     let client = bus.connection().await?;
 
-    let root = zbus::Proxy::new(&client, BUS_NAME, ROOT_PATH, "com.mos.Item1")
+    let root = zbus::Proxy::new(&client, BUS_NAME, ROOT_PATH, "com.mica.Item1")
         .await
         .context("create root Item1 proxy")?;
     let items: Items = root
@@ -152,7 +152,7 @@ async fn item_tree_is_bounded_and_changes_only_after_an_accepted_write() -> anyh
         "the reference emitted ItemsChanged without an accepted mutation",
     );
 
-    let setpoint = zbus::Proxy::new(&client, BUS_NAME, SETPOINT_PATH, "com.mos.Item1")
+    let setpoint = zbus::Proxy::new(&client, BUS_NAME, SETPOINT_PATH, "com.mica.Item1")
         .await
         .context("create setpoint Item1 proxy")?;
     let accepted: i32 = setpoint
@@ -207,7 +207,7 @@ async fn item_tree_is_bounded_and_changes_only_after_an_accepted_write() -> anyh
         "rejected SetValue changed the value"
     );
 
-    let read_only = zbus::Proxy::new(&client, BUS_NAME, "/Example/ReadOnly", "com.mos.Item1")
+    let read_only = zbus::Proxy::new(&client, BUS_NAME, "/Example/ReadOnly", "com.mica.Item1")
         .await
         .context("create read-only Item1 proxy")?;
     let refused: i32 = read_only

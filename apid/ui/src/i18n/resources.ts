@@ -60,7 +60,7 @@ export const en = {
   },
   root: {
     connecting: 'Connecting to the device…',
-    unavailable: 'The management API is unavailable. Retry after mosd is ready.',
+    unavailable: 'The management API is unavailable. Retry after micad is ready.',
   },
   simulation: {
     title: 'Simulation',
@@ -211,7 +211,7 @@ export const en = {
       steps: { saved: 'Saved', applying: 'Applying', reconnecting: 'Reconnecting', applied: 'Applied' },
       body: {
         saved: 'The device accepted the change and queued it.',
-        applying: 'mosd is reconciling the interface.',
+        applying: 'micad is reconciling the interface.',
         reconnecting: 'The device stopped answering while the change was applying. This is expected when the change moves the address this browser is using.',
         applied: 'The device reports the interface reconciled.',
         failed: 'The device refused or could not complete the change. The previous configuration is still in effect.',
@@ -243,7 +243,7 @@ export const en = {
       clientDisabled: 'Wi-Fi client disabled.',
       added: 'Network {{name}} saved.',
       removed: 'Network {{name}} removed.',
-      enabled: 'Wi-Fi client', add: 'Add Wi-Fi network', addCopy: 'Credentials are stored by mosd and are redacted on later reads.', security: 'Security', credential: 'Credential', auto: 'Auto-connect', wpa: 'WPA-PSK', saved: 'Saved · not echoed', noCredential: 'None', priorityValue: 'priority {{priority}}', client: 'Wi-Fi client', hidden: 'Hidden SSID', priority: 'Priority', password: 'Password', open: 'Open network', empty: 'No Wi-Fi networks are saved.', remove: 'Remove {{name}}', removeCopy: 'Forget {{name}}? The device will no longer connect to it automatically.',
+      enabled: 'Wi-Fi client', add: 'Add Wi-Fi network', addCopy: 'Credentials are stored by micad and are redacted on later reads.', security: 'Security', credential: 'Credential', auto: 'Auto-connect', wpa: 'WPA-PSK', saved: 'Saved · not echoed', noCredential: 'None', priorityValue: 'priority {{priority}}', client: 'Wi-Fi client', hidden: 'Hidden SSID', priority: 'Priority', password: 'Password', open: 'Open network', empty: 'No Wi-Fi networks are saved.', remove: 'Remove {{name}}', removeCopy: 'Forget {{name}}? The device will no longer connect to it automatically.',
     },
     wireguard: {
       added: 'Peer added.',
@@ -312,7 +312,7 @@ export const en = {
     addressFallback: 'address',
     noInterfaces: 'No interfaces were reported or configured.',
     configuredMap: 'Configured map',
-    configuredMapDescription: 'Desired state stored by mosd. Changes are accepted only through the typed /api/v1/network routes.',
+    configuredMapDescription: 'Desired state stored by micad. Changes are accepted only through the typed /api/v1/network routes.',
     summary: {
       notConfigured: 'Not configured',
       physical: 'physical',
@@ -553,7 +553,7 @@ export const en = {
         description: 'Image build, daemon, signed deployment and monotonic uptime.',
         system: 'System image',
         commitDate: 'Source commit date',
-        daemon: 'mosd',
+        daemon: 'micad',
         deployment: 'Deployment',
         primary: 'primary',
         uptime: 'Uptime',

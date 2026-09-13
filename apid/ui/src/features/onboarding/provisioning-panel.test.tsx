@@ -59,9 +59,9 @@ describe('the provisioning document status', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/provisioning/status': () => jsonResponse({ error: { message: 'mosd failed to answer' } }, 500) })
+    stubFetch({ '/api/v1/provisioning/status': () => jsonResponse({ error: { message: 'micad failed to answer' } }, 500) })
     renderPanel(<ProvisioningPanel />)
 
-    expect(await screen.findByText('mosd failed to answer')).toBeTruthy()
+    expect(await screen.findByText('micad failed to answer')).toBeTruthy()
   })
 })

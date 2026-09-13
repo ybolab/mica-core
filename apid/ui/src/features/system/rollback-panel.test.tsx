@@ -74,9 +74,9 @@ describe('the guarded rollback', () => {
   })
 
   it('surfaces a read failure as an error', async () => {
-    stubFetch({ '/api/v1/update': () => jsonResponse({ error: { message: 'mosd is unavailable' } }, 503) })
+    stubFetch({ '/api/v1/update': () => jsonResponse({ error: { message: 'micad is unavailable' } }, 503) })
     renderPanel(<RollbackPanel />)
 
-    expect(await screen.findByText('mosd is unavailable')).toBeTruthy()
+    expect(await screen.findByText('micad is unavailable')).toBeTruthy()
   })
 })
