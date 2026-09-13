@@ -1,5 +1,4 @@
 target/
-target-deb/
 _out/
 
 # The mica-build-env release, fetched and verified at its pin

@@ -141,8 +141,8 @@ MICA_BUILD_COMMIT="${MICA_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
 # Producer-private, so this producer has its own cache key and its own output
 # directory: sharing target/ with build-target.sh would let a
 # four-binary build satisfy the independence assertion below with binaries this
-# producer never asked for. Gitignored through .gitignore.
-TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
+# producer never asked for. Under _out/, with every other build output.
+TARGET_DIR="${WORKSPACE}/_out/target-deb/${PRODUCER}"
 RELEASE_DIR="${TARGET_DIR}/${TRIPLE}/release"
 # mica-runkit is the one static executable (init and shutdown of the kernel's
 # early userspace), built into its own target directory so its static

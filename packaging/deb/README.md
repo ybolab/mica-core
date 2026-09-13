@@ -36,7 +36,7 @@ rather than about the package -- so a producer's independence is asserted and
 not merely intended: after the compile, `build-deb.sh` fails by name if any
 binary the producer does not own is present in its target directory. That is
 also why the target directory is producer-private
-(`target-deb/<producer>/`, gitignored) rather than shared with
+(`_out/target-deb/<producer>/`, gitignored) rather than shared with
 `hack/build-target.sh`'s `target/`: a shared one would let a
 four-binary build satisfy the assertion with binaries nobody asked for.
 
