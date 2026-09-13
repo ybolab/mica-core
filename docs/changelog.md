@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-13 23:10 [progress]
+
+The mica-build-env pin is v0.0.2 (`SHA256SUMS` b75932fc6df3). Its `RULES.md`
+and all four `IMAGE_MICA_BUILD_*` digests equal v0.0.1's; it drops the
+rust-check image this repository no longer used. Not yet published.
+
 ## 2026-09-13 22:40 [progress]
 
 Built on the mica-build-env v0.0.1 release (`20260913-2200-build-env-release-v0.0.1`).

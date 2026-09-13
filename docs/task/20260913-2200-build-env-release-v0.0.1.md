@@ -13,7 +13,7 @@ callers and its own build, package and CI scripts to that release, following
 its `RULES.md`; implement the straightforward pin and caller migration and
 keep any new compatibility policy reviewable before it is applied.
 
-Acceptance: `deps/build-env.json` records `v0.0.1` and the sha256 of its
+Acceptance: `deps/build-env.json` records the current release and the sha256 of its
 `SHA256SUMS`; `make deps` refuses assets that do not match; no caller names a
 `LOCAL_MICA_BUILD_*` image; the scripts that run are this repository's own;
 `make check`, `make pool` and `make package-gate` pass in the published images
@@ -30,6 +30,9 @@ Building on the mica-build-env v0.0.1 release
 
 ## Notes
 
+- 2026-09-13 23:10: pin moved to v0.0.2 (coordinator delta; tag 7211badc4462,
+  SHA256SUMS b75932fc6df3). RULES.md and all four IMAGE_MICA_BUILD_* digests are
+  unchanged, so the v0.0.1 gate results stand; only the pin route was re-checked.
 - The independent mica-apid upgrade policy is a proposal only:
   `docs/plan/20260913-2230-independent-apid-upgrade.md`, acceptance case
   `scripts/gate/interface-dependency-test.sh` (not wired into `make check`).

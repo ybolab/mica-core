@@ -1,6 +1,7 @@
 # The Debian package scripts
 
-This repository's own copy of the `deb/` scripts of mica-build-env v0.0.1,
+This repository's own copy of the `deb/` scripts of mica-build-env v0.0.1
+(v0.0.2 changes only the `lock.sh` grep this copy already carries),
 which RULES.md names as the reference implementation of its package rules.
 The packing image is the published `IMAGE_MICA_BUILD_BASE` of that release,
 pinned by digest in the verified `build-env/images.env`

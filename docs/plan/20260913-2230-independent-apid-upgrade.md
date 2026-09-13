@@ -11,7 +11,7 @@ exact `micad` archive it already has. Today `mica-apid` declares
 `Depends: micad (= @VERSION@)`, and the package gate (`scripts/deb/package-gate.sh`,
 check b/i) requires that exact pin between packages built here, so every
 `mica-apid` needs the `micad` of its own commit and dpkg refuses any other.
-mica-build-env v0.0.1 `RULES.md` 6 lists the pool gates and does not name
+mica-build-env `RULES.md` 6 (v0.0.1 and v0.0.2 alike) lists the pool gates and does not name
 the exact-pin rule; it lives in the reference gate this repository now owns.
 
 ## Proposal: the D-Bus interface is the dependency
