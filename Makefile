@@ -66,6 +66,7 @@ preflight:
 
 deb: preflight
 	bash build-env/deb/build.sh --producer micad --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer apid --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer sftp --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer deploy --arch $(MICA_ARCH)
@@ -73,11 +74,13 @@ deb: preflight
 
 pool: preflight
 	bash build-env/deb/build.sh --producer micad --arch amd64
+	bash build-env/deb/build.sh --producer apid --arch amd64
 	bash build-env/deb/build.sh --producer mqtt --arch amd64
 	bash build-env/deb/build.sh --producer sftp --arch amd64
 	bash build-env/deb/build.sh --producer deploy --arch amd64
 	bash build-env/deb/build.sh --producer lifecycle --arch amd64
 	bash build-env/deb/build.sh --producer micad --arch arm64
+	bash build-env/deb/build.sh --producer apid --arch arm64
 	bash build-env/deb/build.sh --producer mqtt --arch arm64
 	bash build-env/deb/build.sh --producer sftp --arch arm64
 	bash build-env/deb/build.sh --producer deploy --arch arm64

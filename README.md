@@ -19,9 +19,9 @@ make package-gate    # the gate over that pool
 make publish         # CI only: ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>
 ```
 
-Seven packages leave here: `micad` (one binary carrying both micad and apid),
-`mica-apid` (the `/usr/bin/mica-apid` link to it, and the committed OpenAPI
-document as `/usr/share/mica-apid/openapi.json`), `mica-mqttd`,
+Seven packages leave here: `micad` (`/usr/bin/micad`), `mica-apid` (its own
+`/usr/bin/mica-apid` executable, and the committed OpenAPI document as
+`/usr/share/mica-apid/openapi.json`), `mica-mqttd`,
 `mica-mqtt-broker`, `mica-sftp-server` (`/usr/lib/sftp-server`, selected by
 boards), `mica-deploy` (`/usr/bin/mica-deploy`) and `mica-lifecycle` (the static
 `/usr/lib/mica/lifecycle/mica-runkit`). The assembly (`ybolab/mica-build`)

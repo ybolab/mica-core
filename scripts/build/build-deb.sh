@@ -165,11 +165,11 @@ mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=LOCAL_MI
 }
 RUST_IMAGE="${RUST_FROM[1]#MICA_BUILD_RUST=}"
 
-# Only the producer that owns micad -- whose binary links apid -- needs the frontend. Finish that separate
+# Only the producer that owns mica-apid -- which embeds the built-in UI -- needs the frontend. Finish that separate
 # producer before entering the Rust-only cross-build image.
 APID_UI_ARGS=()
 for name in "${BINARIES[@]}"; do
-    if [ "${name}" = micad ]; then
+    if [ "${name}" = mica-apid ]; then
         APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
         bash "${WORKSPACE}/crates/mica-apid/ui/build.sh"
         APID_UI_ARGS=(

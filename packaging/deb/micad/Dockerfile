@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # check=skip=InvalidDefaultArgInFrom
-# The micad producer: the `micad` and `mica-apid` packages -- one binary,
-# /usr/bin/micad, and the /usr/bin/mica-apid link to it.
+# The micad producer: the `micad` package -- /usr/bin/micad, its unit and its
+# D-Bus policy. mica-apid is its own producer (packaging/deb/apid).
 #
 #   make os-deb-micad   ->  build-env/deb/build.sh --producer micad --arch <amd64|arm64>
 #
@@ -29,10 +29,7 @@ COPY --from=packer pack.sh /usr/local/bin/pack.sh
 COPY --from=family copyright /in/copyright
 COPY control/ /in/control/
 COPY --from=micad-dist micad.service com.mica.micad.conf /in/dist/
-COPY --from=apid-dist apid.service /in/dist/
 COPY --from=bin micad /in/bin/
-# The OpenAPI document, staged beside the binaries by prepare.sh.
-COPY --from=bin openapi.json /in/openapi.json
 
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
@@ -52,15 +49,15 @@ ARG MICA_DEB_SOURCE_COMMIT
 # something a reader has to run to see, while a symlink in the archive is
 # visible to `dpkg-deb --contents` and to every gate that reads one.
 #
-# NOT a conffile, deliberately. These two links live under /etc, which is where
+# NOT a conffile, deliberately. This link lives under /etc, which is where
 # dpkg would normally expect configuration a user edits and preserves across
 # upgrades -- but this root filesystem is an immutable dm-verity squashfs and
 # nobody edits anything in it. A conffiles entry would promise a merge that
 # cannot happen. Do not "fix" this into one.
 #
-# /usr/share/doc/<package>/copyright is per package and not shared, and each
-# wants-symlink names its own unit, which is what keeps the two payloads
-# disjoint: no path is owned by both.
+# /usr/share/doc/<package>/copyright is per package and not shared, and the
+# wants-symlink names this package's own unit, so no path is owned by two
+# packages.
 RUN set -eu; \
     install -D -m 0755 /in/bin/micad               /stage/micad/usr/bin/micad; \
     install -D -m 0644 /in/dist/micad.service      /stage/micad/usr/lib/systemd/system/micad.service; \
@@ -69,17 +66,7 @@ RUN set -eu; \
     install -d -m 0755 /stage/micad/etc/systemd/system/multi-user.target.wants; \
     ln -s /usr/lib/systemd/system/micad.service \
           /stage/micad/etc/systemd/system/multi-user.target.wants/micad.service; \
-    install -d -m 0755                            /stage/apid/usr/bin; \
-    ln -s micad                                   /stage/apid/usr/bin/mica-apid; \
-    install -D -m 0644 /in/dist/apid.service      /stage/apid/usr/lib/systemd/system/apid.service; \
-    install -D -m 0644 /in/copyright              /stage/apid/usr/share/doc/mica-apid/copyright; \
-    install -D -m 0644 /in/openapi.json           /stage/apid/usr/share/mica-apid/openapi.json; \
-    install -d -m 0755 /stage/apid/etc/systemd/system/multi-user.target.wants; \
-    ln -s /usr/lib/systemd/system/apid.service \
-          /stage/apid/etc/systemd/system/multi-user.target.wants/apid.service; \
     pack.sh --root /stage/micad --control /in/control/micad.control \
-            --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out; \
-    pack.sh --root /stage/apid --control /in/control/mica-apid.control \
             --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out
 
 # The export stage, the shape pkgs/mica-deploy/Dockerfile and

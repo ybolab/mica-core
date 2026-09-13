@@ -1,19 +1,8 @@
-//! One binary for the management plane's two daemons: invoked as `micad` it is
-//! the settings and reconciliation daemon, invoked as `mica-apid` (a link to
-//! this file) the HTTPS API daemon. The name is the only selector; any other name
-//! refuses.
+//! `micad`, the settings and reconciliation daemon. The API daemon is its own
+//! executable, `mica-apid`, so an apid upgrade never repacks micad.
 
 #![forbid(unsafe_code)]
 
 fn main() -> anyhow::Result<()> {
-    let name = std::env::args_os().next();
-    match name
-        .as_deref()
-        .and_then(|name| std::path::Path::new(name).file_name())
-        .and_then(|name| name.to_str())
-    {
-        Some("micad") => mica_core::main(),
-        Some("mica-apid") => mica_apid::main(),
-        _ => anyhow::bail!("this binary must be invoked as micad or mica-apid"),
-    }
+    mica_core::main()
 }

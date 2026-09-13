@@ -1,5 +1,5 @@
-//! apid on its own, for this crate's tests and local runs. Images ship apid as
-//! the `apid` link to the `micad` binary.
+//! `mica-apid`, the HTTPS API daemon: its own executable and its own package,
+//! so an apid upgrade never repacks micad.
 
 #![forbid(unsafe_code)]
 

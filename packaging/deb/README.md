@@ -6,7 +6,8 @@ templates and its own archives, and it emits nothing outside that set:
 
 | Producer | Compiles | Emits |
 | --- | --- | --- |
-| `micad` | `mica-core` (the `micad` binary, carrying apid) | `micad`, `mica-apid` |
+| `micad` | `mica-core` (the `micad` binary) | `micad` |
+| `apid` | `mica-apid` (the `mica-apid` binary, UI embedded) | `mica-apid` |
 | `mqtt` | `mica-mqttd`, `mica-mqtt-broker` | `mica-mqttd`, `mica-mqtt-broker` |
 | `sftp` | `mica-sftp-server` | `mica-sftp-server` (`/usr/lib/sftp-server`) |
 | `deploy` | `mica-deploy` | `mica-deploy` |

@@ -14,8 +14,6 @@ name = "micad"
 path = "src/main.rs"
 
 [dependencies]
-# apid is linked into the micad binary and reached through the `apid` name.
-mica-apid = { path = "../mica-apid" }
 micad-settings = { path = "../micad-settings" }
 # The one `com.mica.*` bus-name rule: the service registry takes
 # it rather than restating it.

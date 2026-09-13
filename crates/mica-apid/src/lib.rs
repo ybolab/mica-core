@@ -60,7 +60,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::settings_api::SettingsApi;
 
-/// The daemon entry point: the `micad` binary runs it when invoked as `apid`.
+/// The daemon entry point of the `mica-apid` executable.
 pub fn main() -> anyhow::Result<()> {
     // `--version` is answered and returned from here, above every line that
     // makes this process a daemon. The position is the requirement: a handler

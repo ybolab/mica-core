@@ -4,14 +4,13 @@ Architecture: @ARCH@
 Maintainer: mos build <mos@example.invalid>
 Section: admin
 Priority: optional
-Depends: micad (= @VERSION@), mica-system
+Depends: micad (= @VERSION@), mica-system, ${shlibs:Depends}
 Description: mos API daemon
  Serves the web dashboard over HTTPS and makes every state change through
  micad's D-Bus interface rather than by touching the system itself.
  .
- /usr/bin/mica-apid is a link to /usr/bin/micad: one binary serves both daemons and
- selects apid by the name it is invoked as, so this package ships no ELF and
- asks for no shlibs substitution.
+ /usr/bin/mica-apid is its own executable, built and packed by its own
+ producer, so an apid upgrade does not repack the micad binary.
  .
  The dependencies are pinned to the exact version because apid and micad are
  built from one workspace commit and speak an interface that carries no

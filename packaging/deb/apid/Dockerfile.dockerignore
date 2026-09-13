@@ -1,0 +1,10 @@
+# The build context is this producer's own directory. Only the control templates
+# are COPYed out of it: the shared copyright file arrives through the `family`
+# named context and the binaries through `bin`, which is what keeps a cargo
+# target directory of several gigabytes out of the path buildx has to walk.
+#
+# producer.env and prepare.sh are excluded deliberately. Neither is copied into
+# the image, and leaving them in the context would invalidate this producer's
+# cache whenever a build input that only the host reads was edited.
+*
+!control/*.control
