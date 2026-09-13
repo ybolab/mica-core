@@ -4,7 +4,7 @@ Architecture: @ARCH@
 Maintainer: mos build <mos@example.invalid>
 Section: admin
 Priority: optional
-Depends: micad (= @VERSION@), mica-system (= @VERSION@), ${shlibs:Depends}
+Depends: micad (= @VERSION@), mica-system, ${shlibs:Depends}
 Description: mos API daemon
  Serves the web dashboard over HTTPS and makes every state change through
  micad's D-Bus interface rather than by touching the system itself.
