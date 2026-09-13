@@ -638,7 +638,7 @@ export const en = {
       },
       namespaces: {
         title: 'System and user namespaces',
-        description: 'The two bind namespaces of the DATA filesystem: /mos is system-owned, /srv is yours.',
+        description: 'The two bind namespaces of the DATA filesystem: /mica is system-owned, /srv is yours.',
         sharedPool: 'Both are views of one filesystem and share its capacity, reported once on the {{tier}} tier.',
         owner: { system: 'system-owned', user: 'user-owned' },
         readiness: {
@@ -757,7 +757,7 @@ export const en = {
           },
           'application-data': {
             name: 'application-data reset',
-            effect: 'Removes operator applications and their data: /srv is cleared and the application areas of /mos are recreated empty. The platform\'s own configuration and credentials survive.',
+            effect: 'Removes operator applications and their data: /srv is cleared and the application areas of /mica are recreated empty. The platform\'s own configuration and credentials survive.',
           },
           'full-factory': {
             name: 'full factory reset',

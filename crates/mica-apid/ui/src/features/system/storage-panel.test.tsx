@@ -21,9 +21,9 @@ function status(overrides: Partial<StorageStatus> = {}): StorageStatus {
     ],
     namespaces: {
       sharedCapacityTier: 'data',
-      detail: '/mos and /srv are binds of the DATA filesystem',
+      detail: '/mica and /srv are binds of the DATA filesystem',
       binds: [
-        { name: 'mos', mount: '/mos', source: '/mnt/data/mica', owner: 'system', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
+        { name: 'mos', mount: '/mica', source: '/mnt/data/mica', owner: 'system', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
         { name: 'srv', mount: '/srv', source: '/mnt/data/srv', owner: 'user', readiness: 'ready', mounted: true, sourceOnData: true, sourceIsDirectory: true, probe: { attempted: true, passed: true } },
       ],
     },
@@ -59,9 +59,9 @@ describe('storage status', () => {
 
     expect(await screen.findByText(/4.0 GiB of 8.0 GiB used/)).toBeTruthy()
     expect(screen.getByText(/Both are views of one filesystem and share its capacity, reported once on the data tier/)).toBeTruthy()
-    // A per-bind size bar would be a lie: /mos and /srv are two views of one
+    // A per-bind size bar would be a lie: /mica and /srv are two views of one
     // pool, and a second number here invites a reader to add them together.
-    for (const mount of ['/mos', '/srv']) {
+    for (const mount of ['/mica', '/srv']) {
       const row = screen.getByText(mount).closest('div')!
       expect(row.textContent).not.toMatch(/GiB|MiB|%/)
     }
@@ -82,9 +82,9 @@ describe('storage status', () => {
       '/api/v1/storage/status': status({
         namespaces: {
           sharedCapacityTier: 'data',
-          detail: '/mos and /srv are binds of the DATA filesystem',
+          detail: '/mica and /srv are binds of the DATA filesystem',
           binds: [
-            { name: 'mos', mount: '/mos', source: '/mnt/data/mica', owner: 'system', readiness: 'degraded', mounted: true, readOnly: true, sourceOnData: true, probe: { attempted: false, reason: 'the mount is read-only' } },
+            { name: 'mos', mount: '/mica', source: '/mnt/data/mica', owner: 'system', readiness: 'degraded', mounted: true, readOnly: true, sourceOnData: true, probe: { attempted: false, reason: 'the mount is read-only' } },
             { name: 'srv', mount: '/srv', source: '/srv', owner: 'user', readiness: 'unavailable', mounted: true, sourceOnData: false, probe: { attempted: true, passed: false, error: 'EROFS' } },
           ],
         },

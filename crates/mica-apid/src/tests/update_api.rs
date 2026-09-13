@@ -388,7 +388,7 @@ async fn the_config_write_maps_the_refusals_and_names_the_offending_field() {
     let (router, fake, token) = update_app(json!({}));
     fake.refuse_updates(
         INVALID_ARGS,
-        "/mos/config/updates.json: policy `auto` requires at least one maintenance window",
+        "/mica/config/updates.json: policy `auto` requires at least one maintenance window",
     );
     let response = bearer_json(
         &router,
@@ -412,7 +412,7 @@ async fn the_config_write_maps_the_refusals_and_names_the_offending_field() {
     let (router, fake, token) = update_app(json!({}));
     fake.refuse_updates(
         ACCESS_DENIED,
-        "parse /mos/config/updates.json: expected value",
+        "parse /mica/config/updates.json: expected value",
     );
     let response = bearer_json(
         &router,

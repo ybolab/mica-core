@@ -1,4 +1,4 @@
-//! `apid --healthcheck`: whether this machine's apid answers `GET /healthz`
+//! `mica-apid --healthcheck`: whether this machine's apid answers `GET /healthz`
 //! over HTTPS, for the boot health gate (`mica-system:mica-health`).
 //!
 //! The address is apid's own `APID_HTTPS_ADDR` (default `0.0.0.0:443`), with an

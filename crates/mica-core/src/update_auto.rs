@@ -783,7 +783,7 @@ mod tests {
         )
     }
 
-    const BUNDLE: &str = "/mos/updates/verified/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
+    const BUNDLE: &str = "/mica/updates/verified/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
 
     fn candidate(name: &str, version: &str) -> Available {
         Available {
@@ -1024,13 +1024,13 @@ mod tests {
         scene.daemon.will_check(Ok(Settled::Unready(Unready {
             status: "degraded".to_string(),
             kind: update_codes::WORKSPACE_PROBE_FAILED,
-            detail: "/mos is mounted read-only".to_string(),
+            detail: "/mica is mounted read-only".to_string(),
         })));
         scene.tick().await;
         record(
             &scene,
             update_codes::DEFER_WORKSPACE_UNREADY,
-            "/mos is mounted read-only",
+            "/mica is mounted read-only",
         );
 
         // 11. The re-check ran and failed.

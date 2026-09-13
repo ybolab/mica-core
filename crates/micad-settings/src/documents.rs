@@ -2,7 +2,7 @@
 //!
 //! **Storage is split; addressing is not.** [`crate::Settings`] is the one
 //! tree every reader and every dot-path still sees. Underneath it, what an
-//! integrator sets lives in `/mos/config/` as one flat JSON document per
+//! integrator sets lives in `/mica/config/` as one flat JSON document per
 //! reconciler, and what the device mints or observes about itself — the
 //! identity record, the credential material derived from it, and a staged
 //! reset intent — stays on STATE. [`crate::Store`] is the only thing that
@@ -10,7 +10,7 @@
 //!
 //! **The boundary is measured, not judged** (§5.2.1): it is the tier-1 reset
 //! partition. Tier 1 returns what an integrator set, so the set it clears IS
-//! the set that lives in `/mos/config/`, and `reset.rs` is the second reader
+//! the set that lives in `/mica/config/`, and `reset.rs` is the second reader
 //! of the same line.
 //!
 //! Each document declares the exact schema this build reads and writes.
@@ -26,10 +26,10 @@ use crate::model::{
     Settings, SshSettings, TimeSettings, WebAdminSettings, WifiSettings,
 };
 
-/// Directory the `/mos/config/` documents live in when nothing relocates it.
-pub const DEFAULT_CONFIG_DIR: &str = "/mos/config";
+/// Directory the `/mica/config/` documents live in when nothing relocates it.
+pub const DEFAULT_CONFIG_DIR: &str = "/mica/config";
 
-/// Mode `mica-data-layout` establishes on `/mos/config/` (§5.2.4).
+/// Mode `mica-data-layout` establishes on `/mica/config/` (§5.2.4).
 ///
 /// Stated here as well as in the layout script because the charter and the
 /// mode have to agree in both readers: the namespace is credential material —
@@ -56,7 +56,7 @@ pub const CONFIG_DOCUMENTS: [&str; 7] = [
     CONTAINER_DOCUMENT,
 ];
 
-/// The addressed-tree subtrees each `/mos/config/` document carries.
+/// The addressed-tree subtrees each `/mica/config/` document carries.
 ///
 /// The §5.2.2 mapping in the form a caller can compute with, rather than as
 /// prose a reader has to re-derive. Two callers need it and both are the
@@ -83,7 +83,7 @@ pub const DOCUMENT_SUBTREES: [(&str, &[&str]); 7] = [
 ];
 
 /// The subtrees `document` carries, or `&[]` for a name that is not a
-/// `/mos/config/` document of this schema.
+/// `/mica/config/` document of this schema.
 ///
 /// Empty rather than a panic: the STATE remainder is read through the same
 /// loader and is legitimately not in the table.
@@ -253,9 +253,9 @@ pub struct StateAccessSettings {
 /// credential material derived from it, and the intents it is carrying out.
 ///
 /// Still TOML at `/var/lib/mica/settings.toml`. The JSON rule is the
-/// `/mos/config/` namespace's, and this document is not in it.
+/// `/mica/config/` namespace's, and this document is not in it.
 ///
-/// **The staged reset intent is here and not in `/mos/config/`, and that is
+/// **The staged reset intent is here and not in `/mica/config/`, and that is
 /// not a technicality.** Tiers 1 and 3 clear the configuration namespace; put
 /// the record that asks for a reset inside it and the tier would clear the
 /// thing that tells it to run, halfway through running.
@@ -417,7 +417,7 @@ mod tests {
 
     /// The STATE remainder is read through the same loader and is not in the
     /// namespace, so the lookup has to answer for it without pretending it is
-    /// a `/mos/config/` document.
+    /// a `/mica/config/` document.
     #[test]
     fn a_name_outside_the_namespace_declares_no_subtree() {
         assert!(document_subtrees("settings.toml").is_empty());

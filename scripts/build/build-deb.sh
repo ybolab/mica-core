@@ -81,7 +81,7 @@ for b in ${BINS}; do BINARIES+=("${b}"); done
 # its prepare.sh, and the complement is what the independence assertion looks
 # for -- so a fifth binary added here is checked without any producer being
 # edited.
-ALL_BINARIES=(micad apid mica-mqttd mica-mqtt-broker mica-mqtt-reference mica-sftp-server mica-deploy mica-runkit)
+ALL_BINARIES=(micad mica-apid mica-mqttd mica-mqtt-broker mica-mqtt-reference mica-sftp-server mica-deploy mica-runkit)
 
 # A crate this workspace does not build would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never

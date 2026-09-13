@@ -135,7 +135,7 @@ describe('the automatic update policy', () => {
       'POST /api/v1/update/config': () => jsonResponse({
         error: {
           code: 'validation_failed',
-          message: '/mos/config/updates.json: policy `auto` requires at least one maintenance window',
+          message: '/mica/config/updates.json: policy `auto` requires at least one maintenance window',
         },
       }, 422),
     })
@@ -178,8 +178,8 @@ describe('the automatic update policy', () => {
 
   it('reports a configuration that could not be read instead of an empty form', async () => {
     stubFetch({
-      '/api/v1/update': { lifecycle: { policy_error: 'parse /mos/config/updates.json: expected value' } },
-      '/api/v1/provisioning/status': () => jsonResponse({ error: { message: 'parse /mos/config/updates.json' } }, 409),
+      '/api/v1/update': { lifecycle: { policy_error: 'parse /mica/config/updates.json: expected value' } },
+      '/api/v1/provisioning/status': () => jsonResponse({ error: { message: 'parse /mica/config/updates.json' } }, 409),
     })
     renderPanel(<AutomaticUpdatesPanel />)
 

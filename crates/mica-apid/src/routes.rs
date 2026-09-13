@@ -91,17 +91,17 @@ pub struct AppState {
     /// literal once, and a second spelling of it here would agree with the
     /// first until somebody moved the file.
     pub(crate) meta_manifest: Arc<std::path::PathBuf>,
-    /// The sole operator update document: `/mos/config/updates.json` on a
+    /// The sole operator update document: `/mica/config/updates.json` on a
     /// device, an isolated path in route tests.
     ///
     /// The default is the configuration library's production path. Only the
     /// test-only builder below can replace it, so no shipped caller can
     /// redirect this configuration input.
     pub(crate) updates_path: Arc<std::path::PathBuf>,
-    /// The desired fleet document: `/mos/config/fleet.json` on a device, an
+    /// The desired fleet document: `/mica/config/fleet.json` on a device, an
     /// isolated path in route tests.
     pub(crate) fleet_path: Arc<std::path::PathBuf>,
-    /// The diagnostic snapshot store (PLAN-052): `/mos/diagnostics` on a
+    /// The diagnostic snapshot store (PLAN-052): `/mica/diagnostics` on a
     /// device, a temporary directory in tests. A path and no syscall until
     /// the first publish.
     diagnostics: Arc<SnapshotStore>,
@@ -230,7 +230,7 @@ impl AppState {
         self
     }
 
-    /// The `/mos/ui` bundle store the asset router reads (§5.2).
+    /// The `/mica/ui` bundle store the asset router reads (§5.2).
     pub(crate) fn bundles(&self) -> &Store {
         &self.bundles
     }
@@ -1300,7 +1300,7 @@ pub(crate) async fn api_v1_ui_bundles(
         (status = 413, description = "The compressed package exceeds 64 MiB", body = ApiError),
         (status = 415, description = "The body is not application/zip", body = ApiError),
         (status = 422, description = "The ZIP or manifest violates the UI package contract", body = ApiError),
-        (status = 507, description = "Writable /mos storage or required headroom is unavailable", body = ApiError),
+        (status = 507, description = "Writable /mica storage or required headroom is unavailable", body = ApiError),
     ),
 )]
 pub(crate) async fn api_v1_ui_upload(
@@ -1354,7 +1354,7 @@ pub(crate) async fn api_v1_ui_upload(
                     &source,
                     StatusCode::INSUFFICIENT_STORAGE,
                     "ui_storage_unavailable",
-                    "writable /mos UI storage is unavailable",
+                    "writable /mica UI storage is unavailable",
                 );
             }
         }
@@ -1365,7 +1365,7 @@ pub(crate) async fn api_v1_ui_upload(
                 &source,
                 StatusCode::INSUFFICIENT_STORAGE,
                 "ui_storage_unavailable",
-                "writable /mos UI storage is unavailable",
+                "writable /mica UI storage is unavailable",
             );
         }
     }
@@ -1378,7 +1378,7 @@ pub(crate) async fn api_v1_ui_upload(
             &source,
             StatusCode::INSUFFICIENT_STORAGE,
             "ui_storage_unavailable",
-            "writable /mos UI storage is unavailable",
+            "writable /mica UI storage is unavailable",
         );
     }
     let upload = upload_dir.join(format!("{:032x}", rand::random::<u128>()));
@@ -1438,7 +1438,7 @@ pub(crate) async fn api_v1_ui_upload(
                 &source,
                 StatusCode::INSUFFICIENT_STORAGE,
                 "ui_storage_unavailable",
-                "the package could not be written to /mos",
+                "the package could not be written to /mica",
             );
         }
     }
@@ -1450,7 +1450,7 @@ pub(crate) async fn api_v1_ui_upload(
             &source,
             StatusCode::INSUFFICIENT_STORAGE,
             "ui_storage_unavailable",
-            "the package could not be persisted to /mos",
+            "the package could not be persisted to /mica",
         );
     }
     drop(file);
@@ -1511,7 +1511,7 @@ pub(crate) async fn api_v1_ui_upload(
                 &source,
                 StatusCode::INSUFFICIENT_STORAGE,
                 "ui_storage_unavailable",
-                "free space under /mos could not be measured",
+                "free space under /mica could not be measured",
             );
         }
         Err(err) => {
@@ -1878,7 +1878,7 @@ pub(crate) async fn api_versions() -> Response {
 /// independently of the API version. Authenticated.
 ///
 /// **After PLAN-070 §5.2.3 the settings tree has no single version.** Storage
-/// is one document per reconciler in `/mos/config/` plus the remainder on
+/// is one document per reconciler in `/mica/config/` plus the remainder on
 /// STATE, and each carries its own `schema_version` starting at v1, because a
 /// namespace-wide version could not be bumped without rewriting every document
 /// across renames with no transaction between them. This member therefore
@@ -2495,14 +2495,14 @@ pub(crate) async fn api_v1_time_status(
 /// Observed by micad at request time: the firmware/ESP, SYSTEM and DATA partitions
 /// with its device, size, mount and read-only state, its space accounting
 /// including the filesystem's reserved pool, and whatever the system recorded
-/// about its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,
+/// about its last check; PLAN-063's two bind namespaces, `/mica` and `/srv`,
 /// each with its readiness against the DATA tier it must live on; every
 /// physical medium with normalized wear where the device exports it and an
 /// explicit `unsupported` with a reason where it does not; the low-space
 /// thresholds with their hysteresis band; observed DATA directory usage and
 /// project quotas; and the explicit lifecycle decisions.
 ///
-/// `/mos` and `/srv` are two namespaces of ONE filesystem and share its
+/// `/mica` and `/srv` are two namespaces of ONE filesystem and share its
 /// capacity pool, so their bytes are reported once, on the `data` tier, and
 /// never a second time under each bind.
 ///
@@ -2515,7 +2515,7 @@ pub(crate) async fn api_v1_time_status(
     context_path = API,
     tag = "resources",
     responses(
-        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions", body = ResourceValue),
+        (status = 200, description = "The fixed tiers with their space, mount and check evidence; the `/mica` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions", body = ResourceValue),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 500, description = "micad failed to observe (`micad_failed`)", body = ApiError),
         (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),

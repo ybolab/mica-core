@@ -174,7 +174,7 @@ export interface StorageMedium {
 }
 
 /// A bind namespace of the DATA filesystem. It carries no capacity of its own
-/// on purpose: /mos and /srv are two views of one pool, and a second capacity
+/// on purpose: /mica and /srv are two views of one pool, and a second capacity
 /// here would invite a reader to add them together.
 export interface StorageBind {
   name: string

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-13 20:45 [progress]
+
+The apid executable is `mica-apid` (`/usr/bin/mica-apid`, a link to `micad`;
+`micad` keeps its name) and the system DATA namespace is mounted at `/mica`
+instead of `/mos`, both on the user's request. Units, packages, D-Bus names
+and API keys are unchanged. Not yet published.
+
 ## 2026-09-13 20:16 [progress]
 
 One crate workspace (`20260913-1935-workspace-convergence`, phases 1 and 2):

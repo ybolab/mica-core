@@ -1,5 +1,5 @@
 //! `micad` is one binary for two daemons: the name it is invoked as selects
-//! micad or apid, and any other name refuses.
+//! micad or apid (as `mica-apid`), and any other name refuses.
 use std::{os::unix::fs::symlink, process::Command};
 
 fn run(name: &str, args: &[&str]) -> (bool, String, String) {
@@ -22,23 +22,24 @@ fn micad_name_selects_micad() {
 }
 
 #[test]
-fn apid_name_selects_apid() {
-    let (success, stdout, _) = run("apid", &["--version"]);
+fn mica_apid_name_selects_apid() {
+    let (success, stdout, _) = run("mica-apid", &["--version"]);
     assert!(success);
-    assert!(stdout.starts_with("apid "), "{stdout}");
-    let (success, stdout, _) = run("apid", &["--openapi"]);
+    assert!(stdout.starts_with("mica-apid "), "{stdout}");
+    let (success, stdout, _) = run("mica-apid", &["--openapi"]);
     assert!(success);
     assert!(stdout.starts_with('{'), "{stdout}");
 }
 
 #[test]
 fn any_other_name_refuses() {
-    for name in ["mica", "apidx", "mica-mqttd"] {
+    // `apid` is the executable's old name; nothing answers to it any more.
+    for name in ["mica", "apid", "mica-apidx", "mica-mqttd"] {
         let (success, stdout, stderr) = run(name, &["--version"]);
         assert!(!success, "{name}");
         assert!(stdout.is_empty(), "{name}: {stdout}");
         assert!(
-            stderr.contains("must be invoked as micad or apid"),
+            stderr.contains("must be invoked as micad or mica-apid"),
             "{name}: {stderr}"
         );
     }

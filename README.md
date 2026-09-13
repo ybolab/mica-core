@@ -4,7 +4,7 @@ The management daemon of Mica OS and what ships beside it, as one Cargo
 workspace with every crate under `crates/`: `mica-core` (the `micad`
 executable: the reconcilers over settings, network, radios, containers,
 updates and the system bus), `mica-apid` (the `apid` HTTP API and the built-in
-UI under `crates/mica-apid/ui/`), `mica-mqttd`, `mica-mqtt-broker`,
+UI under `crates/mica-apid/ui/`; the executable is `mica-apid`), `mica-mqttd`, `mica-mqtt-broker`,
 `mica-sftp-server`, `mica-deploy` (the device-side deployment client and the
 static `mica-runkit`), with the shared crates `micad-settings`, `mica-busname`,
 `mica-ui-bundle`, `mica-mqtt-reference` and `lifecycle-sys`. It stands on the
@@ -20,7 +20,7 @@ make publish         # CI only: ghcr.io/ybolab/mica-core:pool.<arch>.build-<comm
 ```
 
 Seven packages leave here: `micad` (one binary carrying both micad and apid),
-`mica-apid` (the `/usr/bin/apid` link to it, and the committed OpenAPI
+`mica-apid` (the `/usr/bin/mica-apid` link to it, and the committed OpenAPI
 document as `/usr/share/mica-apid/openapi.json`), `mica-mqttd`,
 `mica-mqtt-broker`, `mica-sftp-server` (`/usr/lib/sftp-server`, selected by
 boards), `mica-deploy` (`/usr/bin/mica-deploy`) and `mica-lifecycle` (the static

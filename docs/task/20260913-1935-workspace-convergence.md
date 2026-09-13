@@ -44,3 +44,25 @@ Converging the repository into one crate workspace
 - The old mica-deploy repository: the user allowed its deletion
   (2026-09-13 19:45 UTC); that belongs to its owner through the coordinator,
   not to this repository.
+
+### 2026-09-13 user renames: the apid executable and the /mos directory
+
+- User, in this issue: only `micad` keeps its executable name; `apid` becomes
+  `mica-apid`. The link is `/usr/bin/mica-apid` -> `micad`, micad dispatches on
+  `mica-apid` (plain `apid` is refused), `mica-apid --version` prints
+  `mica-apid <version> (<commit>)`, `apid.service` runs `/usr/bin/mica-apid`.
+  Unchanged: unit names `micad.service` and `apid.service`, the Debian packages,
+  D-Bus `com.mica.micad` `/com/mos/micad` `com.mica.micad1`, the `apid` Unix
+  account in the bus policy, the health and API keys (`apid` in `/healthz`,
+  `source`/`daemon` values), the OpenAPI title, `APID_*` variables.
+- User, in this issue: the `/mos` directory is `/mica`. Every `/mos` path in code,
+  units, tests, UI text and the OpenAPI descriptions is `/mica` (216 references,
+  43 files; `/mica/config`, `/mica/ui`, `/mica/diagnostics`, `/mica/updates`,
+  `/mica/containers`, `/mica/home`, ...). Not paths and unchanged: the bind label
+  `mos` in the storage status, the DATA pool subdirectory `mos`
+  (`/mnt/data/mos`, reset's `SYSTEM_DIR`), the `mos` account, schema ids
+  `mos/meta/v1` and `mos/fleet-config/v1`.
+- The executable change was test-first: `tests/multicall.rs` asked for
+  `mica-apid` and refused `apid` (RED), then passed.
+- Retained: the retired mica-deploy's refs, bundles and release assets are at
+  `.retained/mica-deploy/20260913/` (gitignored, verified against its manifest).

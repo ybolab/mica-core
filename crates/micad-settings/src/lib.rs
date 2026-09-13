@@ -2,7 +2,7 @@
 //!
 //! Provides the typed settings tree, a Venus-style dot-path get/set API, and
 //! the split persistence PLAN-070 §5.2 decided: system configuration as one
-//! JSON document per reconciler under `/mos/config/` on DATA, and what the
+//! JSON document per reconciler under `/mica/config/` on DATA, and what the
 //! device mints or observes about itself as one TOML document on STATE. Each
 //! document carries its own schema version.
 
@@ -11,7 +11,7 @@
 mod api_token;
 mod audit;
 mod authorized_key;
-// A public module rather than a re-export: `/mos/config/` is a namespace with
+// A public module rather than a re-export: `/mica/config/` is a namespace with
 // several documents and two processes reading it, so callers name the
 // namespace (PLAN-070 §5.2). It carries the update policy document and the
 // baked layer it overrides (§5.1).

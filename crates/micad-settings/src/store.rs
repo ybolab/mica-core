@@ -1,4 +1,4 @@
-//! Persistence for the settings tree: the `/mos/config/` documents on DATA
+//! Persistence for the settings tree: the `/mica/config/` documents on DATA
 //! and the remainder on STATE.
 //!
 //! One store, several documents (PLAN-070 §5.2). [`crate::documents`] holds
@@ -31,11 +31,11 @@ pub const DEFAULT_PATH: &str = "/var/lib/mica/settings.toml";
 /// The name the STATE document is reported under.
 const STATE_DOCUMENT: &str = "settings.toml";
 
-/// One `/mos/config/` document that exists and did **not** become
+/// One `/mica/config/` document that exists and did **not** become
 /// configuration (PLAN-070 §5.2.7, F6g).
 ///
 /// **This is "refuses its subsystem", and it is not "refuses to start".** The
-/// two are different rules and the tree carries both: an absent `/mos/config/`
+/// two are different rules and the tree carries both: an absent `/mica/config/`
 /// **namespace** is the DATA medium being gone and refuses the daemon
 /// ([`Store::ensure_config_medium`], §5.2.6), while a single document that does
 /// not parse refuses exactly the capabilities *it* gates and leaves its
@@ -94,14 +94,14 @@ pub struct DocumentRefusal {
 pub struct LoadedStore {
     /// The one addressed tree, total as always.
     pub settings: Settings,
-    /// The `/mos/config/` documents that exist and did not load.
+    /// The `/mica/config/` documents that exist and did not load.
     pub refusals: Vec<DocumentRefusal>,
 }
 
-/// The two on-disk formats: JSON for `/mos/config/`, TOML for the STATE
+/// The two on-disk formats: JSON for `/mica/config/`, TOML for the STATE
 /// remainder.
 ///
-/// `/mos/config/` is JSON because these are machine-written documents and JSON
+/// `/mica/config/` is JSON because these are machine-written documents and JSON
 /// is what a machine writes without a round-trip formatting problem (§5.2.7).
 /// The STATE document is not in that namespace and keeps the format it already
 /// had.
@@ -204,7 +204,7 @@ fn read_document<T: DeserializeOwned + Default>(
 /// sibling, the mode set **before** the rename, the bytes fsynced, the rename,
 /// and the directory fsynced after it.
 ///
-/// **The one write discipline of the `/mos/config/` namespace** (PLAN-070
+/// **The one write discipline of the `/mica/config/` namespace** (PLAN-070
 /// §5.2), and it is `pub(crate)` for that reason: the settings documents above
 /// and [`crate::configuration::save_updates`] are two writers of one
 /// namespace, and a second implementation of this sequence would be a second
@@ -226,14 +226,14 @@ pub(crate) fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// The settings store: the `/mos/config/` namespace plus the STATE document.
+/// The settings store: the `/mica/config/` namespace plus the STATE document.
 #[derive(Debug, Clone)]
 pub struct Store {
     /// The STATE document, holding what the device mints or observes.
     path: PathBuf,
-    /// The `/mos/config/` namespace, holding what an integrator sets.
+    /// The `/mica/config/` namespace, holding what an integrator sets.
     config_dir: PathBuf,
-    /// `/mos/config/` documents this store will not overwrite while they are
+    /// `/mica/config/` documents this store will not overwrite while they are
     /// still on disk ([`Store::preserving`]).
     preserve: Vec<String>,
 }
@@ -269,7 +269,7 @@ impl Store {
     /// later holder inherits it.
     ///
     /// **"While they are still on disk" is the whole condition.** A tier-1
-    /// reset empties `/mos/config/` and then saves; the refused file is gone by
+    /// reset empties `/mica/config/` and then saves; the refused file is gone by
     /// then, and writing the fresh default there is exactly what the reset
     /// asked for. Preserving a name whose file no longer exists would leave the
     /// namespace one document short of what a reset is supposed to produce.
@@ -295,7 +295,7 @@ impl Store {
     }
 
     /// Refuse rather than fall back to defaults when the DATA medium carrying
-    /// `/mos/config/` is not there (§5.2.6).
+    /// `/mica/config/` is not there (§5.2.6).
     ///
     /// **This is the fail-closed rule applied to the medium instead of to the
     /// bytes.** A device whose DATA pool does not mount has no configuration,
@@ -306,7 +306,7 @@ impl Store {
     /// is `docs/design/recovery.md`'s: the serial console and the recovery
     /// tiers, not a silently degraded network.
     ///
-    /// micad's unit carries `RequiresMountsFor=/mos` so this is ordinarily
+    /// micad's unit carries `RequiresMountsFor=/mica` so this is ordinarily
     /// unreachable; the check is here because the unit is not the only way
     /// micad starts, and because the refusal has to name the mount.
     ///
@@ -352,7 +352,7 @@ impl Store {
     ///
     /// **What is NOT downgraded**, because they are different rules:
     ///
-    /// - an absent `/mos/config/` **namespace** is still a hard refusal
+    /// - an absent `/mica/config/` **namespace** is still a hard refusal
     ///   ([`Store::ensure_config_medium`], §5.2.6 / F6f): a device that cannot
     ///   reach its configuration must not render a different one;
     /// - the **STATE** document is still a hard refusal. It is not in this
@@ -381,7 +381,7 @@ impl Store {
     /// The one loader both entry points run.
     ///
     /// `refusals` is what distinguishes them and nothing else does: `Some`
-    /// collects a `/mos/config/` document's failure and carries on with that
+    /// collects a `/mica/config/` document's failure and carries on with that
     /// document's schema default, `None` propagates it and abandons the load.
     /// One implementation because two would drift, and the direction they would
     /// drift in is the lenient one.

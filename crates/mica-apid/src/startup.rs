@@ -8,7 +8,7 @@
 //! Nothing in this module returns an error, and nothing in it may `?`,
 //! `unwrap`, `expect` or panic its way out. §6.1 requires discovery to run
 //! after the listeners bind and after `APID_LISTENING` is printed, and every
-//! outcome — an unreadable disk, a garbage manifest, an absent `/mos/ui` — to
+//! outcome — an unreadable disk, a garbage manifest, an absent `/mica/ui` — to
 //! be a [`BundleState`] the daemon holds. `main` propagates every earlier
 //! start-up step with `?` and the unit is `Restart=on-failure`
 //! (`dist/apid.service`), so an error out of here is a crash loop with
@@ -738,7 +738,7 @@ mod tests {
 
     // §6.1 class 3.
 
-    /// Class 3's second reachable cause: "an operator writing into `/mos/ui`
+    /// Class 3's second reachable cause: "an operator writing into `/mica/ui`
     /// over a root shell". Detected at the next restart -- which is this
     /// module -- and not per request.
     #[test]

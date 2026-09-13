@@ -20,7 +20,7 @@ use micad_settings::{
 
 /// A store over a temporary tree.
 ///
-/// The `/mos/config/` namespace has to EXIST: an absent document is a default,
+/// The `/mica/config/` namespace has to EXIST: an absent document is a default,
 /// but an absent NAMESPACE is the DATA medium being gone, which the store
 /// refuses rather than defaults (PLAN-070 §5.2.6). Every test that reaches the
 /// store therefore creates it, exactly as `mica-data-layout` does on a device.
@@ -30,7 +30,7 @@ fn store_at(dir: &tempfile::TempDir) -> Store {
     Store::new(dir.path().join("settings.toml"), config)
 }
 
-/// One `/mos/config/` document, parsed.
+/// One `/mica/config/` document, parsed.
 fn config_document(dir: &tempfile::TempDir, name: &str) -> serde_json::Value {
     let text = fs::read_to_string(dir.path().join("config").join(name)).unwrap();
     serde_json::from_str(&text).unwrap()
@@ -119,7 +119,7 @@ fn load_missing_file_returns_defaults_without_creating_it() {
 #[test]
 fn default_path_is_the_state_location() {
     assert_eq!(DEFAULT_PATH, "/var/lib/mica/settings.toml");
-    assert_eq!(DEFAULT_CONFIG_DIR, "/mos/config");
+    assert_eq!(DEFAULT_CONFIG_DIR, "/mica/config");
     let _store = Store::default_path();
 }
 
@@ -1308,7 +1308,7 @@ fn an_unknown_claim_key_is_refused_and_writes_nothing() {
 // split itself created and nothing asserted: a rollback in one document costs
 // one document.
 
-/// Write raw bytes as one `/mos/config/` document, bypassing the store.
+/// Write raw bytes as one `/mica/config/` document, bypassing the store.
 ///
 /// Every fixture here is written by hand rather than produced by a `save`,
 /// because what is under test is what the reader does with a document this
@@ -1317,7 +1317,7 @@ fn write_config(dir: &tempfile::TempDir, name: &str, text: &str) {
     fs::write(dir.path().join("config").join(name), text).unwrap();
 }
 
-/// Every document one device holds, `/mos/config/` and STATE alike.
+/// Every document one device holds, `/mica/config/` and STATE alike.
 fn document_paths(dir: &tempfile::TempDir) -> Vec<PathBuf> {
     CONFIG_DOCUMENTS
         .iter()
@@ -1627,7 +1627,7 @@ fn a_missing_configuration_namespace_refuses_and_names_the_mount() {
     let state = dir.path().join("settings.toml");
     // Deliberately NOT created: this is the DATA medium being gone, not a
     // document that was never written.
-    let store = Store::new(&state, dir.path().join("mos").join("config"));
+    let store = Store::new(&state, dir.path().join("mica").join("config"));
 
     for err in [
         store.load().unwrap_err(),
@@ -1636,8 +1636,8 @@ fn a_missing_configuration_namespace_refuses_and_names_the_mount() {
         let SettingsError::Unavailable { directory, mount } = &err else {
             panic!("expected an unavailable error, got {err:?}");
         };
-        assert!(directory.ends_with("/mos/config"), "{directory}");
-        assert!(mount.ends_with("/mos"), "{mount}");
+        assert!(directory.ends_with("/mica/config"), "{directory}");
+        assert!(mount.ends_with("/mica"), "{mount}");
         let message = err.to_string();
         assert!(
             message.contains(mount) && message.contains("not mounted"),
@@ -1653,7 +1653,7 @@ fn a_missing_configuration_namespace_refuses_and_names_the_mount() {
 /// literals, and a `const &str` cannot be built from another without a macro
 /// crate — so nothing but this line makes them move together when the
 /// namespace relocates. The separator is part of the assertion: without it
-/// `/mos/configuration/…` would satisfy it.
+/// `/mica/configuration/…` would satisfy it.
 #[test]
 fn the_update_document_lives_inside_the_configuration_namespace() {
     assert!(
@@ -1871,7 +1871,7 @@ fn a_refused_document_is_distinguishable_from_an_absent_one() {
     assert_eq!(refused.settings, absent.settings);
 }
 
-/// Every way a `/mos/config/` document can fail reaches the same refusal.
+/// Every way a `/mica/config/` document can fail reaches the same refusal.
 ///
 /// The four the hard-failing loader already covers, plus the two the move
 /// introduced — a version older than this build reads, and a document the
@@ -2006,7 +2006,7 @@ fn a_save_leaves_a_preserved_document_exactly_as_it_was() {
 
 /// A preserved name whose file is gone is written.
 ///
-/// Tier 1 empties `/mos/config/` and then saves the re-seeded tree
+/// Tier 1 empties `/mica/config/` and then saves the re-seeded tree
 /// (`reset.rs`). If preservation were by name alone, the refused document would
 /// be the one occupant a factory reset failed to restore — and the namespace
 /// would come back one document short of what the reset is defined to produce.
@@ -2060,7 +2060,7 @@ fn a_store_preserves_nothing_unless_it_was_narrowed() {
     assert!(store.load_with_refusals().unwrap().refusals.is_empty());
 }
 
-/// **Every occupant of `/mos/config/` fails closed, and every refusal names its
+/// **Every occupant of `/mica/config/` fails closed, and every refusal names its
 /// file.**
 ///
 /// The namespace has two readers and they are in different modules: `Store`

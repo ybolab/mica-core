@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build micad, apid, mica-mqttd and mica-mqtt-broker for one Rust target
+# Cross-build micad, mica-apid, mica-mqttd and mica-mqtt-broker for one Rust target
 # and verify the ELF.
 #
 #   bash scripts/build/build-target.sh <rust-target> <elf-arch-substring>
@@ -199,7 +199,7 @@ docker run --rm \
     -e "TARGET=${TARGET}" -e "ELF_ARCH=${ELF_ARCH}" \
     --entrypoint /bin/bash "${IMAGE}" -c '
         set -euo pipefail
-        for name in micad apid mica-mqttd mica-mqtt-broker; do
+        for name in micad mica-apid mica-mqttd mica-mqtt-broker; do
             bin="/target/${TARGET}/release/${name}"
             [ -f "${bin}" ] || { echo "error: ${name} was not produced by the build" >&2; exit 1; }
             got="$(file -b "${bin}")"
@@ -210,6 +210,6 @@ docker run --rm \
         done
         echo "micad: four ${ELF_ARCH} ELFs in target/${TARGET}/release"
     '
-for name in micad apid mica-mqttd mica-mqtt-broker; do
+for name in micad mica-apid mica-mqttd mica-mqtt-broker; do
     echo "${WORKSPACE}/target/${TARGET}/release/${name}"
 done

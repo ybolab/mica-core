@@ -16,7 +16,7 @@
 //!   nothing on the device can write it. See
 //!   [`micad_settings::configuration`].
 //! - `MOSD_UPDATE_POLICY_PATH` — the operator document layer 1's defaults are
-//!   overridden by (default `/mos/config/updates.json`, on DATA). apid reads
+//!   overridden by (default `/mica/config/updates.json`, on DATA). apid reads
 //!   the same two documents through the same resolver, so a status route and
 //!   the update subsystem cannot disagree. See [`update_policy`].
 //! - `MOSD_PROVISIONING_ROOT` — where the offline provisioning transport
@@ -160,10 +160,10 @@ async fn serve() -> anyhow::Result<()> {
 
     let settings_path = std::env::var("MOSD_SETTINGS_PATH")
         .unwrap_or_else(|_| micad_settings::DEFAULT_PATH.to_string());
-    // The `/mos/config/` namespace. Relocatable for the same reason the
+    // The `/mica/config/` namespace. Relocatable for the same reason the
     // settings path is — the bus tests run a real daemon against a temporary
     // tree — and by a variable of its own rather than derived from
-    // `MICA_DATA_ROOT`, because what micad reads is the `/mos` BIND and what
+    // `MICA_DATA_ROOT`, because what micad reads is the `/mica` BIND and what
     // `mica-data-layout` and `reset.rs` write is the pool underneath it.
     let config_dir = std::env::var("MOSD_CONFIG_DIR")
         .unwrap_or_else(|_| micad_settings::DEFAULT_CONFIG_DIR.to_string());
@@ -177,7 +177,7 @@ async fn serve() -> anyhow::Result<()> {
     // not render a different one. Without this it would come up on schema
     // defaults, DHCP on every interface and sshd off, and look fine to
     // everything except the operator who configured a static address.
-    // `RequiresMountsFor=/mos` on the unit is the first half; this is the half
+    // `RequiresMountsFor=/mica` on the unit is the first half; this is the half
     // that names the mount in the journal, and the error carries that name.
     // The recovery route is `docs/design/recovery.md`'s — the serial console
     // and the reset tiers — not a silently degraded network.

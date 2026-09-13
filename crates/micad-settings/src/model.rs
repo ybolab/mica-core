@@ -2,7 +2,7 @@
 //!
 //! **This is the addressing shape, not the storage shape.** One tree, one
 //! dot-path namespace, one set of validation rules -- and underneath it,
-//! several documents: what an integrator sets in `/mos/config/` on DATA and
+//! several documents: what an integrator sets in `/mica/config/` on DATA and
 //! what the device mints or observes on STATE (PLAN-070 §5.2, and
 //! [`crate::documents`] for the split). The move changed storage; addressing
 //! is unchanged, which is what made it affordable.

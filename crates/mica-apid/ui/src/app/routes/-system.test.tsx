@@ -167,8 +167,8 @@ describe('update status panel', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
       lifecycle: {
         state: 'update-unavailable',
-        reason: 'degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)',
-        workspace: { root: '/mos/updates', status: 'degraded', kind: 'read-only' },
+        reason: 'degraded read-only: /mica is mounted read-only (/dev/mmcblk0p7)',
+        workspace: { root: '/mica/updates', status: 'degraded', kind: 'read-only' },
         client: { available: true },
         reboot_gate: { safe: true, reasons: [] },
       },
@@ -176,7 +176,7 @@ describe('update status panel', () => {
     renderUpdatePanel()
 
     expect(await screen.findByText('update-unavailable')).toBeTruthy()
-    expect(screen.getByText('degraded read-only: /mos is mounted read-only (/dev/mmcblk0p7)')).toBeTruthy()
+    expect(screen.getByText('degraded read-only: /mica is mounted read-only (/dev/mmcblk0p7)')).toBeTruthy()
   })
 
   it('reports an absent update client instead of hiding it', async () => {

@@ -42,7 +42,7 @@ pub const SCHEMA_VERSION: u64 = 5;
 /// Redaction allowlist for the native deployment schema.
 pub const REDACTION_SCHEMA_VERSION: u64 = 7;
 /// Persistent snapshot store in the system-owned DATA namespace.
-pub const DEFAULT_ROOT: &str = "/mos/diagnostics";
+pub const DEFAULT_ROOT: &str = "/mica/diagnostics";
 /// The most snapshots retained; publishing one more removes the oldest.
 pub const MAX_SNAPSHOTS: usize = 8;
 /// The most bytes the store holds across all snapshots.
@@ -1094,7 +1094,7 @@ pub struct SnapshotSummary {
 
 /// The bounded on-disk store.
 ///
-/// Layout, all of it under one root (`/mos/diagnostics` on a device, a
+/// Layout, all of it under one root (`/mica/diagnostics` on a device, a
 /// temporary directory in tests):
 ///
 /// ```text
@@ -1406,7 +1406,7 @@ mod tests {
                             "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 }, "pressure": "warning",
                             "check": { "recorded": true, "unit": "systemd-fsck@dev-mmcblk0p11.service", "activeState": "inactive", "result": "success", "exitStatus": 0 } }],
                 "namespaces": { "sharedCapacityTier": "data", "detail": "one pool",
-                    "binds": [{ "name": "mos", "mount": "/mos", "source": "/mnt/data/mica", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
+                    "binds": [{ "name": "mos", "mount": "/mica", "source": "/mnt/data/mica", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
                 "media": [{ "name": "mmcblk0", "kind": "emmc", "sizeBytes": 32000000000u64, "model": "DG4032", "rotational": false,
                             "health": { "supported": true, "source": "sysfs", "raw": { "lifeTime": "0x01 0x01", "preEolInfo": "0x01" }, "lifetimeEstimates": [{ "raw": "0x01", "usedPercentMin": 0, "usedPercentMax": 10 }], "preEol": "normal" } }],
                 "policy": { "warningPercent": 80, "warningClearPercent": 75, "criticalPercent": 90, "criticalClearPercent": 85, "watchedTiers": ["data"] },

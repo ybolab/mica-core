@@ -7,11 +7,11 @@ Wants=micad.service
 # not start against an unmounted STATE — counters written to a tmpfs standing
 # in for an unmounted STATE would reset on the next power cycle, which is the
 # exact bypass the persistence exists to close.
-RequiresMountsFor=/var/lib/mica /mos
+RequiresMountsFor=/var/lib/mica /mica
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/apid
+ExecStart=/usr/bin/mica-apid
 Restart=on-failure
 StateDirectory=mos/apid
 # 0700, not the systemd default 0755: the directory holds the TLS private
@@ -61,7 +61,7 @@ RuntimeDirectoryPreserve=yes
 # /var/lib/mica/apid and /run/mica from strict. mica-data-layout creates the two
 # DATA directories before this unit starts.
 ProtectSystem=strict
-ReadWritePaths=/mos/ui /mos/diagnostics
+ReadWritePaths=/mica/ui /mica/diagnostics
 
 [Install]
 WantedBy=multi-user.target

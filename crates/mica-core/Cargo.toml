@@ -25,7 +25,7 @@ serde = { workspace = true }
 # The settings store and the offline provisioning document are both TOML; the
 # crate is already in the workspace graph via micad-settings. The update policy
 # document is no longer among them -- PLAN-070 F6b moved it to
-# /mos/config/updates.json, which is JSON.
+# /mica/config/updates.json, which is JSON.
 toml = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }

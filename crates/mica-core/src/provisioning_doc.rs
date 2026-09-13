@@ -951,7 +951,7 @@ mod tests {
     }
 
     fn store_in(dir: &Path) -> Store {
-        // The `/mos/config/` namespace has to exist: an absent document is a
+        // The `/mica/config/` namespace has to exist: an absent document is a
         // default, an absent namespace is the DATA medium being gone, and the
         // store refuses that rather than defaulting (PLAN-070 §5.2.6).
         let config = dir.join("config");

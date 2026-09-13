@@ -53,14 +53,14 @@ cargo deny check licenses bans advisories
 # time on a developer's machine as well.
 openapi_tmp="$(mktemp -d)"
 trap 'rm -rf "${openapi_tmp}"' EXIT
-cargo run --locked -p mica-apid --bin apid -- --openapi >"${openapi_tmp}/openapi.json"
+cargo run --locked -p mica-apid --bin mica-apid -- --openapi >"${openapi_tmp}/openapi.json"
 diff -u crates/mica-apid/openapi.json "${openapi_tmp}/openapi.json" || {
-    echo "error: crates/mica-apid/openapi.json is not what apid --openapi prints." >&2
+    echo "error: crates/mica-apid/openapi.json is not what mica-apid --openapi prints." >&2
     echo "       Regenerate it from :" >&2
     echo "         bash crates/mica-apid/ui/build.sh" >&2
-    echo '         MICA_APID_UI_DIST_DIR="$PWD/_out/apid-ui/dist" cargo run -p mica-apid --bin apid -- --openapi > crates/mica-apid/openapi.json' >&2
+    echo '         MICA_APID_UI_DIST_DIR="$PWD/_out/apid-ui/dist" cargo run -p mica-apid --bin mica-apid -- --openapi > crates/mica-apid/openapi.json' >&2
     exit 1
 }
-echo "crates/mica-apid/openapi.json matches apid --openapi"
+echo "crates/mica-apid/openapi.json matches mica-apid --openapi"
 
 echo "ALL CHECKS PASSED"

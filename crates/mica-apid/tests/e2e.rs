@@ -69,10 +69,10 @@ trait Mosd {
     fn get_state(&self, path: &str) -> zbus::Result<String>;
 }
 
-/// `apid --healthcheck` against `https_addr`, bounded so that an apid that
+/// `mica-apid --healthcheck` against `https_addr`, bounded so that an apid that
 /// ignored the flag and started serving cannot hang the test.
 fn healthcheck(https_addr: &str) -> anyhow::Result<bool> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_apid"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mica-apid"))
         .arg("--healthcheck")
         .env_clear()
         .env("APID_HTTPS_ADDR", https_addr)
@@ -87,7 +87,7 @@ fn healthcheck(https_addr: &str) -> anyhow::Result<bool> {
     }
     let _ = child.kill();
     let _ = child.wait();
-    anyhow::bail!("apid --healthcheck did not exit")
+    anyhow::bail!("mica-apid --healthcheck did not exit")
 }
 
 fn wait_for_line(stdout: ChildStdout, prefix: &'static str) -> anyhow::Result<String> {
@@ -170,7 +170,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
 
     let dir = tempfile::tempdir()?;
     let settings_path = dir.path().join("settings.toml");
-    // The `/mos/config/` namespace micad reads its configuration from. It must
+    // The `/mica/config/` namespace micad reads its configuration from. It must
     // exist before the daemon starts: an absent namespace is the DATA medium
     // being gone, and micad refuses to start rather than render a configuration
     // nobody chose (PLAN-070 §5.2.6).
@@ -189,7 +189,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
             .spawn()?,
     );
 
-    let mut apid_child = Command::new(env!("CARGO_BIN_EXE_apid"))
+    let mut apid_child = Command::new(env!("CARGO_BIN_EXE_mica-apid"))
         .env("DBUS_SESSION_BUS_ADDRESS", &address)
         .env("APID_BUS", "session")
         .env("APID_STATE_DIR", dir.path().join("apid"))
@@ -674,7 +674,7 @@ async fn a_poured_document_is_adopted_and_its_secret_reaches_no_served_record() 
             .spawn()?,
     );
 
-    let mut apid_child = Command::new(env!("CARGO_BIN_EXE_apid"))
+    let mut apid_child = Command::new(env!("CARGO_BIN_EXE_mica-apid"))
         .env("DBUS_SESSION_BUS_ADDRESS", &address)
         .env("APID_BUS", "session")
         .env("APID_STATE_DIR", dir.path().join("apid"))

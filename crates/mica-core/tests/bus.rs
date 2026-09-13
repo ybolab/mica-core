@@ -125,7 +125,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
 
     let dir = tempfile::tempdir()?;
     let settings_path = dir.path().join("settings.toml");
-    // The `/mos/config/` namespace the daemon reads its configuration from.
+    // The `/mica/config/` namespace the daemon reads its configuration from.
     // It has to exist before micad starts: an absent namespace is the DATA
     // medium being gone, and micad refuses to start on defaults rather than
     // render a configuration nobody chose (PLAN-070 §5.2.6).
@@ -215,7 +215,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let hostname = proxy.get_settings("hostname").await?;
     assert_eq!(hostname, "\"unit-test-host\"");
 
-    // `hostname` is carried by `/mos/config/system.json` since PLAN-070 §5.2,
+    // `hostname` is carried by `/mica/config/system.json` since PLAN-070 §5.2,
     // not by the STATE document. Same claim as before -- the write reached the
     // medium, not only the in-memory tree -- read at the address that now
     // holds it.

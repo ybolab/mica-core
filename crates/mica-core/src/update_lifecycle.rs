@@ -23,11 +23,11 @@ use crate::update_policy::{
 /// Fixed native command shipped in the complete system image.
 pub const DEFAULT_CLIENT_PATH: &str = "/usr/bin/mica-deploy";
 
-/// The `/mos/updates` workspace the client acquires into (PLAN-061/063):
+/// The `/mica/updates` workspace the client acquires into (PLAN-061/063):
 /// partials in `downloads/`, verified descriptors and objects in `verified/`. The client's
 /// own default; restated here because this module decides what may be
 /// recorded as `ready` and what may be installed.
-pub const DEFAULT_WORKSPACE_ROOT: &str = "/mos/updates";
+pub const DEFAULT_WORKSPACE_ROOT: &str = "/mica/updates";
 
 /// Bound on one `probe` subprocess: a handful of stat calls and one fsync;
 /// a minute is a wedged disk, not a slow one.
@@ -302,7 +302,7 @@ pub enum Settled<T> {
     /// Nothing published is compatible — the device is up to date, or the
     /// selected channel holds nothing newer than the running system.
     NoneCompatible,
-    /// The `/mos/updates` workspace refused it before anything was acquired.
+    /// The `/mica/updates` workspace refused it before anything was acquired.
     Unready(Unready),
     /// It failed, with the same code and reason recorded beside the `failed`
     /// state.
@@ -493,7 +493,7 @@ pub struct UpdateLifecycle {
     /// The bus layer's install-in-flight flag, shared so `installing` here
     /// and the install refusal there can never disagree.
     installing: Arc<AtomicBool>,
-    /// The `/mos/updates` workspace root; `verified/` below it is the only
+    /// The `/mica/updates` workspace root; `verified/` below it is the only
     /// place a recorded or installed descriptor may be.
     workspace_root: PathBuf,
     machine: Mutex<Machine>,
@@ -877,7 +877,7 @@ impl UpdateLifecycle {
     /// Write the operator's update document (PLAN-071 §3, U11).
     ///
     /// **micad is the file's only writer and this is where it writes.** apid
-    /// does not hold a path to `/mos/config/updates.json`; it asks over the
+    /// does not hold a path to `/mica/config/updates.json`; it asks over the
     /// bus, which is PLAN-070 §5.2's one-writer rule rather than a choice made
     /// here. The ordering — parse the patch, refuse an anchor by name, load
     /// the base, merge, validate, save atomically — is
@@ -899,7 +899,7 @@ impl UpdateLifecycle {
     pub async fn write_config(&self, sender: &str, patch_json: &str) -> Result<Value, Refusal> {
         let Some(path) = self.policy.path() else {
             // The dry-run store, which was told to read no file. Refused
-            // rather than defaulted to `/mos/config/`: a daemon that reads
+            // rather than defaulted to `/mica/config/`: a daemon that reads
             // nothing must not write the device's real configuration.
             return Err(Refusal::Unavailable(
                 "this daemon has no update policy document".to_string(),
@@ -1402,7 +1402,7 @@ mod tests {
         output(
             0,
             &json!({"id":"a".repeat(64),"path":path,
-                "objects":"/mos/updates/verified/objects","version":"1.1.0","generation":3
+                "objects":"/mica/updates/verified/objects","version":"1.1.0","generation":3
             })
             .to_string(),
             "",
@@ -1410,7 +1410,7 @@ mod tests {
     }
 
     fn staged_path() -> String {
-        format!("/mos/updates/verified/{}.json", "a".repeat(64))
+        format!("/mica/updates/verified/{}.json", "a".repeat(64))
     }
 
     fn no_selection() -> ClientOutput {
@@ -1460,7 +1460,7 @@ mod tests {
 
     #[test]
     fn fetch_output_is_an_identified_verified_descriptor_or_nothing() {
-        let verified = Path::new("/mos/updates/verified");
+        let verified = Path::new("/mica/updates/verified");
         assert_eq!(
             parse_fetch(&fetch_output(&staged_path()), verified),
             Ok(FetchOutcome::Staged(staged_path()))
@@ -1470,10 +1470,10 @@ mod tests {
             Ok(FetchOutcome::NoneCompatible)
         );
         for outside in [
-            "/mos/updates/downloads/a.json",
-            "/mos/updates/verified/a.json",
+            "/mica/updates/downloads/a.json",
+            "/mica/updates/verified/a.json",
             "/tmp/a.json",
-            "/mos/updates/verified/a.json.partial",
+            "/mica/updates/verified/a.json.partial",
         ] {
             assert_eq!(
                 parse_fetch(&fetch_output(outside), verified)
@@ -1641,7 +1641,7 @@ mod tests {
             "probe",
             Ok(output(
                 0,
-                r#"{"status":"ready","root":"/mos/updates","freeBytes":1000000000,"maxBytes":500000000,"freeInodes":10000}"#,
+                r#"{"status":"ready","root":"/mica/updates","freeBytes":1000000000,"maxBytes":500000000,"freeInodes":10000}"#,
                 "",
             )),
         )
@@ -1723,9 +1723,9 @@ mod tests {
     #[tokio::test]
     async fn a_fetch_path_outside_verified_is_never_recorded_as_ready() {
         for printed in [
-            "/mos/updates/downloads/x.json.part",
-            "/mos/updates/downloads/x.json",
-            "/mos/updates/verified/x.json.part",
+            "/mica/updates/downloads/x.json.part",
+            "/mica/updates/downloads/x.json",
+            "/mica/updates/verified/x.json.part",
             "/tmp/outside/x.json",
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -2319,7 +2319,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            parse_fetch(&fetched, Path::new("/mos/updates/verified")),
+            parse_fetch(&fetched, Path::new("/mica/updates/verified")),
             Ok(FetchOutcome::Staged(staged_path()))
         );
         let probed = client
@@ -2421,10 +2421,10 @@ mod tests {
         };
         assert_eq!(parse_check(&none).unwrap(), CheckOutcome::NoneCompatible);
         let ready = ClientOutput { code:Some(0),stderr:String::new(),stdout:json!({"id":id,
-            "path":format!("/mos/updates/verified/{id}.json"),"objects":"/mos/updates/verified/objects","version":"1.0","generation":3}).to_string() };
+            "path":format!("/mica/updates/verified/{id}.json"),"objects":"/mica/updates/verified/objects","version":"1.0","generation":3}).to_string() };
         assert_eq!(
-            parse_fetch(&ready, Path::new("/mos/updates/verified")).unwrap(),
-            FetchOutcome::Staged(format!("/mos/updates/verified/{id}.json"))
+            parse_fetch(&ready, Path::new("/mica/updates/verified")).unwrap(),
+            FetchOutcome::Staged(format!("/mica/updates/verified/{id}.json"))
         );
         let probe = ClientOutput {
             code: Some(0),

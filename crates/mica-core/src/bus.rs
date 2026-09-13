@@ -130,7 +130,7 @@ pub struct MosdService {
     /// dry-run daemon can neither spawn the update client nor read a host
     /// policy file; production attaches both via [`Self::with_update`].
     update: Arc<UpdateLifecycle>,
-    /// The `/mos/config/` documents this boot found and refused (PLAN-070
+    /// The `/mica/config/` documents this boot found and refused (PLAN-070
     /// §5.2.7, F6g — **the pour**).
     ///
     /// Empty on every device whose documents parse, which is every device that
@@ -241,7 +241,7 @@ impl MosdService {
         }
     }
 
-    /// Record the `/mos/config/` documents this boot refused, and publish them
+    /// Record the `/mica/config/` documents this boot refused, and publish them
     /// into the live-state tree (PLAN-070 §5.2.7, F6g).
     ///
     /// An `async` setter rather than a `with_*` builder step, unlike every
@@ -1449,7 +1449,7 @@ impl MosdService {
     /// document as saved, as JSON.
     ///
     /// Exported as `SetUpdateConfig`, and it is the **only** writer of
-    /// `/mos/config/updates.json` (PLAN-071 §3, PLAN-070 §5.2.7). apid holds
+    /// `/mica/config/updates.json` (PLAN-071 §3, PLAN-070 §5.2.7). apid holds
     /// no path to that file and asks here instead, so one fact has one writer
     /// all the way down to the filesystem.
     ///
@@ -1944,7 +1944,7 @@ mod tests {
     type CallLog = Arc<Mutex<Vec<String>>>;
 
     /// A store over a throwaway tree: the STATE document and the
-    /// `/mos/config/` namespace beside it.
+    /// `/mica/config/` namespace beside it.
     ///
     /// The namespace is created, because an absent one is the DATA medium
     /// being gone and the store refuses that rather than defaulting
@@ -3174,8 +3174,8 @@ mod tests {
             // travels as.
             (
                 SettingsError::Unavailable {
-                    directory: "/mos/config".into(),
-                    mount: "/mos".into(),
+                    directory: "/mica/config".into(),
+                    mount: "/mica".into(),
                 },
                 "org.freedesktop.DBus.Error.IOError",
             ),
@@ -3352,14 +3352,14 @@ mod tests {
     // --- F6g: the pour (PLAN-070 §5.2.7) -----------------------------------
 
     /// A service with one recording reconciler per document-backed subtree,
-    /// over a store whose `/mos/config/` namespace is on disk and writable.
+    /// over a store whose `/mica/config/` namespace is on disk and writable.
     ///
     /// The wifi pair is spelled out because it is the case that makes the
     /// refusal a *document* rule rather than a reconciler one: `wifi.json`
     /// carries `wifi` and backs two reconcilers, one of which declares
     /// `wifi.client`, so a refusal that matched reconciler subtrees by equality
     /// would leave the client half running on a schema default.
-    /// Hand-write one `/mos/config/` document, creating the namespace the way
+    /// Hand-write one `/mica/config/` document, creating the namespace the way
     /// `mica-data-layout` does before an integrator ever sees the partition.
     fn pour(dir: &tempfile::TempDir, document: &str, text: &str) -> std::path::PathBuf {
         let config = dir.path().join("config");
@@ -3544,7 +3544,7 @@ mod tests {
         );
     }
 
-    /// Every shipped reconciler is backed by exactly one `/mos/config/`
+    /// Every shipped reconciler is backed by exactly one `/mica/config/`
     /// document.
     ///
     /// The refusal is computed from [`micad_settings::DOCUMENT_SUBTREES`], so a

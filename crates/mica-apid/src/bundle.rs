@@ -1,11 +1,11 @@
-//! The `/mos/ui` bundle store: layout, validation, atomic activation,
+//! The `/mica/ui` bundle store: layout, validation, atomic activation,
 //! deactivate, explicit delete, and the "what is installed right now?" read.
 //!
 //! This is `docs/design/api.md` §5.2 and §5.3 as a self-contained module. It
 //! contains no HTTP: the asset router (§4) and the start-up wiring (§6.1) are
 //! separate work and call in here.
 //!
-//! Layout, all of it under one root (`/mos/ui` on a device, a temporary
+//! Layout, all of it under one root (`/mica/ui` on a device, a temporary
 //! directory in tests):
 //!
 //! ```text
@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The shipped location of the bundle store (§5.2).
-pub const DEFAULT_ROOT: &str = "/mos/ui";
+pub const DEFAULT_ROOT: &str = "/mica/ui";
 
 /// The answer the status read gives when no custom bundle is active. §5.3
 /// requires this state to be a named answer, never an empty field.
@@ -448,7 +448,7 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// The store at `/mos/ui` (§5.2).
+    /// The store at `/mica/ui` (§5.2).
     #[must_use]
     pub fn at_default() -> Self {
         Self::new(DEFAULT_ROOT)
@@ -1023,7 +1023,7 @@ impl Store {
     }
 
     /// Create the root, `bundles/` and `records/` with mode 0755. Called from
-    /// the install path only: §5.2 requires that nothing create `/mos/ui` at
+    /// the install path only: §5.2 requires that nothing create `/mica/ui` at
     /// start-up.
     fn ensure_layout(&self) -> anyhow::Result<()> {
         for dir in [self.root.clone(), self.bundles_dir(), self.records_dir()] {

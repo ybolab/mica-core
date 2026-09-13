@@ -316,7 +316,7 @@ fn execute() -> Result<()> {
     ) {
         require_workspace()?;
         let acquisition = Acquisition {
-            root: "/mos/updates".into(),
+            root: "/mica/updates".into(),
             store: &store,
             keys: &keys,
             board: &policy.identity.board,
@@ -420,18 +420,18 @@ fn require_workspace() -> Result<()> {
         if fields.len() < 10 {
             continue;
         }
-        if fields[4] == "/mos" {
+        if fields[4] == "/mica" {
             ensure!(
                 namespace.is_none()
                     && fields[2] == data
-                    && fields[3] == "/mos"
+                    && fields[3] == "/mica"
                     && fields[5].split(',').any(|option| option == "rw"),
                 "invalid DATA namespace binding"
             );
             namespace = Some(());
         }
         ensure!(
-            fields[4] != "/mos/updates" && !fields[4].starts_with("/mos/updates/"),
+            fields[4] != "/mica/updates" && !fields[4].starts_with("/mica/updates/"),
             "unexpected mount in update workspace"
         );
     }

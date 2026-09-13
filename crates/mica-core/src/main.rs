@@ -1,6 +1,6 @@
 //! One binary for the management plane's two daemons: invoked as `micad` it is
-//! the settings and reconciliation daemon, invoked as `apid` (a link to this
-//! file) the HTTPS API daemon. The name is the only selector; any other name
+//! the settings and reconciliation daemon, invoked as `mica-apid` (a link to
+//! this file) the HTTPS API daemon. The name is the only selector; any other name
 //! refuses.
 
 #![forbid(unsafe_code)]
@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|name| name.to_str())
     {
         Some("micad") => mica_core::main(),
-        Some("apid") => mica_apid::main(),
-        _ => anyhow::bail!("this binary must be invoked as micad or apid"),
+        Some("mica-apid") => mica_apid::main(),
+        _ => anyhow::bail!("this binary must be invoked as micad or mica-apid"),
     }
 }

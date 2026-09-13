@@ -1,4 +1,4 @@
-//! `/mos/config/` and the baked layer it overrides: the documents, the
+//! `/mica/config/` and the baked layer it overrides: the documents, the
 //! readers, and the one resolution both callers share.
 //!
 //! This module is in the **library** rather than in micad because two
@@ -21,10 +21,10 @@
 //!    inside the read-only dm-verity root, carries defaults for the source URL,
 //!    channel, policy and check interval. Nothing on the device writes it.
 //!    Metadata trust keys belong exclusively to the authenticated kernel package.
-//! 2. **`/mos/config/updates.json`**, on DATA: operator-owned, and the only
+//! 2. **`/mica/config/updates.json`**, on DATA: operator-owned, and the only
 //!    place any of those four is overridden. It also *owns* the keys layer 1
 //!    never carries — the windows, the network mode, the workspace paths and
-//!    the reboot-gate keys. The independent `/mos/config/fleet.json` document
+//!    the reboot-gate keys. The independent `/mica/config/fleet.json` document
 //!    carries only the fleet overlay.
 //! 3. **The running state**, which configures nothing.
 //!
@@ -53,7 +53,7 @@ use serde_json::{Map, Value, json};
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Why a `/mos/config/` document could not be turned into configuration.
+/// Why a `/mica/config/` document could not be turned into configuration.
 ///
 /// Every variant names the file, because PLAN-070 §5.1 requires the refusal
 /// an operator sees to name it.
@@ -374,7 +374,7 @@ impl LoadedManifest {
     /// The whole document is safe to publish for a structural reason rather
     /// than a promise (PLAN-070 §8): the baked set is allowlisted at staging
     /// and checked again against the image, so there is nothing secret in it
-    /// to disclose. That argument covers this layer only — `/mos/config/` is
+    /// to disclose. That argument covers this layer only — `/mica/config/` is
     /// credential material and is read through the redactor.
     pub fn to_json(&self) -> Value {
         json!({
@@ -425,12 +425,12 @@ pub fn load_manifest(path: &Path) -> LoadedManifest {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 2: /mos/config/updates.json
+// Layer 2: /mica/config/updates.json
 // ---------------------------------------------------------------------------
 
 /// Where the operator document lives (PLAN-070 §5.1): the update subsystem's
-/// occupant of the `/mos/config/` namespace, on the DATA pool that also backs
-/// the `/mos/updates` workspace, so one readiness probe gates both.
+/// occupant of the `/mica/config/` namespace, on the DATA pool that also backs
+/// the `/mica/updates` workspace, so one readiness probe gates both.
 ///
 /// **The directory half of this literal is [`crate::DEFAULT_CONFIG_DIR`]**,
 /// which is the namespace's one declaration and is what `mica-data-layout`
@@ -439,7 +439,7 @@ pub fn load_manifest(path: &Path) -> LoadedManifest {
 /// concatenated from another `const` without a macro crate, so the two agree
 /// by inspection and not by construction — relocate the namespace and this
 /// line has to move with it.
-pub const DEFAULT_UPDATES_PATH: &str = "/mos/config/updates.json";
+pub const DEFAULT_UPDATES_PATH: &str = "/mica/config/updates.json";
 
 /// The operator document's schema tag (PLAN-071 §1). Optional — a key the
 /// document does not name is a key that takes its default — but checked when
@@ -1043,7 +1043,7 @@ pub fn write_updates(path: &Path, patch_json: &str) -> Result<UpdatesDocument, W
 /// fsynced. This plan invents no second discipline, so a reader sees the old
 /// document or the new one.
 ///
-/// **A missing `/mos/config/` is a failure and not a directory to create.**
+/// **A missing `/mica/config/` is a failure and not a directory to create.**
 /// Its absence is the DATA medium not being mounted (PLAN-070 §5.2.6), and a
 /// device that created it would write the operator's channel onto the root
 /// filesystem, where the next boot would not find it.
@@ -1182,11 +1182,11 @@ pub fn resolve(baked: &BakedUpdate, document: UpdatesDocument) -> EffectivePolic
 }
 
 // ---------------------------------------------------------------------------
-// Layer 2: /mos/config/fleet.json
+// Layer 2: /mica/config/fleet.json
 // ---------------------------------------------------------------------------
 
 /// Where the desired fleet configuration is poured on the DATA pool.
-pub const DEFAULT_FLEET_PATH: &str = "/mos/config/fleet.json";
+pub const DEFAULT_FLEET_PATH: &str = "/mica/config/fleet.json";
 
 /// The only fleet document schema this development tree accepts.
 const FLEET_SCHEMA_TAG: &str = "mos/fleet-config/v1";
@@ -1771,7 +1771,7 @@ mod tests {
     #[test]
     fn a_write_into_a_missing_namespace_refuses_and_creates_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        // `/mos/config/` absent is the DATA medium not mounted (§5.2.6), so a
+        // `/mica/config/` absent is the DATA medium not mounted (§5.2.6), so a
         // device that created it would write the operator's channel onto the
         // root filesystem where the next boot would not look.
         let path = dir.path().join("not-mounted").join("updates.json");

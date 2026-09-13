@@ -513,7 +513,7 @@ pub(crate) struct UpdateConfigWrite(Value);
 /// administrator authority every other management write takes, and there is no
 /// unauthenticated or fleet-derived path to it.
 ///
-/// **apid does not write the file.** micad owns `/mos/config/updates.json` and
+/// **apid does not write the file.** micad owns `/mica/config/updates.json` and
 /// is its only writer; this route asks. The validation is therefore the same
 /// code the update subsystem reads the document with, so a document that is
 /// accepted here is one that loads, and a rejected one is refused with the

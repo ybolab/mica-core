@@ -8,7 +8,7 @@
 //!
 //! **The layout is not this module's to define.** `boards/*/board.env` fixes
 //! the partition table, `rootfs/overlay/etc/fstab.in` mounts DATA at
-//! [`DATA_MOUNT`], and PLAN-063 binds `/mnt/data/mica` at `/mos` and
+//! [`DATA_MOUNT`], and PLAN-063 binds `/mnt/data/mica` at `/mica` and
 //! `/mnt/data/srv` at `/srv` through
 //! `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, after
 //! `rootfs/overlay/usr/lib/mica/mica-data-layout` has created the roots
@@ -90,7 +90,7 @@ pub const TIERS: &[TierSpec] = &[
 
 /// Where the DATA partition itself mounts (PLAN-063).
 ///
-/// `/mnt/data` is a system implementation detail: PLAN-063 exposes `/mos` and
+/// `/mnt/data` is a system implementation detail: PLAN-063 exposes `/mica` and
 /// `/srv` and asks product surfaces not to encourage direct writes below it.
 /// It is named here because a tier report that hid the actual mountpoint
 /// could not be checked against `/etc/fstab`.
@@ -107,7 +107,7 @@ pub const DATA_MOUNT: &str = "/mnt/data";
 pub const BINDS: &[BindSpec] = &[
     BindSpec {
         name: "mos",
-        mount: "/mos",
+        mount: "/mica",
         source: "/mnt/data/mica",
         owner: "system",
     },
@@ -119,7 +119,7 @@ pub const BINDS: &[BindSpec] = &[
     },
     BindSpec {
         name: "containers",
-        mount: "/mos/containers",
+        mount: "/mica/containers",
         source: "/mnt/data/containers",
         owner: "system",
     },
@@ -133,7 +133,7 @@ pub struct BindSpec {
     pub mount: &'static str,
     /// The path under [`DATA_MOUNT`] it is bound from.
     pub source: &'static str,
-    /// `system` for `/mos`, `user` for `/srv`.
+    /// `system` for `/mica`, `user` for `/srv`.
     pub owner: &'static str,
 }
 
@@ -141,12 +141,12 @@ pub struct BindSpec {
 ///
 /// This directory is created by mica-data-layout inside the acquisition
 /// workspace; the probe never writes to an unrelated DATA namespace.
-pub const PROBE_SUBTREE: &str = "/mos/updates/staging";
+pub const PROBE_SUBTREE: &str = "/mica/updates/staging";
 
 /// The tier observed by the low-space policy.
 ///
 /// One tier, one filesystem, one capacity pool -- and two namespaces on top of
-/// it. Reporting `/mos` and `/srv` as if each had its own capacity would give
+/// it. Reporting `/mica` and `/srv` as if each had its own capacity would give
 /// a reader two numbers that sum to twice the disk.
 pub const DATA_TIER: &str = "data";
 /// Used-space percentage at or above which a watched tier is `warning`.
@@ -309,7 +309,7 @@ pub struct BindEvidence {
     /// real directory rather than a symlink. `mica-data-layout` refuses a
     /// symlink at these paths, so a symlink here is a substituted namespace.
     pub source_is_directory: Option<bool>,
-    /// The readiness probe, on `/mos` only.
+    /// The readiness probe, on `/mica` only.
     pub probe: Option<ProbeOutcome>,
 }
 
@@ -621,7 +621,7 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
         // saying so here is what stops a reader adding them together.
         "namespaces": {
             "sharedCapacityTier": DATA_TIER,
-            "detail": "/mos, /srv and /mos/containers bind directories of one DATA filesystem; capacity is reported once on the data tier, with independent project accounting; system/user and container limits are zero (unlimited), while variable data is bounded",
+            "detail": "/mica, /srv and /mica/containers bind directories of one DATA filesystem; capacity is reported once on the data tier, with independent project accounting; system/user and container limits are zero (unlimited), while variable data is bounded",
             "binds": binds,
             "directories": DATA_DIRECTORIES.map(|name| json!({
                 "name": name,
@@ -714,7 +714,7 @@ fn tier_json(spec: &TierSpec, evidence: Option<&TierEvidence>, pressure: &Pressu
 
 /// One bind namespace rendered.
 ///
-/// Deliberately carries NO capacity of its own: `/mos` and `/srv` are two
+/// Deliberately carries NO capacity of its own: `/mica` and `/srv` are two
 /// views of the DATA filesystem, and a `space` object here would be the same
 /// bytes reported a second and third time.
 fn bind_json(
@@ -1569,7 +1569,7 @@ mod tests {
 
     fn bound(device: &str) -> BindEvidence {
         BindEvidence {
-            mount: Some(mounted(device, "/mos")),
+            mount: Some(mounted(device, "/mica")),
             source_is_directory: Some(true),
             probe: Some(ProbeOutcome::Passed),
         }
@@ -1622,7 +1622,7 @@ mod tests {
         let read_only = BindEvidence {
             mount: Some(MountEvidence {
                 read_only: true,
-                ..mounted("/dev/mmcblk0p11", "/mos")
+                ..mounted("/dev/mmcblk0p11", "/mica")
             }),
             ..bound("/dev/mmcblk0p11")
         };
@@ -1937,7 +1937,7 @@ mod tests {
         assert_eq!(data["present"], true);
         assert_eq!(data["mounted"], true);
         // The DATA partition's own mountpoint, not either bind's: PLAN-063
-        // puts the filesystem at /mnt/data and exposes /mos and /srv on top.
+        // puts the filesystem at /mnt/data and exposes /mica and /srv on top.
         assert_eq!(data["mount"], DATA_MOUNT);
         assert_eq!(data["readOnly"], false);
         assert_eq!(data["role"], "ext4");
@@ -2082,14 +2082,14 @@ mod tests {
 
         // The PLAN-063 layout: DATA at /mnt/data, and the same device bound
         // twice on top of it. The DATA row is listed LAST on purpose -- a
-        // tier lookup that matched on the device alone would pick /mos here
+        // tier lookup that matched on the device alone would pick /mica here
         // and report it as the DATA tier's own mountpoint.
         write(
             "proc/self/mountinfo",
             concat!(
                 "25 1 254:0 / / ro,noatime shared:1 - squashfs /dev/dm-0 ro\n",
                 "32 25 179:6 / /mnt/system ro - ext4 /dev/mmcblk0p6 ro\n",
-                "33 25 179:11 /mica /mos rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
+                "33 25 179:11 /mica /mica rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
                 "34 25 179:11 /srv /srv rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
                 "35 25 179:11 / /mnt/data rw,noatime - ext4 /dev/mmcblk0p11 rw\n",
             ),
@@ -2098,7 +2098,7 @@ mod tests {
         // under the system one.
         std::fs::create_dir_all(path.join("mnt/data/mica")).expect("mkdir");
         std::fs::create_dir_all(path.join("mnt/data/srv")).expect("mkdir");
-        std::fs::create_dir_all(path.join("mos/updates/staging")).expect("mkdir");
+        std::fs::create_dir_all(path.join("mica/updates/staging")).expect("mkdir");
 
         let observer = HostStorage::at(path)
             .with_space_reader(|mount| (mount == DATA_MOUNT).then(|| space(1000, 100, 850)));
@@ -2131,7 +2131,7 @@ mod tests {
         assert_eq!(mos.probe, Some(ProbeOutcome::Passed));
         // The probe cleans up after itself: a readiness check that leaves
         // files behind is a slow leak on the filesystem it is vouching for.
-        let leftovers: Vec<_> = std::fs::read_dir(path.join("mos/updates/staging"))
+        let leftovers: Vec<_> = std::fs::read_dir(path.join("mica/updates/staging"))
             .expect("read staging")
             .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
             .collect();
@@ -2219,7 +2219,7 @@ mod tests {
         }
         match &evidence.binds["mos"].probe {
             Some(ProbeOutcome::NotAttempted(reason)) => {
-                assert!(reason.contains("/mos"), "{reason}")
+                assert!(reason.contains("/mica"), "{reason}")
             }
             other => panic!("expected an unattempted probe, got {other:?}"),
         }
@@ -2270,7 +2270,7 @@ mod tests {
     #[test]
     fn a_bind_of_another_data_directory_is_unavailable() {
         let mut bind = bound("/dev/vda3");
-        bind.mount = parse_mountinfo("33 25 254:3 /state /mos rw - ext4 /dev/vda3 rw\n").pop();
+        bind.mount = parse_mountinfo("33 25 254:3 /state /mica rw - ext4 /dev/vda3 rw\n").pop();
         assert_eq!(
             classify_readiness(&bind, Some(&data_tier("/dev/vda3")), Pressure::Normal),
             Readiness::Unavailable
@@ -2314,9 +2314,10 @@ mod tests {
                 .any(|entry| entry["name"] == "containers" && entry["project"] == 102)
         );
         assert!(
-            BINDS.iter().any(
-                |spec| spec.mount == "/mos/containers" && spec.source == "/mnt/data/containers"
-            )
+            BINDS
+                .iter()
+                .any(|spec| spec.mount == "/mica/containers"
+                    && spec.source == "/mnt/data/containers")
         );
     }
 }

@@ -25,7 +25,7 @@
 //!
 //! **The root must already be resolved.** §4.4 carries one consequence into
 //! §5.3: the assertion is made against the resolved bundle root, never against
-//! the `/mos/ui/current` symlink, which is appliance-managed and lives outside
+//! the `/mica/ui/current` symlink, which is appliance-managed and lives outside
 //! every bundle tree. Passing a non-canonical root is therefore a caller bug,
 //! and it fails closed: every request under it is rejected, as
 //! [`Rejection::OutsideRoot`] or [`Rejection::Symlink`] depending on the
@@ -547,7 +547,7 @@ mod tests {
 
     /// A root that is itself a symlink fails closed rather than silently
     /// widening the assertion, which is what §4.4's "resolved bundle root"
-    /// requires of the caller. The router resolves `/mos/ui/current` before
+    /// requires of the caller. The router resolves `/mica/ui/current` before
     /// calling in; this is what happens if it forgets.
     #[test]
     fn a_symlinked_root_rejects_everything() {

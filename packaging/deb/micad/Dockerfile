@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # check=skip=InvalidDefaultArgInFrom
 # The micad producer: the `micad` and `mica-apid` packages -- one binary,
-# /usr/bin/micad, and the /usr/bin/apid link to it.
+# /usr/bin/micad, and the /usr/bin/mica-apid link to it.
 #
 #   make os-deb-micad   ->  build-env/deb/build.sh --producer micad --arch <amd64|arm64>
 #
@@ -70,7 +70,7 @@ RUN set -eu; \
     ln -s /usr/lib/systemd/system/micad.service \
           /stage/micad/etc/systemd/system/multi-user.target.wants/micad.service; \
     install -d -m 0755                            /stage/apid/usr/bin; \
-    ln -s micad                                   /stage/apid/usr/bin/apid; \
+    ln -s micad                                   /stage/apid/usr/bin/mica-apid; \
     install -D -m 0644 /in/dist/apid.service      /stage/apid/usr/lib/systemd/system/apid.service; \
     install -D -m 0644 /in/copyright              /stage/apid/usr/share/doc/mica-apid/copyright; \
     install -D -m 0644 /in/openapi.json           /stage/apid/usr/share/mica-apid/openapi.json; \

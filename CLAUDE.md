@@ -8,7 +8,7 @@ update this file.
 ### Skill stack
 
 - `/pma` — workflow control, three-phase gate, task and plan tracking
-- `/pma-rust` — the workspace under `crates/` (`mica-core`, which builds the `micad` executable; `mica-apid`, which builds `apid`; `mica-mqttd`, `mica-mqtt-broker`, `micad-settings`, `mica-busname`, `mica-ui-bundle`, `mica-mqtt-reference`, `mica-sftp-server`, `mica-deploy`, which builds `mica-deploy` and the static `mica-runkit`; `lifecycle-sys`, the one crate allowed `unsafe` by its dated decision)
+- `/pma-rust` — the workspace under `crates/` (`mica-core`, which builds the `micad` executable; `mica-apid`, whose `apid` code micad carries and which builds a standalone `mica-apid`; `mica-mqttd`, `mica-mqtt-broker`, `micad-settings`, `mica-busname`, `mica-ui-bundle`, `mica-mqtt-reference`, `mica-sftp-server`, `mica-deploy`, which builds `mica-deploy` and the static `mica-runkit`; `lifecycle-sys`, the one crate allowed `unsafe` by its dated decision)
 - `/pma-web` — `crates/mica-apid/ui/` (React + Vite, embedded into apid)
 
 Every crate is under `crates/<package name>/`. The packaging

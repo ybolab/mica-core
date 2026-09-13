@@ -431,7 +431,7 @@ export const zhCN: Translation = {
       },
       namespaces: {
         title: '系统与用户命名空间',
-        description: 'DATA 文件系统的两个绑定命名空间：/mos 归系统所有，/srv 归你所有。',
+        description: 'DATA 文件系统的两个绑定命名空间：/mica 归系统所有，/srv 归你所有。',
         sharedPool: '两者是同一个文件系统的两种视图，共用同一份容量，仅在 {{tier}} 层报告一次。',
         owner: { system: '系统所有', user: '用户所有' },
         readiness: {
@@ -543,7 +543,7 @@ export const zhCN: Translation = {
           },
           'application-data': {
             name: '应用数据重置',
-            effect: '移除运维方的应用及其数据：清空 /srv，并将 /mos 下的应用区域重建为空。平台自身的配置和凭据会保留。',
+            effect: '移除运维方的应用及其数据：清空 /srv，并将 /mica 下的应用区域重建为空。平台自身的配置和凭据会保留。',
           },
           'full-factory': {
             name: '完全恢复出厂设置',

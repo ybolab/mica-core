@@ -26,7 +26,7 @@
 //!
 //! **`operator` and `effective` do not pass through that redactor, and do not
 //! borrow the baked half's argument for it either** (PLAN-070 §8's last
-//! paragraph forbids exactly that). `/mos/config/` is credential material and
+//! paragraph forbids exactly that). `/mica/config/` is credential material and
 //! is never returned whole; what is returned is
 //! [`micad_settings::configuration::provisioning_status`]'s projection over
 //! six named update and fleet fields, built key by key rather than serialized from the
@@ -81,7 +81,7 @@ pub(crate) struct ProvisioningStatus {
     baked: Value,
     /// SHA-256 by relative path under `/usr/share/mica/meta/`.
     baked_digests: BTreeMap<String, String>,
-    /// What the operator wrote in `/mos/config/updates.json`, projected onto
+    /// What the operator wrote in `/mica/config/updates.json`, projected onto
     /// `update.source`, `update.channel` and `update.policy` and nothing else.
     ///
     /// A field the operator did not write is **absent**; one they wrote as
@@ -95,7 +95,7 @@ pub(crate) struct ProvisioningStatus {
     /// `fleet.enabled`.
     ///
     /// The fleet pair is the **baked** value and is not a placeholder for a
-    /// resolution not yet written: `/mos/config/`'s fleet document is
+    /// resolution not yet written: `/mica/config/`'s fleet document is
     /// PLAN-072 §2's and does not exist, so nothing on the device reads an
     /// operator layer for it either. When that slice lands it extends the
     /// library's resolver; it does not add a second one here.
@@ -190,7 +190,7 @@ fn read_baked_files(root: &Path, at: &Path, files: &mut BTreeMap<String, Vec<u8>
     responses(
         (status = 200, description = "Import history and claim state, the public baked manifest with SHA-256 digests by baked file path, and the operator and effective readings of `update.source`, `update.channel` and `update.policy` beside the baked `fleet` pair. The secret-bearing import document is never returned.", body = ProvisioningStatus),
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
-        (status = 500, description = "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value", body = ApiError),
+        (status = 500, description = "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mica/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value", body = ApiError),
         (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 504, description = "The bounded call to micad timed out (`micad_timeout`)", body = ApiError),
         (status = 405, description = "A method this route does not serve (`method_not_allowed`); carries `Allow`", body = ApiError),

@@ -132,7 +132,7 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
     }
 }
 
-/// The one line `--version` prints: `apid <version> (<commit>)`.
+/// The one line `--version` prints: `mica-apid <version> (<commit>)`.
 ///
 /// The version is `micad/apid/Cargo.toml`'s `[package] version` by way of
 /// Cargo's own `CARGO_PKG_VERSION`, which is the same file
@@ -147,7 +147,7 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
 fn version_line() -> String {
     format!(
         "{} {} ({})",
-        "apid",
+        "mica-apid",
         env!("CARGO_PKG_VERSION"),
         commit_or_unknown(option_env!("MICA_BUILD_COMMIT")),
     )
@@ -349,7 +349,7 @@ mod version_tests {
     #[test]
     fn the_version_line_names_the_binary_the_version_and_the_commit() {
         let line = version_line();
-        assert!(line.starts_with("apid "), "got {line:?}");
+        assert!(line.starts_with("mica-apid "), "got {line:?}");
         assert!(
             line.contains(env!("CARGO_PKG_VERSION")),
             "the crate version is missing from {line:?}"

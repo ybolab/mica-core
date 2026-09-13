@@ -197,7 +197,7 @@ impl Harness {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("settings.toml");
-        // The `/mos/config/` namespace micad reads its configuration from. It
+        // The `/mica/config/` namespace micad reads its configuration from. It
         // must exist before the daemon starts: an absent namespace is the DATA
         // medium being gone, and micad refuses to start rather than render a
         // configuration nobody chose (PLAN-070 §5.2.6).

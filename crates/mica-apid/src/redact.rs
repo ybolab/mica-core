@@ -40,9 +40,9 @@ pub const REDACTED: &str = "<redacted>";
 ///
 /// **The rule that makes that luck into a rule** (PLAN-070 section 5.2.4.2).
 /// This list is a denylist of field names and it is fail-open by design, so
-/// now that `/mos/config/` holds secrets on purpose:
+/// now that `/mica/config/` holds secrets on purpose:
 ///
-/// > A `/mos/config/` document spells a secret-bearing key with a name already
+/// > A `/mica/config/` document spells a secret-bearing key with a name already
 /// > on this list, or the same change that adds the key adds the name.
 ///
 /// Stated because the alternative is a subsystem author who picks

@@ -44,10 +44,10 @@ use micad_settings::{ProvisioningState, ResetTier, Settings, Store};
 /// `MICA_DATA_ROOT` is `rootfs/overlay/usr/lib/mica/mica-data-layout`'s own
 /// variable, read here under the same name so a test that relocates the pool
 /// relocates it for the layout script and for the applier together, and so a
-/// device can never have the two disagree about where `/mos` is.
+/// device can never have the two disagree about where `/mica` is.
 pub const DATA_ROOT_ENV: &str = "MICA_DATA_ROOT";
 /// Where the pool is mounted when nothing relocates it (PLAN-063 / RFCT-292:
-/// `/mos` and `/srv` are binds of this ONE pool).
+/// `/mica` and `/srv` are binds of this ONE pool).
 pub const DEFAULT_DATA_ROOT: &str = "/mnt/data";
 
 /// The system-owned DATA namespace, relative to the pool root.
@@ -55,11 +55,11 @@ const SYSTEM_DIR: &str = "mos";
 /// The user-owned DATA namespace, relative to the pool root.
 const USER_DIR: &str = "srv";
 
-/// The `/mos` skeleton `mica-data-layout` establishes on a virgin device, in
+/// The `/mica` skeleton `mica-data-layout` establishes on a virgin device, in
 /// its own order.
 ///
 /// **Read as the definition of `re-seeded`**: tier 3 empties every one of
-/// these and removes anything under `/mos` that is not one of them, which
+/// these and removes anything under `/mica` that is not one of them, which
 /// leaves exactly the tree a virgin device has. The directories themselves are
 /// kept rather than deleted and recreated, so their declared modes are never
 /// this module's to restate — `mica-data-layout` owns them and chmods them on
@@ -78,7 +78,7 @@ const SYSTEM_SKELETON: &[&str] = &[
     "updates/staging",
 ];
 
-/// The system configuration namespace, relative to `/mos` (PLAN-070 §4.1).
+/// The system configuration namespace, relative to `/mica` (PLAN-070 §4.1).
 ///
 /// **Tier 1 clears this directory, and that is §5.2.1's boundary read from the
 /// other end.** Tier 1 returns what an integrator set; the set an integrator
@@ -92,7 +92,7 @@ const SYSTEM_SKELETON: &[&str] = &[
 /// and names the survivors, so a subtree added to the schema later is
 /// re-seeded without an edit there — the direction that fails safe. Under
 /// PLAN-070 that property moves onto this line: a document added to
-/// `/mos/config/` by any subsystem is cleared by default because the tier
+/// `/mica/config/` by any subsystem is cleared by default because the tier
 /// empties the directory rather than enumerating what is in it, and a document
 /// micad does not model at all — `updates.json`, `fleet.json`, anything a later
 /// slice adds — is covered by the same sweep. **Written down here because the
@@ -100,9 +100,9 @@ const SYSTEM_SKELETON: &[&str] = &[
 /// that used to carry it.**
 const CONFIG_DIR: &str = "config";
 
-/// The `/mos` subtrees the application layer owns, which tier 2 clears.
+/// The `/mica` subtrees the application layer owns, which tier 2 clears.
 ///
-/// §2.1 footnote `[^apps-mos]`: `/mos` is the system-owned namespace and tier
+/// §2.1 footnote `[^apps-mos]`: `/mica` is the system-owned namespace and tier
 /// 2 does not empty it. `ui/`, `updates/` — an acquired deployment is not
 /// application data — and the `home/`/`root/` backing directories are not
 /// opened.
@@ -246,7 +246,7 @@ pub enum Outcome {
 ///
 /// **The save is ONE `Store::save`**, and after PLAN-070 §5.2 that is one call
 /// over several documents rather than one rename. The ordering inside it is
-/// the one that matters here: `Store::save` writes the `/mos/config/`
+/// the one that matters here: `Store::save` writes the `/mica/config/`
 /// documents first and the STATE document — which carries this record — last,
 /// so a power loss between them leaves the intent staged and the next boot
 /// replays the same idempotent tier. There is still no ordering in which a
@@ -344,7 +344,7 @@ pub fn apply_pending(store: &Store, settings: &mut Settings, roots: &Roots) -> R
 ///
 /// **After PLAN-070 §5.2 the survivor list is exactly what STATE holds**, and
 /// that is not a coincidence: everything this function used to clear moved to
-/// `/mos/config/`, where [`CONFIG_DIR`] clears it by emptying the directory.
+/// `/mica/config/`, where [`CONFIG_DIR`] clears it by emptying the directory.
 /// The two halves of tier 1 are now the directory sweep above and this
 /// function, and neither is redundant — the sweep reaches documents micad does
 /// not model, and this reaches the settings the tier hands back to first-boot
@@ -379,7 +379,7 @@ fn reseeded_settings(before: &Settings, tier: ResetTier) -> Settings {
 }
 
 /// Tier 2's whole scope, and tier 3's share of it: the application layer's
-/// enrolment records on STATE, its subtrees under `/mos`, and `/srv`.
+/// enrolment records on STATE, its subtrees under `/mica`, and `/srv`.
 fn clear_application_state(roots: &Roots) -> Result<()> {
     for dir in STATE_APPLICATION_DIRS {
         let path = roots.state.join(dir);
@@ -765,7 +765,7 @@ mod tests {
     }
 
     /// Tier 2, §2.1 row 2: the application layer goes and nothing else does —
-    /// not the platform's settings, not its credentials, not `/mos/ui`, not a
+    /// not the platform's settings, not its credentials, not `/mica/ui`, not a
     /// verified bundle.
     #[test]
     fn tier_two_clears_the_application_layer_and_keeps_the_platform() {
@@ -783,7 +783,7 @@ mod tests {
             Outcome::Applied(ResetTier::ApplicationData)
         );
 
-        // CLEARED: the application subtrees of `/mos`, all of `/srv`, and the
+        // CLEARED: the application subtrees of `/mica`, all of `/srv`, and the
         // enrolment records on STATE.
         assert!(!exists(&roots.system().join("apps/inventory")));
         assert!(!exists(&roots.containers().join("overlay")));
@@ -799,7 +799,7 @@ mod tests {
         }
         assert!(roots.user().is_dir(), "the /srv mount point was removed");
 
-        // PRESERVED: `/mos` is the system-owned namespace and tier 2 does not
+        // PRESERVED: `/mica` is the system-owned namespace and tier 2 does not
         // empty it — a verified bundle is not application data.
         assert_eq!(
             fs::read_to_string(roots.system().join("updates/verified/deployment.json")).unwrap(),
@@ -866,7 +866,7 @@ mod tests {
         assert!(!exists(&roots.user().join("operator")));
         assert!(!exists(&roots.state.join("quadlet/web.container")));
 
-        // RE-SEEDED: `/mos` is exactly the skeleton a virgin device has, every
+        // RE-SEEDED: `/mica` is exactly the skeleton a virgin device has, every
         // directory present and every one of them empty.
         for relative in SYSTEM_SKELETON {
             let path = roots.system().join(relative);
@@ -1025,7 +1025,7 @@ mod tests {
             !dir.path().join("settings.toml").exists(),
             "a failed tier committed"
         );
-        // And it did not widen: the STATE and `/mos` work its own row calls
+        // And it did not widen: the STATE and `/mica` work its own row calls
         // for ran, but nothing outside that row was touched.
         assert!(exists(
             &roots.system().join("updates/verified/deployment.json")

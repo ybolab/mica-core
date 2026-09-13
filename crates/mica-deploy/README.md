@@ -42,8 +42,8 @@ mica-deploy probe
 mica-deploy check --source https://updates.example/v1/manifest.json --channel stable
 mica-deploy fetch --source https://updates.example/v1/manifest.json --channel stable
 mica-deploy import /path/to/update.mosupd
-mica-deploy install /mos/updates/verified/DEPLOYMENT_ID.json \
-  --objects /mos/updates/verified/objects
+mica-deploy install /mica/updates/verified/DEPLOYMENT_ID.json \
+  --objects /mica/updates/verified/objects
 mica-deploy confirm
 mica-deploy rollback
 mica-deploy gc

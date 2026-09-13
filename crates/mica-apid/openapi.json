@@ -885,7 +885,7 @@
           "discovery"
         ],
         "summary": "Report what the caller is talking to.",
-        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mos/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `micad_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
+        "description": "Answers the API major version, the daemon name, and\n`settingsSchemaVersion` — a settings document format version, which moves\nindependently of the API version. Authenticated.\n\n**After PLAN-070 §5.2.3 the settings tree has no single version.** Storage\nis one document per reconciler in `/mica/config/` plus the remainder on\nSTATE, and each carries its own `schema_version` starting at v1, because a\nnamespace-wide version could not be bumped without rewriting every document\nacross renames with no transaction between them. This member therefore\nreports the STATE document's version — the one document that is still one\ndocument — and it is read live from `micad_settings` rather than copied,\nwhich is the property §2.1 of `docs/design/api.md` actually asks for.",
         "operationId": "api_v1_meta",
         "responses": {
           "200": {
@@ -1785,7 +1785,7 @@
             }
           },
           "500": {
-            "description": "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mos/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value",
+            "description": "micad failed to answer (`micad_failed`), the baked configuration could not be read (`baked_configuration_unavailable`), or `/mica/config/updates.json` did not read, parse or validate (`configuration_unavailable`) — which is refused rather than answered with the baked value",
             "content": {
               "application/json": {
                 "schema": {
@@ -2926,11 +2926,11 @@
           "resources"
         ],
         "summary": "Read the storage status.",
-        "description": "Observed by micad at request time: the firmware/ESP, SYSTEM and DATA partitions\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mos` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; observed DATA directory usage and\nproject quotas; and the explicit lifecycle decisions.\n\n`/mos` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
+        "description": "Observed by micad at request time: the firmware/ESP, SYSTEM and DATA partitions\nwith its device, size, mount and read-only state, its space accounting\nincluding the filesystem's reserved pool, and whatever the system recorded\nabout its last check; PLAN-063's two bind namespaces, `/mica` and `/srv`,\neach with its readiness against the DATA tier it must live on; every\nphysical medium with normalized wear where the device exports it and an\nexplicit `unsupported` with a reason where it does not; the low-space\nthresholds with their hysteresis band; observed DATA directory usage and\nproject quotas; and the explicit lifecycle decisions.\n\n`/mica` and `/srv` are two namespaces of ONE filesystem and share its\ncapacity pool, so their bytes are reported once, on the `data` tier, and\nnever a second time under each bind.\n\nRead-only. There is no route that formats, repartitions, resizes, mounts\nor erases storage, and adding one is a product decision this surface does\nnot anticipate.",
         "operationId": "api_v1_storage_status",
         "responses": {
           "200": {
-            "description": "The fixed tiers with their space, mount and check evidence; the `/mos` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions",
+            "description": "The fixed tiers with their space, mount and check evidence; the `/mica` and `/srv` bind namespaces with their readiness (one shared capacity pool, reported once on the `data` tier); the physical media with normalized wear or an explicit `unsupported` reason; the low-space policy, directory usage and project quotas; and the explicit data-lifecycle decisions",
             "content": {
               "application/json": {
                 "schema": {
@@ -3964,7 +3964,7 @@
             }
           },
           "507": {
-            "description": "Writable /mos storage or required headroom is unavailable",
+            "description": "Writable /mica storage or required headroom is unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -4206,7 +4206,7 @@
           "update"
         ],
         "summary": "Write the operator's update configuration.",
-        "description": "The one route that changes what this device does on its own: which channel\nit follows, which address it dials, whether it checks, fetches and installs\nunattended, and inside which maintenance window. It takes the same\nadministrator authority every other management write takes, and there is no\nunauthenticated or fleet-derived path to it.\n\n**apid does not write the file.** micad owns `/mos/config/updates.json` and\nis its only writer; this route asks. The validation is therefore the same\ncode the update subsystem reads the document with, so a document that is\naccepted here is one that loads, and a rejected one is refused with the\noffending field named **before** anything is replaced. `auto` with no\nmaintenance window is refused here rather than failing closed some hours\nlater at a check the operator would have to go looking for.\n\nAnswers **200** with the document as saved.",
+        "description": "The one route that changes what this device does on its own: which channel\nit follows, which address it dials, whether it checks, fetches and installs\nunattended, and inside which maintenance window. It takes the same\nadministrator authority every other management write takes, and there is no\nunauthenticated or fleet-derived path to it.\n\n**apid does not write the file.** micad owns `/mica/config/updates.json` and\nis its only writer; this route asks. The validation is therefore the same\ncode the update subsystem reads the document with, so a document that is\naccepted here is one that loads, and a rejected one is refused with the\noffending field named **before** anything is replaced. `auto` with no\nmaintenance window is refused here rather than failing closed some hours\nlater at a check the operator would have to go looking for.\n\nAnswers **200** with the document as saved.",
         "operationId": "api_v1_update_config",
         "requestBody": {
           "content": {
@@ -6014,13 +6014,13 @@
             "minimum": 0
           },
           "effective": {
-            "description": "What this device actually runs on after §5.1's precedence:\n`update.source`, `update.channel`, `update.policy`, and `fleet.url` /\n`fleet.enabled`.\n\nThe fleet pair is the **baked** value and is not a placeholder for a\nresolution not yet written: `/mos/config/`'s fleet document is\nPLAN-072 §2's and does not exist, so nothing on the device reads an\noperator layer for it either. When that slice lands it extends the\nlibrary's resolver; it does not add a second one here."
+            "description": "What this device actually runs on after §5.1's precedence:\n`update.source`, `update.channel`, `update.policy`, and `fleet.url` /\n`fleet.enabled`.\n\nThe fleet pair is the **baked** value and is not a placeholder for a\nresolution not yet written: `/mica/config/`'s fleet document is\nPLAN-072 §2's and does not exist, so nothing on the device reads an\noperator layer for it either. When that slice lands it extends the\nlibrary's resolver; it does not add a second one here."
           },
           "lastImport": {
             "description": "The last import ATTEMPT: `source` (`boot` or `media`), `outcome`\n(`applied`, `unchanged` or `rejected`), `reason` for a rejection, and\n`at`, the device clock's reading when it happened. `null` when no\nmedium has ever been offered to this device."
           },
           "operator": {
-            "description": "What the operator wrote in `/mos/config/updates.json`, projected onto\n`update.source`, `update.channel` and `update.policy` and nothing else.\n\nA field the operator did not write is **absent**; one they wrote as\n`null` is **`null`**. Both resolve to the baked default and they are\nstill two different statements about the document, so the reading is\npreserved rather than flattened. `{}` when the document overrides\nnothing, which is a factory-reset device (PLAN-070 §4.1)."
+            "description": "What the operator wrote in `/mica/config/updates.json`, projected onto\n`update.source`, `update.channel` and `update.policy` and nothing else.\n\nA field the operator did not write is **absent**; one they wrote as\n`null` is **`null`**. Both resolve to the baked default and they are\nstill two different statements about the document, so the reading is\npreserved rather than flattened. `{}` when the document overrides\nnothing, which is a factory-reset device (PLAN-070 §4.1)."
           },
           "unclaimed": {
             "type": "boolean",

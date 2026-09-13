@@ -8,11 +8,6 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# The executable keeps its name; the package is named for the workspace.
-[[bin]]
-name = "apid"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = { workspace = true }
 argon2 = { workspace = true }

@@ -119,7 +119,7 @@ pub trait SettingsApi: Send + Sync {
     /// recorded override.
     async fn set_reboot_override(&self, seconds: u32) -> anyhow::Result<Value>;
 
-    /// Ask micad to merge `patch` into `/mos/config/updates.json` and write
+    /// Ask micad to merge `patch` into `/mica/config/updates.json` and write
     /// it; answers the document as saved.
     ///
     /// Deliberately not a file apid opens. micad owns that document and is its

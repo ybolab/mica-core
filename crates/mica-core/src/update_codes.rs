@@ -68,7 +68,7 @@ pub const POLICY_NOT_LOADED: &str = "policy-not-loaded";
 
 // ---------------------------------------------------------------------------
 // `update.lifecycle.code` for state `update-unavailable`, and
-// `update.lifecycle.workspace.kind`: the `/mos/updates` workspace refused the
+// `update.lifecycle.workspace.kind`: the `/mica/updates` workspace refused the
 // acquisition before it started.
 // ---------------------------------------------------------------------------
 
@@ -119,7 +119,7 @@ pub const DEFER_OUTSIDE_WINDOW: &str = "outside-window";
 pub const DEFER_DEPLOYMENT_STATUS_UNKNOWN: &str = "deployment-status-unknown";
 /// A slot is already installed and waiting for its first boot.
 pub const DEFER_REBOOT_PENDING: &str = "reboot-pending";
-/// The `/mos/updates` workspace refused the pre-install re-check.
+/// The `/mica/updates` workspace refused the pre-install re-check.
 pub const DEFER_WORKSPACE_UNREADY: &str = "workspace-unready";
 /// The pre-install re-check failed.
 pub const DEFER_RECHECK_FAILED: &str = "recheck-failed";

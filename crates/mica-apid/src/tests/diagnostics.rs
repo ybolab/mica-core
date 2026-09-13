@@ -21,7 +21,7 @@ use crate::routes::{AppState, app};
 use crate::settings_api::FakeSettings;
 
 /// A router whose snapshot store lives in a temporary directory, so no test
-/// can touch `/mos/diagnostics`.
+/// can touch `/mica/diagnostics`.
 fn diagnostics_app(tree: serde_json::Value) -> (Router, Arc<FakeSettings>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let fake = Arc::new(FakeSettings::new(tree));

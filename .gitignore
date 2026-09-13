@@ -11,3 +11,8 @@ _out/
 # and the agent sandbox's project-scoped throwaway directory.
 tmp/
 .tmp/
+
+# Retained, never committed and never cleaned with generated output: material
+# kept for provenance, such as the retired mica-deploy repository's refs,
+# bundles and release assets under .retained/mica-deploy/<date>/.
+/.retained/
