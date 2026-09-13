@@ -14,15 +14,19 @@ IMAGE=$(bash "$REPO/build-env/from.sh" --arch=amd64 --ref LOCAL_MOS_BUILD_RUST_C
 HOST_REPO=$REPO
 case "$REPO" in /root/*) HOST_REPO="/srv/station/root/${REPO#/root/}";; /work/*) HOST_REPO="/srv/station/work/${REPO#/work/}";; esac
 docker image inspect --format '{{.Id}}' "$IMAGE"
+# The target directory is this suite's own; the crate cache is the one every
+# other cargo run in this repository fills (gate/rust-gate.sh, hack/build-deb.sh),
+# because the build below is --offline and a private empty registry would
+# resolve nothing on a fresh clone.
 CACHE="$REPO/_out/b3-rust"
-mkdir -p "$CACHE/target" "$CACHE/registry" "$CACHE/git"
+mkdir -p "$CACHE/target" "$REPO/_out/cargo/registry" "$REPO/_out/cargo/git"
 # /srv paths map identically; /root and /work are translated above for siblings.
 # mos-build-side: container-block -- pinned native and UAPI fixture toolchain.
 timeout 110 docker run --rm --label ai-agent=true --network traefik \
     --name "ai-agent-mos-boot-shutdown-$$" \
     -v "$HOST_REPO:/src:ro" -v "$HOST_REPO/_out/b3-rust/target:/target" \
-    -v "$HOST_REPO/_out/b3-rust/registry:/usr/local/cargo/registry" \
-    -v "$HOST_REPO/_out/b3-rust/git:/usr/local/cargo/git" \
+    -v "$HOST_REPO/_out/cargo/registry:/usr/local/cargo/registry" \
+    -v "$HOST_REPO/_out/cargo/git:/usr/local/cargo/git" \
     -e "ARM_ABI=$ARM_ABI" -e CARGO_TARGET_DIR=/target -w /src --entrypoint /bin/bash "$IMAGE" -c '
 set -euo pipefail
 for tool in cargo gcc; do command -v "$tool" >/dev/null; done
