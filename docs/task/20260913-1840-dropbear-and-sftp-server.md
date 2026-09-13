@@ -1,6 +1,6 @@
 # 20260913-1840-dropbear-and-sftp-server micad drives dropbear; a Rust sftp-server package
 
-- **status**: in_progress
+- **status**: completed
 - **priority**: P1
 - **owner**: vtv87o8e/mica-core
 - **createdAt**: 2026-09-13 18:40
@@ -79,3 +79,13 @@ Moving micad to dropbear and adding the sftp-server package
   group-writable home.
 - `deb/sftp` producer: `mica-sftp-server` installs `/usr/lib/sftp-server`,
   `Depends: libc6, libgcc-s1`, both architectures built.
+- Gates on ae513fb: `make check` (shell lint, apid UI build contract, fmt,
+  clippy `-D warnings`, nextest 1104/1104, doctests, cargo-deny advisories,
+  bans and licences ok, OpenAPI match); `make pool`; `make package-gate`
+  91/91 over 10 archives, reproducibility rebuilds byte-identical.
+- Left for others (through coordinator a0psyi7e): mica-build adoption
+  (consumers, verifier, pin bump), the `mica:docs/design/access.md` and
+  changelog text, and a rust-check image with `openssh-client` so the
+  interop tests run in the gate instead of skipping.
+
+- complete: Implemented and verified on ae513fb; in review

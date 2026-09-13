@@ -1,6 +1,6 @@
 # 20260913-1840-dropbear-and-sftp-server micad drives dropbear; a Rust sftp-server package
 
-- **status**: in_progress
+- **status**: completed
 - **createdAt**: 2026-09-13 18:40
 - **task**: `docs/task/20260913-1840-dropbear-and-sftp-server.md`
 
