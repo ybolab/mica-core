@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-14 00:55 [progress]
+
+The package producers moved from `packaging/deb/<producer>/` to
+`pkgs/<producer>/` (history kept), with the shared copyright file and the
+packaging contract at `pkgs/copyright` and `pkgs/README.md`; each producer's
+`family` build context is `pkgs`. Producer compile outputs moved from the
+root `target-deb/` to `_out/target-deb/`. Package contents are unchanged.
+Not yet published.
+
 ## 2026-09-14 00:40 [progress]
 
 The mica-build-env pin is the new v0.0.1 (`SHA256SUMS` de740ff5798e), cut

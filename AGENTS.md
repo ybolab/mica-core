@@ -12,7 +12,7 @@ update this file.
 - `/pma-web` — `crates/mica-apid/ui/` (React + Vite, embedded into apid)
 
 Every crate is under `crates/<package name>/`. The packaging
-(`packaging/deb/`) and the shell entry points (`scripts/gate/`, `scripts/build/`) are bash and Dockerfiles; `/pma`'s *Delivery*
+(`pkgs/`) and the shell entry points (`scripts/gate/`, `scripts/build/`) are bash and Dockerfiles; `/pma`'s *Delivery*
 rules apply to them directly.
 
 ### Triggers
@@ -25,7 +25,7 @@ the fast path; everything else waits for explicit approval such as `proceed`.
 ### Project-specific facts
 
 - Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the published `IMAGE_MICA_BUILD_RUST`; the UI in the bun of `IMAGE_MICA_BUILD_BASE`, which also packs the archives; both pinned by digest in `build-env/images.env`; the host carries no cargo
-- The build substrate is the `mica-build-env` release pinned in `deps/build-env.json` (version and the sha256 of its `SHA256SUMS`), fetched and verified into the gitignored `build-env/` by `make deps` (`scripts/build/build-env.sh`); this repository runs only its own scripts (`scripts/build/from.sh`, `scripts/deb/`, owned copies of the release reference implementation per its `RULES.md`), and `scripts/build/build-deb.sh`, `scripts/build/build-target.sh`, `scripts/build/check.sh` and the producers under `packaging/deb/` derive the repository as their own root and refuse a missing `build-env/images.env` by name
+- The build substrate is the `mica-build-env` release pinned in `deps/build-env.json` (version and the sha256 of its `SHA256SUMS`), fetched and verified into the gitignored `build-env/` by `make deps` (`scripts/build/build-env.sh`); this repository runs only its own scripts (`scripts/build/from.sh`, `scripts/deb/`, owned copies of the release reference implementation per its `RULES.md`), and `scripts/build/build-deb.sh`, `scripts/build/build-target.sh`, `scripts/build/check.sh` and the producers under `pkgs/` derive the repository as their own root and refuse a missing `build-env/images.env` by name
 - Products (repository mica-core): seven Debian packages per architecture -- `micad` (`/usr/bin/micad`), `mica-apid` (its own `/usr/bin/mica-apid` executable from its own producer, plus `/usr/share/mica-apid/openapi.json`), `mica-mqttd`, `mica-mqtt-broker`, `mica-sftp-server` (`/usr/lib/sftp-server`, the SFTP server dropbear runs; a board feature that boards select, not a dependency of the base system), `mica-deploy` (the device-side client, `/usr/bin/mica-deploy`), `mica-lifecycle` (the static `mica-runkit`, reached as `init` and `shutdown`, under `/usr/lib/mica/lifecycle/`, read by the assembly's kernel component and never installed into a root) -- versioned `VERSION+git<commit12>-1` (every crate's `[package] version` must equal `VERSION`; `scripts/build/check.sh` asserts it) and published by this repository's CI as the public OCI artifacts `ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>`; the assembly (`mica-build`) imports them through `deps/packages/`
 - The API harness that boots the assembled image and drives apid over a socket lives in the assembly (`mica-build:tests/apid-api/`); its build-time half pins phase literals against the OpenAPI document the `mica-apid` archive ships
 - Database / storage: none -- micad persists to `DATA/state` and `DATA/meta` as files (`mica:docs/design/`)

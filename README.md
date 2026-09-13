@@ -26,8 +26,8 @@ boards), `mica-deploy` (`/usr/bin/mica-deploy`) and `mica-lifecycle` (the static
 `/usr/lib/mica/lifecycle/mica-runkit`). The assembly (`ybolab/mica-build`)
 imports them through `deps/packages/` and builds none; the API harness that
 boots the assembled image and drives apid over a socket lives there
-(`tests/apid-api/`). `packaging/deb/README.md` is the packaging contract of the
-producers under `packaging/deb/`; the shell entry points are under
+(`tests/apid-api/`). `pkgs/README.md` is the packaging contract of the
+producers under `pkgs/`; the shell entry points are under
 `scripts/build/` and `scripts/gate/`, and `scripts/gate/dbus-policy-test.sh`
 proves the shipped D-Bus policy against a real `dbus-daemon`.
 

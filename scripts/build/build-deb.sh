@@ -8,7 +8,7 @@
 # WHY THIS FILE STILL EXISTS. Every producer in this repository is built by
 # scripts/deb/build.sh from its producer.env, and this is not a second
 # driver: it is the micad workspace's PREPARE hook implementation, reached
-# through packaging/deb/<producer>/prepare.sh. What it does -- cross-compile
+# through pkgs/<producer>/prepare.sh. What it does -- cross-compile
 # a named set of binaries and then assert that NOTHING ELSE was compiled with them
 # -- is a claim about a cargo build, and no key in producer.env describes a
 # cargo build. The generic driver packs what it is handed; this decides what it

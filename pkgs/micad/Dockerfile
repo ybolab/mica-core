@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # check=skip=InvalidDefaultArgInFrom
 # The micad producer: the `micad` package -- /usr/bin/micad, its unit and its
-# D-Bus policy. mica-apid is its own producer (packaging/deb/apid).
+# D-Bus policy. mica-apid is its own producer (pkgs/apid).
 #
 #   make os-deb-micad   ->  scripts/deb/build.sh --producer micad --arch <amd64|arm64>
 #

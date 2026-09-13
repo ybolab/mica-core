@@ -5,7 +5,7 @@
 #
 #   scripts/deb/build.sh --producer apid --arch <amd64|arm64>
 #
-# The shape is packaging/deb/micad/Dockerfile's: this file only STAGES and
+# The shape is pkgs/micad/Dockerfile's: this file only STAGES and
 # PACKS; the binary was cross-compiled by this producer's PREPARE hook and
 # arrives through the `bin` context, and this stage runs at the TARGET
 # architecture because dpkg-shlibdeps resolves an ELF's dependencies against
@@ -32,7 +32,7 @@ ARG MICA_DEB_SOURCE_COMMIT
 
 # ENABLEMENT IS OWNED BY THE PACKAGE: the multi-user.target.wants symlink is a
 # file in the payload, not something a maintainer script creates, and not a
-# conffile (see packaging/deb/micad/Dockerfile).
+# conffile (see pkgs/micad/Dockerfile).
 RUN set -eu; \
     install -D -m 0755 /in/bin/mica-apid          /stage/apid/usr/bin/mica-apid; \
     install -D -m 0644 /in/dist/apid.service      /stage/apid/usr/lib/systemd/system/apid.service; \
