@@ -22,7 +22,7 @@ the fast path; everything else waits for explicit approval such as `proceed`.
 
 ### Project-specific facts
 
-- Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the pinned `mos-build-rust` image; the host carries no cargo
+- Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the pinned `mica-build-rust` image; the host carries no cargo
 - The build substrate is `build-env/`, the `mica-build-env` source pin (`deps/sources/mica-build-env.json`, fetched by `make deps`); `hack/build-deb.sh` and the producers under `deb/` derive the repository as their own root and refuse a missing substrate by name
 - Products: two Debian packages per architecture, `mica-deploy` (the device-side client, `/usr/bin/mica-deploy`) and `mica-lifecycle` (the static `mica-init` and `mica-shutdown` under `/usr/lib/mica/lifecycle/`, read by the assembly's kernel component and never installed into a root), versioned `VERSION+git<commit12>-1` and published as the GitHub Release `build-<commit12>` of `ybolab/mica-deploy`; the assembly (`mica-build`) imports both through `deps/packages/`
 - `tests/component-contracts/` is the contract between the assembly's component producer (`mica-build:build/`) and this crate's reader; the assembly keeps the same files and its `make os-pool` refuses a divergence from the copy at the pinned commit

@@ -15,7 +15,7 @@
 /* Loaded only into an isolated integration-test child. No device or production hook. */
 static atomic_uint sequence;
 static int watched(const char *path) {
-    const char *prefix = getenv("MOS_FAULT_PREFIX");
+    const char *prefix = getenv("MICA_FAULT_PREFIX");
     if (!prefix || !path) return 0;
     size_t n = strlen(prefix);
     return !strncmp(path, prefix, n) && (path[n] == '/' || path[n] == '\0');
@@ -31,7 +31,7 @@ static int watched_fd(int fd) {
 static unsigned begin(const char *kind, int active) {
     if (!active) return 0;
     unsigned n = atomic_fetch_add(&sequence, 1) + 1;
-    const char *log = getenv("MOS_FAULT_LOG");
+    const char *log = getenv("MICA_FAULT_LOG");
     int fd = open(log, O_CREAT | O_APPEND | O_WRONLY, 0600);
     if (fd < 0) _exit(98);
     char line[96];
@@ -42,9 +42,9 @@ static unsigned begin(const char *kind, int active) {
     return n;
 }
 static int fault(unsigned n, const char *when) {
-    const char *at = getenv("MOS_FAULT_AT"), *phase = getenv("MOS_FAULT_WHEN");
+    const char *at = getenv("MICA_FAULT_AT"), *phase = getenv("MICA_FAULT_WHEN");
     if (!n || !at || !phase || strtoul(at, NULL, 10) != n || strcmp(phase, when)) return 0;
-    if (getenv("MOS_FAULT_ENOSPC")) { errno = ENOSPC; return 1; }
+    if (getenv("MICA_FAULT_ENOSPC")) { errno = ENOSPC; return 1; }
     kill(getpid(), SIGKILL);
     _exit(97);
 }

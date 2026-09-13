@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mos-build-side: container -- the same as micad:hack/check.sh, for the same reason and by the same two callers: tests/rust-gate.sh takes both workspaces into localhost/mos-build-rust-check, and since PLAN-080 backlog B7 the CI runner reaches this file only through that script. The PATH prepend below finds nothing in the image.
+# mica-build-side: container -- the same as micad:hack/check.sh, for the same reason and by the same two callers: tests/rust-gate.sh takes both workspaces into localhost/mica-build-rust-check, and since PLAN-080 backlog B7 the CI runner reaches this file only through that script. The PATH prepend below finds nothing in the image.
 # The gate for this workspace. It exists because `mica-deploy` is no longer a
 # member of the micad workspace: the split gave it its own `[workspace]`, and
 # from that moment `cargo clippy --workspace` and `cargo nextest run --workspace`

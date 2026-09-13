@@ -24,28 +24,28 @@
 # This file is the same in every Mica OS repository, VENDORED rather than
 # fetched, because it is what fetches everything else: bash, curl, jq, tar
 # and sha256sum only. The API, organisation and token variable are the
-# defaults below; MOS_DEPS_API, MOS_DEPS_UPLOAD, MOS_DEPS_OWNER and
-# MOS_DEPS_TOKEN_VAR override them (the tests drive a stub that way), and the
+# defaults below; MICA_DEPS_API, MICA_DEPS_UPLOAD, MICA_DEPS_OWNER and
+# MICA_DEPS_TOKEN_VAR override them (the tests drive a stub that way), and the
 # token falls back to `gh auth token`. Nothing prints the token.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/.." && pwd)"
-API="${MOS_DEPS_API:-https://api.github.com}"
-UPLOAD="${MOS_DEPS_UPLOAD:-https://uploads.github.com}"
-OWNER="${MOS_DEPS_OWNER:-ybolab}"
-TOKEN_VAR="${MOS_DEPS_TOKEN_VAR:-GH_TOKEN}"
-PINS="${MOS_DEPS_DIR:-${REPO_ROOT}/deps/sources}"
+API="${MICA_DEPS_API:-https://api.github.com}"
+UPLOAD="${MICA_DEPS_UPLOAD:-https://uploads.github.com}"
+OWNER="${MICA_DEPS_OWNER:-ybolab}"
+TOKEN_VAR="${MICA_DEPS_TOKEN_VAR:-GH_TOKEN}"
+PINS="${MICA_DEPS_DIR:-${REPO_ROOT}/deps/sources}"
 
 die() { echo "deps.sh: error: $*" >&2; exit 1; }
 for t in curl jq tar sha256sum git; do
     command -v "${t}" >/dev/null 2>&1 || die "${t} is required and not on PATH"
 done
-case "${API}" in https://* | http://127.0.0.1:* | http://localhost:*) ;; *) die "MOS_DEPS_API='${API}' is not https; the token would be sent in clear" ;; esac
+case "${API}" in https://* | http://127.0.0.1:* | http://localhost:*) ;; *) die "MICA_DEPS_API='${API}' is not https; the token would be sent in clear" ;; esac
 
 token() {
     TOKEN="${!TOKEN_VAR:-}"
-    if [ -z "${TOKEN}" ] && [ -z "${MOS_DEPS_NO_GH:-}" ] && command -v gh >/dev/null 2>&1; then
+    if [ -z "${TOKEN}" ] && [ -z "${MICA_DEPS_NO_GH:-}" ] && command -v gh >/dev/null 2>&1; then
         TOKEN="$(gh auth token 2>/dev/null || true)"
     fi
     [ -n "${TOKEN}" ] || die "${TOKEN_VAR} is unset or empty and \`gh auth token\` gave nothing. The releases of ${OWNER} are private; export the token in ${TOKEN_VAR} or log in with gh"
@@ -185,11 +185,11 @@ cmd_bump() {
 
 cmd_publish_source() {
     local repository
-    if [ -n "${MOS_SOURCE_REPO:-}" ]; then repository="${MOS_SOURCE_REPO}"
+    if [ -n "${MICA_SOURCE_REPO:-}" ]; then repository="${MICA_SOURCE_REPO}"
     else
         local origin_url; origin_url="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
         repository="$(basename "${origin_url%/}" .git)"
-        [ -n "${origin_url}" ] && [ -n "${repository}" ] || die "${REPO_ROOT} has no origin remote; set MOS_SOURCE_REPO=<name>"
+        [ -n "${origin_url}" ] && [ -n "${repository}" ] || die "${REPO_ROOT} has no origin remote; set MICA_SOURCE_REPO=<name>"
     fi
     [ -z "$(git -C "${REPO_ROOT}" status --porcelain)" ] || die "${REPO_ROOT} has uncommitted changes; a source release is one commit's tree"
     local commit tag asset; commit="$(git -C "${REPO_ROOT}" rev-parse HEAD)"; tag="build-${commit:0:12}"; asset="${repository}-${commit:0:12}.tar.gz"

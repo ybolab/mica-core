@@ -10,7 +10,7 @@ case "${1:-}" in
 esac
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 case "$(uname -m)" in x86_64) ;; *) echo 'This fixture runner requires the pinned amd64 build container' >&2; exit 1;; esac
-IMAGE=$(bash "$REPO/build-env/from.sh" --arch=amd64 --ref LOCAL_MOS_BUILD_RUST_CHECK)
+IMAGE=$(bash "$REPO/build-env/from.sh" --arch=amd64 --ref LOCAL_MICA_BUILD_RUST_CHECK)
 HOST_REPO=$REPO
 case "$REPO" in /root/*) HOST_REPO="/srv/station/root/${REPO#/root/}";; /work/*) HOST_REPO="/srv/station/work/${REPO#/work/}";; esac
 docker image inspect --format '{{.Id}}' "$IMAGE"
@@ -21,7 +21,7 @@ docker image inspect --format '{{.Id}}' "$IMAGE"
 CACHE="$REPO/_out/b3-rust"
 mkdir -p "$CACHE/target" "$REPO/_out/cargo/registry" "$REPO/_out/cargo/git"
 # /srv paths map identically; /root and /work are translated above for siblings.
-# mos-build-side: container-block -- pinned native and UAPI fixture toolchain.
+# mica-build-side: container-block -- pinned native and UAPI fixture toolchain.
 timeout 110 docker run --rm --label ai-agent=true --network traefik \
     --name "ai-agent-mos-boot-shutdown-$$" \
     -v "$HOST_REPO:/src:ro" -v "$HOST_REPO/_out/b3-rust/target:/target" \
@@ -52,4 +52,4 @@ else
 fi
 printf "%s\n" BOOT_SHUTDOWN_FIXTURES_PASS
 '
-# mos-build-side: host
+# mica-build-side: host

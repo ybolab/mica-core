@@ -42,7 +42,7 @@ fn shutdown(supervisor: &mut Supervisor, args: &[String]) -> Result<()> {
         "partial startup record is not an exitrd handoff"
     );
     shutdown::diagnostic(&format!(
-        "MOS_SHUTDOWN stage=entered action={} source=exitrd deployment={}",
+        "MICA_SHUTDOWN stage=entered action={} source=exitrd deployment={}",
         action.as_str(),
         owner.deployment
     ))?;

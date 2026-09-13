@@ -127,19 +127,19 @@ release_binary() {
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git"
 
-mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MOS_BUILD_RUST=LOCAL_MOS_BUILD_RUST)
+mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=LOCAL_MICA_BUILD_RUST)
 [ "${#RUST_FROM[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mos-build-rust:amd64 (see its message above); it is built by \`make build-env\`, which must run before any component build that stands on it" >&2
+    echo "error: build-env/from.sh did not yield localhost/mica-build-rust:amd64 (see its message above); it is built by \`make build-env\`, which must run before any component build that stands on it" >&2
     exit 1
 }
-RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
+RUST_IMAGE="${RUST_FROM[1]#MICA_BUILD_RUST=}"
 
 # The repository at the fixed path /src, not where it happens to live, for the
 # reason pkgs/micad/hack/build-target.sh gives: rustc records the paths it is
 # given, so mounting the checkout at its own path would make the binaries depend
 # on the directory the repository was cloned into.
-# mos-build-side: container-block -- the compiler is localhost/mos-build-rust's,
-# recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
+# mica-build-side: container-block -- the compiler is localhost/mica-build-rust's,
+# recorded in that image's /etc/mica-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
     --label ai-agent=true --network traefik --name "ai-agent-mica-deploy-${PRODUCER}-$$" \
@@ -155,12 +155,12 @@ docker run --rm \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
         set -euo pipefail
-        [ -f /etc/mos-build/rust.env ] || {
-            echo "error: this image carries no /etc/mos-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
+        [ -f /etc/mica-build/rust.env ] || {
+            echo "error: this image carries no /etc/mica-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mos-build/rust.env
-        echo "build-deb: compiling ${BINS} for ${TARGET} with rustc ${MOS_BUILD_RUSTC} from ${MOS_BUILD_IMAGE}"
+        . /etc/mica-build/rust.env
+        echo "build-deb: compiling ${BINS} for ${TARGET} with rustc ${MICA_BUILD_RUSTC} from ${MICA_BUILD_IMAGE}"
         # --bin per binary and nothing else: the whole point of a producer is
         # that it cannot emit a binary it does not own. --locked makes
         # Cargo.lock the decision and refuses a build that would quietly update
@@ -203,7 +203,7 @@ docker run --rm \
             esac
         done
     '
-# mos-build-side: host
+# mica-build-side: host
 
 # What this producer OWNS, checked before what it must not hold. Without this the
 # scan below would pass over a directory the build never wrote -- an "is absent"

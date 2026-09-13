@@ -1082,7 +1082,7 @@ impl Supervisor {
     }
     pub fn failure(mut self, error: &anyhow::Error) -> ! {
         let _ = diagnostic(&format!(
-            "MOS_SHUTDOWN stage=storage-not-released error={:?}",
+            "MICA_SHUTDOWN stage=storage-not-released error={:?}",
             format!("{error:#}")
         ));
         if let Some(budget) = self.budget {
@@ -1095,7 +1095,7 @@ impl Supervisor {
             }
         }
         let _ = diagnostic(&format!(
-            "MOS_SHUTDOWN stage=failed watchdogArmed={}",
+            "MICA_SHUTDOWN stage=failed watchdogArmed={}",
             self.armed
         ));
         // PID 1 must stay alive without feeding. Only a verified armed watchdog
@@ -1112,7 +1112,7 @@ impl Supervisor {
             "terminal deadline exhausted"
         );
         diagnostic(&format!(
-            "MOS_SHUTDOWN stage=action-requested action={}",
+            "MICA_SHUTDOWN stage=action-requested action={}",
             action.as_str()
         ))?;
         let command = match action {
@@ -1180,7 +1180,7 @@ impl LifecycleIo for SystemIo<'_> {
         Ok(())
     }
     fn event(&mut self, stage: &str, detail: &str) {
-        if diagnostic(&format!("MOS_SHUTDOWN stage={stage} detail={detail:?}")).is_err() {
+        if diagnostic(&format!("MICA_SHUTDOWN stage={stage} detail={detail:?}")).is_err() {
             self.supervisor.poisoned = true;
         }
     }

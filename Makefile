@@ -14,7 +14,7 @@ $(error build-env/ is empty: the build substrate is fetched at its pin from ybol
 endif
 endif
 
-MOS_ARCH ?= arm64
+MICA_ARCH ?= arm64
 
 .PHONY: help deps deps-check deps-bump build-env rust-gate boot-shutdown-test file-transaction-faults deb pool package-gate preflight publish lint check
 
@@ -25,7 +25,7 @@ help:
 	@echo "  rust-gate           hack/check.sh (fmt, clippy -D warnings, nextest, doctests, cargo-deny) in the pinned rust-check image"
 	@echo "  boot-shutdown-test  the native shutdown suite and the UAPI translation unit (BOOT_SHUTDOWN_ARM_ABI=1 adds the aarch64 compiler)"
 	@echo "  file-transaction-faults  exact native transaction code, interrupted before and after each observed IO"
-	@echo "  deb                 both producers for \$$MOS_ARCH into _out/debs/\$$MOS_ARCH/pool (MOS_ARCH=amd64|arm64)"
+	@echo "  deb                 both producers for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
 	@echo "  pool                both producers, both architectures, indexed"
 	@echo "  package-gate        the package gate over this repository's pool"
 	@echo "  publish             the pool as the GitHub Release build-<commit12> of this commit"
@@ -55,8 +55,8 @@ preflight:
 	bash build-env/deb/preflight.sh
 
 deb: preflight
-	bash build-env/deb/build.sh --producer deploy --arch $(MOS_ARCH)
-	bash build-env/deb/build.sh --producer lifecycle --arch $(MOS_ARCH)
+	bash build-env/deb/build.sh --producer deploy --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer lifecycle --arch $(MICA_ARCH)
 
 pool: preflight
 	bash build-env/deb/build.sh --producer deploy --arch amd64

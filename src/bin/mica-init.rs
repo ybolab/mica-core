@@ -677,7 +677,7 @@ fn main() {
             Action::Reboot
         };
         shutdown::diagnostic(&format!(
-            "MOS_SHUTDOWN stage=entered action={} source=partial-startup",
+            "MICA_SHUTDOWN stage=entered action={} source=partial-startup",
             action.as_str()
         ))?;
         shutdown::finish(

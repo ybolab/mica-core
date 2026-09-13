@@ -349,16 +349,16 @@ fn validate(root: &Path, fit: bool) {
 #[ignore = "requires tests/file-ab-faults/run.sh and its isolated IO fault shim"]
 fn transactions_survive_each_boundary() {
     use std::os::unix::process::ExitStatusExt;
-    if let Ok(root) = std::env::var("MOS_FAULT_WORK") {
+    if let Ok(root) = std::env::var("MICA_FAULT_WORK") {
         run_operation(
             Path::new(&root),
-            std::env::var("MOS_FAULT_FIT").unwrap() == "1",
-            &std::env::var("MOS_FAULT_OPERATION").unwrap(),
+            std::env::var("MICA_FAULT_FIT").unwrap() == "1",
+            &std::env::var("MICA_FAULT_OPERATION").unwrap(),
         );
         return;
     }
-    let shim = std::env::var("MOS_TEST_FAULT_SHIM").expect("run tests/file-ab-faults/run.sh");
-    let evidence = PathBuf::from(std::env::var("MOS_TEST_FAULT_EVIDENCE").unwrap());
+    let shim = std::env::var("MICA_TEST_FAULT_SHIM").expect("run tests/file-ab-faults/run.sh");
+    let evidence = PathBuf::from(std::env::var("MICA_TEST_FAULT_EVIDENCE").unwrap());
     let mut summaries = Vec::new();
     for fit in [false, true] {
         for operation in ["install", "confirm", "gc"] {
@@ -371,15 +371,15 @@ fn transactions_survive_each_boundary() {
                     "--test-threads=1",
                 ])
                 .env("LD_PRELOAD", &shim)
-                .env("MOS_FAULT_WORK", root)
-                .env("MOS_FAULT_OPERATION", operation)
-                .env("MOS_FAULT_FIT", if fit { "1" } else { "0" })
-                .env("MOS_FAULT_PREFIX", root.join("store"))
-                .env("MOS_FAULT_LOG", root.join("trace"))
-                .env("MOS_FAULT_AT", at.to_string())
-                .env("MOS_FAULT_WHEN", phase);
+                .env("MICA_FAULT_WORK", root)
+                .env("MICA_FAULT_OPERATION", operation)
+                .env("MICA_FAULT_FIT", if fit { "1" } else { "0" })
+                .env("MICA_FAULT_PREFIX", root.join("store"))
+                .env("MICA_FAULT_LOG", root.join("trace"))
+                .env("MICA_FAULT_AT", at.to_string())
+                .env("MICA_FAULT_WHEN", phase);
                 if enospc {
-                    cmd.env("MOS_FAULT_ENOSPC", "1");
+                    cmd.env("MICA_FAULT_ENOSPC", "1");
                 }
                 cmd.output().unwrap()
             };
@@ -629,7 +629,7 @@ fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
 #[ignore = "requires the bounded tmpfs provided by tests/file-ab-faults/run.sh"]
 fn replacement_capacity_uses_reclaimed_blocks_without_a_third_version() {
     use mica_deploy::components::authenticate_deployment;
-    let parent = std::env::var("MOS_TEST_SPACE_ROOT").unwrap();
+    let parent = std::env::var("MICA_TEST_SPACE_ROOT").unwrap();
     for insufficient in [false, true] {
         let root = TempDir::new_in(&parent).unwrap();
         seed(root.path(), true, "install");

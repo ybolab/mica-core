@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Rust gate: hack/check.sh, UNMODIFIED, inside localhost/mos-build-rust-check
+# The Rust gate: hack/check.sh, UNMODIFIED, inside localhost/mica-build-rust-check
 # -- `cargo fmt --all --check`, clippy at `-D warnings`, nextest, doctests and
 # `cargo deny check licenses bans advisories`. The repository is mounted
 # read-only at the fixed path /src, so rustc's recorded paths do not depend on
@@ -20,9 +20,9 @@ done
 command -v docker >/dev/null 2>&1 || { echo "error: docker is required and not on PATH; the gate runs in the pinned rust-check image" >&2; exit 1; }
 
 IMAGE_ARCH=amd64
-mapfile -t FROM < <(bash "${REPO_ROOT}/build-env/from.sh" --arch="${IMAGE_ARCH}" MOS_BUILD_RUST_CHECK=LOCAL_MOS_BUILD_RUST_CHECK)
-[ "${#FROM[@]}" -eq 2 ] || { echo "error: build-env/from.sh did not yield localhost/mos-build-rust-check:${IMAGE_ARCH} (see its message above); it is built by \`make build-env\`" >&2; exit 1; }
-IMAGE="${FROM[1]#MOS_BUILD_RUST_CHECK=}"
+mapfile -t FROM < <(bash "${REPO_ROOT}/build-env/from.sh" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST_CHECK=LOCAL_MICA_BUILD_RUST_CHECK)
+[ "${#FROM[@]}" -eq 2 ] || { echo "error: build-env/from.sh did not yield localhost/mica-build-rust-check:${IMAGE_ARCH} (see its message above); it is built by \`make build-env\`" >&2; exit 1; }
+IMAGE="${FROM[1]#MICA_BUILD_RUST_CHECK=}"
 
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 TARGET_DIR="${REPO_ROOT}/_out/rust-gate"
@@ -41,12 +41,12 @@ docker run --rm \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail
-        [ -f /etc/mos-build/rust-check.env ] || {
-            echo "error: this image carries no /etc/mos-build/rust-check.env, so what ran this gate cannot be read back out of it" >&2
+        [ -f /etc/mica-build/rust-check.env ] || {
+            echo "error: this image carries no /etc/mica-build/rust-check.env, so what ran this gate cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mos-build/rust-check.env
-        echo "gate: mica-deploy with rustc ${MOS_BUILD_RUSTC}, clippy ${MOS_BUILD_CLIPPY}, rustfmt ${MOS_BUILD_RUSTFMT}, nextest ${MOS_BUILD_NEXTEST}, deny ${MOS_BUILD_DENY} from ${MOS_BUILD_IMAGE}"
+        . /etc/mica-build/rust-check.env
+        echo "gate: mica-deploy with rustc ${MICA_BUILD_RUSTC}, clippy ${MICA_BUILD_CLIPPY}, rustfmt ${MICA_BUILD_RUSTFMT}, nextest ${MICA_BUILD_NEXTEST}, deny ${MICA_BUILD_DENY} from ${MICA_BUILD_IMAGE}"
         bash hack/check.sh
     '
 echo "RUST GATE PASSED (mica-deploy)"
