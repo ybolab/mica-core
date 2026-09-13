@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-14 00:40 [progress]
+
+The mica-build-env pin is the new v0.0.1 (`SHA256SUMS` de740ff5798e), cut
+after mica-build-env's history and release reset; the earlier v0.0.1 and
+v0.0.2 and their image digests no longer exist. Its generated `images.env`
+holds only the four `IMAGE_MICA_BUILD_*` references, which is all this
+repository reads. The Rust and base images are new digests with the same
+toolchain versions. Not yet published.
+
 ## 2026-09-13 23:55 [progress]
 
 CI builds and publishes a pool only for a commit that needs one
