@@ -1,43 +1,66 @@
 name: release
-# Every push to main that passes the gates publishes the pool -- every
-# package this repository builds, both architectures -- to the one package
-# named after this repository, by this workflow's own token:
-# ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>. The assembly pins it
-# through deps/packages/. The release is public, so `make deps` needs no token;
-# publish.sh reads what it pushed back anonymously and fails while the package
-# is not public. The arm64 archives are cross-compiled by the pinned
-# IMAGE_MICA_BUILD_RUST and packed in the arm64 image of IMAGE_MICA_BUILD_BASE
-# under emulation; both are public indexes of the mica-build-env release.
+# Manual only, the way a version is released: bump VERSION by a commit on main,
+# then push the tag v<VERSION> (or dispatch this workflow with that tag). A
+# branch push or pull request runs nothing. Dispatched without a tag it is a
+# dry run over the chosen ref: every gate and the pool, nothing published.
+#
+# A release checks the tag (scripts/build/release.sh check: v<VERSION>, on
+# main), runs the gates, publishes the pool -- every package this repository
+# builds, both architectures -- to the one package named after this
+# repository, by this workflow's own token:
+# ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>, and then the GitHub
+# release of the tag naming those pools by digest (release.sh publish). The
+# assembly pins the pools through deps/packages/. The build-env release is
+# public, so `make deps` needs no token; publish.sh and release.sh read what
+# they pushed back anonymously. The arm64 archives are cross-compiled by the
+# pinned IMAGE_MICA_BUILD_RUST and packed in the arm64 image of
+# IMAGE_MICA_BUILD_BASE under emulation.
 #
 # A commit that changes no package input builds no pool: when everything
 # changed since the nearest ancestor with a complete published pool is docs,
 # markdown, .gitignore or a release pin whose verified images.env pins
 # IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE to the same digests,
-# scripts/build/pool-decision.sh says pool=skip and nothing below runs. Any
-# other change, and anything it cannot establish, is pool=build.
+# scripts/build/pool-decision.sh says pool=skip. A dry run then stops there;
+# a release refuses, because there is nothing new to release.
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag v<VERSION> on main. Leave empty for a dry run (gates and pool, nothing published)."
+        required: false
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
 permissions:
   contents: read
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
 jobs:
   package:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v7
         with:
-          # The baseline is an ancestor of HEAD; a shallow clone has none.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The baseline is an ancestor of HEAD and the tag must be on main;
+          # a shallow clone has neither.
           fetch-depth: 0
+      - name: The release tag is v<VERSION> on main
+        if: env.RELEASE_TAG != ''
+        run: bash scripts/build/release.sh check "${RELEASE_TAG}"
       - name: Whether this commit builds a pool
         id: pool
         run: bash scripts/build/pool-decision.sh
+      - name: A release needs a pool
+        if: env.RELEASE_TAG != '' && steps.pool.outputs.pool != 'build'
+        run: |
+          echo "::error::${RELEASE_TAG}: no package input changed since the last published pool, so there is nothing to release"
+          exit 1
       - name: The mica-build-env release at its pin
         if: steps.pool.outputs.pool == 'build'
         run: make deps
@@ -68,7 +91,12 @@ jobs:
           make pool
           make package-gate
       - name: Publish the pool of this commit
-        if: github.event_name == 'push' && steps.pool.outputs.pool == 'build'
+        if: env.RELEASE_TAG != '' && steps.pool.outputs.pool == 'build'
         run: make publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: The GitHub release of the tag
+        if: env.RELEASE_TAG != '' && steps.pool.outputs.pool == 'build'
+        run: bash scripts/build/release.sh publish "${RELEASE_TAG}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

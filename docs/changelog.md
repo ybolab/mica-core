@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-14 01:10 [progress]
+
+CI no longer runs on a branch push or pull request. A release is manual, as
+in bkhq/bkd: bump `VERSION` by a commit on main and push the tag
+`v<VERSION>`, or dispatch `release.yml` with it. The workflow checks the tag
+(`scripts/build/release.sh check`: `v<VERSION>` on main), runs every gate,
+publishes the pool and then the GitHub release of the tag, whose notes name
+both pools by manifest digest and every archive by sha256, read back with no
+credential. Dispatched without a tag it is a dry run that publishes nothing.
+A release whose commit changes no package input since the last published
+pool is refused. Not yet published.
+
 ## 2026-09-14 00:55 [progress]
 
 The package producers moved from `packaging/deb/<producer>/` to
