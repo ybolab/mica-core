@@ -528,7 +528,10 @@ mod tests {
     // dropping it would leave the fail-closed direction untested.
     #[test]
     fn neither_profile_seeds_ssh_on() {
-        for (body, expected) in [("MICA_PROFILE=dev\n", false), ("MICA_PROFILE=prod\n", false)] {
+        for (body, expected) in [
+            ("MICA_PROFILE=dev\n", false),
+            ("MICA_PROFILE=prod\n", false),
+        ] {
             let dir = TempDir::new().expect("tempdir");
             let store = store_in(dir.path());
             let profile = write_profile(dir.path(), body);
