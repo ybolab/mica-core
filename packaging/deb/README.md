@@ -6,9 +6,11 @@ templates and its own archives, and it emits nothing outside that set:
 
 | Producer | Compiles | Emits |
 | --- | --- | --- |
-| `micad` | `micad`, `apid` | `micad`, `mica-apid` |
+| `micad` | `mica-core` (the `micad` binary, carrying apid) | `micad`, `mica-apid` |
 | `mqtt` | `mica-mqttd`, `mica-mqtt-broker` | `mica-mqttd`, `mica-mqtt-broker` |
 | `sftp` | `mica-sftp-server` | `mica-sftp-server` (`/usr/lib/sftp-server`) |
+| `deploy` | `mica-deploy` | `mica-deploy` |
+| `lifecycle` | `mica-deploy` (the static `mica-runkit` only) | `mica-lifecycle` |
 
 Each is built by the repository's one generic driver, which discovers them:
 

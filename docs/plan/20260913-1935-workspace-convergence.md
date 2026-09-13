@@ -1,6 +1,6 @@
 # 20260913-1935-workspace-convergence mica-deploy joins mica-core; one crate workspace
 
-- **status**: draft
+- **status**: in_progress
 - **createdAt**: 2026-09-13 19:35
 - **task**: `docs/task/20260913-1935-workspace-convergence.md`
 
@@ -23,11 +23,16 @@ shared with mica-build.
 
 ## Target layout
 
+Revision 2 (approved by the user 2026-09-13 19:45 UTC, with the crate renames
+`apid` -> `mica-apid` and `micad` -> `mica-core` asked at 19:44 UTC): the
+executables, Debian packages, units, D-Bus names and filesystem paths keep
+their names; only the Cargo packages and their directories are renamed.
+
 ```text
 Cargo.toml                 virtual workspace: members = ["crates/*"]
 Cargo.lock  deny.toml  rustfmt.toml  clippy.toml  VERSION  Makefile
 crates/
-  micad/  apid/ (ui/ stays inside)  micad-settings/  mica-busname/
+  mica-core/ (bin micad)  mica-apid/ (bin apid; ui/ inside)  micad-settings/  mica-busname/
   mica-mqttd/  mica-mqtt-broker/  mica-ui-bundle/  mica-mqtt-reference/
   mica-sftp-server/  mica-deploy/  lifecycle-sys/
   (each crate keeps its own dist/ units and tests/)
@@ -81,3 +86,16 @@ entry point that CI and build-env call.
 - One git stamp per pool: mica-deploy's packages take mica-core's version.
 - Pending local work lands first (runtime commits, own-CI branch) so the move
   is a pure rename on top of it.
+
+## Progress
+
+- Phase 1 done: 1805e84 (layout), d8a8b55 (renames, `--bins` in
+  build-deb.sh). Package payloads before and after: identical file lists,
+  modes and control fields for all five packages on both architectures.
+- Phase 2 done: 5a1bea2 merges b698b10dd6aaa023fa1b3896c5d0c40f03a35329
+  (tree a922119d..., 18 commits) under import/mica-deploy/; 9c4187d moves it
+  into place and drops the duplicated tooling. mica-deploy and mica-lifecycle
+  match mica-deploy's own archives in files, modes and control fields;
+  mica-runkit is static on both architectures.
+- Phase 3 not started: kept to its own review, and no lint or toolchain scope is
+  widened here.

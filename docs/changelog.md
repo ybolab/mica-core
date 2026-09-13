@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-13 20:16 [progress]
+
+One crate workspace (`20260913-1935-workspace-convergence`, phases 1 and 2):
+every crate under `crates/`, the producers under `packaging/deb/`, the shell
+entry points under `scripts/build/` and `scripts/gate/`. The Cargo packages
+`micad` and `apid` are now `mica-core` and `mica-apid`; executables, Debian
+packages, units, D-Bus names and installed paths are unchanged. mica-deploy
+joined with its history (b698b10dd6aa, merged unchanged, then moved into
+`crates/mica-deploy`, `crates/lifecycle-sys`, `packaging/deb/{deploy,lifecycle}`
+and `scripts/gate/`), so the pool has seven packages; `mica-runkit` is built
+alone on the static route. Not yet published.
+
 ## 2026-09-13 03:30 [progress]
 
 Created from `pkgs/mosd/` of `ybolab/mica-build` (163 commits kept through

@@ -1,8 +1,8 @@
 # 20260913-1935-workspace-convergence Merge mica-deploy in as crates and converge the repository into one crate workspace
 
-- **status**: pending
+- **status**: in_progress
 - **priority**: P1
-- **owner**: (unassigned)
+- **owner**: vtv87o8e/mica-core
 - **createdAt**: 2026-09-13 19:35
 
 ## Description
@@ -26,10 +26,21 @@ Converging the repository into one crate workspace
 
 ## Dependencies
 
-- **blocked by**: approval of `docs/plan/20260913-1935-workspace-convergence.md`;
-  the import commit agreed with the mica-deploy owner (through coordinator a0psyi7e)
+- **blocked by**: (none; plan approved 2026-09-13 19:45 UTC, import source
+  b698b10 handed over by the mica-deploy owner through coordinator a0psyi7e)
 - **blocks**: mica-build's consumer pins for `mica-deploy` and `mica-lifecycle`
 
 ## Notes
 
-- Plan: `docs/plan/20260913-1935-workspace-convergence.md` (draft, awaiting approval).
+- Plan: `docs/plan/20260913-1935-workspace-convergence.md`.
+- Identity mapping: Cargo packages `micad` -> `mica-core`, `apid` -> `mica-apid`
+  (directories follow); new packages `mica-deploy`, `lifecycle-sys`.
+  Unchanged: executables `micad`, `apid`, `mica-deploy`, `mica-runkit`,
+  `mica-mqttd`, `mica-mqtt-broker`, `mica-sftp-server`; Debian packages
+  `micad`, `mica-apid`, `mica-mqttd`, `mica-mqtt-broker`, `mica-sftp-server`,
+  `mica-deploy`, `mica-lifecycle`; units `micad.service`, `apid.service`;
+  D-Bus `com.mica.micad`; every installed path; `micad --version` and
+  `apid --version` output; the OpenAPI document.
+- The old mica-deploy repository: the user allowed its deletion
+  (2026-09-13 19:45 UTC); that belongs to its owner through the coordinator,
+  not to this repository.
