@@ -5,7 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const UI_DIST_ENV: &str = "MOS_APID_UI_DIST_DIR";
+const UI_DIST_ENV: &str = "MICA_APID_UI_DIST_DIR";
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-env-changed={UI_DIST_ENV}");

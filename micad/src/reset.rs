@@ -41,11 +41,11 @@ use micad_settings::{ProvisioningState, ResetTier, Settings, Store};
 
 /// The DATA pool root, and the variable that relocates it.
 ///
-/// `MOS_DATA_ROOT` is `rootfs/overlay/usr/lib/mica/mica-data-layout`'s own
+/// `MICA_DATA_ROOT` is `rootfs/overlay/usr/lib/mica/mica-data-layout`'s own
 /// variable, read here under the same name so a test that relocates the pool
 /// relocates it for the layout script and for the applier together, and so a
 /// device can never have the two disagree about where `/mos` is.
-pub const DATA_ROOT_ENV: &str = "MOS_DATA_ROOT";
+pub const DATA_ROOT_ENV: &str = "MICA_DATA_ROOT";
 /// Where the pool is mounted when nothing relocates it (PLAN-063 / RFCT-292:
 /// `/mos` and `/srv` are binds of this ONE pool).
 pub const DEFAULT_DATA_ROOT: &str = "/mnt/data";

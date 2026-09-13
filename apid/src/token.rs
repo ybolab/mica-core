@@ -315,7 +315,7 @@ mod tests {
             "_3f2a9c41_9d4e",
             "mos_3f2a9c41_9d4e_extra",
             "sess_3f2a9c41_9d4e",
-            "MOS_3f2a9c41_9d4e",
+            "MICA_3f2a9c41_9d4e",
             // Uppercase hex is refused rather than folded, for the reason the
             // store refuses it in the digest: one value must have one spelling.
             "mos_3F2A9C41_9d4e",

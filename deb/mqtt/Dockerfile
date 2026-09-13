@@ -18,9 +18,9 @@
 # No default for the base, for the reason build-env/deb/Dockerfile gives: a
 # driver that failed to pass the argument would otherwise build from a floating
 # tag.
-ARG MOS_BUILD_DEB
+ARG MICA_BUILD_DEB
 
-FROM ${MOS_BUILD_DEB} AS pack
+FROM ${MICA_BUILD_DEB} AS pack
 
 # pack.sh comes over as a named context rather than out of the image. It is the
 # packaging CONTRACT, shared by every producer, and build-env/deb/README.md
@@ -35,12 +35,12 @@ COPY --from=mqttd-dist mica-mqttd.service /in/dist/
 COPY --from=broker-dist mica-mqtt-broker.service /in/dist/
 COPY --from=bin mica-mqttd mica-mqtt-broker /in/bin/
 
-ARG MOS_DEB_VERSION
-ARG MOS_DEB_ARCH
+ARG MICA_DEB_VERSION
+ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
 # Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
-ARG MOS_DEB_SOURCE_REPO
-ARG MOS_DEB_SOURCE_COMMIT
+ARG MICA_DEB_SOURCE_REPO
+ARG MICA_DEB_SOURCE_COMMIT
 
 # Two staged roots and two pack.sh runs. The paths and the modes are the ones
 # rootfs/scripts/micad-install.sh writes today, so a root composed from these
@@ -78,10 +78,10 @@ RUN set -eu; \
     install -D -m 0644 /in/copyright                  /stage/broker/usr/share/doc/mica-mqtt-broker/copyright; \
     pack.sh --root /stage/mqttd --control /in/control/mica-mqttd.control \
             --maintainer-scripts /in/maintainer/mica-mqttd \
-            --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out; \
+            --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out; \
     pack.sh --root /stage/broker --control /in/control/mica-mqtt-broker.control \
             --maintainer-scripts /in/maintainer/mica-mqtt-broker \
-            --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out
+            --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out
 
 # The export stage, the shape deb/micad/Dockerfile ends in:
 # `-o type=local` writes this stage's filesystem into _out/debs/<arch>/pool/ and

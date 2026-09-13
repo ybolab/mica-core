@@ -130,9 +130,9 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
 /// `verify/src/smoke-pins.ts` reads to decide what this binary must report:
 /// one value, two readers, no copy.
 ///
-/// The commit is `MOS_BUILD_COMMIT`, passed in by `micad/hack/build-target.sh`
+/// The commit is `MICA_BUILD_COMMIT`, passed in by `micad/hack/build-target.sh`
 /// from the host. Not discovered here and no `build.rs`: inside
-/// `localhost/mos-build-rust` with that build's own mount, `git rev-parse
+/// `localhost/mica-build-rust` with that build's own mount, `git rev-parse
 /// HEAD` exits 128, because the checkout is a git worktree and `/src/.git`
 /// points at a gitdir outside the mount.
 fn version_line() -> String {
@@ -140,7 +140,7 @@ fn version_line() -> String {
         "{} {} ({})",
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
-        commit_or_unknown(option_env!("MOS_BUILD_COMMIT")),
+        commit_or_unknown(option_env!("MICA_BUILD_COMMIT")),
     )
 }
 
@@ -311,7 +311,7 @@ mod version_tests {
     }
 
     /// Absent is `unknown` and never an error, and empty counts as absent,
-    /// because `-e MOS_BUILD_COMMIT=` sets the variable to exactly that.
+    /// because `-e MICA_BUILD_COMMIT=` sets the variable to exactly that.
     #[test]
     fn a_commit_the_build_did_not_supply_reports_unknown() {
         assert_eq!(commit_or_unknown(None), UNKNOWN_COMMIT);

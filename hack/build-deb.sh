@@ -15,7 +15,7 @@
 # is handed and what may not be in it.
 #
 # THE COMPILE RUNS AT amd64 FOR BOTH TARGETS. cargo cross-compiles, so this is a
-# plain `docker run` against localhost/mos-build-rust:amd64 and needs no buildx
+# plain `docker run` against localhost/mica-build-rust:amd64 and needs no buildx
 # and no emulation. The PACKAGING runs at the target architecture, and that is
 # build-env/deb/build.sh's half.
 set -euo pipefail
@@ -136,7 +136,7 @@ DIRTY=""
 # runner checks that against what the build embedded. This is NOT the package
 # version: that is build-env/deb/version.sh's, and it is one rule for the
 # whole pool.
-MOS_BUILD_COMMIT="${MOS_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
+MICA_BUILD_COMMIT="${MICA_BUILD_COMMIT:-${COMMIT}${DIRTY}}"
 
 # Producer-private, so this producer has its own cache key and its own output
 # directory: sharing target/ with build-target.sh would let a
@@ -148,12 +148,12 @@ RELEASE_DIR="${TARGET_DIR}/${TRIPLE}/release"
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${TARGET_DIR}"
 
-mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MOS_BUILD_RUST=LOCAL_MOS_BUILD_RUST)
+mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=LOCAL_MICA_BUILD_RUST)
 [ "${#RUST_FROM[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mos-build-rust:amd64 (see its message above); it is built by \`make build-env\`, which must run before any component build that stands on it" >&2
+    echo "error: build-env/from.sh did not yield localhost/mica-build-rust:amd64 (see its message above); it is built by \`make build-env\`, which must run before any component build that stands on it" >&2
     exit 1
 }
-RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
+RUST_IMAGE="${RUST_FROM[1]#MICA_BUILD_RUST=}"
 
 # Only the producer that owns APID needs the frontend. Finish that separate
 # producer before entering the Rust-only cross-build image.
@@ -164,7 +164,7 @@ for name in "${BINARIES[@]}"; do
         bash "${WORKSPACE}/apid/ui/build.sh"
         APID_UI_ARGS=(
             -v "${APID_UI_DIST}:/build/apid-ui:ro"
-            -e "MOS_APID_UI_DIST_DIR=/build/apid-ui"
+            -e "MICA_APID_UI_DIST_DIR=/build/apid-ui"
         )
         break
     fi
@@ -174,8 +174,8 @@ done
 # reason build-target.sh gives: rustc records the paths it is given, so mounting
 # the checkout at its own path would make the binaries depend on the directory
 # the repository was cloned into.
-# mos-build-side: container-block -- the compiler is localhost/mos-build-rust's,
-# recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
+# mica-build-side: container-block -- the compiler is localhost/mica-build-rust's,
+# recorded in that image's /etc/mica-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
     --label ai-agent=true \
@@ -189,17 +189,17 @@ docker run --rm \
     -e "ELF_ARCH=${ELF_ARCH}" \
     -e "CRATES=${BINARIES[*]}" \
     -e "CARGO_TARGET_DIR=/target" \
-    -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
+    -e "MICA_BUILD_COMMIT=${MICA_BUILD_COMMIT}" \
     "${APID_UI_ARGS[@]}" \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
         set -euo pipefail
-        [ -f /etc/mos-build/rust.env ] || {
-            echo "error: this image carries no /etc/mos-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
+        [ -f /etc/mica-build/rust.env ] || {
+            echo "error: this image carries no /etc/mica-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mos-build/rust.env
-        echo "build-deb: compiling ${CRATES} for ${TARGET} with rustc ${MOS_BUILD_RUSTC} from ${MOS_BUILD_IMAGE}"
+        . /etc/mica-build/rust.env
+        echo "build-deb: compiling ${CRATES} for ${TARGET} with rustc ${MICA_BUILD_RUSTC} from ${MICA_BUILD_IMAGE}"
         # -p per crate and nothing else: the whole point of a producer is that
         # it cannot emit a binary it does not own. --locked makes Cargo.lock
         # the decision and refuses a build that would quietly update it.
@@ -217,7 +217,7 @@ docker run --rm \
             esac
         done
     '
-# mos-build-side: host
+# mica-build-side: host
 
 # What this producer OWNS, checked before what it must not hold. Without this the
 # scan below would pass over a directory the build never wrote -- an "is absent"
@@ -254,7 +254,7 @@ done
 echo "build-deb: staged ${BINARIES[*]} into ${STAGE}"
 
 # NO BUILD RECORD IS WRITTEN HERE ANY MORE. The commit these binaries report is
-# the commit pack.sh writes into the archive's Mos-Source-Commit control field,
+# the commit pack.sh writes into the archive's Mica-Source-Commit control field,
 # and rootfs/build.sh reads it out of the micad archive it installs to write
 # _out/<board>/micad-build.txt for verify/src/smoke.ts. One source of the fact,
 # carried inside the archive, so a package fetched from the registry has it

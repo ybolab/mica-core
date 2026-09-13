@@ -51,7 +51,7 @@ else
     echo "apid UI build: ${image} -> ${OUTPUT}"
 fi
 
-# mos-build-side: container-block -- the UI is built by the bun pinned as IMAGE_BUN_1
+# mica-build-side: container-block -- the UI is built by the bun pinned as IMAGE_BUN_1
 # with the source mounted read-only; a host bun produces different chunk hashes, so
 # there is deliberately no host route here
 docker run --rm \
@@ -60,7 +60,7 @@ docker run --rm \
     -v "${HERE}:/source:ro" \
     -v "${BUILD_ROOT}:/build" \
     -e HOME=/build/home \
-    -e "MOS_APID_UI_RUN_CHECKS=${RUN_CHECKS}" \
+    -e "MICA_APID_UI_RUN_CHECKS=${RUN_CHECKS}" \
     --entrypoint /bin/bash \
     "${image}" -c '
         set -euo pipefail
@@ -77,7 +77,7 @@ docker run --rm \
 
         cd /build/work
         bun install --frozen-lockfile
-        if [ "${MOS_APID_UI_RUN_CHECKS}" = 1 ]; then
+        if [ "${MICA_APID_UI_RUN_CHECKS}" = 1 ]; then
             # The UI library policy first: it is the cheapest check and the one
             # that catches a hand-written primitive or a re-styled registry
             # component before the type checker spends a minute agreeing the
@@ -95,7 +95,7 @@ docker run --rm \
         }
         find /build/work -mindepth 1 -delete
     '
-# mos-build-side: host
+# mica-build-side: host
 
 if [ "${RUN_CHECKS}" = 1 ]; then
     echo "APID UI CHECKS PASSED"

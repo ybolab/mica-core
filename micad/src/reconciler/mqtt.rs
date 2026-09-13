@@ -184,7 +184,7 @@ fn render_device_identity(device_id: Option<&str>) -> Result<String> {
             "mqtt: device identity must contain only ASCII letters, digits, '.', '_', '-' or ':'"
         );
     }
-    Ok(format!("MOS_MQTT_DEVICE_ID={device_id}\n"))
+    Ok(format!("MICA_MQTT_DEVICE_ID={device_id}\n"))
 }
 
 impl<C: UnitControl> MqttReconciler<C> {
@@ -486,7 +486,7 @@ mod tests {
     /// What `apply` renders for default `mqtt` settings.
     const GOLDEN_DEFAULTS: &str =
         "listen_address = \"127.0.0.1\"\nlisten_port = 1883\nauth_enabled = false\n";
-    const GOLDEN_IDENTITY: &str = "MOS_MQTT_DEVICE_ID=00112233445566778899aabbccddeeff\n";
+    const GOLDEN_IDENTITY: &str = "MICA_MQTT_DEVICE_ID=00112233445566778899aabbccddeeff\n";
 
     fn mqtt_settings(enabled: bool, address: &str, port: u16, auth: bool) -> MqttSettings {
         MqttSettings {

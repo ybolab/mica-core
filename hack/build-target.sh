@@ -6,7 +6,7 @@
 #   bash hack/build-target.sh aarch64-unknown-linux-gnu aarch64
 #   bash hack/build-target.sh x86_64-unknown-linux-gnu  x86-64
 #
-# The compiler is localhost/mos-build-rust's, not the host's, so docker is the
+# The compiler is localhost/mica-build-rust's, not the host's, so docker is the
 # one thing the host needs: no rustup, no cross linker, no target std. What
 # compiled these binaries is a value build-env/images.env records.
 set -euo pipefail
@@ -29,7 +29,7 @@ for p in "${WORKSPACE}/Cargo.toml" "${FROM_SH}"; do
 done
 
 command -v docker >/dev/null 2>&1 || {
-    echo "error: docker is required and not on PATH. This build runs inside localhost/mos-build-rust rather than on the host's cargo, which is what makes the compiler a value recorded in build-env/images.env instead of whatever the machine happens to have" >&2
+    echo "error: docker is required and not on PATH. This build runs inside localhost/mica-build-rust rather than on the host's cargo, which is what makes the compiler a value recorded in build-env/images.env instead of whatever the machine happens to have" >&2
     exit 1
 }
 
@@ -40,7 +40,7 @@ case "${TARGET}" in
 aarch64-*) IMAGE_ARCH=amd64 ;; # cross-built FROM an amd64 builder
 x86_64-*) IMAGE_ARCH=amd64 ;;
 *)
-    echo "error: '${TARGET}' is not a target build-env/images.env pins a Rust std for. mos-build-rust ships std for exactly two triples -- RUST_TRIPLE_AMD64 and RUST_TRIPLE_ARM64 -- and adding a third is an images.env edit (RUST_STD_SHA256_<arch>) and not an argument to this script" >&2
+    echo "error: '${TARGET}' is not a target build-env/images.env pins a Rust std for. mica-build-rust ships std for exactly two triples -- RUST_TRIPLE_AMD64 and RUST_TRIPLE_ARM64 -- and adding a third is an images.env edit (RUST_STD_SHA256_<arch>) and not an argument to this script" >&2
     exit 1
     ;;
 esac
@@ -49,12 +49,12 @@ esac
 # wrong architecture -- docker reports the first as a failed pull from a
 # registry called `localhost` and the second as a manifest error, neither of
 # which names `make build-env`.
-mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MOS_BUILD_RUST=LOCAL_MOS_BUILD_RUST)
+mapfile -t FROM_ARGS < <("${FROM_SH}" --arch="${IMAGE_ARCH}" MICA_BUILD_RUST=LOCAL_MICA_BUILD_RUST)
 [ "${#FROM_ARGS[@]}" -eq 2 ] || {
-    echo "error: build-env/from.sh did not yield localhost/mos-build-rust (see its message above)" >&2
+    echo "error: build-env/from.sh did not yield localhost/mica-build-rust (see its message above)" >&2
     exit 1
 }
-IMAGE="${FROM_ARGS[1]#MOS_BUILD_RUST=}"
+IMAGE="${FROM_ARGS[1]#MICA_BUILD_RUST=}"
 
 # The frontend is a separate, container-only producer. Its source is mounted
 # read-only and its generated tree stays outside the source checkout.
@@ -76,27 +76,27 @@ mkdir -p "${CARGO_CACHE}/registry" "${CARGO_CACHE}/git" "${WORKSPACE}/target"
 # container: this checkout is a git worktree whose `.git` is a file naming a
 # gitdir outside the mount, so git in the container reports `not a git
 # repository` even though git is installed there. An already-resolved
-# MOS_BUILD_COMMIT in the environment wins, so a release pipeline handed a commit
+# MICA_BUILD_COMMIT in the environment wins, so a release pipeline handed a commit
 # or a rebuild of an exported tarball with no .git says so rather than being told
-# it is `unknown`. An empty value is not an error: `-e MOS_BUILD_COMMIT=` sets
+# it is `unknown`. An empty value is not an error: `-e MICA_BUILD_COMMIT=` sets
 # the empty string, `option_env!` yields `Some("")`, and both crates report
 # `unknown` and still exit 0. Dirty is marked, never passed off as the clean SHA,
 # and the test is `git status --porcelain` rather than `git diff`: an
 # untracked-but-not-ignored `.rs` file is compiled in exactly like a modified
 # one.
-if [ -z "${MOS_BUILD_COMMIT:-}" ]; then
-    MOS_BUILD_COMMIT=""
+if [ -z "${MICA_BUILD_COMMIT:-}" ]; then
+    MICA_BUILD_COMMIT=""
     if command -v git >/dev/null 2>&1 &&
         git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
-        MOS_BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || true)"
-        if [ -n "${MOS_BUILD_COMMIT}" ] &&
+        MICA_BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+        if [ -n "${MICA_BUILD_COMMIT}" ] &&
             [ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]; then
-            MOS_BUILD_COMMIT="${MOS_BUILD_COMMIT}-dirty"
+            MICA_BUILD_COMMIT="${MICA_BUILD_COMMIT}-dirty"
         fi
     fi
 fi
-if [ -n "${MOS_BUILD_COMMIT}" ]; then
-    echo "micad: embedding build commit ${MOS_BUILD_COMMIT}"
+if [ -n "${MICA_BUILD_COMMIT}" ]; then
+    echo "micad: embedding build commit ${MICA_BUILD_COMMIT}"
 else
     echo "micad: no build commit could be resolved; micad and apid will report unknown" >&2
 fi
@@ -105,7 +105,7 @@ fi
 # omission. This script used to write `_out/micad-build.txt` for the smoke runner
 # to assert against; a composed root has never carried the binaries it produces.
 # They come out of the micad and mica-apid packages, whose archives carry the
-# commit they were built from in their Mos-Source-Commit control field
+# commit they were built from in their Mica-Source-Commit control field
 # (build-env/deb/pack.sh), and rootfs/build.sh reads that field into
 # `_out/<board>/micad-build.txt`. A record from here would name the commit of a
 # build whose output nothing installs, and would be indistinguishable from one
@@ -146,8 +146,8 @@ done < <(sed -n 's/^members = \[\(.*\)\]/\1/p' "${WORKSPACE}/Cargo.toml" | tr ',
 
 # `--network host` is not used and is not needed: cargo fetches through the
 # container's default network, and the only thing bound in is this repository.
-# mos-build-side: container-block -- the compiler is localhost/mos-build-rust's,
-# recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
+# mica-build-side: container-block -- the compiler is localhost/mica-build-rust's,
+# recorded in that image's /etc/mica-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
     --platform "linux/${IMAGE_ARCH}" \
@@ -159,8 +159,8 @@ docker run --rm \
     -w /src \
     -e "TARGET=${TARGET}" \
     -e "CARGO_TARGET_DIR=/target" \
-    -e "MOS_BUILD_COMMIT=${MOS_BUILD_COMMIT}" \
-    -e "MOS_APID_UI_DIST_DIR=/build/apid-ui" \
+    -e "MICA_BUILD_COMMIT=${MICA_BUILD_COMMIT}" \
+    -e "MICA_APID_UI_DIST_DIR=/build/apid-ui" \
     --entrypoint /bin/bash \
     "${IMAGE}" -c '
         set -euo pipefail
@@ -168,18 +168,18 @@ docker run --rm \
         # build log answers "which rustc compiled this" without anyone having to
         # know which image was current. An image with no record is one that
         # cannot answer that, and build-env/build.sh refuses to tag one.
-        [ -f /etc/mos-build/rust.env ] || {
-            echo "error: this image carries no /etc/mos-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
+        [ -f /etc/mica-build/rust.env ] || {
+            echo "error: this image carries no /etc/mica-build/rust.env, so what compiled these binaries cannot be read back out of it" >&2
             exit 1
         }
-        . /etc/mos-build/rust.env
-        echo "micad: building ${TARGET} with rustc ${MOS_BUILD_RUSTC} from ${MOS_BUILD_IMAGE} (RUST_SHA256=${MOS_BUILD_RUST_SHA256})"
+        . /etc/mica-build/rust.env
+        echo "micad: building ${TARGET} with rustc ${MICA_BUILD_RUSTC} from ${MICA_BUILD_IMAGE} (RUST_SHA256=${MICA_BUILD_RUST_SHA256})"
         # --locked makes Cargo.lock the decision and refuses a build that
         # would quietly update it.
         cargo build --release --locked --target "${TARGET}" \
             -p micad -p apid -p mica-mqttd -p mica-mqtt-broker
     '
-# mos-build-side: host
+# mica-build-side: host
 
 # The ELF check is per binary, not just the first: a target that silently
 # produced a host-arch artifact for one crate would otherwise ship and fail at
@@ -191,7 +191,7 @@ docker run --rm \
 # rootfs/build.sh is about to copy from, so an export that dropped a file
 # or a mount that wrote somewhere unexpected is caught. On the host it would
 # make `file` a host requirement, and docker is the only one this script has;
-# the `file` it uses is mos-build-base's, whose version images.env pins a floor
+# the `file` it uses is mica-build-base's, whose version images.env pins a floor
 # for.
 docker run --rm \
     --platform "linux/${IMAGE_ARCH}" \

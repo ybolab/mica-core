@@ -340,7 +340,7 @@ pub struct DaemonIdentity {
     pub name: &'static str,
     /// `CARGO_PKG_VERSION`.
     pub version: &'static str,
-    /// `MOS_BUILD_COMMIT`, when the build supplied one.
+    /// `MICA_BUILD_COMMIT`, when the build supplied one.
     pub commit: Option<&'static str>,
 }
 
@@ -351,7 +351,7 @@ impl DaemonIdentity {
         Self {
             name: env!("CARGO_PKG_NAME"),
             version: env!("CARGO_PKG_VERSION"),
-            commit: option_env!("MOS_BUILD_COMMIT").filter(|commit| !commit.trim().is_empty()),
+            commit: option_env!("MICA_BUILD_COMMIT").filter(|commit| !commit.trim().is_empty()),
         }
     }
 }

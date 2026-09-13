@@ -46,13 +46,13 @@ use crate::model::ResetTier;
 pub const DEFAULT_DECLARATION_PATH: &str = "/usr/lib/mica/recovery-actions.conf";
 
 /// Test hook relocating [`DEFAULT_DECLARATION_PATH`].
-pub const DECLARATION_PATH_ENV: &str = "MOS_RECOVERY_DECLARATION_PATH";
+pub const DECLARATION_PATH_ENV: &str = "MICA_RECOVERY_DECLARATION_PATH";
 
 /// Where the recovery intent is read from.
 pub const DEFAULT_CMDLINE_PATH: &str = "/proc/cmdline";
 
 /// Test hook relocating [`DEFAULT_CMDLINE_PATH`].
-pub const CMDLINE_PATH_ENV: &str = "MOS_RECOVERY_CMDLINE_PATH";
+pub const CMDLINE_PATH_ENV: &str = "MICA_RECOVERY_CMDLINE_PATH";
 
 /// The kernel command-line parameter a board's mechanism sets.
 ///
@@ -95,7 +95,7 @@ pub const TIER_NONE: &str = "none";
 pub const DEFAULT_PRESENCE_MARKER_PATH: &str = "/run/mica/presence";
 
 /// Test hook relocating [`DEFAULT_PRESENCE_MARKER_PATH`].
-pub const PRESENCE_MARKER_PATH_ENV: &str = "MOS_PRESENCE_MARKER_PATH";
+pub const PRESENCE_MARKER_PATH_ENV: &str = "MICA_PRESENCE_MARKER_PATH";
 
 /// The audit event a mapped recovery action is recorded under, before the
 /// mechanism is appended: see [`recovery_action_event`].

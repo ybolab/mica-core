@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
 /// What the commit is reported as when the build supplied none.
 ///
 /// An absent commit is a value, not a failure: a `--version` that exited
-/// non-zero when `MOS_BUILD_COMMIT` is unset would turn "we do not know which
+/// non-zero when `MICA_BUILD_COMMIT` is unset would turn "we do not know which
 /// commit" into "this binary is broken". The smoke runner reads the same
 /// distinction from the other side, asserting the commit only when the build
 /// recorded one.
@@ -127,7 +127,7 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
 /// The version is `CARGO_PKG_VERSION`, the same `Cargo.toml` value
 /// `verify/src/smoke-pins.ts` reads to decide what this binary must report,
 /// so the comparison has two readers of one value. The commit is
-/// `MOS_BUILD_COMMIT`, resolved on the host by `micad/hack/build-target.sh`:
+/// `MICA_BUILD_COMMIT`, resolved on the host by `micad/hack/build-target.sh`:
 /// there is deliberately no `build.rs` shelling out to git, because the build
 /// mount is a git worktree and `git rev-parse HEAD` inside it fails with
 /// `fatal: not a git repository`. Embedding a sha costs no reproducibility --
@@ -139,7 +139,7 @@ fn version_line() -> String {
         "{} {} ({})",
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
-        commit_or_unknown(option_env!("MOS_BUILD_COMMIT")),
+        commit_or_unknown(option_env!("MICA_BUILD_COMMIT")),
     )
 }
 
@@ -162,7 +162,7 @@ async fn serve() -> anyhow::Result<()> {
     // The `/mos/config/` namespace. Relocatable for the same reason the
     // settings path is — the bus tests run a real daemon against a temporary
     // tree — and by a variable of its own rather than derived from
-    // `MOS_DATA_ROOT`, because what micad reads is the `/mos` BIND and what
+    // `MICA_DATA_ROOT`, because what micad reads is the `/mos` BIND and what
     // `mica-data-layout` and `reset.rs` write is the pool underneath it.
     let config_dir = std::env::var("MOSD_CONFIG_DIR")
         .unwrap_or_else(|_| micad_settings::DEFAULT_CONFIG_DIR.to_string());
@@ -557,7 +557,7 @@ mod tests {
     }
 
     /// Absent is `unknown`, never an error -- and empty counts as absent,
-    /// because `-e MOS_BUILD_COMMIT=` sets the variable to exactly that.
+    /// because `-e MICA_BUILD_COMMIT=` sets the variable to exactly that.
     #[test]
     fn a_commit_the_build_did_not_supply_reports_unknown() {
         assert_eq!(commit_or_unknown(None), UNKNOWN_COMMIT);

@@ -42,12 +42,12 @@ pub const QUADLET_MOUNT_UNIT: &str = "etc-containers-systemd.mount";
 /// that path and Quadlet never looks at it.
 const DEFAULT_QUADLET_DIR: &str = "/etc/containers/systemd";
 /// Override for tests.
-pub const QUADLET_DIR_ENV: &str = "MOS_QUADLET_DIR";
+pub const QUADLET_DIR_ENV: &str = "MICA_QUADLET_DIR";
 
 /// Where systemd leaves what its generators produced.
 const DEFAULT_GENERATOR_DIR: &str = "/run/systemd/generator";
 /// Override for tests.
-pub const GENERATOR_DIR_ENV: &str = "MOS_SYSTEMD_GENERATOR_DIR";
+pub const GENERATOR_DIR_ENV: &str = "MICA_SYSTEMD_GENERATOR_DIR";
 
 /// Marker identifying a unit as one Quadlet generated for this image.
 ///

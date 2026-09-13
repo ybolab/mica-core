@@ -44,7 +44,7 @@ if grep -Eq 'bun (install|run)|command -v bun' "${CHECK_SCRIPT}"; then
     fail "the frontend quality gate still owns a second Bun execution path"
 fi
 
-grep -q 'MOS_APID_UI_DIST_DIR' "${ROOT}/apid/build.rs" ||
+grep -q 'MICA_APID_UI_DIST_DIR' "${ROOT}/apid/build.rs" ||
     fail "apid/build.rs does not require the generated UI directory"
 
 for entry in \
@@ -54,7 +54,7 @@ for entry in \
 do
     grep -q 'apid/ui/build.sh' "${ROOT}/${entry}" ||
         fail "${entry} does not build the UI before Cargo"
-    grep -q 'MOS_APID_UI_DIST_DIR' "${ROOT}/${entry}" ||
+    grep -q 'MICA_APID_UI_DIST_DIR' "${ROOT}/${entry}" ||
         fail "${entry} does not pass the generated UI directory to Cargo"
     if grep -q 'apid/ui/dist' "${ROOT}/${entry}"; then
         fail "${entry} still consumes generated assets from the UI source tree"
@@ -69,7 +69,7 @@ do
         fail "${entry} does not mount repository source read-only"
     grep -q -- '-v "${APID_UI_DIST}:/build/apid-ui:ro"' "${ROOT}/${entry}" ||
         fail "${entry} does not mount generated UI assets read-only"
-    grep -q 'MOS_APID_UI_DIST_DIR=/build/apid-ui' "${ROOT}/${entry}" ||
+    grep -q 'MICA_APID_UI_DIST_DIR=/build/apid-ui' "${ROOT}/${entry}" ||
         fail "${entry} does not name the isolated UI mount for Cargo"
     grep -q 'CARGO_TARGET_DIR=/target' "${ROOT}/${entry}" ||
         fail "${entry} does not move Cargo writes out of the source tree"

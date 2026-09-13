@@ -1701,7 +1701,7 @@ timezone = "Europe/Berlin"
         let dir = TempDir::new().expect("tempdir");
         let store = store_in(dir.path());
         let profile = dir.path().join("profile.conf");
-        fs::write(&profile, "MOS_PROFILE=prod\n").expect("write profile");
+        fs::write(&profile, "MICA_PROFILE=prod\n").expect("write profile");
         let root = stage(
             dir.path(),
             Source::Boot,
@@ -1733,7 +1733,7 @@ timezone = "Europe/Berlin"
         let dir = TempDir::new().expect("tempdir");
         let store = store_in(dir.path());
         let profile = dir.path().join("profile.conf");
-        fs::write(&profile, "MOS_PROFILE=prod\n").expect("write profile");
+        fs::write(&profile, "MICA_PROFILE=prod\n").expect("write profile");
         let root = stage(dir.path(), Source::Media, "version = 9\n");
         let mut settings = Settings::default();
 

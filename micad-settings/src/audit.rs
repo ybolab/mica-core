@@ -39,7 +39,7 @@ pub const AUDIT_LOG_PREVIOUS: &str = "audit.log.1";
 pub const DEFAULT_AUDIT_RING_DIR: &str = "/var/lib/mica/apid";
 
 /// Test hook relocating [`DEFAULT_AUDIT_RING_DIR`].
-pub const AUDIT_RING_DIR_ENV: &str = "MOS_AUDIT_RING_DIR";
+pub const AUDIT_RING_DIR_ENV: &str = "MICA_AUDIT_RING_DIR";
 
 /// The ring directory this device uses, honouring the test hook.
 #[must_use]

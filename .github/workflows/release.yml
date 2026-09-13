@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           make build-env
-          MOS_BUILD_PLATFORM=linux/arm64 make build-env
+          MICA_BUILD_PLATFORM=linux/arm64 make build-env
       - name: Prepare the check container network
         run: docker network inspect traefik >/dev/null 2>&1 || docker network create --label ai-agent=true traefik
       - name: Lint, the UI build contract and the Rust gate

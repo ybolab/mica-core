@@ -38,7 +38,7 @@ pub const SEEDING_GENERATION: u32 = 1;
 pub const DEFAULT_PROFILE_PATH: &str = "/usr/lib/mica/profile.conf";
 
 /// Key read out of the profile file.
-const PROFILE_KEY: &str = "MOS_PROFILE";
+const PROFILE_KEY: &str = "MICA_PROFILE";
 
 /// Prefix of a seeded hostname.
 const HOSTNAME_PREFIX: &str = "mos-";
@@ -166,7 +166,7 @@ pub fn ensure_provisioned(
 
 /// Read the image profile from a shell-style `KEY=value` file.
 ///
-/// Fails closed: a file that is missing, unreadable, carries no `MOS_PROFILE`
+/// Fails closed: a file that is missing, unreadable, carries no `MICA_PROFILE`
 /// key or carries a value this build does not know resolves to
 /// [`Profile::Prod`] with a warning, and the comparison is case-sensitive, so
 /// `DEV` is not `dev`. No seeded value currently depends on the answer — both
@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn prod_profile(dir: &Path) -> PathBuf {
-        write_profile(dir, "MOS_PROFILE=prod\n")
+        write_profile(dir, "MICA_PROFILE=prod\n")
     }
 
     fn settings_path(dir: &Path) -> PathBuf {
@@ -454,11 +454,11 @@ mod tests {
 
         // The one input that opens SSH.
         assert_eq!(
-            read_profile(&write_profile(dir.path(), "MOS_PROFILE=dev\n")),
+            read_profile(&write_profile(dir.path(), "MICA_PROFILE=dev\n")),
             Profile::Dev
         );
         assert_eq!(
-            read_profile(&write_profile(dir.path(), "MOS_PROFILE=prod\n")),
+            read_profile(&write_profile(dir.path(), "MICA_PROFILE=prod\n")),
             Profile::Prod
         );
 
@@ -466,16 +466,16 @@ mod tests {
         for body in [
             "",
             "\n\n",
-            "# MOS_PROFILE=dev\n",
-            "MOS_PROFILE=\n",
-            "MOS_PROFILE=DEV\n",
-            "MOS_PROFILE=Dev\n",
-            "MOS_PROFILE=development\n",
-            "MOS_PROFILE=devel\n",
-            "MOS_PROFILE = dev extra\n",
-            "MOS_VARIANT=cx3576\n",
+            "# MICA_PROFILE=dev\n",
+            "MICA_PROFILE=\n",
+            "MICA_PROFILE=DEV\n",
+            "MICA_PROFILE=Dev\n",
+            "MICA_PROFILE=development\n",
+            "MICA_PROFILE=devel\n",
+            "MICA_PROFILE = dev extra\n",
+            "MICA_VARIANT=cx3576\n",
             "MOSPROFILE=dev\n",
-            "MOS_PROFILE_EXTRA=dev\n",
+            "MICA_PROFILE_EXTRA=dev\n",
             "\u{0}\u{1}garbage\u{2}\n",
         ] {
             let path = write_profile(dir.path(), body);
@@ -505,18 +505,18 @@ mod tests {
             dir.path(),
             "# image profile\n\
              \n\
-             MOS_VARIANT=cx3576\n\
-             MOS_PROFILE=\"dev\"\n",
+             MICA_VARIANT=cx3576\n\
+             MICA_PROFILE=\"dev\"\n",
         );
         assert_eq!(read_profile(&path), Profile::Dev);
 
-        let path = write_profile(dir.path(), "MOS_PROFILE='dev'\n");
+        let path = write_profile(dir.path(), "MICA_PROFILE='dev'\n");
         assert_eq!(read_profile(&path), Profile::Dev);
 
         // Last assignment wins, as a shell would evaluate it.
-        let path = write_profile(dir.path(), "MOS_PROFILE=dev\nMOS_PROFILE=prod\n");
+        let path = write_profile(dir.path(), "MICA_PROFILE=dev\nMOS_PROFILE=prod\n");
         assert_eq!(read_profile(&path), Profile::Prod);
-        let path = write_profile(dir.path(), "MOS_PROFILE=prod\nMOS_PROFILE=dev\n");
+        let path = write_profile(dir.path(), "MICA_PROFILE=prod\nMOS_PROFILE=dev\n");
         assert_eq!(read_profile(&path), Profile::Dev);
     }
 
@@ -528,7 +528,7 @@ mod tests {
     // dropping it would leave the fail-closed direction untested.
     #[test]
     fn neither_profile_seeds_ssh_on() {
-        for (body, expected) in [("MOS_PROFILE=dev\n", false), ("MOS_PROFILE=prod\n", false)] {
+        for (body, expected) in [("MICA_PROFILE=dev\n", false), ("MICA_PROFILE=prod\n", false)] {
             let dir = TempDir::new().expect("tempdir");
             let store = store_in(dir.path());
             let profile = write_profile(dir.path(), body);

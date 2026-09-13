@@ -20,17 +20,17 @@ Type=simple
 # To point the bridge at a broker, write /var/lib/mica/mqttd.env (a STATE-backed
 # bind, so it survives a reboot and an A/B update) and restart the unit:
 #
-#     MOS_MQTT_BROKER_HOST=10.0.0.2
-#     MOS_MQTT_BROKER_PORT=1883
-#     MOS_MQTT_CLIENT_ID=mos-<serial>
-#     MOS_MQTT_MODE=read-only
+#     MICA_MQTT_BROKER_HOST=10.0.0.2
+#     MICA_MQTT_BROKER_PORT=1883
+#     MICA_MQTT_CLIENT_ID=mos-<serial>
+#     MICA_MQTT_MODE=read-only
 #
 # The leading `-` on EnvironmentFile makes an absent file a non-error: an
 # unconfigured device runs on the defaults below rather than failing to start.
-Environment=MOS_MQTT_BROKER_HOST=localhost
-Environment=MOS_MQTT_BROKER_PORT=1883
-Environment=MOS_MQTT_CLIENT_ID=mica-mqttd
-Environment=MOS_MQTT_MODE=read-only
+Environment=MICA_MQTT_BROKER_HOST=localhost
+Environment=MICA_MQTT_BROKER_PORT=1883
+Environment=MICA_MQTT_CLIENT_ID=mica-mqttd
+Environment=MICA_MQTT_MODE=read-only
 EnvironmentFile=-/var/lib/mica/mqttd.env
 # For an authenticated broker, provision /var/lib/mica/mqttd-credentials.json
 # with {"username":"<enrolled user>","password":"<matching password>"}.
@@ -41,15 +41,15 @@ EnvironmentFile=-/var/lib/mica/mqttd.env
 EnvironmentFile=/run/mica/mqttd-device.env
 
 # Read-only by default: the bridge is a data publisher unless someone
-# deliberately makes it a control path (MOS_MQTT_MODE=full carries W topics
+# deliberately makes it a control path (MICA_MQTT_MODE=full carries W topics
 # through to SetValue). The default is restated in the binary's own clap
 # default, so a wiped environment cannot silently promote the bridge.
 ExecStart=/usr/bin/mica-mqttd \
-    --device-id ${MOS_MQTT_DEVICE_ID} \
-    --mode ${MOS_MQTT_MODE} \
-    --broker-host ${MOS_MQTT_BROKER_HOST} \
-    --broker-port ${MOS_MQTT_BROKER_PORT} \
-    --client-id ${MOS_MQTT_CLIENT_ID}
+    --device-id ${MICA_MQTT_DEVICE_ID} \
+    --mode ${MICA_MQTT_MODE} \
+    --broker-host ${MICA_MQTT_BROKER_HOST} \
+    --broker-port ${MICA_MQTT_BROKER_PORT} \
+    --client-id ${MICA_MQTT_CLIENT_ID}
 Restart=on-failure
 RestartSec=5
 

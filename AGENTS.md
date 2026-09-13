@@ -24,7 +24,7 @@ the fast path; everything else waits for explicit approval such as `proceed`.
 
 ### Project-specific facts
 
-- Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the pinned `mos-build-rust` image; the UI in the Bun pinned by digest as `IMAGE_BUN_1` in `build-env/images.env`; the host carries no cargo
+- Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the pinned `mica-build-rust` image; the UI in the Bun pinned by digest as `IMAGE_BUN_1` in `build-env/images.env`; the host carries no cargo
 - The build substrate is `build-env/`, the `mica-build-env` source pin (`deps/sources/mica-build-env.json`, fetched by `make deps`); `hack/build-deb.sh`, `hack/build-target.sh`, `hack/check.sh` and the producers under `deb/` derive the repository as their own root and refuse a missing substrate by name
 - Products: four Debian packages per architecture -- `micad`, `mica-apid` (which also ships `/usr/share/mica-apid/openapi.json`), `mica-mqttd`, `mica-mqtt-broker` -- versioned `VERSION+git<commit12>-1` (every crate's `[package] version` must equal `VERSION`; `hack/check.sh` asserts it) and published as the GitHub Release `build-<commit12>` of `ybolab/micad`; the assembly (`mica-build`) imports them through `deps/packages/`
 - The API harness that boots the assembled image and drives apid over a socket lives in the assembly (`mica-build:tests/apid-api/`); its build-time half pins phase literals against the OpenAPI document the `mica-apid` archive ships

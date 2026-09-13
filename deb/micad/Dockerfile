@@ -15,9 +15,9 @@
 # No default for the base, for the reason build-env/deb/Dockerfile gives: a
 # driver that failed to pass the argument would otherwise build from a floating
 # tag.
-ARG MOS_BUILD_DEB
+ARG MICA_BUILD_DEB
 
-FROM ${MOS_BUILD_DEB} AS pack
+FROM ${MICA_BUILD_DEB} AS pack
 
 # pack.sh comes over as a named context rather than out of the image. It is the
 # packaging CONTRACT, shared by every producer, and build-env/deb/README.md
@@ -32,12 +32,12 @@ COPY --from=bin micad apid /in/bin/
 # The OpenAPI document, staged beside the binaries by prepare.sh.
 COPY --from=bin openapi.json /in/openapi.json
 
-ARG MOS_DEB_VERSION
-ARG MOS_DEB_ARCH
+ARG MICA_DEB_VERSION
+ARG MICA_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
 # Provenance, written into the control file by pack.sh; see build-env/deb/README.md.
-ARG MOS_DEB_SOURCE_REPO
-ARG MOS_DEB_SOURCE_COMMIT
+ARG MICA_DEB_SOURCE_REPO
+ARG MICA_DEB_SOURCE_COMMIT
 
 # Two staged roots and two pack.sh runs. The paths, the modes and the
 # enablement links are the ones rootfs/scripts/micad-install.sh writes today,
@@ -75,9 +75,9 @@ RUN set -eu; \
     ln -s /usr/lib/systemd/system/apid.service \
           /stage/apid/etc/systemd/system/multi-user.target.wants/apid.service; \
     pack.sh --root /stage/micad --control /in/control/micad.control \
-            --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out; \
+            --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out; \
     pack.sh --root /stage/apid --control /in/control/mica-apid.control \
-            --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out
+            --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out
 
 # The export stage, the shape pkgs/mica-deploy/Dockerfile and
 # mica-podman:Dockerfile end in: `-o type=local` writes this stage's

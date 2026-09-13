@@ -74,7 +74,7 @@ owning one path.
 ## The two routes
 
 The compile runs at **amd64 for both architectures**: `cargo` cross-compiles,
-so it is a plain `docker run` against `localhost/mos-build-rust:amd64` with
+so it is a plain `docker run` against `localhost/mica-build-rust:amd64` with
 `--target x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`, and needs
 no buildx and no emulation.
 
@@ -89,7 +89,7 @@ That builder cannot resolve a `localhost/*` tag, so the base is handed over as
 an OCI layout by `build-env/from.sh --contexts=`, exactly as
 `pkgs/rauc/build.sh` does it.
 
-`pack.sh` is not baked into `mos-build-deb`. Each producer Dockerfile takes it
+`pack.sh` is not baked into `mica-build-deb`. Each producer Dockerfile takes it
 through the `packer` named build context, which is what lets an edit to the
 packer take effect without rebuilding the builder family.
 

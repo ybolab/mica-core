@@ -13,7 +13,7 @@ $(error build-env/ is empty: the build substrate is fetched at its pin from ybol
 endif
 endif
 
-MOS_ARCH ?= arm64
+MICA_ARCH ?= arm64
 
 .PHONY: help deps deps-check deps-bump build-env rust-gate dbus-policy-test apid-ui-build-contract-test deb pool package-gate preflight publish lint check
 
@@ -24,7 +24,7 @@ help:
 	@echo "  rust-gate           hack/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
 	@echo "  dbus-policy-test    prove the shipped micad D-Bus policy is root-only against a real dbus-daemon (needs dbus-daemon on the host)"
 	@echo "  apid-ui-build-contract-test  the built-in SPA builds as ignored production assets in the pinned Bun image"
-	@echo "  deb                 both producers for \$$MOS_ARCH into _out/debs/\$$MOS_ARCH/pool (MOS_ARCH=amd64|arm64)"
+	@echo "  deb                 both producers for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
 	@echo "  pool                both producers, both architectures, indexed"
 	@echo "  package-gate        the package gate over this repository's pool"
 	@echo "  publish             the pool as the GitHub Release build-<commit12> of this commit"
@@ -55,8 +55,8 @@ preflight:
 	bash build-env/deb/preflight.sh
 
 deb: preflight
-	bash build-env/deb/build.sh --producer micad --arch $(MOS_ARCH)
-	bash build-env/deb/build.sh --producer mqtt --arch $(MOS_ARCH)
+	bash build-env/deb/build.sh --producer micad --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
 
 pool: preflight
 	bash build-env/deb/build.sh --producer micad --arch amd64
