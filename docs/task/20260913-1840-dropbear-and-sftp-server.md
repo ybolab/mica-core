@@ -120,3 +120,14 @@ Moving micad to dropbear and adding the sftp-server package
   a container that has one (adding openssh-client to that image is optional).
 - Own CI (cc4a3f9 and its parents f3de5c6, 1c7442a) sit below the runtime
   commits, so they can be published without them.
+
+### Own CI published (2026-09-13, user direction to push and publish)
+
+- Pushed cc4a3f9 then 74235c3 (the D-Bus policy step now runs as root) to
+  origin and gitea main. CI run 34781861899 failed only at that step; run
+  34783068970 passed every step and published
+  ghcr.io/ybolab/mica-core:pool.amd64.build-74235c35ddf5
+  (sha256:5935a824...0d7a) and pool.arm64.build-74235c35ddf5
+  (sha256:60f724fa...c89), four archives each, read back anonymously.
+- These artifacts carry the four pre-convergence packages; the Dropbear,
+  convergence and naming commits on local main are not published.
