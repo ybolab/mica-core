@@ -514,9 +514,9 @@ mod tests {
         assert_eq!(read_profile(&path), Profile::Dev);
 
         // Last assignment wins, as a shell would evaluate it.
-        let path = write_profile(dir.path(), "MICA_PROFILE=dev\nMOS_PROFILE=prod\n");
+        let path = write_profile(dir.path(), "MICA_PROFILE=dev\nMICA_PROFILE=prod\n");
         assert_eq!(read_profile(&path), Profile::Prod);
-        let path = write_profile(dir.path(), "MICA_PROFILE=prod\nMOS_PROFILE=dev\n");
+        let path = write_profile(dir.path(), "MICA_PROFILE=prod\nMICA_PROFILE=dev\n");
         assert_eq!(read_profile(&path), Profile::Dev);
     }
 
