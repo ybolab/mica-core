@@ -568,6 +568,42 @@ fn stalled_transfer_is_abandoned() {
 }
 
 #[test]
+fn trickled_response_head_is_abandoned() {
+    use std::io::{Read, Write};
+    let started = std::time::Instant::now();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let source = format!("http://{}/v1/manifest.json", listener.local_addr().unwrap());
+    // One header byte every two seconds: never silent for a read timeout,
+    // never a complete head, far below the low-speed floor.
+    let _server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        for byte in b"HTTP/1.1 200 OK\r\nX-Padding: "
+            .iter()
+            .chain([b'a'; 64].iter())
+        {
+            if stream.write_all(&[*byte]).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+    let (dir, store) = fixture();
+    let keys = [[0; 32]];
+    let Err(error) = acquisition(&dir, &store, &keys).check(&source, "stable", NOW) else {
+        panic!("a trickled response head was accepted");
+    };
+    assert!(format!("{error:#}").contains("too slow"), "{error:#}");
+    let elapsed = started.elapsed().as_secs();
+    assert!((29..45).contains(&elapsed), "abandoned after {elapsed}s");
+}
+
+#[test]
 fn https_transfer_verifies_the_server_certificate() {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     let certificate =

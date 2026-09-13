@@ -362,7 +362,7 @@ impl Acquisition<'_> {
 
 /// Connection establishment bound, per resolved address.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Whole-transfer bound, checked between reads.
+/// Whole-transfer bound, checked before every socket read and write.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1800);
 /// A transfer averaging under this many bytes per second over one window is
 /// abandoned; a socket silent for a whole window is abandoned at once.
@@ -430,6 +430,11 @@ fn transfer_once(
         .context("component transfer could not connect")?;
     address.set_read_timeout(Some(LOW_SPEED_WINDOW))?;
     address.set_write_timeout(Some(LOW_SPEED_WINDOW))?;
+    let socket = Paced {
+        stream: address,
+        started,
+        window: (Instant::now(), 0),
+    };
     let mut request = format!(
         "GET {}{} HTTP/1.1\r\nHost: {}{}\r\nUser-Agent: mica-deploy\r\nAccept: */*\r\n",
         url.path(),
@@ -450,7 +455,6 @@ fn transfer_once(
         path,
         offset,
         limit,
-        started,
     };
     if url.scheme() == "https" {
         let name = match host {
@@ -459,9 +463,9 @@ fn transfer_once(
             url::Host::Ipv6(ip) => ServerName::from(std::net::IpAddr::V6(ip)),
         };
         let connection = rustls::ClientConnection::new(tls_config()?, name)?;
-        transfer.run(rustls::StreamOwned::new(connection, address))
+        transfer.run(rustls::StreamOwned::new(connection, socket))
     } else {
-        transfer.run(address)
+        transfer.run(socket)
     }
 }
 
@@ -483,12 +487,57 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>> {
     ))
 }
 
+/// The socket beneath TLS and HTTP framing, so the transfer bounds hold for the
+/// response head, chunk framing and body alike: the whole-transfer deadline is
+/// checked before every read and write, and a window averaging under
+/// [`LOW_SPEED_BYTES`] per second abandons the connection.
+struct Paced {
+    stream: TcpStream,
+    started: Instant,
+    window: (Instant, u64),
+}
+
+impl Paced {
+    fn deadline(&self) -> std::io::Result<()> {
+        if self.started.elapsed() < TRANSFER_TIMEOUT {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("component transfer timed out"))
+        }
+    }
+}
+
+impl Read for Paced {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.deadline()?;
+        let count = self.stream.read(buffer)?;
+        self.window.1 += count as u64;
+        if count > 0 && self.window.0.elapsed() >= LOW_SPEED_WINDOW {
+            if self.window.1 < LOW_SPEED_BYTES * LOW_SPEED_WINDOW.as_secs() {
+                return Err(std::io::Error::other("component transfer too slow"));
+            }
+            self.window = (Instant::now(), 0);
+        }
+        Ok(count)
+    }
+}
+
+impl Write for Paced {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.deadline()?;
+        self.stream.write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 struct Transfer<'a> {
     request: &'a str,
     path: &'a Path,
     offset: u64,
     limit: u64,
-    started: Instant,
 }
 
 impl Transfer<'_> {
@@ -568,13 +617,8 @@ impl Transfer<'_> {
         };
         let mut written = self.offset;
         let mut received = 0_u64;
-        let mut window = (Instant::now(), 0_u64);
         let mut buffer = vec![0; 65536];
         loop {
-            ensure!(
-                self.started.elapsed() < TRANSFER_TIMEOUT,
-                "component transfer timed out"
-            );
             let count = match body.read(&mut buffer) {
                 Ok(count) => count,
                 Err(error)
@@ -594,14 +638,6 @@ impl Transfer<'_> {
             received += count as u64;
             ensure!(written <= self.limit, "transfer exceeded byte bound");
             output.write_all(&buffer[..count])?;
-            window.1 += count as u64;
-            if window.0.elapsed() >= LOW_SPEED_WINDOW {
-                ensure!(
-                    window.1 >= LOW_SPEED_BYTES * LOW_SPEED_WINDOW.as_secs(),
-                    "component transfer too slow"
-                );
-                window = (Instant::now(), 0);
-            }
         }
         if !chunked && let Some(length) = length {
             ensure!(received == length, "component transfer interrupted");
