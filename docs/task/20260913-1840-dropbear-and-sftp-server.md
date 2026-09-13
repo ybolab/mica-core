@@ -89,3 +89,20 @@ Moving micad to dropbear and adding the sftp-server package
   interop tests run in the gate instead of skipping.
 
 - complete: Implemented and verified on ae513fb; in review
+
+### Follow-up 2026-09-13 (coordinator decisions)
+
+- Root policy confirmed: `-w` for permitRootLogin=false, `-s` for effective
+  password authentication off, never `-g`. Dropbear ships disabled on both
+  profiles; micad enables and starts it at runtime after writing the files.
+- Added: a unit control that observes the files at each call proves the env
+  file and both key files are complete before enable, start and restart; a
+  `failed` dropbear.service is reset before it is started (RED first), as the
+  mqtt and time reconcilers do; every permitRootLogin x passwordAuthentication
+  x transient-password combination through `apply`; a port change across IPv4,
+  IPv6 and an entry with its own port.
+- Evidence correction: the pinned Debian dropbear lists `-D <directory>` for
+  another authorized_keys location; micad does not pass it.
+- Service-layer session survival across restart is mica-system's evidence
+  (7faafef, KillMode=process); a micad-driven guest check is still open.
+- `make check` 1109/1109.

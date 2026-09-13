@@ -7,9 +7,11 @@
 ## Context
 
 `dropbear-bin` 2025.89 replaces OpenSSH on the device. It has no
-configuration file: every policy is a command-line flag, it reads only
-`~/.ssh/authorized_keys` (after checking that `~/.ssh` and the home are owned
-by the user or root and not group/world-writable), and its sftp subsystem
+configuration file: every policy is a command-line flag, it reads
+`~/.ssh/authorized_keys` unless `-D <directory>` names another location (the
+pinned Debian build lists `-D`; micad does not pass it), after checking that
+`~/.ssh` and the home are owned by the user or root and not
+group/world-writable, and its sftp subsystem
 execs `/usr/lib/sftp-server` as the logged-in user. It re-reads nothing on
 SIGHUP, so a changed flag needs a restart.
 

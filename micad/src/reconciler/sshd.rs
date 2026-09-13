@@ -5,8 +5,9 @@
 //! - `~/.ssh/authorized_keys` of every managed login account is rendered from
 //!   `access.ssh.authorizedKeys`, after the list has been re-validated: one
 //!   file per account, every one holding the same key list, owned by the
-//!   account, 0600 in a 0700 `~/.ssh`. That is the only file dropbear reads
-//!   keys from.
+//!   account, 0600 in a 0700 `~/.ssh`. That is dropbear's default key file;
+//!   the pinned build also takes `-D <directory>` for another location, and
+//!   micad does not pass it.
 //! - `/run/mica/dropbear.env` is rendered from `access.ssh`: exactly one line,
 //!   `DROPBEAR_ARGS="..."`, which `dropbear.service` (mica-system) reads through
 //!   `EnvironmentFile=` and appends to its `ExecStart`. dropbear has no
@@ -43,6 +44,9 @@ use crate::transient;
 
 /// Unit implementing the SSH server, shipped by mica-system.
 const SSH_UNIT: &str = "dropbear.service";
+/// `ActiveState` of a unit that exited unsuccessfully, possibly inside its
+/// start-limit window.
+const FAILED_STATE: &str = "failed";
 /// Environment file carrying dropbear's arguments.
 const DEFAULT_ENVIRONMENT_FILE: &str = "/run/mica/dropbear.env";
 /// Account database the managed accounts' ids and homes are read from.
@@ -530,7 +534,8 @@ impl<C: UnitControl> SshdReconciler<C> {
             if !is_enabled(&self.control.unit_file_state(SSH_UNIT).await?) {
                 self.control.enable(SSH_UNIT).await?;
             }
-            if is_active(&self.control.active_state(SSH_UNIT).await?) {
+            let active_state = self.control.active_state(SSH_UNIT).await?;
+            if is_active(&active_state) {
                 if config_changed {
                     self.control.restart(SSH_UNIT).await.with_context(|| {
                         format!(
@@ -540,6 +545,14 @@ impl<C: UnitControl> SshdReconciler<C> {
                     })?;
                 }
             } else {
+                // The mqtt.rs start-limit amendment: dropbear.service restarts
+                // on failure, so a server that could not bind can be `failed`
+                // inside its start-limit window, where systemd refuses start
+                // jobs. Clear the failure first -- only when there is one, so
+                // the call log still says which apply rescued it.
+                if active_state == FAILED_STATE {
+                    self.control.reset_failed(SSH_UNIT).await?;
+                }
                 self.control.start(SSH_UNIT).await?;
             }
         } else {
@@ -1121,6 +1134,249 @@ mod tests {
                 .unwrap()
                 .contains("-p 2222")
         );
+    }
+
+    /// dropbear.service fails its start without `/run/mica/dropbear.env`
+    /// (the EnvironmentFile is required) and would accept only what the key
+    /// files say at the moment of the first login, so every unit operation
+    /// has to see the finished files. Observed from inside the unit control,
+    /// at the moment each call is made.
+    #[tokio::test]
+    async fn arguments_and_keys_are_on_disk_before_any_unit_operation() {
+        struct Observing {
+            inner: MockUnitControl,
+            watched: Vec<PathBuf>,
+            seen: std::sync::Mutex<Vec<(String, bool)>>,
+        }
+        impl Observing {
+            fn observe(&self, verb: &str, unit: &str) {
+                let ready = self
+                    .watched
+                    .iter()
+                    .all(|path| std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0));
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((format!("{verb} {unit}"), ready));
+            }
+        }
+        #[async_trait::async_trait]
+        impl UnitControl for Observing {
+            async fn active_state(&self, unit: &str) -> Result<String> {
+                self.inner.active_state(unit).await
+            }
+            async fn unit_file_state(&self, unit: &str) -> Result<String> {
+                self.inner.unit_file_state(unit).await
+            }
+            async fn start(&self, unit: &str) -> Result<()> {
+                self.observe("start", unit);
+                self.inner.start(unit).await
+            }
+            async fn stop(&self, unit: &str) -> Result<()> {
+                self.observe("stop", unit);
+                self.inner.stop(unit).await
+            }
+            async fn restart(&self, unit: &str) -> Result<()> {
+                self.observe("restart", unit);
+                self.inner.restart(unit).await
+            }
+            async fn reset_failed(&self, unit: &str) -> Result<()> {
+                self.observe("reset-failed", unit);
+                self.inner.reset_failed(unit).await
+            }
+            async fn enable(&self, unit: &str) -> Result<()> {
+                self.observe("enable", unit);
+                self.inner.enable(unit).await
+            }
+            async fn disable(&self, unit: &str) -> Result<()> {
+                self.observe("disable", unit);
+                self.inner.disable(unit).await
+            }
+            async fn daemon_reload(&self) -> Result<()> {
+                self.inner.daemon_reload().await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let (probe, paths) = fixture(dir.path(), "inactive", "disabled");
+        drop(probe);
+        let reconciler = SshdReconciler::new(
+            paths.environment.clone(),
+            paths.passwd.clone(),
+            paths.shadow.clone(),
+            Observing {
+                inner: MockUnitControl::new("inactive", "disabled"),
+                watched: vec![
+                    paths.environment.clone(),
+                    paths.keys.clone(),
+                    paths.mos_keys.clone(),
+                ],
+                seen: std::sync::Mutex::new(Vec::new()),
+            },
+        );
+        let keys = vec![raw_key(&canonical(REAL_ED25519_LINE), None)];
+
+        reconciler
+            .apply(&settings_with_keys(keys.clone()))
+            .await
+            .unwrap();
+        // And a change under the now running server: restart, same rule.
+        reconciler
+            .apply(&settings_with(SshSettings {
+                enabled: true,
+                port: 2222,
+                authorized_keys: keys,
+                ..SshSettings::default()
+            }))
+            .await
+            .unwrap();
+
+        let seen = reconciler.control.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                ("enable dropbear.service".to_string(), true),
+                ("start dropbear.service".to_string(), true),
+                ("restart dropbear.service".to_string(), true),
+            ]
+        );
+    }
+
+    /// dropbear.service restarts on failure under systemd's default start
+    /// limit, so a server that cannot bind (an address not yet on any
+    /// interface) ends up `failed` with start jobs refused. The operator's
+    /// corrected settings must bring it up on this apply: the failure is
+    /// cleared first, and only when there is one.
+    #[tokio::test]
+    async fn a_failed_dropbear_is_reset_before_it_is_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, _paths) = fixture(dir.path(), "failed", "enabled-runtime");
+
+        reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls(&reconciler),
+            vec![
+                "reset-failed dropbear.service".to_string(),
+                "start dropbear.service".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropbear_that_is_not_failed_is_not_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, _paths) = fixture(dir.path(), "inactive", "enabled-runtime");
+
+        reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls(&reconciler),
+            vec!["start dropbear.service".to_string()]
+        );
+    }
+
+    /// The whole policy surface through `apply`: root login, the password
+    /// setting and whether a transient password is active, with a key list
+    /// present. Keys are rendered whatever the password policy; `-s` follows
+    /// the EFFECTIVE value; `-w` follows `permitRootLogin` alone.
+    #[tokio::test]
+    async fn every_root_password_and_transient_combination_renders_its_flags() {
+        for permit_root_login in [true, false] {
+            for requested in [true, false] {
+                for transient in [true, false] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+                    if transient {
+                        set_marker(&paths.shadow);
+                    }
+                    let case = format!(
+                        "permitRootLogin={permit_root_login} passwordAuthentication={requested} \
+                         transient={transient}"
+                    );
+
+                    let state = reconciler
+                        .apply(&settings_with(SshSettings {
+                            enabled: true,
+                            permit_root_login,
+                            password_authentication: requested,
+                            authorized_keys: vec![raw_key(&canonical(REAL_ED25519_LINE), None)],
+                            ..SshSettings::default()
+                        }))
+                        .await
+                        .unwrap();
+
+                    let effective = requested && transient;
+                    let mut expected = String::from("DROPBEAR_ARGS=\"-p 22");
+                    if !effective {
+                        expected.push_str(" -s");
+                    }
+                    if !permit_root_login {
+                        expected.push_str(" -w");
+                    }
+                    expected.push_str("\"\n");
+                    assert_eq!(
+                        std::fs::read_to_string(&paths.environment).unwrap(),
+                        expected,
+                        "{case}"
+                    );
+                    assert_eq!(state["passwordAuthentication"], json!(effective), "{case}");
+                    assert_eq!(
+                        state["passwordAuthenticationRequested"],
+                        json!(requested),
+                        "{case}"
+                    );
+                    assert_eq!(state["transientPasswordActive"], json!(transient), "{case}");
+                    assert_eq!(state["permitRootLogin"], json!(permit_root_login), "{case}");
+                    for keys in [&paths.keys, &paths.mos_keys] {
+                        assert_eq!(
+                            std::fs::read_to_string(keys).unwrap(),
+                            format!("{}\n", canonical(REAL_ED25519_LINE)),
+                            "{case}: keys are rendered whatever the password policy"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A port change reaches every listener, IPv4 and IPv6 alike, except an
+    /// entry that names its own port.
+    #[tokio::test]
+    async fn a_port_change_reaches_every_listener_but_one_with_its_own_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let listen = vec![
+            "192.0.2.7".to_string(),
+            "2001:db8::7".to_string(),
+            "[2001:db8::8]:2022".to_string(),
+        ];
+
+        for port in [22, 2200] {
+            reconciler
+                .apply(&settings_with(SshSettings {
+                    enabled: true,
+                    port,
+                    listen_addresses: listen.clone(),
+                    ..SshSettings::default()
+                }))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(&paths.environment).unwrap(),
+                format!(
+                    "DROPBEAR_ARGS=\"-p 192.0.2.7:{port} -p [2001:db8::7]:{port} \
+                     -p [2001:db8::8]:2022 -s\"\n"
+                )
+            );
+        }
     }
 
     #[tokio::test]
