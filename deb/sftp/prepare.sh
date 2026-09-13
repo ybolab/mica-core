@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The sftp producer's PREPARE hook: cross-compile mica-sftp-server, assert that
+# nothing this producer does not own was compiled with it, and leave the
+# result in MICA_DEB_STAGE for build-env/deb/build.sh to pack.
+#
+# THE CRATE LIST LIVES HERE, per producer, because it is the one thing about
+# this producer that no key in producer.env could describe: it is an input to a
+# cargo build, not to a docker build. That is what a PREPARE hook is for.
+set -euo pipefail
+
+exec bash "${MICA_DEB_REPO_ROOT}/hack/build-deb.sh" \
+    --producer "${MICA_DEB_PRODUCER}" \
+    --crates mica-sftp-server \
+    --arch "${MICA_DEB_ARCH}" \
+    --stage "${MICA_DEB_STAGE}"

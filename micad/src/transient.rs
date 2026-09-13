@@ -10,7 +10,7 @@
 //! Two files on STATE carry it: the shadow file itself, whose `root:` hash
 //! field is rewritten with a bcrypt hash of the password, and a marker beside
 //! it, [`transient_marker_path`], holding exactly that hash.
-//! `mica-shadow-reconcile` runs on every boot before sshd and micad; when the
+//! `mica-shadow-reconcile` runs on every boot before dropbear and micad; when the
 //! marker's hash still equals the shadow file's root hash it rewrites the field
 //! to `!` and deletes the marker, so the password vanishes. When the two
 //! disagree the shadow file is left alone: something other than this module
@@ -56,7 +56,7 @@ const SHADOW_HASH_FIELD: usize = 1;
 const BCRYPT_COST: u32 = 12;
 /// Shortest password accepted.
 ///
-/// Not security theatre: the moment sshd comes up this password is reachable
+/// Not security theatre: the moment dropbear comes up this password is reachable
 /// over the network, so it is guessed at network speed rather than at
 /// keyboard speed. Eight bytes is the floor, not a recommendation.
 const MIN_PASSWORD_BYTES: usize = 8;
@@ -239,7 +239,7 @@ pub(crate) fn rewrite_root_hash(shadow: &str, hash: &str) -> Result<String> {
 /// directory, flushed, then renamed over the target.
 ///
 /// Same directory because `rename` is only atomic within one filesystem, and
-/// `/etc/ssh/sshd_config.d` is a separate mount from `/etc`.
+/// the STATE-backed shadow file's directory is a separate mount from `/etc`.
 ///
 /// `mode` is applied explicitly rather than left to the umask so the result is
 /// deterministic, and `owner` (uid, gid) is restored when given — a shadow

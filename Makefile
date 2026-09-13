@@ -1,7 +1,8 @@
 # mica-core: micad, the management daemon of Mica OS, and what ships beside it --
-# apid with its built-in UI, mica-mqttd and mica-mqtt-broker -- packed as the
-# Debian packages micad, mica-apid, mica-mqttd and mica-mqtt-broker. Heavy
-# lifting stays in the scripts; this file only routes.
+# apid with its built-in UI, mica-mqttd, mica-mqtt-broker and the sftp-server
+# dropbear runs -- packed as the Debian packages micad, mica-apid, mica-mqttd,
+# mica-mqtt-broker and mica-sftp-server. Heavy lifting stays in the scripts;
+# this file only routes.
 
 # THE SOURCE DEPENDENCY, before anything else: build-env/ (mica-build-env) is
 # the substrate every target reaches through. It is fetched at its pin
@@ -24,8 +25,8 @@ help:
 	@echo "  rust-gate           hack/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
 	@echo "  dbus-policy-test    prove the shipped micad D-Bus policy is root-only against a real dbus-daemon (needs dbus-daemon on the host)"
 	@echo "  apid-ui-build-contract-test  the built-in SPA builds as ignored production assets in the pinned Bun image"
-	@echo "  deb                 both producers for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
-	@echo "  pool                both producers, both architectures, indexed"
+	@echo "  deb                 every producer for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
+	@echo "  pool                every producer, both architectures, indexed"
 	@echo "  package-gate        the package gate over this repository's pool"
 	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (CI publishes; a developer machine does not)"
 	@echo "  lint                shell hygiene of the tree"
@@ -57,12 +58,15 @@ preflight:
 deb: preflight
 	bash build-env/deb/build.sh --producer micad --arch $(MICA_ARCH)
 	bash build-env/deb/build.sh --producer mqtt --arch $(MICA_ARCH)
+	bash build-env/deb/build.sh --producer sftp --arch $(MICA_ARCH)
 
 pool: preflight
 	bash build-env/deb/build.sh --producer micad --arch amd64
 	bash build-env/deb/build.sh --producer mqtt --arch amd64
+	bash build-env/deb/build.sh --producer sftp --arch amd64
 	bash build-env/deb/build.sh --producer micad --arch arm64
 	bash build-env/deb/build.sh --producer mqtt --arch arm64
+	bash build-env/deb/build.sh --producer sftp --arch arm64
 	bash build-env/deb/repo.sh --arch amd64
 	bash build-env/deb/repo.sh --arch arm64
 

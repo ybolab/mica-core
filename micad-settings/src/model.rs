@@ -433,16 +433,17 @@ pub enum ClaimChannel {
     ProvisioningDocument,
 }
 
-/// SSH channel policy, reconciled into sshd configuration.
+/// SSH channel policy, reconciled into dropbear's arguments and the managed
+/// accounts' `~/.ssh/authorized_keys`.
 ///
-/// Disabled by default: `prod` images ship sshd but never open it without an
+/// Disabled by default: `prod` images ship dropbear but never open it without an
 /// authenticated admin action (see `docs/design/access.md` section 5).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SshSettings {
-    /// Whether sshd is started.
+    /// Whether dropbear is started.
     pub enabled: bool,
-    /// TCP port sshd listens on.
+    /// TCP port dropbear listens on.
     pub port: u16,
     /// Whether the root account may log in; phase 1 has only that account.
     #[serde(rename = "permitRootLogin")]
@@ -451,10 +452,11 @@ pub struct SshSettings {
     /// password.
     #[serde(rename = "passwordAuthentication")]
     pub password_authentication: bool,
-    /// Addresses sshd binds to; empty means every address.
+    /// Addresses dropbear binds to (at most 10); empty means every address.
     #[serde(rename = "listenAddresses")]
     pub listen_addresses: Vec<String>,
-    /// Public keys rendered into the root account's `authorized_keys` file.
+    /// Public keys rendered into every managed account's `authorized_keys`
+    /// file.
     ///
     /// Empty by default: a key baked into the signed rootfs would let whoever
     /// holds its private half into every device built from that image. Keys

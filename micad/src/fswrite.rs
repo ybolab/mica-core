@@ -3,7 +3,7 @@
 //! micad renders configuration into paths that are STATE-backed bind mounts,
 //! and the correct way to write one depends on WHAT is bound:
 //!
-//!   * a bound DIRECTORY -- /etc/ssh, /etc/hostapd, /etc/wpa_supplicant,
+//!   * a bound DIRECTORY -- /etc/hostapd, /etc/wpa_supplicant,
 //!     /etc/containers/systemd, /var/lib/mica. The files inside are ordinary
 //!     files in a writable directory, so a temporary file and a rename gives an
 //!     atomic replace.

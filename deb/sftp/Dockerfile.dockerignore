@@ -1,0 +1,4 @@
+# The build context is this producer's own directory; see the micad producer's
+# Dockerfile.dockerignore beside it.
+*
+!control/*.control

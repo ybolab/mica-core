@@ -2669,7 +2669,7 @@
             }
           },
           "422": {
-            "description": "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)",
+            "description": "The line is not an authorized key, or the resulting list is one the SSH reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)",
             "content": {
               "application/json": {
                 "schema": {

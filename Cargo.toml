@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["micad", "micad-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference"]
+members = ["micad", "micad-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference", "sftp-server"]
 
 [workspace.package]
 edition = "2024"
@@ -91,3 +91,8 @@ rumqttc = { version = "0.25", default-features = false }
 # libwebsockets19t64 into a root filesystem that has no package manager to
 # maintain them.
 rumqttd = { version = "0.20", default-features = false }
+# The SFTP v3 wire format for mica-sftp-server, the `/usr/lib/sftp-server`
+# dropbear execs for the sftp subsystem. Pure Rust; `bytes` is the buffer type
+# its packets decode from and encode to.
+russh-sftp = "3.0.0"
+bytes = "1"

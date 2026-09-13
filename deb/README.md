@@ -8,8 +8,9 @@ templates and its own archives, and it emits nothing outside that set:
 | --- | --- | --- |
 | `micad` | `micad`, `apid` | `micad`, `mica-apid` |
 | `mqtt` | `mica-mqttd`, `mica-mqtt-broker` | `mica-mqttd`, `mica-mqtt-broker` |
+| `sftp` | `mica-sftp-server` | `mica-sftp-server` (`/usr/lib/sftp-server`) |
 
-Both are built by the repository's one generic driver, which discovers them:
+Each is built by the repository's one generic driver, which discovers them:
 
 ```
 make os-deb-micad

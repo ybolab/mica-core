@@ -1488,8 +1488,9 @@ impl MosdService {
     /// on the next boot and readable by anything that can call `GetSettings` —
     /// which is the opposite of transient in all three respects.
     ///
-    /// The reconcilers are re-run afterwards so the sshd drop-in re-renders
-    /// against a device that now has a password to offer, and sshd picks it up.
+    /// The reconcilers are re-run afterwards so dropbear's arguments re-render
+    /// against a device that now has a password to offer, and dropbear is
+    /// restarted onto them.
     #[zbus(name = "SetTransientRootPassword")]
     async fn enqueue_transient_root_password(
         &self,

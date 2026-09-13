@@ -157,8 +157,7 @@ impl<C: UnitControl> TimeReconciler<C> {
     /// Bring timesyncd to "running against the current render".
     ///
     /// `restart`, not `reload`: the unit carries no `ExecReload`, and a
-    /// restart costs one poll cycle, not a session (the sshd trade does not
-    /// apply). Enablement is never touched — the image enables the unit
+    /// restart costs one poll cycle, not a session. Enablement is never touched — the image enables the unit
     /// statically in `sysinit.target.wants` and there is no pause control for
     /// a reconciler to spell.
     async fn converge_unit(&self, servers_changed: bool) -> Result<()> {

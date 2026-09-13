@@ -1,0 +1,16 @@
+Package: mica-sftp-server
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: mos build <mos@example.invalid>
+Section: net
+Priority: optional
+Depends: ${shlibs:Depends}
+Description: mos SFTP server
+ /usr/lib/sftp-server, the program dropbear runs for the sftp subsystem: an
+ SFTP version 3 server on stdin and stdout, running as the logged-in user with
+ no privilege handling of its own. It serves what OpenSSH's sftp and scp (which
+ uses SFTP by default since OpenSSH 9.0) send. The legacy SCP protocol,
+ scp -O, is not provided.
+ .
+ There is no dependency on micad: the binary speaks only SFTP to its SSH server
+ and reads nothing micad renders.

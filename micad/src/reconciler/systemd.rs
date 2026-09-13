@@ -1,12 +1,11 @@
 //! Shared systemd unit control: the operations a reconciler needs to converge a
 //! named unit's runtime state. Deliberately unit-name-generic — the sshd
-//! reconciler drives `ssh.service` through it and the WiFi client and AP
+//! reconciler drives `dropbear.service` through it and the WiFi client and AP
 //! reconcilers drive `wpa_supplicant@…` and `hostapd` through the same trait.
 //!
 //! Enablement is runtime-scoped. `EnableUnitFiles` with `runtime = false`
 //! writes symlinks under `/etc/systemd/system`, which the mos read-only root
-//! does not offer: `/etc` lives on the dm-verity squashfs and only
-//! `/etc/ssh/sshd_config.d` is bind-mounted writable from STATE. Runtime scope
+//! does not offer: `/etc` lives on the dm-verity squashfs. Runtime scope
 //! writes to `/run/systemd/system`, which always works, and micad reconciles the
 //! whole settings tree on every start, so the unit returns to its configured
 //! state each boot without a persisted symlink. `stop` is the authoritative
@@ -27,7 +26,7 @@ const MANAGER_INTERFACE: &str = "org.freedesktop.systemd1.Manager";
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 /// Standard D-Bus property interface.
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
-/// Job mode for start/stop/restart/reload: queue the job, displacing
+/// Job mode for start/stop/restart: queue the job, displacing
 /// conflicting ones.
 const JOB_MODE: &str = "replace";
 /// Upper bound for connecting to systemd or waiting for one D-Bus reply.
@@ -77,21 +76,6 @@ pub trait UnitControl: Send + Sync {
     ///
     /// Returns an error when the bus call fails or systemd refuses the job.
     async fn restart(&self, unit: &str) -> Result<()>;
-
-    /// Reload `unit`, so a rewritten configuration file takes effect **without**
-    /// tearing the running process down.
-    ///
-    /// The equivalent of `systemctl reload <unit>`. Only meaningful for a unit
-    /// whose unit file carries `ExecReload`; systemd refuses the job on one that
-    /// does not, and this returns that refusal rather than papering over it. A
-    /// caller that needs the operator to understand *why* a reload is the right
-    /// operation for its unit is expected to add that context to the error.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bus call fails or systemd refuses the job —
-    /// notably when the unit file has no `ExecReload`.
-    async fn reload(&self, unit: &str) -> Result<()>;
 
     /// Clear `unit`'s failed state, and with it the start rate limit a
     /// repeatedly-failing unit accumulates.
@@ -274,15 +258,6 @@ impl UnitControl for Systemd {
         Ok(())
     }
 
-    async fn reload(&self, unit: &str) -> Result<()> {
-        // ReloadUnit is what `systemctl reload` calls. It fails rather than
-        // falling back to a restart when the unit file carries no ExecReload,
-        // which is the behaviour a caller that chose reload for its
-        // session-preserving property needs.
-        self.manager_call("ReloadUnit", &(unit, JOB_MODE)).await?;
-        Ok(())
-    }
-
     async fn reset_failed(&self, unit: &str) -> Result<()> {
         // ResetFailedUnit and NOT ResetFailed: the latter takes no argument
         // and clears the failed state of EVERY unit on the system, which is
@@ -352,9 +327,6 @@ pub mod mock {
     /// first one left behind.
     pub struct MockUnitControl {
         state: Mutex<State>,
-        /// When true, [`super::UnitControl::reload`] records its attempt and
-        /// then fails.
-        reload_fails: bool,
     }
 
     impl MockUnitControl {
@@ -370,19 +342,6 @@ pub mod mock {
                     file_by_unit: std::collections::BTreeMap::new(),
                     start_refused: std::collections::BTreeSet::new(),
                 }),
-                reload_fails: false,
-            }
-        }
-
-        /// Same, but every [`super::UnitControl::reload`] fails — the shape of
-        /// a unit file that carries no `ExecReload`.
-        ///
-        /// The attempt is still recorded, so a test can assert both that the
-        /// reload was tried and that nothing else was tried after it failed.
-        pub fn with_failing_reload(active: &str, file: &str) -> Self {
-            Self {
-                reload_fails: true,
-                ..Self::new(active, file)
             }
         }
 
@@ -414,8 +373,8 @@ pub mod mock {
         /// `StartLimitBurst` and is in cool-off for the rest of its
         /// `StartLimitIntervalSec`.
         ///
-        /// Same shape as [`MockUnitControl::with_failing_reload`]: the attempt
-        /// is still recorded, so a test can assert both that the start was
+        /// The attempt is still recorded, so a test can assert both that the
+        /// start was
         /// tried and what the caller did after it was refused. Per-unit rather
         /// than a constructor, because the assertion worth making is about the
         /// units that were NOT refused.
@@ -507,8 +466,6 @@ pub mod mock {
                             .insert(unit.to_string(), "inactive".to_string());
                     }
                 }
-                // "reload" among them: a reload leaves the unit exactly as
-                // active as it already was, which is the whole point of it.
                 _ => {}
             }
         }
@@ -565,14 +522,6 @@ pub mod mock {
 
         async fn restart(&self, unit: &str) -> Result<()> {
             self.record("restart", unit);
-            Ok(())
-        }
-
-        async fn reload(&self, unit: &str) -> Result<()> {
-            self.record("reload", unit);
-            if self.reload_fails {
-                return Err(anyhow::anyhow!("Unit {unit} does not support reload"));
-            }
             Ok(())
         }
 
@@ -660,17 +609,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_records_a_reload_and_leaves_the_unit_as_active_as_it_was() {
-        use mock::MockUnitControl;
-
-        let control = MockUnitControl::new("active", "enabled");
-        control.reload("u.service").await.unwrap();
-
-        assert_eq!(control.calls(), vec!["reload u.service".to_string()]);
-        assert_eq!(control.active_state("u.service").await.unwrap(), "active");
-    }
-
-    #[tokio::test]
     async fn mock_reset_failed_clears_a_failed_unit_and_leaves_others_alone() {
         use mock::MockUnitControl;
 
@@ -732,21 +670,5 @@ mod tests {
                 "start other.service".to_string(),
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn mock_can_model_a_unit_whose_unit_file_has_no_exec_reload() {
-        use mock::MockUnitControl;
-
-        let control = MockUnitControl::with_failing_reload("active", "enabled");
-        let error = control.reload("u.service").await.unwrap_err();
-
-        assert!(
-            error.to_string().contains("does not support reload"),
-            "unexpected error: {error}"
-        );
-        // Recorded even though it failed: a caller asserting "no fallback"
-        // needs to see the attempt and nothing after it.
-        assert_eq!(control.calls(), vec!["reload u.service".to_string()]);
     }
 }

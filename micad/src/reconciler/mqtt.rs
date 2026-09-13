@@ -278,12 +278,9 @@ impl<C: UnitControl> MqttReconciler<C> {
     /// against has been rewritten.
     ///
     /// `restart`, not `reload`. The broker is rumqttd used as a library and its
-    /// unit carries no `ExecReload`; `systemd.rs` documents that `reload` fails
-    /// rather than falling back to a restart, which is right for a caller that
-    /// chose reload for its session-preserving property (sshd does) and wrong
-    /// here -- it would turn every config change into an error and leave the
-    /// broker on the old address. A broker restart drops MQTT sessions and the
-    /// bridge reconnects: a cost this unit can pay and sshd's cannot.
+    /// unit carries no `ExecReload`, so a reload would fail on every config
+    /// change and leave the broker on the old address. A broker restart drops
+    /// MQTT sessions and the bridge reconnects: a cost this unit can pay.
     ///
     /// Reads before it writes, so a broker already in the target state and
     /// running against the current config gets no calls at all.
@@ -405,7 +402,7 @@ impl<C: UnitControl> Reconciler for MqttReconciler<C> {
             // whole `mqtt` subtree, so an error raised over `listen` fails the
             // reconcile of `mqtt.enabled` itself. Deliberately a different rule
             // from `SshdReconciler`, which does reject an unparseable
-            // `ListenAddress` -- sshd has one key, `access.ssh.enabled`, and no
+            // listen address -- SSH has one key, `access.ssh.enabled`, and no
             // separate switch to protect.
             match classify_listen_address(&mqtt.listen.address) {
                 // Not a wide bind -- not a bind at all. The config is rendered

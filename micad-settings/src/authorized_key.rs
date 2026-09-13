@@ -1,7 +1,7 @@
 //! Parser and validator for SSH authorized keys.
 //!
 //! This module is a security boundary, not a convenience. Whatever it accepts
-//! is written verbatim into a file sshd reads and acts on, so it parses the
+//! is written verbatim into a file the SSH server reads and acts on, so it parses the
 //! narrowest grammar that still expresses a usable key — `<type> <blob>` with
 //! an optional trailing comment — and rejects everything else, including
 //! constructs OpenSSH itself would happily honour.
@@ -226,7 +226,7 @@ pub fn encode_base64_nopad(input: &[u8]) -> String {
 ///
 /// A newline would turn one entry into two authorized keys, and a carriage
 /// return or a NUL would let the visible prefix of an entry differ from what
-/// sshd reads; the remaining control characters are banned because nothing in
+/// the SSH server reads; the remaining control characters are banned because nothing in
 /// a key needs them.
 fn check_line_shape(line: &str) -> Result<(), SettingsError> {
     if line.is_empty() {
@@ -294,7 +294,7 @@ fn check_blob(blob: &str) -> Result<(), SettingsError> {
 /// followed by that many bytes of algorithm name. Comparing it to the declared
 /// type is what makes this module a validator rather than a shape check: a
 /// line reading `ssh-ed25519 <an RSA blob>` is well-formed by every other rule
-/// here, and sshd would resolve the mismatch by trusting the blob, not the
+/// here, and OpenSSH's sshd would resolve the mismatch by trusting the blob, not the
 /// label the operator read.
 fn check_blob_declares(decoded: &[u8], key_type: &str) -> Result<(), SettingsError> {
     let Some((length_bytes, rest)) = decoded.split_at_checked(4) else {

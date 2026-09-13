@@ -4,7 +4,7 @@
 //! appliance -- its ProtectSystem=strict namespace has no writable /etc,
 //! because /etc is a dm-verity squashfs and the one writable path in it is a
 //! bind mount that does not survive into that namespace. The file is micad's to
-//! write, the same way the sshd reconciler owns its drop-in.
+//! write, the same way the sshd reconciler owns dropbear's environment file.
 
 use anyhow::Context;
 use micad_settings::Settings;
@@ -79,7 +79,7 @@ impl HostnameExecutor for Hostnamed {
     /// was CHANGING the hostname at runtime through the management API or bus.
     ///
     /// micad writes the file itself -- the same thing the sshd reconciler does
-    /// with its drop-in -- and asks hostnamed only for the transient hostname,
+    /// with dropbear's arguments -- and asks hostnamed only for the transient hostname,
     /// which is a kernel setting and touches no file.
     async fn set_static_hostname(&self, name: &str) -> anyhow::Result<()> {
         let path = self.path.display().to_string();

@@ -3465,7 +3465,7 @@ async fn api_stored_keys(state: &AppState) -> Result<Vec<AuthorizedKey>, Box<Res
 ///
 /// The API's own writer and not [`write_key_list`], which answers a re-rendered
 /// pane at 422 and a redirect on success. The **validator** is the same one:
-/// `validate_authorized_keys` is what micad's sshd reconciler runs before it
+/// `validate_authorized_keys` is what micad's SSH reconciler runs before it
 /// renders the file, so a list either surface accepts is a list the reconciler
 /// accepts too.
 async fn api_write_keys(state: &AppState, keys: &[AuthorizedKey]) -> Result<(), Box<Response>> {
@@ -3540,7 +3540,7 @@ pub(crate) async fn api_v1_ssh_keys_list(
         (status = 401, description = "No stored bearer token or authenticated browser session (`not_authenticated`)", body = ApiError),
         (status = 403, description = "A browser session mutation omitted or supplied the wrong CSRF token (`csrf_invalid`)", body = ApiError),
         (status = 409, description = "A stored key already carries that public key (`key_exists`), or the device already holds the maximum number of keys (`key_limit_reached`); the collection's current state is what refuses the request, not the body", body = ApiError),
-        (status = 422, description = "The line is not an authorized key, or the resulting list is one the sshd reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
+        (status = 422, description = "The line is not an authorized key, or the resulting list is one the SSH reconciler would refuse (`validation_failed`); or micad rejected the write (`settings_rejected`)", body = ApiError),
         (status = 500, description = "The stored list could not be read as a key list (`settings_invalid`), or micad failed to write (`settings_io`, `micad_failed`)", body = ApiError),
         (status = 503, description = "The call to micad could not be made (`micad_unreachable`); carries `Retry-After`", body = ApiError),
         (status = 504, description = "The bounded call to micad timed out (`micad_timeout`); the operation may still be running", body = ApiError),
@@ -7147,7 +7147,7 @@ const MAX_TRANSIENT_PASSWORD_BYTES: usize = 72;
 ///
 /// `SHA256:` followed by the unpadded base64 of the SHA-256 digest of the
 /// decoded blob — the string `ssh-keygen -lf` prints, and the same value
-/// micad's sshd reconciler publishes. It is recomputed here rather than read
+/// micad's SSH reconciler publishes. It is recomputed here rather than read
 /// from the published state because the pane has to map the fingerprint an
 /// operator clicks back onto the stored entry a removal rewrites, and the
 /// published list carries no such handle. A test pins it against fingerprints

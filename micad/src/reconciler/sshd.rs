@@ -1,55 +1,52 @@
-//! SSH access reconciler: renders the sshd drop-in from `access.ssh` and drives
-//! `ssh.service`. Three system effects, in this order:
+//! SSH access reconciler: renders dropbear's arguments and the managed
+//! accounts' authorized keys from `access.ssh` and drives `dropbear.service`.
+//! Three system effects, in this order:
 //!
-//! - `/etc/ssh/authorized_keys.d/<account>` is rendered from
-//!   `access.ssh.authorizedKeys`, at 0600, after the list has been re-validated
-//!   — one file per managed login account, every one holding the same key list.
-//! - `/etc/ssh/sshd_config.d/10-mos.conf` is rendered from `access.ssh`. That
-//!   directory is the one writable part of `/etc` on the mos read-only root, a
-//!   STATE-backed bind mount (`etc-ssh.mount`).
-//! - `ssh.service` is brought to the state `access.ssh.enabled` asks for.
+//! - `~/.ssh/authorized_keys` of every managed login account is rendered from
+//!   `access.ssh.authorizedKeys`, after the list has been re-validated: one
+//!   file per account, every one holding the same key list, owned by the
+//!   account, 0600 in a 0700 `~/.ssh`. That is the only file dropbear reads
+//!   keys from.
+//! - `/run/mica/dropbear.env` is rendered from `access.ssh`: exactly one line,
+//!   `DROPBEAR_ARGS="..."`, which `dropbear.service` (mica-system) reads through
+//!   `EnvironmentFile=` and appends to its `ExecStart`. dropbear has no
+//!   configuration file; every policy is a flag.
+//! - `dropbear.service` is brought to the state `access.ssh.enabled` asks for,
+//!   and restarted when the arguments changed under a running server.
 //!
-//! Configuration before service start, deliberately: an sshd started against a
-//! stale drop-in listens on the wrong port, or accepts an authentication method
-//! the operator has already turned off.
+//! Configuration before service start, deliberately: a dropbear started
+//! against stale arguments listens on the wrong port, or accepts an
+//! authentication method the operator has already turned off.
 //!
-//! The device password does not reach PAM. The credential of record for shell
-//! access is an SSH public key, or a transient password set through
-//! `crate::transient` that the next boot clears; nothing reads
-//! `secrets/device-password` back, because a hash in the root shadow entry
-//! would be a password on a fielded device that never expires.
-//! `PasswordAuthentication` is gated on that transient password: the rendered
-//! value is the setting AND `transient::transient_password_active`, so root
-//! ships locked and stays locked unless a transient password is active.
-//! `AuthorizedKeysFile` is not rendered here — it is the static image file
-//! `05-mos-authorized-keys.conf`, which sorts ahead of `10-mos.conf`, and sshd
-//! keeps the first value it obtains for a non-repeatable keyword.
+//! The device password does not reach PAM (dropbear has none; it reads the
+//! shadow file). The credential of record for shell access is an SSH public
+//! key, or a transient password set through `crate::transient` that the next
+//! boot clears; nothing reads `secrets/device-password` back, because a hash in
+//! the root shadow entry would be a password on a fielded device that never
+//! expires. Password authentication is gated on that transient password: `-s`
+//! (no password logins) is rendered unless the setting AND
+//! `transient::transient_password_active` are both true, so root ships locked
+//! and stays locked unless a transient password is active.
 
+use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use micad_settings::{AuthorizedKey, Settings, SshSettings};
+use rustix::fs::{AtFlags, Mode, OFlags};
 use serde_json::json;
 
 use super::Reconciler;
 use super::systemd::{Systemd, UnitControl, is_active, is_enabled};
 use crate::transient;
-use crate::transient::write_atomically;
 
-/// Unit implementing the SSH server.
-const SSH_UNIT: &str = "ssh.service";
-/// Drop-in rendered from `access.ssh`; `sshd_config` includes this directory.
-const DEFAULT_DROP_IN: &str = "/etc/ssh/sshd_config.d/10-mos.conf";
-/// Directory the per-account authorized-keys files are rendered into.
-///
-/// Under `/etc/ssh`, a STATE-backed bind mount (`etc-ssh.mount` binds
-/// `/mnt/data/state/ssh` over it), so the files survive an A/B update; `/root` is on
-/// the ephemeral filesystem and a key written there is gone on the next boot.
-///
-/// The static `05-mos-authorized-keys.conf` points sshd at
-/// `/etc/ssh/authorized_keys.d/%u`, which sshd expands **per login user**, so
-/// the file name inside this directory is the account name and nothing else.
-const DEFAULT_AUTHORIZED_KEYS_DIR: &str = "/etc/ssh/authorized_keys.d";
+/// Unit implementing the SSH server, shipped by mica-system.
+const SSH_UNIT: &str = "dropbear.service";
+/// Environment file carrying dropbear's arguments.
+const DEFAULT_ENVIRONMENT_FILE: &str = "/run/mica/dropbear.env";
+/// Account database the managed accounts' ids and homes are read from.
+const DEFAULT_PASSWD: &str = "/etc/passwd";
 /// Accounts this reconciler renders authorized keys for, in render order.
 ///
 /// **One key set, rendered for every managed login account.** Keys are not
@@ -58,32 +55,34 @@ const DEFAULT_AUTHORIZED_KEYS_DIR: &str = "/etc/ssh/authorized_keys.d";
 ///
 /// **A constant list, deliberately not a scan of `/etc/passwd`.** Scanning
 /// would grant key access to any account a future package adds — a privilege
-/// decision inherited from a dependency rather than made in review.
+/// decision inherited from a dependency rather than made in review. The
+/// account database is read only for where each of these accounts lives.
 const MANAGED_LOGIN_ACCOUNTS: [&str; 2] = ["root", "mos"];
-/// Environment variable overriding the drop-in path.
-const DROP_IN_ENV: &str = "MOSD_SSHD_DROP_IN";
-/// Environment variable overriding the authorized-keys directory.
-///
-/// A DIRECTORY, which is why the name says so: a value naming a single file
-/// would be treated as a directory and render `<that file>/root`. Nothing in
-/// the image sets it; the override exists for tests.
-const AUTHORIZED_KEYS_DIR_ENV: &str = "MOSD_AUTHORIZED_KEYS_DIR";
-/// Mode of the rendered drop-in: world-readable configuration, owner-writable.
-const DROP_IN_MODE: u32 = 0o644;
-/// Mode of the rendered authorized-keys file: owner-only. sshd reads it as
-/// root, and nothing else has any business enumerating which keys open the
-/// device.
+/// Environment variable overriding the environment file path.
+const ENVIRONMENT_FILE_ENV: &str = "MOSD_DROPBEAR_ENV";
+/// Environment variable overriding the account database path. Nothing in the
+/// image sets it; the override exists for tests.
+const PASSWD_ENV: &str = "MOSD_PASSWD_PATH";
+/// Mode of the environment file: world-readable arguments, owner-writable.
+const ENVIRONMENT_FILE_MODE: u32 = 0o644;
+/// Mode of `~/.ssh`.
+const SSH_DIR_MODE: u32 = 0o700;
+/// Mode of `~/.ssh/authorized_keys`: owner-only. Nothing else has any business
+/// enumerating which keys open the device.
 const AUTHORIZED_KEYS_MODE: u32 = 0o600;
-/// Mode of the authorized-keys directory when this reconciler creates it.
-/// Traversable, because sshd checks the path, but writable only by root.
-const AUTHORIZED_KEYS_DIR_MODE: u32 = 0o755;
+/// Name of the key file inside `~/.ssh`.
+const AUTHORIZED_KEYS: &str = "authorized_keys";
+/// Temporary sibling a key file is written to before the rename.
+const AUTHORIZED_KEYS_TEMP: &str = ".authorized_keys.micad-tmp";
+/// Most `-p` listeners dropbear binds (`DROPBEAR_MAX_PORTS`); it ignores the
+/// rest without a word.
+const MAX_LISTEN_ADDRESSES: usize = 10;
 
 /// Reconciler for the `access.ssh` settings subtree.
 pub struct SshdReconciler<C: UnitControl> {
-    drop_in_path: PathBuf,
-    /// Directory the key files are rendered into: one file per
-    /// [`MANAGED_LOGIN_ACCOUNTS`] entry, named for the account.
-    authorized_keys_dir: PathBuf,
+    environment_path: PathBuf,
+    /// Account database the managed accounts' uid, gid and home come from.
+    passwd_path: PathBuf,
     /// Shadow file this reconciler's device operates on.
     ///
     /// Nothing here writes it. It is read — through
@@ -95,21 +94,22 @@ pub struct SshdReconciler<C: UnitControl> {
 }
 
 impl<C: UnitControl> SshdReconciler<C> {
-    /// Create an sshd reconciler writing `drop_in_path` and one key file per
-    /// managed account under `authorized_keys_dir`, tracking the shadow file at
-    /// `shadow_path`, and driving `ssh.service` through `control`.
+    /// Create a reconciler writing dropbear's arguments to `environment_path`
+    /// and each managed account's key file under the home `passwd_path` names,
+    /// tracking the shadow file at `shadow_path`, and driving
+    /// `dropbear.service` through `control`.
     ///
     /// Every path is a parameter so tests run entirely inside a temporary
-    /// directory and never touch the host's sshd.
+    /// directory and never touch the host's SSH server.
     pub fn new(
-        drop_in_path: PathBuf,
-        authorized_keys_dir: PathBuf,
+        environment_path: PathBuf,
+        passwd_path: PathBuf,
         shadow_path: PathBuf,
         control: C,
     ) -> Self {
         Self {
-            drop_in_path,
-            authorized_keys_dir,
+            environment_path,
+            passwd_path,
             shadow_path,
             control,
         }
@@ -117,43 +117,50 @@ impl<C: UnitControl> SshdReconciler<C> {
 }
 
 impl SshdReconciler<Systemd> {
-    /// Production reconciler: paths from [`DROP_IN_ENV`],
-    /// [`AUTHORIZED_KEYS_DIR_ENV`] and [`transient::SHADOW_ENV`] if set, else
-    /// the system locations.
+    /// Production reconciler: paths from [`ENVIRONMENT_FILE_ENV`],
+    /// [`PASSWD_ENV`] and [`transient::SHADOW_ENV`] if set, else the system
+    /// locations.
     ///
     /// The shadow path is resolved by [`transient::production_shadow_path`],
     /// not by a second copy of the constant and env var: this reconciler and
     /// the transient module must agree which file the marker sits beside.
     pub fn production() -> Self {
-        let drop_in = std::env::var(DROP_IN_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_DROP_IN));
-        let authorized_keys_dir = std::env::var(AUTHORIZED_KEYS_DIR_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_AUTHORIZED_KEYS_DIR));
+        let from_env = |name: &str, default: &str| {
+            std::env::var(name)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(default))
+        };
         Self::new(
-            drop_in,
-            authorized_keys_dir,
+            from_env(ENVIRONMENT_FILE_ENV, DEFAULT_ENVIRONMENT_FILE),
+            from_env(PASSWD_ENV, DEFAULT_PASSWD),
             transient::production_shadow_path(),
             Systemd::new(),
         )
     }
 }
 
-/// Refuse a listen address that could not be one.
+/// Refuse a listen address that could not be one, and more of them than
+/// dropbear binds.
 ///
-/// sshd's `ListenAddress` grammar also admits `host:port` and hostname forms,
-/// but this appliance's settings model only ever offers IP addresses, so the
-/// strictest parse that fits is the right boundary: an `IpAddr`, or an IPv6
-/// literal in the brackets sshd requires when a port follows. Anything else —
-/// in particular anything carrying whitespace or a newline — is rejected
-/// before the renderer sees it.
+/// The settings model only ever offers IP addresses, optionally with a port,
+/// so the strictest parse that fits is the right boundary: an `IpAddr`, or a
+/// `SocketAddr` (an IPv6 one in brackets). Anything else — in particular
+/// anything carrying whitespace, a quote or a newline, which would split or end
+/// the `DROPBEAR_ARGS` value — is rejected before the renderer sees it.
 ///
 /// # Errors
 ///
-/// Returns an error naming the first entry that does not parse. The value is
-/// an address, not a secret, so naming it is diagnostic rather than a leak.
+/// Returns an error naming the first entry that does not parse, or the count
+/// when it exceeds [`MAX_LISTEN_ADDRESSES`]. The value is an address, not a
+/// secret, so naming it is diagnostic rather than a leak.
 fn validate_listen_addresses(addresses: &[String]) -> Result<()> {
+    if addresses.len() > MAX_LISTEN_ADDRESSES {
+        bail!(
+            "access.ssh.listenAddresses holds {} entries; dropbear binds at most \
+             {MAX_LISTEN_ADDRESSES} and would silently ignore the rest",
+            addresses.len()
+        );
+    }
     for address in addresses {
         let ok = address.parse::<std::net::IpAddr>().is_ok()
             || address.parse::<std::net::SocketAddr>().is_ok();
@@ -166,36 +173,54 @@ fn validate_listen_addresses(addresses: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Render the sshd drop-in for `ssh`.
+/// One `-p` listener for `address`: `addr:port`, IPv6 in brackets, and an
+/// address that carries its own port keeps it. Called only on a validated
+/// address.
+fn listener(address: &str, port: u16) -> String {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(ip) => std::net::SocketAddr::new(ip, port).to_string(),
+        Err(_) => address.to_string(),
+    }
+}
+
+/// Render `/run/mica/dropbear.env` for `ssh`.
 ///
 /// Pure and deterministic: the same settings always produce the same bytes, so
 /// a re-render can be compared against what is on disk to decide whether
-/// anything changed. An empty `listen_addresses` emits no `ListenAddress`
-/// directive at all, which is sshd's "listen on every address"; encoding
-/// "listen nowhere" as the empty list would leave an operator who enables SSH
-/// without naming an address with a running but unreachable server, and closure
-/// is already expressed by `enabled: false`. `password_authentication` is the
-/// effective value — the caller has already ANDed the setting with whether a
-/// transient root password is active — passed as a parameter rather than read
-/// again, so this function stays pure and its bytes stay comparable in a test.
-/// No `AuthorizedKeysFile` directive is emitted: the static
-/// `05-mos-authorized-keys.conf` owns that keyword and sorts first.
-fn render_drop_in(ssh: &SshSettings, password_authentication: bool) -> String {
-    let yes_no = |value: bool| if value { "yes" } else { "no" };
-    let mut out = String::from("# Managed by micad from access.ssh. Do not edit.\n");
-    out.push_str(&format!("Port {}\n", ssh.port));
-    out.push_str(&format!(
-        "PermitRootLogin {}\n",
-        yes_no(ssh.permit_root_login)
-    ));
-    out.push_str(&format!(
-        "PasswordAuthentication {}\n",
-        yes_no(password_authentication)
-    ));
-    for address in &ssh.listen_addresses {
-        out.push_str(&format!("ListenAddress {address}\n"));
+/// anything changed. Exactly one line, `DROPBEAR_ARGS="..."`:
+///
+/// - `-p <addr>:<port>` per listen address, in tree order. An empty list is
+///   `-p <port>`, which is dropbear's "every address": encoding "listen
+///   nowhere" as the empty list would leave an operator who enables SSH
+///   without naming an address with a running but unreachable server, and
+///   closure is already expressed by `enabled: false`. A `-p` is always
+///   present; mica-system's unit refuses a start without one.
+/// - `-s` (no password logins) unless `password_authentication`, the
+///   EFFECTIVE value — the caller has already ANDed the setting with whether a
+///   transient root password is active — passed as a parameter rather than
+///   read again, so this function stays pure.
+/// - `-w` (no root logins) when `permitRootLogin` is false, which is what
+///   OpenSSH's `PermitRootLogin no` meant: root refused by every method.
+///
+/// `-g` (no root password logins) is never rendered: the only password this
+/// device can have is the transient ROOT password, so `-g` would either turn
+/// off exactly that login or repeat `-s`.
+fn render_environment(ssh: &SshSettings, password_authentication: bool) -> String {
+    let mut args: Vec<String> = if ssh.listen_addresses.is_empty() {
+        vec![format!("-p {}", ssh.port)]
+    } else {
+        ssh.listen_addresses
+            .iter()
+            .map(|address| format!("-p {}", listener(address, ssh.port)))
+            .collect()
+    };
+    if !password_authentication {
+        args.push("-s".to_string());
     }
-    out
+    if !ssh.permit_root_login {
+        args.push("-w".to_string());
+    }
+    format!("DROPBEAR_ARGS=\"{}\"\n", args.join(" "))
 }
 
 /// Render the authorized-keys file for `keys`.
@@ -206,7 +231,7 @@ fn render_drop_in(ssh: &SshSettings, password_authentication: bool) -> String {
 ///
 /// An empty list renders an **empty file**, not an absent one. A removed key
 /// has to stop working immediately, and "no file" versus "empty file" is a
-/// distinction sshd does not need to make.
+/// distinction dropbear does not need to make.
 ///
 /// Pure: every value written here has already been through
 /// [`micad_settings::validate_authorized_keys`] at the call site.
@@ -239,103 +264,267 @@ fn fingerprint(key: &str) -> Option<String> {
     ))
 }
 
+/// A managed account as the account database describes it.
+#[derive(Debug, Clone, PartialEq)]
+struct Account {
+    name: String,
+    uid: u32,
+    gid: u32,
+    home: PathBuf,
+}
+
+/// The `/etc/passwd` entry named `name`, if there is a well-formed one.
+fn find_account(passwd: &str, name: &str) -> Option<Account> {
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() != 7 || fields[0] != name {
+            return None;
+        }
+        Some(Account {
+            name: name.to_string(),
+            uid: fields[2].parse().ok()?,
+            gid: fields[3].parse().ok()?,
+            home: PathBuf::from(fields[5]),
+        })
+    })
+}
+
+/// An account whose `~/.ssh` is open and ready for its key file.
+struct KeyTarget {
+    account: Account,
+    ssh_dir: OwnedFd,
+}
+
+impl KeyTarget {
+    fn path(&self) -> PathBuf {
+        self.account.home.join(".ssh").join(AUTHORIZED_KEYS)
+    }
+}
+
+fn errno(err: rustix::io::Errno) -> std::io::Error {
+    std::io::Error::from(err)
+}
+
+/// Open `account`'s home and `~/.ssh` for a key file dropbear will honour.
+///
+/// dropbear checks, at every login, that `~/.ssh` and the home are owned by
+/// the account or root and writable by neither group nor others, and refuses
+/// every key otherwise. A home that fails that check is an error here, so the
+/// failure is on the apply and not a key in the UI that grants nothing. It is
+/// not repaired: the home is the operator's, and loosening or tightening it is
+/// not this reconciler's call.
+///
+/// `~/.ssh` is created 0700 when missing and brought to the account's
+/// ownership and 0700 when not. Everything below the home is reached through
+/// directory descriptors with `O_NOFOLLOW`, because the home is writable by
+/// the account and micad is root: a `~/.ssh` that is a symbolic link is
+/// refused instead of followed to wherever it points.
+///
+/// Returns `None` for a home that does not exist — the account cannot log in
+/// with a key either way.
+fn open_key_target(account: Account) -> Result<Option<KeyTarget>> {
+    let home = match rustix::fs::open(
+        &account.home,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(home) => home,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(err) => {
+            return Err(errno(err)).with_context(|| format!("open {}", account.home.display()));
+        }
+    };
+    let stat = rustix::fs::fstat(&home)
+        .map_err(errno)
+        .with_context(|| format!("stat {}", account.home.display()))?;
+    if (stat.st_uid != account.uid && stat.st_uid != 0) || stat.st_mode & 0o022 != 0 {
+        bail!(
+            "{} (home of {}) must be owned by the account or root and not be group- or \
+             world-writable, or dropbear refuses every key under it",
+            account.home.display(),
+            account.name
+        );
+    }
+
+    let ssh_path = account.home.join(".ssh");
+    match rustix::fs::mkdirat(&home, ".ssh", Mode::from_raw_mode(SSH_DIR_MODE)) {
+        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+        Err(err) => {
+            return Err(errno(err)).with_context(|| format!("create {}", ssh_path.display()));
+        }
+    }
+    let ssh_dir = rustix::fs::openat(
+        &home,
+        ".ssh",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(errno)
+    .with_context(|| format!("open {} (a symbolic link is refused)", ssh_path.display()))?;
+    let stat = rustix::fs::fstat(&ssh_dir)
+        .map_err(errno)
+        .with_context(|| format!("stat {}", ssh_path.display()))?;
+    if stat.st_uid != account.uid || stat.st_gid != account.gid {
+        rustix::fs::fchown(
+            &ssh_dir,
+            Some(rustix::fs::Uid::from_raw(account.uid)),
+            Some(rustix::fs::Gid::from_raw(account.gid)),
+        )
+        .map_err(errno)
+        .with_context(|| format!("set owner on {}", ssh_path.display()))?;
+    }
+    if stat.st_mode & 0o7777 != SSH_DIR_MODE {
+        rustix::fs::fchmod(&ssh_dir, Mode::from_raw_mode(SSH_DIR_MODE))
+            .map_err(errno)
+            .with_context(|| format!("set mode on {}", ssh_path.display()))?;
+    }
+    Ok(Some(KeyTarget { account, ssh_dir }))
+}
+
+/// Write `rendered` as `target`'s key file unless it already holds exactly
+/// that.
+///
+/// A temporary file created exclusively and without following links, owned by
+/// the account and 0600 before it has a name dropbear reads, then renamed over
+/// the key file — which replaces a symbolic link planted there rather than
+/// writing through it. An unchanged file is not rewritten: homes live on DATA,
+/// and a no-op rewrite still costs a flash write.
+fn write_key_file(target: &KeyTarget, rendered: &str) -> Result<()> {
+    let path = target.path();
+    // Non-blocking, and only a regular file of the rendered length is read:
+    // the name is in a directory the account controls, and a FIFO there would
+    // otherwise hold the open until somebody wrote to it.
+    if let Ok(existing) = rustix::fs::openat(
+        &target.ssh_dir,
+        AUTHORIZED_KEYS,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) && rustix::fs::fstat(&existing).is_ok_and(|stat| {
+        rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::RegularFile
+            && u64::try_from(stat.st_size).ok() == Some(rendered.len() as u64)
+    }) {
+        let mut current = String::new();
+        if std::fs::File::from(existing)
+            .read_to_string(&mut current)
+            .is_ok()
+            && current == rendered
+        {
+            return Ok(());
+        }
+    }
+
+    let temp_path = path.with_file_name(AUTHORIZED_KEYS_TEMP);
+    // A leftover from an interrupted run, or anything planted under the name.
+    let _ = rustix::fs::unlinkat(&target.ssh_dir, AUTHORIZED_KEYS_TEMP, AtFlags::empty());
+    let temp = rustix::fs::openat(
+        &target.ssh_dir,
+        AUTHORIZED_KEYS_TEMP,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(AUTHORIZED_KEYS_MODE),
+    )
+    .map_err(errno)
+    .with_context(|| format!("create {}", temp_path.display()))?;
+    // Mode and owner explicitly and on the descriptor: the umask applied to
+    // the create, and the name is not trusted between two calls.
+    rustix::fs::fchmod(&temp, Mode::from_raw_mode(AUTHORIZED_KEYS_MODE))
+        .map_err(errno)
+        .with_context(|| format!("set mode on {}", temp_path.display()))?;
+    rustix::fs::fchown(
+        &temp,
+        Some(rustix::fs::Uid::from_raw(target.account.uid)),
+        Some(rustix::fs::Gid::from_raw(target.account.gid)),
+    )
+    .map_err(errno)
+    .with_context(|| format!("set owner on {}", temp_path.display()))?;
+    let mut file = std::fs::File::from(temp);
+    file.write_all(rendered.as_bytes())
+        .with_context(|| format!("write {}", temp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("flush {}", temp_path.display()))?;
+    drop(file);
+    rustix::fs::renameat(
+        &target.ssh_dir,
+        AUTHORIZED_KEYS_TEMP,
+        &target.ssh_dir,
+        AUTHORIZED_KEYS,
+    )
+    .map_err(errno)
+    .with_context(|| format!("rename {} to {}", temp_path.display(), path.display()))?;
+    Ok(())
+}
+
 impl<C: UnitControl> SshdReconciler<C> {
-    /// Render the drop-in and report whether its bytes changed.
+    /// Render the environment file and report whether its bytes changed.
     ///
-    /// An unchanged render is not rewritten: the drop-in lives on STATE, and
-    /// a rewrite that changes nothing still costs a flash write on every
-    /// reconcile.
-    fn apply_drop_in(&self, ssh: &SshSettings, password_authentication: bool) -> Result<bool> {
-        let rendered = render_drop_in(ssh, password_authentication);
-        if let Ok(current) = std::fs::read_to_string(&self.drop_in_path)
+    /// An unchanged render is not rewritten, so a reconcile that changes
+    /// nothing does not look like a change and restart the server.
+    fn apply_environment(&self, ssh: &SshSettings, password_authentication: bool) -> Result<bool> {
+        let rendered = render_environment(ssh, password_authentication);
+        if let Ok(current) = std::fs::read_to_string(&self.environment_path)
             && current == rendered
         {
             return Ok(false);
         }
-        if let Some(directory) = self.drop_in_path.parent() {
+        if let Some(directory) = self.environment_path.parent() {
             std::fs::create_dir_all(directory)
                 .with_context(|| format!("create {}", directory.display()))?;
         }
-        write_atomically(&self.drop_in_path, &rendered, DROP_IN_MODE, None)
-            .with_context(|| format!("render {}", self.drop_in_path.display()))?;
+        crate::fswrite::write_config(&self.environment_path, &rendered, ENVIRONMENT_FILE_MODE)
+            .with_context(|| format!("render {}", self.environment_path.display()))?;
         Ok(true)
     }
 
-    /// Render the same key list into one file per entry of `accounts`.
+    /// Every managed account the key list can be rendered for, opened and
+    /// checked before any key file is written.
     ///
-    /// The caller has already re-validated the list, and it is rendered once
-    /// before the first file is opened, so no two accounts can be written from
-    /// different key lists. An unchanged file is not rewritten: these live on
-    /// STATE, and a no-op rewrite still costs a flash write. No account is
-    /// checked for existence — asking `/etc/passwd` would couple this
-    /// reconciler to account state it does not own, failing in the window where
-    /// the account and this render land out of order. A key file for an account
-    /// that cannot log in is inert: `AuthorizedKeysFile
-    /// /etc/ssh/authorized_keys.d/%u` expands from the user sshd is
-    /// authenticating, so a file no login names is never read. `accounts` is a
-    /// parameter and not a read of [`MANAGED_LOGIN_ACCOUNTS`] so a test can
-    /// prove that against an account name no system could have.
-    fn apply_authorized_keys(&self, keys: &[AuthorizedKey], accounts: &[&str]) -> Result<()> {
-        let rendered = render_authorized_keys(keys);
-        if !self.authorized_keys_dir.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::create_dir_all(&self.authorized_keys_dir)
-                .with_context(|| format!("create {}", self.authorized_keys_dir.display()))?;
-            // Explicitly, rather than letting the umask decide: sshd refuses a
-            // key file it reaches through a group- or world-writable directory.
-            std::fs::set_permissions(
-                &self.authorized_keys_dir,
-                std::fs::Permissions::from_mode(AUTHORIZED_KEYS_DIR_MODE),
-            )
-            .with_context(|| format!("set mode on {}", self.authorized_keys_dir.display()))?;
-        }
-        for account in accounts {
-            let path = self.authorized_keys_dir.join(account);
-            if let Ok(current) = std::fs::read_to_string(&path)
-                && current == rendered
-            {
+    /// The whole set first, so a home dropbear would refuse fails the apply
+    /// with no account's keys changed — the same no-partial-application rule
+    /// the key validation holds. An account missing from the account database,
+    /// or whose home does not exist, is skipped with a warning: it cannot log
+    /// in with a key either way, and failing here would keep SSH closed for
+    /// every other account. `accounts` is a parameter and not a read of
+    /// [`MANAGED_LOGIN_ACCOUNTS`] so a test can use a name no system has.
+    fn key_targets(&self, accounts: &[&str]) -> Result<Vec<KeyTarget>> {
+        let passwd = std::fs::read_to_string(&self.passwd_path)
+            .with_context(|| format!("read {}", self.passwd_path.display()))?;
+        let mut targets = Vec::new();
+        for name in accounts {
+            let Some(account) = find_account(&passwd, name) else {
+                tracing::warn!(
+                    account = name,
+                    passwd = %self.passwd_path.display(),
+                    "managed SSH account is not in the account database; no keys rendered for it"
+                );
                 continue;
+            };
+            let home = account.home.clone();
+            match open_key_target(account)? {
+                Some(target) => targets.push(target),
+                None => tracing::warn!(
+                    account = name,
+                    home = %home.display(),
+                    "managed SSH account has no home directory; no keys rendered for it"
+                ),
             }
-            write_atomically(&path, &rendered, AUTHORIZED_KEYS_MODE, None)
-                .with_context(|| format!("render {}", path.display()))?;
         }
-        Ok(())
+        Ok(targets)
     }
 
-    /// Every path this reconciler renders keys to, in
-    /// [`MANAGED_LOGIN_ACCOUNTS`] order.
-    fn authorized_keys_paths(&self) -> Vec<String> {
-        MANAGED_LOGIN_ACCOUNTS
-            .iter()
-            .map(|account| self.authorized_keys_dir.join(account).display().to_string())
-            .collect()
-    }
-
-    /// Bring `ssh.service` to the state `ssh.enabled` asks for. Reads before it
-    /// writes, so a system already in the target state gets no calls at all.
+    /// Bring `dropbear.service` to the state `ssh.enabled` asks for. Reads
+    /// before it writes, so a system already in the target state gets no calls
+    /// at all.
     ///
-    /// A configuration-only change reloads and never restarts. A rewritten
-    /// drop-in that nothing re-reads is a configuration that silently did not
-    /// take effect, so an already-running sshd has to be told — but a restart
-    /// tears the daemon down, and the moment that matters most is exactly the
-    /// one where an operator is setting a transient root password over their
-    /// existing SSH session in order to gain access. sshd re-reads its
-    /// configuration on `SIGHUP`, so a reload applies the change while every
-    /// established session keeps running. `KillMode` is not what keeps them
-    /// alive: Debian's `openssh-server` ships `KillMode=process`, which would
-    /// spare established sessions across a restart, but nothing in this image
-    /// chose that value and a future package revision can change it silently.
-    ///
-    /// This depends on `ssh.service` carrying `ExecReload`, which is the Debian
-    /// package's and not this repo's. A unit without it makes systemd refuse
-    /// the job, and the refusal is surfaced with an error naming `ExecReload`
-    /// and saying the change has not been applied. There is deliberately no
-    /// fallback to `restart`: it would reintroduce the disconnect this reload
-    /// prevents and hide the missing `ExecReload`. Enable/disable and
-    /// start/stop are unit state changes rather than configuration changes and
-    /// stay as they are; a unit that is not running but should be is started,
-    /// never reloaded, because reloading a stopped daemon applies a
-    /// configuration to nothing.
+    /// A changed environment file under a running server is a RESTART: dropbear
+    /// reads its arguments once, at start, and re-reads nothing on `SIGHUP`, so
+    /// a rewritten file that nothing restarts is a configuration that silently
+    /// did not take effect. The established sessions survive it only because
+    /// mica-system's `dropbear.service` sets `KillMode=process` — dropbear
+    /// forks one process per connection into the unit's cgroup, and the
+    /// default kill mode would end them all, including the session of an
+    /// operator setting a transient root password in order to get in. A unit
+    /// that is not running but should be is started, never restarted; a start
+    /// reads the new file on the way up. Enable/disable and start/stop are unit
+    /// state changes rather than configuration changes and stay as they are.
     async fn apply_unit(&self, ssh: &SshSettings, config_changed: bool) -> Result<()> {
         if ssh.enabled {
             if !is_enabled(&self.control.unit_file_state(SSH_UNIT).await?) {
@@ -343,11 +532,10 @@ impl<C: UnitControl> SshdReconciler<C> {
             }
             if is_active(&self.control.active_state(SSH_UNIT).await?) {
                 if config_changed {
-                    self.control.reload(SSH_UNIT).await.with_context(|| {
+                    self.control.restart(SSH_UNIT).await.with_context(|| {
                         format!(
-                            "reload {SSH_UNIT} after a configuration change: the unit may lack \
-                             ExecReload, in which case sshd is still running the previous \
-                             configuration and the rendered change has not been applied"
+                            "restart {SSH_UNIT} after its arguments changed: the running server \
+                             still has the previous arguments"
                         )
                     })?;
                 }
@@ -369,6 +557,9 @@ impl<C: UnitControl> SshdReconciler<C> {
 #[async_trait::async_trait]
 impl<C: UnitControl> Reconciler for SshdReconciler<C> {
     fn name(&self) -> &'static str {
+        // The live-state key and the apply queue's name for this reconciler,
+        // which apid and the API harness read; it names the SSH channel, not
+        // the daemon behind it.
         "sshd"
     }
 
@@ -388,27 +579,32 @@ impl<C: UnitControl> Reconciler for SshdReconciler<C> {
         // nothing.
         micad_settings::validate_authorized_keys(&ssh.authorized_keys)?;
         // Same boundary, same reasoning: each listen address is interpolated
-        // verbatim onto a `ListenAddress` line in the drop-in, where a newline
-        // is a new sshd directive. Requiring an actual address makes injection
-        // structurally impossible rather than filtering for it.
+        // verbatim into the quoted `DROPBEAR_ARGS` value, where whitespace
+        // splits an argument and a quote or newline ends the value. Requiring
+        // an actual address makes injection structurally impossible rather
+        // than filtering for it.
         validate_listen_addresses(&ssh.listen_addresses)?;
 
         // Outside the settings tree, so it has to be read on every apply: the
         // operator setting a transient password changes no setting at all, and
         // the bus method that sets one calls back through `apply_all`.
         let transient_active = transient::transient_password_active(&self.shadow_path);
-        // `password_authentication` below is the EFFECTIVE value — what sshd is
-        // actually told. `passwordAuthenticationRequested` in the published
+        // `password_authentication` below is the EFFECTIVE value — what dropbear
+        // is actually told. `passwordAuthenticationRequested` in the published
         // state is the raw setting. Two similarly-named keys, so: effective =
         // requested AND a transient password is really active.
         let password_authentication = ssh.password_authentication && transient_active;
 
-        // No "did it change" comes back, and none is wanted: only the drop-in
-        // forces sshd to re-read anything. sshd re-reads the authorized-keys
-        // file on every authentication attempt, so a key added or removed takes
-        // effect without touching the unit at all.
-        self.apply_authorized_keys(&ssh.authorized_keys, &MANAGED_LOGIN_ACCOUNTS)?;
-        let config_changed = self.apply_drop_in(ssh, password_authentication)?;
+        // Every home is checked before any key file is written. No "did it
+        // change" comes back from the keys, and none is wanted: dropbear opens
+        // the key file on every authentication attempt, so a key added or
+        // removed takes effect without touching the unit at all.
+        let targets = self.key_targets(&MANAGED_LOGIN_ACCOUNTS)?;
+        let rendered = render_authorized_keys(&ssh.authorized_keys);
+        for target in &targets {
+            write_key_file(target, &rendered)?;
+        }
+        let config_changed = self.apply_environment(ssh, password_authentication)?;
         self.apply_unit(ssh, config_changed).await?;
 
         let authorized_keys: Vec<serde_json::Value> = ssh
@@ -424,6 +620,10 @@ impl<C: UnitControl> Reconciler for SshdReconciler<C> {
                 })
             })
             .collect();
+        let authorized_keys_paths: Vec<String> = targets
+            .iter()
+            .map(|target| target.path().display().to_string())
+            .collect();
 
         Ok(json!({
             "enabled": ssh.enabled,
@@ -433,10 +633,10 @@ impl<C: UnitControl> Reconciler for SshdReconciler<C> {
             "passwordAuthenticationRequested": ssh.password_authentication,
             "transientPasswordActive": transient_active,
             "listenAddresses": ssh.listen_addresses,
-            "dropIn": self.drop_in_path.display().to_string(),
-            // Plural: one key set is rendered to one file per managed
-            // account, so a single path could only ever name one of them.
-            "authorizedKeysPaths": self.authorized_keys_paths(),
+            "environmentFile": self.environment_path.display().to_string(),
+            // Plural: one key set is rendered to one file per managed account
+            // that exists, in managed-account order.
+            "authorizedKeysPaths": authorized_keys_paths,
             "authorizedKeys": authorized_keys,
             "unit": SSH_UNIT,
             "activeState": self.control.active_state(SSH_UNIT).await?,
@@ -447,21 +647,17 @@ impl<C: UnitControl> Reconciler for SshdReconciler<C> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
 
     use super::super::systemd::mock::MockUnitControl;
     use super::*;
 
-    const GOLDEN_DEFAULTS: &str = "# Managed by micad from access.ssh. Do not edit.\n\
-        Port 22\nPermitRootLogin yes\nPasswordAuthentication yes\n";
+    const GOLDEN_DEFAULTS: &str = "DROPBEAR_ARGS=\"-p 22\"\n";
     /// What `apply` writes for default settings with **no** transient password
-    /// active: the same drop-in with password authentication gated off.
-    const GOLDEN_DEFAULTS_GATED: &str = "# Managed by micad from access.ssh. Do not edit.\n\
-        Port 22\nPermitRootLogin yes\nPasswordAuthentication no\n";
-    const GOLDEN_LISTEN: &str = "# Managed by micad from access.ssh. Do not edit.\n\
-        Port 2222\nPermitRootLogin no\nPasswordAuthentication no\n\
-        ListenAddress 10.0.0.5\nListenAddress fd00::1\n";
+    /// active: the same arguments with password logins turned off.
+    const GOLDEN_DEFAULTS_GATED: &str = "DROPBEAR_ARGS=\"-p 22 -s\"\n";
+    const GOLDEN_LISTEN: &str = "DROPBEAR_ARGS=\"-p 10.0.0.5:2222 -p [fd00::1]:2222 -s -w\"\n";
 
     /// Three accounts, nine fields each, trailing newline — the shape of a
     /// Debian `/etc/shadow`. `root` starts out locked (`!`).
@@ -489,9 +685,10 @@ mod tests {
 
     /// Paths of a fixture, all of them under the tempdir.
     struct Paths {
-        drop_in: PathBuf,
-        /// Directory the per-account key files land in.
-        keys_dir: PathBuf,
+        environment: PathBuf,
+        passwd: PathBuf,
+        root_home: PathBuf,
+        mos_home: PathBuf,
         /// The `root` account's key file — the path the goldens below are
         /// written against.
         keys: PathBuf,
@@ -500,62 +697,92 @@ mod tests {
         shadow: PathBuf,
     }
 
-    /// Fixture rooted entirely inside `dir`: a drop-in path that does not
-    /// exist yet and a shadow file at [`SHADOW_MODE`].
+    /// The uid and gid this test runs as. Both managed accounts are given
+    /// them, so the ownership the reconciler sets is one any test runner may
+    /// set, root or not.
+    fn own_ids() -> (u32, u32) {
+        (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        )
+    }
+
+    /// An `/etc/passwd` naming `root` and `mos` at the given homes, with a
+    /// system account between them.
+    fn passwd_for(root_home: &Path, mos_home: &Path) -> String {
+        let (uid, gid) = own_ids();
+        format!(
+            "root:x:{uid}:{gid}:root:{}:/bin/bash\n\
+             daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+             mos:x:{uid}:{gid}:mos operator:{}:/bin/bash\n",
+            root_home.display(),
+            mos_home.display()
+        )
+    }
+
+    /// Fixture rooted entirely inside `dir`: an environment file that does
+    /// not exist yet, two 0755 homes with no `.ssh`, and a shadow file at
+    /// [`SHADOW_MODE`].
     fn fixture(
         dir: &Path,
         active: &str,
         file_state: &str,
     ) -> (SshdReconciler<MockUnitControl>, Paths) {
-        fixture_with(dir, MockUnitControl::new(active, file_state))
-    }
-
-    /// Same fixture, driving `control` — so a test can supply a mock that
-    /// models a unit file without `ExecReload`.
-    fn fixture_with(
-        dir: &Path,
-        control: MockUnitControl,
-    ) -> (SshdReconciler<MockUnitControl>, Paths) {
-        let keys_dir = dir.join("authorized_keys.d");
+        let root_home = dir.join("root");
+        let mos_home = dir.join("home").join("mos");
         let paths = Paths {
-            drop_in: dir.join("sshd_config.d").join("10-mos.conf"),
-            keys: keys_dir.join("root"),
-            mos_keys: keys_dir.join("mos"),
-            keys_dir,
+            environment: dir.join("run").join("mica").join("dropbear.env"),
+            passwd: dir.join("passwd"),
+            keys: root_home.join(".ssh").join("authorized_keys"),
+            mos_keys: mos_home.join(".ssh").join("authorized_keys"),
+            root_home,
+            mos_home,
             shadow: dir.join("shadow"),
         };
+        for home in [&paths.root_home, &paths.mos_home] {
+            std::fs::create_dir_all(home).unwrap();
+            std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(&paths.passwd, passwd_for(&paths.root_home, &paths.mos_home)).unwrap();
         std::fs::write(&paths.shadow, SHADOW).unwrap();
         std::fs::set_permissions(&paths.shadow, std::fs::Permissions::from_mode(SHADOW_MODE))
             .unwrap();
         let reconciler = SshdReconciler::new(
-            paths.drop_in.clone(),
-            paths.keys_dir.clone(),
+            paths.environment.clone(),
+            paths.passwd.clone(),
             paths.shadow.clone(),
-            control,
+            MockUnitControl::new(active, file_state),
         );
         (reconciler, paths)
+    }
+
+    /// Write `contents` as the environment file, as a previous apply would
+    /// have.
+    fn preexisting_environment(paths: &Paths, contents: &str) {
+        std::fs::create_dir_all(paths.environment.parent().unwrap()).unwrap();
+        std::fs::write(&paths.environment, contents).unwrap();
     }
 
     fn mode_of(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
+    fn calls(reconciler: &SshdReconciler<MockUnitControl>) -> Vec<String> {
+        reconciler.control.calls()
+    }
+
     // ---- rendering --------------------------------------------------------
 
     #[test]
-    fn empty_listen_addresses_emit_no_listen_address_directive() {
-        let rendered = render_drop_in(&SshSettings::default(), true);
+    fn empty_listen_addresses_render_one_listener_on_every_address() {
+        let rendered = render_environment(&SshSettings::default(), true);
 
         assert_eq!(rendered, GOLDEN_DEFAULTS);
-        assert!(
-            !rendered.contains("ListenAddress"),
-            "empty listenAddresses means listen on all, so no directive: {rendered}"
-        );
     }
 
     #[test]
-    fn each_listen_address_becomes_one_directive() {
-        let rendered = render_drop_in(
+    fn each_listen_address_becomes_one_listener() {
+        let rendered = render_environment(
             &SshSettings {
                 enabled: true,
                 port: 2222,
@@ -568,7 +795,67 @@ mod tests {
         );
 
         assert_eq!(rendered, GOLDEN_LISTEN);
-        assert_eq!(rendered.matches("ListenAddress ").count(), 2);
+        assert_eq!(rendered.matches("-p ").count(), 2);
+    }
+
+    #[test]
+    fn an_address_that_carries_its_own_port_keeps_it() {
+        let rendered = render_environment(
+            &SshSettings {
+                listen_addresses: vec!["10.0.0.5:2200".to_string(), "[fd00::1]:2201".to_string()],
+                ..SshSettings::default()
+            },
+            true,
+        );
+
+        assert_eq!(
+            rendered,
+            "DROPBEAR_ARGS=\"-p 10.0.0.5:2200 -p [fd00::1]:2201\"\n"
+        );
+    }
+
+    /// The contract with mica-system's unit: one line, one variable, and
+    /// always a `-p` (its ExecStartPre refuses a start without one).
+    #[test]
+    fn every_render_is_exactly_one_dropbear_args_line_with_a_listener() {
+        for permit_root_login in [true, false] {
+            for password in [true, false] {
+                for listen in [vec![], vec!["192.0.2.1".to_string()]] {
+                    let rendered = render_environment(
+                        &SshSettings {
+                            permit_root_login,
+                            listen_addresses: listen,
+                            ..SshSettings::default()
+                        },
+                        password,
+                    );
+                    assert_eq!(rendered.lines().count(), 1, "{rendered}");
+                    assert!(rendered.starts_with("DROPBEAR_ARGS=\"-p "), "{rendered}");
+                    assert!(rendered.ends_with("\"\n"), "{rendered}");
+                }
+            }
+        }
+    }
+
+    /// `permitRootLogin = false` refuses root by every method, which is `-w`;
+    /// `-g` would refuse only root's password, and the only password this
+    /// device has is root's transient one.
+    #[test]
+    fn root_login_refusal_is_w_and_g_is_never_rendered() {
+        for permit_root_login in [true, false] {
+            for password in [true, false] {
+                let rendered = render_environment(
+                    &SshSettings {
+                        permit_root_login,
+                        ..SshSettings::default()
+                    },
+                    password,
+                );
+                assert_eq!(rendered.contains(" -w"), !permit_root_login, "{rendered}");
+                assert_eq!(rendered.contains(" -s"), !password, "{rendered}");
+                assert!(!rendered.contains("-g"), "{rendered}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -576,17 +863,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
         let mut ssh = ssh_settings(true);
-        // A newline here would land verbatim on the ListenAddress line, where
-        // it starts a new sshd directive.
-        ssh.listen_addresses = vec!["10.0.0.5\nPermitRootLogin yes".to_string()];
+        // A space or a quote here would land verbatim inside DROPBEAR_ARGS,
+        // where it splits the value into arguments dropbear never asked for.
+        ssh.listen_addresses = vec!["10.0.0.5 -B\" -R".to_string()];
 
         let err = reconciler.apply(&settings_with(ssh)).await.unwrap_err();
 
         assert!(err.to_string().contains("listenAddresses"), "{err}");
         assert!(
-            !paths.drop_in.exists(),
+            !paths.environment.exists(),
             "the reconcile must abort before anything is rendered"
         );
+        assert!(!paths.keys.exists());
+        assert!(calls(&reconciler).is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_more_listen_addresses_than_dropbear_binds() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let mut ssh = ssh_settings(true);
+        ssh.listen_addresses = (1..=11).map(|i| format!("192.0.2.{i}")).collect();
+
+        let err = reconciler.apply(&settings_with(ssh)).await.unwrap_err();
+
+        assert!(err.to_string().contains("at most 10"), "{err}");
+        assert!(!paths.environment.exists());
     }
 
     #[test]
@@ -601,13 +903,13 @@ mod tests {
         };
 
         assert_eq!(
-            render_drop_in(&ssh, true),
-            render_drop_in(&ssh.clone(), true)
+            render_environment(&ssh, true),
+            render_environment(&ssh.clone(), true)
         );
     }
 
     #[tokio::test]
-    async fn apply_writes_the_golden_drop_in_creating_its_directory() {
+    async fn apply_writes_the_golden_environment_file_creating_its_directory() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
 
@@ -619,10 +921,10 @@ mod tests {
         // GOLDEN_DEFAULTS_GATED, not GOLDEN_DEFAULTS: the fixture writes no
         // transient marker, so password authentication is gated off.
         assert_eq!(
-            std::fs::read_to_string(&paths.drop_in).unwrap(),
+            std::fs::read_to_string(&paths.environment).unwrap(),
             GOLDEN_DEFAULTS_GATED
         );
-        assert_eq!(mode_of(&paths.drop_in), 0o644);
+        assert_eq!(mode_of(&paths.environment), 0o644);
     }
 
     #[tokio::test]
@@ -636,8 +938,9 @@ mod tests {
             .unwrap();
 
         for directory in [
-            paths.drop_in.parent().unwrap(),
+            paths.environment.parent().unwrap(),
             paths.keys.parent().unwrap(),
+            paths.mos_keys.parent().unwrap(),
             dir.path(),
         ] {
             let leftovers: Vec<_> = std::fs::read_dir(directory)
@@ -662,25 +965,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            reconciler.control.calls(),
+            calls(&reconciler),
             vec![
-                "enable ssh.service".to_string(),
-                "start ssh.service".to_string()
+                "enable dropbear.service".to_string(),
+                "start dropbear.service".to_string()
             ]
         );
-        // Enablement is a unit STATE change, not a configuration change: it is
-        // correctly not a reload, and a stopped unit could not be reloaded
-        // anyway.
-        assert!(
-            !reconciler
-                .control
-                .calls()
-                .contains(&"reload ssh.service".to_string())
-        );
+        // Enablement is a unit STATE change, not a configuration change: the
+        // start reads the freshly written arguments, so nothing restarts.
+        assert!(!calls(&reconciler).contains(&"restart dropbear.service".to_string()));
         assert_eq!(state["enabled"], json!(true));
         assert_eq!(state["activeState"], json!("active"));
         assert_eq!(state["unitFileState"], json!("enabled-runtime"));
-        assert_eq!(state["unit"], json!("ssh.service"));
+        assert_eq!(state["unit"], json!("dropbear.service"));
         assert_eq!(reconciler.name(), "sshd");
         assert_eq!(reconciler.subtree(), "access.ssh");
     }
@@ -696,19 +993,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            reconciler.control.calls(),
+            calls(&reconciler),
             vec![
-                "stop ssh.service".to_string(),
-                "disable ssh.service".to_string()
+                "stop dropbear.service".to_string(),
+                "disable dropbear.service".to_string()
             ]
-        );
-        // Likewise a unit STATE change. Reloading a daemon on the way out is
-        // meaningless.
-        assert!(
-            !reconciler
-                .control
-                .calls()
-                .contains(&"reload ssh.service".to_string())
         );
         assert_eq!(state["enabled"], json!(false));
         assert_eq!(state["activeState"], json!("inactive"));
@@ -719,8 +1008,7 @@ mod tests {
     async fn already_running_and_enabled_needs_no_calls() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "active", "enabled");
-        std::fs::create_dir_all(paths.drop_in.parent().unwrap()).unwrap();
-        std::fs::write(&paths.drop_in, GOLDEN_DEFAULTS_GATED).unwrap();
+        preexisting_environment(&paths, GOLDEN_DEFAULTS_GATED);
 
         reconciler
             .apply(&settings_with(ssh_settings(true)))
@@ -728,9 +1016,9 @@ mod tests {
             .unwrap();
 
         assert!(
-            reconciler.control.calls().is_empty(),
+            calls(&reconciler).is_empty(),
             "converged system got calls: {:?}",
-            reconciler.control.calls()
+            calls(&reconciler)
         );
     }
 
@@ -745,9 +1033,9 @@ mod tests {
             .unwrap();
 
         assert!(
-            reconciler.control.calls().is_empty(),
+            calls(&reconciler).is_empty(),
             "converged system got calls: {:?}",
-            reconciler.control.calls()
+            calls(&reconciler)
         );
     }
 
@@ -758,34 +1046,34 @@ mod tests {
         let settings = settings_with(ssh_settings(true));
 
         reconciler.apply(&settings).await.unwrap();
-        let after_first = reconciler.control.calls();
+        let after_first = calls(&reconciler);
         // A marker the reconciler would clobber if it rewrote the file: the
         // renderer always produces mode 0644.
-        std::fs::set_permissions(&paths.drop_in, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&paths.environment, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
 
         reconciler.apply(&settings).await.unwrap();
 
-        assert_eq!(reconciler.control.calls(), after_first);
+        assert_eq!(calls(&reconciler), after_first);
         assert_eq!(
-            mode_of(&paths.drop_in),
+            mode_of(&paths.environment),
             0o600,
-            "an unchanged drop-in must not be rewritten"
+            "an unchanged environment file must not be rewritten"
         );
         assert_eq!(
-            std::fs::read_to_string(&paths.drop_in).unwrap(),
+            std::fs::read_to_string(&paths.environment).unwrap(),
             GOLDEN_DEFAULTS_GATED
         );
     }
 
-    /// The central guard: a configuration-only change reloads a running sshd
-    /// and must never restart it, so the operator's established session
-    /// survives by construction rather than by `KillMode`'s grace.
+    /// dropbear reads its arguments only at start, so changed arguments under
+    /// a running server are a restart — and nothing else: the unit is neither
+    /// stopped nor re-enabled on the way.
     #[tokio::test]
-    async fn changing_the_config_of_a_running_sshd_reloads_it_and_never_restarts_it() {
+    async fn changing_the_arguments_of_a_running_dropbear_restarts_it() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "active", "enabled");
-        std::fs::create_dir_all(paths.drop_in.parent().unwrap()).unwrap();
-        std::fs::write(&paths.drop_in, GOLDEN_DEFAULTS_GATED).unwrap();
+        preexisting_environment(&paths, GOLDEN_DEFAULTS_GATED);
 
         let state = reconciler
             .apply(&settings_with(SshSettings {
@@ -797,31 +1085,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            reconciler.control.calls(),
-            vec!["reload ssh.service".to_string()]
+            calls(&reconciler),
+            vec!["restart dropbear.service".to_string()]
         );
-        assert!(
-            !reconciler
-                .control
-                .calls()
-                .contains(&"restart ssh.service".to_string()),
-            "a restart would drop the operator's live session: {:?}",
-            reconciler.control.calls()
-        );
-        assert!(
-            std::fs::read_to_string(&paths.drop_in)
-                .unwrap()
-                .contains("Port 2222\n")
+        assert_eq!(
+            std::fs::read_to_string(&paths.environment).unwrap(),
+            "DROPBEAR_ARGS=\"-p 2222 -s\"\n"
         );
         assert_eq!(state["port"], json!(2222));
     }
 
     #[tokio::test]
-    async fn changing_the_config_of_a_stopped_sshd_starts_it_without_reloading() {
+    async fn changing_the_arguments_of_a_stopped_dropbear_starts_it_without_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "enabled");
-        std::fs::create_dir_all(paths.drop_in.parent().unwrap()).unwrap();
-        std::fs::write(&paths.drop_in, GOLDEN_DEFAULTS_GATED).unwrap();
+        preexisting_environment(&paths, GOLDEN_DEFAULTS_GATED);
 
         reconciler
             .apply(&settings_with(SshSettings {
@@ -832,61 +1110,40 @@ mod tests {
             .await
             .unwrap();
 
-        // A start reads the drop-in on the way up, so the change is applied
-        // without a reload — and reloading a stopped daemon would apply the
-        // configuration to nothing.
+        // A start reads the file on the way up, so the change is applied
+        // without a restart.
         assert_eq!(
-            reconciler.control.calls(),
-            vec!["start ssh.service".to_string()]
+            calls(&reconciler),
+            vec!["start dropbear.service".to_string()]
         );
         assert!(
-            std::fs::read_to_string(&paths.drop_in)
+            std::fs::read_to_string(&paths.environment)
                 .unwrap()
-                .contains("Port 2222\n")
+                .contains("-p 2222")
         );
     }
 
     #[tokio::test]
-    async fn a_unit_without_exec_reload_fails_loudly_and_is_never_restarted_instead() {
+    async fn changed_arguments_while_ssh_is_being_disabled_only_stop_the_server() {
         let dir = tempfile::tempdir().unwrap();
-        let (reconciler, paths) = fixture_with(
-            dir.path(),
-            MockUnitControl::with_failing_reload("active", "enabled"),
-        );
-        std::fs::create_dir_all(paths.drop_in.parent().unwrap()).unwrap();
-        std::fs::write(&paths.drop_in, GOLDEN_DEFAULTS_GATED).unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "active", "enabled");
+        preexisting_environment(&paths, GOLDEN_DEFAULTS_GATED);
 
-        let error = reconciler
+        reconciler
             .apply(&settings_with(SshSettings {
-                enabled: true,
+                enabled: false,
                 port: 2222,
                 ..SshSettings::default()
             }))
             .await
-            .unwrap_err();
+            .unwrap();
 
-        let rendered = format!("{error:#}");
-        assert!(
-            rendered.contains("ExecReload"),
-            "the error must send the next reader at the unit file: {rendered}"
-        );
-        assert!(
-            rendered.contains("has not been applied"),
-            "the error must say the change did not take effect: {rendered}"
-        );
-        assert!(
-            !reconciler
-                .control
-                .calls()
-                .contains(&"restart ssh.service".to_string()),
-            "a silent restart fallback reintroduces the disconnect and hides the \
-             missing ExecReload: {:?}",
-            reconciler.control.calls()
-        );
         assert_eq!(
-            reconciler.control.calls(),
-            vec!["reload ssh.service".to_string()],
-            "the reload is attempted once and nothing follows it"
+            calls(&reconciler),
+            vec![
+                "stop dropbear.service".to_string(),
+                "disable dropbear.service".to_string()
+            ]
         );
     }
 
@@ -932,8 +1189,8 @@ mod tests {
         assert_eq!(
             reconciler.control.calls(),
             vec![
-                "enable ssh.service".to_string(),
-                "start ssh.service".to_string()
+                "enable dropbear.service".to_string(),
+                "start dropbear.service".to_string()
             ]
         );
     }
@@ -950,15 +1207,23 @@ mod tests {
             .await
             .unwrap();
 
-        for path in [&paths.drop_in, &paths.keys, &paths.mos_keys, &paths.shadow] {
+        for path in [
+            &paths.environment,
+            &paths.keys,
+            &paths.mos_keys,
+            &paths.shadow,
+        ] {
             assert!(
                 path.starts_with(dir.path()),
                 "{} escapes the tempdir",
                 path.display()
             );
         }
-        assert_eq!(state["dropIn"], json!(paths.drop_in.display().to_string()));
-        assert_ne!(state["dropIn"], json!(DEFAULT_DROP_IN));
+        assert_eq!(
+            state["environmentFile"],
+            json!(paths.environment.display().to_string())
+        );
+        assert_ne!(state["environmentFile"], json!(DEFAULT_ENVIRONMENT_FILE));
         assert_eq!(
             state["authorizedKeysPaths"],
             json!([
@@ -969,8 +1234,8 @@ mod tests {
         assert!(
             !state["authorizedKeysPaths"]
                 .to_string()
-                .contains(DEFAULT_AUTHORIZED_KEYS_DIR),
-            "a test must never render into the real /etc/ssh"
+                .contains("\"/root/"),
+            "a test must never render into the real /root"
         );
     }
 
@@ -1308,7 +1573,7 @@ mod tests {
     }
 
     /// Removing every key empties the file rather than deleting it: an absent
-    /// file and an empty file mean the same thing to sshd, and a key removed
+    /// file and an empty file mean the same thing to dropbear, and a key removed
     /// has to stop working immediately either way.
     #[tokio::test]
     async fn removing_every_key_empties_the_file_without_deleting_it() {
@@ -1354,7 +1619,7 @@ mod tests {
     }
 
     /// The other direction: shell metacharacters are ordinary comment text.
-    /// The rendered file is read by sshd, not by a shell, and a guard that
+    /// The rendered file is read by dropbear, not by a shell, and a guard that
     /// rejected these would refuse comments operators really write.
     #[tokio::test]
     async fn shell_metacharacters_in_a_comment_render_verbatim() {
@@ -1376,7 +1641,7 @@ mod tests {
         );
     }
 
-    // ---- PasswordAuthentication gating ------------------------------------
+    // ---- password authentication gating -----------------------------------
 
     #[tokio::test]
     async fn without_a_transient_password_password_authentication_is_off() {
@@ -1392,10 +1657,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            std::fs::read_to_string(&paths.drop_in)
-                .unwrap()
-                .contains("PasswordAuthentication no\n"),
+        assert_eq!(
+            std::fs::read_to_string(&paths.environment).unwrap(),
+            GOLDEN_DEFAULTS_GATED,
             "root is locked, so the method cannot succeed and must not be offered"
         );
         assert_eq!(state["passwordAuthentication"], json!(false));
@@ -1404,7 +1668,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_marker_appearing_between_two_applies_turns_passwords_on_and_reloads_sshd() {
+    async fn a_marker_appearing_between_two_applies_turns_passwords_on_and_restarts_dropbear() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "active", "enabled");
         let settings = settings_with(SshSettings {
@@ -1415,11 +1679,11 @@ mod tests {
 
         let before = reconciler.apply(&settings).await.unwrap();
         assert_eq!(before["passwordAuthentication"], json!(false));
-        assert!(
-            std::fs::read_to_string(&paths.drop_in)
-                .unwrap()
-                .contains("PasswordAuthentication no\n")
+        assert_eq!(
+            std::fs::read_to_string(&paths.environment).unwrap(),
+            GOLDEN_DEFAULTS_GATED
         );
+        let calls_before = calls(&reconciler).len();
 
         // Nothing in the settings tree changes here — this is exactly what
         // `SetTransientRootPassword` does before it calls `apply_all`.
@@ -1428,27 +1692,18 @@ mod tests {
 
         assert_eq!(after["passwordAuthentication"], json!(true));
         assert_eq!(after["transientPasswordActive"], json!(true));
-        assert!(
-            std::fs::read_to_string(&paths.drop_in)
-                .unwrap()
-                .contains("PasswordAuthentication yes\n")
+        assert_eq!(
+            std::fs::read_to_string(&paths.environment).unwrap(),
+            GOLDEN_DEFAULTS
         );
-        assert!(
-            reconciler
-                .control
-                .calls()
-                .contains(&"reload ssh.service".to_string()),
-            "sshd must re-read the flipped drop-in: {:?}",
-            reconciler.control.calls()
-        );
-        assert!(
-            !reconciler
-                .control
-                .calls()
-                .contains(&"restart ssh.service".to_string()),
-            "this is the path where the operator is setting a password over the \
-             very session a restart would drop: {:?}",
-            reconciler.control.calls()
+        // A restart and nothing else: the server has to re-read -s, and a
+        // stop/start pair would leave a window with no listener at all.
+        // mica-system's KillMode=process is what keeps the operator's session.
+        assert_eq!(
+            calls(&reconciler)[calls_before..],
+            ["restart dropbear.service".to_string()],
+            "dropbear must pick up the flipped arguments: {:?}",
+            calls(&reconciler)
         );
     }
 
@@ -1474,10 +1729,9 @@ mod tests {
         );
         assert_eq!(state["transientPasswordActive"], json!(true));
         assert_eq!(state["passwordAuthenticationRequested"], json!(false));
-        assert!(
-            std::fs::read_to_string(&paths.drop_in)
-                .unwrap()
-                .contains("PasswordAuthentication no\n")
+        assert_eq!(
+            std::fs::read_to_string(&paths.environment).unwrap(),
+            GOLDEN_DEFAULTS_GATED
         );
     }
 
@@ -1498,18 +1752,6 @@ mod tests {
 
         assert_eq!(state["transientPasswordActive"], json!(false));
         assert_eq!(state["passwordAuthentication"], json!(false));
-    }
-
-    #[test]
-    fn the_rendered_drop_in_never_carries_an_authorized_keys_file_directive() {
-        // The static 05-mos-authorized-keys.conf owns that keyword and sorts
-        // first; sshd keeps the first value it sees, so emitting it here would
-        // be dead text that a later reader would try to "fix".
-        for effective in [true, false] {
-            assert!(
-                !render_drop_in(&SshSettings::default(), effective).contains("AuthorizedKeysFile")
-            );
-        }
     }
 
     // ---- published state --------------------------------------------------
@@ -1567,12 +1809,13 @@ mod tests {
         assert_eq!(state["authorizedKeys"], json!([]));
     }
 
-    // ---- permissions ------------------------------------------------------
+    // ---- ownership and permissions dropbear checks ------------------------
 
     #[tokio::test]
-    async fn every_rendered_key_file_is_0600_in_a_0755_directory() {
+    async fn every_key_file_is_the_accounts_0600_file_in_its_0700_ssh_directory() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let (uid, gid) = own_ids();
 
         reconciler
             .apply(&settings_with_keys(vec![raw_key(
@@ -1582,9 +1825,161 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(mode_of(&paths.keys), 0o600);
-        assert_eq!(mode_of(&paths.mos_keys), 0o600);
-        assert_eq!(mode_of(&paths.keys_dir), 0o755);
+        for file in [&paths.keys, &paths.mos_keys] {
+            let ssh_dir = file.parent().unwrap();
+            assert_eq!(mode_of(file), 0o600, "{}", file.display());
+            assert_eq!(mode_of(ssh_dir), 0o700, "{}", ssh_dir.display());
+            for path in [file.as_path(), ssh_dir] {
+                let meta = std::fs::symlink_metadata(path).unwrap();
+                assert_eq!((meta.uid(), meta.gid()), (uid, gid), "{}", path.display());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_existing_ssh_directory_is_brought_to_0700() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let ssh_dir = paths.mos_home.join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        std::fs::set_permissions(&ssh_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(ssh_dir.join("known_hosts"), "operator data").unwrap();
+
+        reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .unwrap();
+
+        assert_eq!(mode_of(&ssh_dir), 0o700);
+        assert_eq!(
+            std::fs::read_to_string(ssh_dir.join("known_hosts")).unwrap(),
+            "operator data",
+            "only the key file is this reconciler's"
+        );
+    }
+
+    /// dropbear refuses every key under a home that group or others can write.
+    /// The apply fails naming the home, before ANY account's keys or the
+    /// server's arguments change, and the home is not repaired.
+    #[tokio::test]
+    async fn a_writable_home_fails_the_apply_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        std::fs::set_permissions(&paths.mos_home, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        let err = reconciler
+            .apply(&settings_with_keys(vec![raw_key(
+                &canonical(REAL_ED25519_LINE),
+                None,
+            )]))
+            .await
+            .unwrap_err();
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(&paths.mos_home.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("group- or world-writable"), "{message}");
+        assert!(
+            !paths.keys.exists(),
+            "root's keys changed on a failed apply"
+        );
+        assert!(!paths.mos_keys.exists());
+        assert!(!paths.environment.exists());
+        assert!(calls(&reconciler).is_empty());
+        assert_eq!(mode_of(&paths.mos_home), 0o775);
+    }
+
+    /// The home is writable by the account and micad is root: a `~/.ssh`
+    /// pointing elsewhere must not carry a root-written file there.
+    #[tokio::test]
+    async fn a_symlinked_ssh_directory_is_refused_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, paths.mos_home.join(".ssh")).unwrap();
+
+        let err = reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("symbolic link"), "{err:#}");
+        assert!(!elsewhere.join("authorized_keys").exists());
+        assert!(!paths.keys.exists());
+    }
+
+    /// Planted names inside `~/.ssh` are replaced, never written through.
+    #[tokio::test]
+    async fn symlinks_planted_as_the_key_file_or_its_temporary_are_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        let ssh_dir = paths.mos_home.join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        std::os::unix::fs::symlink(&victim, ssh_dir.join(".authorized_keys.micad-tmp")).unwrap();
+        std::os::unix::fs::symlink(&victim, ssh_dir.join("authorized_keys")).unwrap();
+
+        reconciler
+            .apply(&settings_with_keys(vec![raw_key(
+                &canonical(REAL_ED25519_LINE),
+                None,
+            )]))
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        assert!(
+            !std::fs::symlink_metadata(&paths.mos_keys)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&paths.mos_keys).unwrap(),
+            format!("{}\n", canonical(REAL_ED25519_LINE))
+        );
+    }
+
+    /// micad reads the existing key file to skip a no-op rewrite. A FIFO
+    /// planted under that name would block a plain read-only open until a
+    /// writer appeared, holding every reconcile behind the account's whim.
+    #[test]
+    fn a_fifo_planted_as_the_key_file_neither_hangs_the_apply_nor_survives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        std::fs::create_dir(paths.mos_home.join(".ssh")).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &paths.mos_keys,
+            rustix::fs::FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let result = runtime.block_on(reconciler.apply(&settings_with(ssh_settings(true))));
+            let _ = done.send(result.map(|_| ()).map_err(|err| format!("{err:#}")));
+        });
+
+        let result = finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the apply must not block on a FIFO");
+        result.unwrap();
+        assert!(
+            std::fs::symlink_metadata(&paths.mos_keys)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
     }
 
     #[tokio::test]
@@ -1608,10 +2003,10 @@ mod tests {
 
     // ---- one key set, rendered for every managed login account ------------
     //
-    // `AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u` is expanded per login
-    // user, so a file exists for each account micad manages and all of them
-    // carry the same list. These tests hold the plural property; the goldens
-    // above still hold the `root` file byte-for-byte.
+    // dropbear reads `~/.ssh/authorized_keys` of the user it is
+    // authenticating, so a file exists for each account micad manages and all
+    // of them carry the same list. These tests hold the plural property; the
+    // goldens above still hold the `root` file byte-for-byte.
 
     /// The central guard. One validated list, two files, identical bytes.
     #[tokio::test]
@@ -1633,7 +2028,6 @@ mod tests {
             canonical(REAL_RSA_LINE)
         );
         for path in [&paths.keys, &paths.mos_keys] {
-            assert!(path.exists(), "{} was not rendered", path.display());
             assert_eq!(
                 std::fs::read_to_string(path).unwrap(),
                 expected,
@@ -1641,20 +2035,30 @@ mod tests {
                 path.display()
             );
         }
-        assert_eq!(
-            std::fs::read(&paths.keys).unwrap(),
-            std::fs::read(&paths.mos_keys).unwrap(),
-            "one key set means byte-identical files"
-        );
     }
 
-    /// The file set is exactly the constant list — no more, no fewer. A scan of
+    /// The file set is exactly the constant list. The fixture's account
+    /// database also names `daemon`, whose home gets nothing: a scan of
     /// `/etc/passwd` would render for whatever accounts the host happens to
     /// have, which is the thing the constant exists to prevent.
     #[tokio::test]
     async fn only_the_managed_accounts_get_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let daemon_home = dir.path().join("daemon");
+        std::fs::create_dir(&daemon_home).unwrap();
+        let (uid, gid) = own_ids();
+        std::fs::write(
+            &paths.passwd,
+            std::fs::read_to_string(&paths.passwd).unwrap().replace(
+                "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+                &format!(
+                    "daemon:x:{uid}:{gid}:daemon:{}:/bin/bash",
+                    daemon_home.display()
+                ),
+            ),
+        )
+        .unwrap();
 
         reconciler
             .apply(&settings_with_keys(vec![raw_key(
@@ -1664,49 +2068,70 @@ mod tests {
             .await
             .unwrap();
 
-        let mut rendered: Vec<String> = std::fs::read_dir(&paths.keys_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        rendered.sort();
-        let mut expected: Vec<String> = MANAGED_LOGIN_ACCOUNTS
-            .iter()
-            .map(|a| a.to_string())
-            .collect();
-        expected.sort();
-        assert_eq!(rendered, expected);
+        assert!(paths.keys.exists());
+        assert!(paths.mos_keys.exists());
+        assert!(!daemon_home.join(".ssh").exists());
         assert_eq!(MANAGED_LOGIN_ACCOUNTS, ["root", "mos"]);
     }
 
-    /// `mos` may not exist as an account when this ships: a sibling task adds
-    /// it, and the two can merge in either order. Rendering a key file for an
-    /// account that does not exist must therefore be an ordinary success —
-    /// sshd only ever opens the file named by the user it is authenticating, so
-    /// a file no login can name is inert rather than wrong.
-    ///
-    /// The account name here is one no system could plausibly carry, so this
-    /// proves the render is unconditional rather than merely lucky about what
-    /// the build host happens to have in `/etc/passwd`.
-    #[test]
-    fn a_key_file_renders_for_an_account_that_does_not_exist() {
-        const ABSENT: &str = "no-such-account-rfct053";
-        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-        assert!(
-            !passwd.contains(ABSENT),
-            "the fixture account must genuinely not exist for this test to mean anything"
-        );
+    /// An account the database does not name, or whose home does not exist,
+    /// cannot log in with a key; it is skipped rather than failing the apply,
+    /// which would keep SSH closed for root too, and it is absent from the
+    /// published paths.
+    #[tokio::test]
+    async fn an_account_without_an_entry_or_a_home_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
+        let passwd = std::fs::read_to_string(&paths.passwd).unwrap();
+        let without_mos: String = passwd
+            .lines()
+            .filter(|line| !line.starts_with("mos:"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&paths.passwd, without_mos).unwrap();
 
-        reconciler
-            .apply_authorized_keys(&[raw_key(&canonical(REAL_ED25519_LINE), None)], &[ABSENT])
-            .expect("a render for a missing account must not fail the reconcile");
+        let state = reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .expect("a missing account must not fail the reconcile");
+
+        assert!(paths.keys.exists());
+        assert!(!paths.mos_home.join(".ssh").exists());
+        assert_eq!(
+            state["authorizedKeysPaths"],
+            json!([paths.keys.display().to_string()])
+        );
+
+        std::fs::write(&paths.passwd, passwd).unwrap();
+        std::fs::remove_dir(&paths.mos_home).unwrap();
+        let state = reconciler
+            .apply(&settings_with(ssh_settings(true)))
+            .await
+            .expect("a missing home must not fail the reconcile");
+        assert!(!paths.mos_home.exists(), "a home is not created");
+        assert_eq!(
+            state["authorizedKeysPaths"],
+            json!([paths.keys.display().to_string()])
+        );
+    }
+
+    #[test]
+    fn the_account_entry_is_found_by_exact_name() {
+        let passwd = "mosx:x:5:5::/nowhere:/bin/sh\n\
+                      broken:x:notanumber:1::/x:/bin/sh\n\
+                      mos:x:1000:1000:mos operator:/home/mos:/bin/bash\n";
 
         assert_eq!(
-            std::fs::read_to_string(paths.keys_dir.join(ABSENT)).unwrap(),
-            format!("{}\n", canonical(REAL_ED25519_LINE)),
-            "the render is the same whether or not the account exists"
+            find_account(passwd, "mos"),
+            Some(Account {
+                name: "mos".to_string(),
+                uid: 1000,
+                gid: 1000,
+                home: PathBuf::from("/home/mos"),
+            })
         );
+        assert_eq!(find_account(passwd, "broken"), None);
+        assert_eq!(find_account(passwd, "root"), None);
     }
 
     /// An empty list empties EVERY account file. Two empty files, not two
@@ -1816,28 +2241,5 @@ mod tests {
                 path.display()
             );
         }
-    }
-
-    /// No temporary file survives either write. Both files share one directory,
-    /// so a leftover from the second write would be visible here too.
-    #[tokio::test]
-    async fn rendering_every_account_leaves_no_temporary_file_behind() {
-        let dir = tempfile::tempdir().unwrap();
-        let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
-
-        reconciler
-            .apply(&settings_with_keys(vec![raw_key(
-                &canonical(REAL_ED25519_LINE),
-                None,
-            )]))
-            .await
-            .unwrap();
-
-        let leftovers: Vec<_> = std::fs::read_dir(&paths.keys_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name.to_string_lossy().contains("micad-tmp"))
-            .collect();
-        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
     }
 }

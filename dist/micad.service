@@ -21,13 +21,13 @@ ExecStart=/usr/bin/micad
 Restart=on-failure
 
 # Sandboxing for a root daemon. micad must keep root and broad file access —
-# it rewrites /etc/shadow, renders under /etc/ssh and /run/systemd/network,
-# and owns STATE — so ProtectSystem= and a capability bounding set are not
-# candidates. Everything below is: micad execs nothing setuid, touches no
-# home, needs no realtime, maps nothing writable-executable, and speaks only
-# unix/netlink/inet sockets (zbus, sd-notify, reconciler bus calls).
+# it rewrites /etc/shadow, renders under /run/mica and /run/systemd/network,
+# writes ~/.ssh/authorized_keys into /root and /home/mos, and owns STATE — so
+# ProtectSystem=, ProtectHome= and a capability bounding set are not
+# candidates. Everything below is: micad execs nothing setuid, needs no
+# realtime, maps nothing writable-executable, and speaks only unix/netlink/inet
+# sockets (zbus, sd-notify, reconciler bus calls).
 NoNewPrivileges=yes
-ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
