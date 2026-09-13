@@ -1,6 +1,6 @@
 # 20260913-2230-independent-apid-upgrade PROPOSAL: mica-apid upgrades beside an unchanged micad
 
-- **status**: proposed (not applied)
+- **status**: proposed (not applied; pending the user's decision)
 - **createdAt**: 2026-09-13 22:30
 - **task**: `20260913-2200-build-env-release-v0.0.1` (notes)
 
@@ -79,4 +79,7 @@ Result on 2026-09-13: 10 passed, 0 failed.
 
 Accept the D-Bus interface name and revision as the only compatibility unit
 between micad and mica-apid (1-4 in this repository), and route 5 to the
-root composer.
+root composer. Items 1-4 alone do not make the upgrade independent end to
+end: without 5, the micad downgrade case above installs with both packages
+`ii`. Complete acceptance is 1-4 here and 5 in the composer's final dpkg
+database; JSON semantics stay a review and bus-test obligation.
