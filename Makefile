@@ -50,7 +50,7 @@ dbus-policy-test:
 
 apid-ui-build-contract-test:
 	bash scripts/gate/apid-ui-build-contract-test.sh
-	bash crates/apid/ui/run.sh
+	bash crates/mica-apid/ui/run.sh
 
 preflight:
 	bash build-env/deb/preflight.sh

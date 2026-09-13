@@ -11,12 +11,12 @@ case "${1-}" in
 "") ;;
 --check) RUN_CHECKS=1 ;;
 *)
-    echo "usage: bash crates/apid/ui/build.sh [--check]" >&2
+    echo "usage: bash crates/mica-apid/ui/build.sh [--check]" >&2
     exit 1
     ;;
 esac
 [ "$#" -le 1 ] || {
-    echo "usage: bash crates/apid/ui/build.sh [--check]" >&2
+    echo "usage: bash crates/mica-apid/ui/build.sh [--check]" >&2
     exit 1
 }
 

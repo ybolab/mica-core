@@ -95,37 +95,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "apid"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "async-trait",
- "axum 0.8.9",
- "axum-server",
- "chrono",
- "futures-util",
- "hmac",
- "mica-ui-bundle",
- "micad-settings",
- "rand 0.8.7",
- "rcgen",
- "reqwest",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "utoipa",
- "zbus",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1660,8 +1629,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-apid"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "axum 0.8.9",
+ "axum-server",
+ "chrono",
+ "futures-util",
+ "hmac",
+ "mica-ui-bundle",
+ "micad-settings",
+ "rand 0.8.7",
+ "rcgen",
+ "reqwest",
+ "rustix",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
+ "zbus",
+]
+
+[[package]]
 name = "mica-busname"
 version = "0.1.0"
+
+[[package]]
+name = "mica-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "base64 0.22.1",
+ "bcrypt",
+ "chrono",
+ "hex",
+ "mica-apid",
+ "mica-busname",
+ "micad-settings",
+ "ring",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "x25519-dalek",
+ "zbus",
+]
 
 [[package]]
 name = "mica-mqtt-broker"
@@ -1733,33 +1760,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "zip",
-]
-
-[[package]]
-name = "micad"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "apid",
- "argon2",
- "async-trait",
- "base64 0.22.1",
- "bcrypt",
- "chrono",
- "hex",
- "mica-busname",
- "micad-settings",
- "ring",
- "rustix",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "x25519-dalek",
- "zbus",
 ]
 
 [[package]]

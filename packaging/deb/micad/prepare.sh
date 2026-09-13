@@ -11,7 +11,7 @@ set -euo pipefail
 
 bash "${MICA_DEB_REPO_ROOT}/scripts/build/build-deb.sh" \
     --producer "${MICA_DEB_PRODUCER}" \
-    --crates micad \
+    --bins micad \
     --arch "${MICA_DEB_ARCH}" \
     --stage "${MICA_DEB_STAGE}"
 # The committed OpenAPI document rides in the mica-apid payload as
@@ -20,4 +20,4 @@ bash "${MICA_DEB_REPO_ROOT}/scripts/build/build-deb.sh" \
 # it out of the archive it installs rather than out of a checkout of this
 # repository. scripts/build/check.sh has already asserted it is what apid --openapi
 # prints.
-cp "${MICA_DEB_REPO_ROOT}/crates/apid/openapi.json" "${MICA_DEB_STAGE}/openapi.json"
+cp "${MICA_DEB_REPO_ROOT}/crates/mica-apid/openapi.json" "${MICA_DEB_STAGE}/openapi.json"

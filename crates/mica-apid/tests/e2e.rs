@@ -53,7 +53,7 @@ fn find_mosd() -> anyhow::Result<PathBuf> {
         .join("micad");
     anyhow::ensure!(
         candidate.exists(),
-        "micad binary not found at {}; build it with `cargo build -p micad` or set MOSD_BIN",
+        "micad binary not found at {}; build it with `cargo build -p mica-core` or set MOSD_BIN",
         candidate.display()
     );
     Ok(candidate)

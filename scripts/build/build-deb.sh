@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Compile one producer's crates out of the micad workspace, prove the producer
+# Compile one producer's binaries out of the workspace, prove the producer
 # boundary held, and stage the binaries for packaging.
 #
-#   bash scripts/build/build-deb.sh --producer micad --crates micad \
+#   bash scripts/build/build-deb.sh --producer micad --bins micad \
 #        --arch amd64 --stage <dir>
 #
 # WHY THIS FILE STILL EXISTS. Every producer in this repository is built by
 # build-env/deb/build.sh from its producer.env, and this is not a second
 # driver: it is the micad workspace's PREPARE hook implementation, reached
 # through packaging/deb/<producer>/prepare.sh. What it does -- cross-compile
-# a named set of crates and then assert that NOTHING ELSE was compiled with them
+# a named set of binaries and then assert that NOTHING ELSE was compiled with them
 # -- is a claim about a cargo build, and no key in producer.env describes a
 # cargo build. The generic driver packs what it is handed; this decides what it
 # is handed and what may not be in it.
@@ -37,7 +37,7 @@ command -v docker >/dev/null 2>&1 || {
 }
 
 PRODUCER=""
-CRATES=""
+BINS=""
 ARCH=""
 STAGE=""
 while [ "$#" -gt 0 ]; do
@@ -47,9 +47,9 @@ while [ "$#" -gt 0 ]; do
         [ -n "${PRODUCER}" ] || { echo "error: --producer takes a producer name" >&2; exit 1; }
         shift 2
         ;;
-    --crates)
-        CRATES="${2-}"
-        [ -n "${CRATES}" ] || { echo "error: --crates takes a space-separated crate list" >&2; exit 1; }
+    --bins)
+        BINS="${2-}"
+        [ -n "${BINS}" ] || { echo "error: --bins takes a space-separated binary list" >&2; exit 1; }
         shift 2
         ;;
     --arch)
@@ -63,19 +63,19 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash scripts/build/build-deb.sh --producer <name> --crates \"<crate> ...\" --arch <amd64|arm64> --stage <dir>" >&2
+        echo "usage: bash scripts/build/build-deb.sh --producer <name> --bins \"<binary> ...\" --arch <amd64|arm64> --stage <dir>" >&2
         exit 1
         ;;
     esac
 done
 [ -n "${PRODUCER}" ] || { echo "error: --producer is required; it names the producer-private target directory, and two producers sharing one would let a build satisfy the independence assertion below with binaries nobody asked for" >&2; exit 1; }
-[ -n "${CRATES}" ] || { echo "error: --crates is required; there is no default crate list, because a build that picked one would compile a subset nobody asked for" >&2; exit 1; }
+[ -n "${BINS}" ] || { echo "error: --bins is required; there is no default binary list, because a build that picked one would compile a subset nobody asked for" >&2; exit 1; }
 [ -n "${ARCH}" ] || { echo "error: --arch is required; guessing the host's would silently produce amd64 binaries for a cx3576 image" >&2; exit 1; }
 [ -n "${STAGE}" ] || { echo "error: --stage is required; it is where build-env/deb/build.sh looks for what this hook produced" >&2; exit 1; }
 [ -d "${STAGE}" ] || { echo "error: --stage ${STAGE} is not a directory. build-env/deb/build.sh creates it before running this hook" >&2; exit 1; }
 
 BINARIES=()
-for c in ${CRATES}; do BINARIES+=("${c}"); done
+for b in ${BINS}; do BINARIES+=("${b}"); done
 
 # Every binary this workspace can build. A producer names the ones it OWNS in
 # its prepare.sh, and the complement is what the independence assertion looks
@@ -161,7 +161,7 @@ APID_UI_ARGS=()
 for name in "${BINARIES[@]}"; do
     if [ "${name}" = micad ]; then
         APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
-        bash "${WORKSPACE}/crates/apid/ui/build.sh"
+        bash "${WORKSPACE}/crates/mica-apid/ui/build.sh"
         APID_UI_ARGS=(
             -v "${APID_UI_DIST}:/build/apid-ui:ro"
             -e "MICA_APID_UI_DIST_DIR=/build/apid-ui"
@@ -187,7 +187,7 @@ docker run --rm \
     -w /src \
     -e "TARGET=${TRIPLE}" \
     -e "ELF_ARCH=${ELF_ARCH}" \
-    -e "CRATES=${BINARIES[*]}" \
+    -e "BINS=${BINARIES[*]}" \
     -e "CARGO_TARGET_DIR=/target" \
     -e "MICA_BUILD_COMMIT=${MICA_BUILD_COMMIT}" \
     "${APID_UI_ARGS[@]}" \
@@ -199,15 +199,17 @@ docker run --rm \
             exit 1
         }
         . /etc/mica-build/rust.env
-        echo "build-deb: compiling ${CRATES} for ${TARGET} with rustc ${MICA_BUILD_RUSTC} from ${MICA_BUILD_IMAGE}"
-        # -p per crate and nothing else: the whole point of a producer is that
-        # it cannot emit a binary it does not own. --locked makes Cargo.lock
-        # the decision and refuses a build that would quietly update it.
-        pkgs=""
-        for c in ${CRATES}; do pkgs="${pkgs} -p ${c}"; done
+        echo "build-deb: compiling ${BINS} for ${TARGET} with rustc ${MICA_BUILD_RUSTC} from ${MICA_BUILD_IMAGE}"
+        # --bin per binary and nothing else: the whole point of a producer is
+        # that it cannot emit a binary it does not own, and a package name no
+        # longer equals the binary it builds (mica-core builds micad).
+        # --locked makes Cargo.lock the decision and refuses a build that would
+        # quietly update it.
+        bins=""
+        for b in ${BINS}; do bins="${bins} --bin ${b}"; done
         # shellcheck disable=SC2086
-        cargo build --release --locked --target "${TARGET}" ${pkgs}
-        for name in ${CRATES}; do
+        cargo build --release --locked --target "${TARGET}" ${bins}
+        for name in ${BINS}; do
             bin="${CARGO_TARGET_DIR}/${TARGET}/release/${name}"
             [ -f "${bin}" ] || { echo "error: ${name} was not produced by the build" >&2; exit 1; }
             got="$(file -b "${bin}")"

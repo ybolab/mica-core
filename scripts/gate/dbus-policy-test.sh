@@ -22,7 +22,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${HERE}/../.." && pwd)
-POLICY="${REPO_ROOT}/crates/micad/dist/com.mica.micad.conf"
+POLICY="${REPO_ROOT}/crates/mica-core/dist/com.mica.micad.conf"
 NAME=com.mica.micad
 
 [ -f "${POLICY}" ] || { echo "no ${POLICY} to test" >&2; exit 1; }
@@ -677,9 +677,9 @@ check "mqttd: another unprivileged uid CANNOT receive SettingsChanged" "NONE" \
 # only for exact direct service destinations. No prefix ownership grant and no
 # micad destination/sender may hide in another policy fragment.
 check "mqttd: legacy global extension policy is absent" "ABSENT" \
-    "$([ ! -e "${REPO_ROOT}/crates/micad/dist/com.mica.ext.conf" ] && echo ABSENT || echo PRESENT)"
+    "$([ ! -e "${REPO_ROOT}/crates/mica-core/dist/com.mica.ext.conf" ] && echo ABSENT || echo PRESENT)"
 check "mqttd: legacy micad exception policy is absent" "ABSENT" \
-    "$([ ! -e "${REPO_ROOT}/crates/micad/dist/mica-mqttd.conf" ] && echo ABSENT || echo PRESENT)"
+    "$([ ! -e "${REPO_ROOT}/crates/mica-core/dist/mica-mqttd.conf" ] && echo ABSENT || echo PRESENT)"
 
 policy_audit=$(python3 - "${REPO_ROOT}" <<'PY'
 import pathlib

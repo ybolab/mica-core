@@ -12,8 +12,8 @@ fn main() -> anyhow::Result<()> {
         .and_then(|name| std::path::Path::new(name).file_name())
         .and_then(|name| name.to_str())
     {
-        Some("micad") => micad::main(),
-        Some("apid") => apid::main(),
+        Some("micad") => mica_core::main(),
+        Some("apid") => mica_apid::main(),
         _ => anyhow::bail!("this binary must be invoked as micad or apid"),
     }
 }

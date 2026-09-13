@@ -138,7 +138,7 @@ fn commit_or_unknown(embedded: Option<&'static str>) -> &'static str {
 fn version_line() -> String {
     format!(
         "{} {} ({})",
-        env!("CARGO_PKG_NAME"),
+        "micad",
         env!("CARGO_PKG_VERSION"),
         commit_or_unknown(option_env!("MICA_BUILD_COMMIT")),
     )

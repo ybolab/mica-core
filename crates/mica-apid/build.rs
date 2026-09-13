@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-env-changed={UI_DIST_ENV}");
     let dist = PathBuf::from(env::var_os(UI_DIST_ENV).ok_or_else(|| {
         io::Error::other(format!(
-            "{UI_DIST_ENV} is not set; build the UI with crates/apid/ui/build.sh before compiling apid"
+            "{UI_DIST_ENV} is not set; build the UI with crates/mica-apid/ui/build.sh before compiling apid"
         ))
     })?);
     if !dist.is_absolute() {

@@ -53,7 +53,7 @@ tough = { version = "=0.18.0", default-features = false }
 axum = "0.8"
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 # The OpenAPI document is generated from the handlers and committed as
-# `crates/apid/openapi.json`, so the spec cannot describe a route the code does
+# `crates/mica-apid/openapi.json`, so the spec cannot describe a route the code does
 # not serve. Each route's path is one constant, read by the axum declaration
 # and by the `utoipa::path` attribute that documents it.
 #

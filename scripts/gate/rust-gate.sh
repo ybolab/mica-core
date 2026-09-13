@@ -27,7 +27,7 @@ mapfile -t FROM < <(bash "${REPO_ROOT}/build-env/from.sh" --arch="${IMAGE_ARCH}"
 IMAGE="${FROM[1]#MICA_BUILD_RUST_CHECK=}"
 
 APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
-bash "${REPO_ROOT}/crates/apid/ui/build.sh"
+bash "${REPO_ROOT}/crates/mica-apid/ui/build.sh"
 
 CARGO_CACHE="${REPO_ROOT}/_out/cargo"
 TARGET_DIR="${REPO_ROOT}/_out/rust-gate"

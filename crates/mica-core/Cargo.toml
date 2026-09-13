@@ -1,5 +1,5 @@
 [package]
-name = "micad"
+name = "mica-core"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,14 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# The executable keeps its name; the package is named for the workspace.
+[[bin]]
+name = "micad"
+path = "src/main.rs"
+
 [dependencies]
 # apid is linked into the micad binary and reached through the `apid` name.
-apid = { path = "../apid" }
+mica-apid = { path = "../mica-apid" }
 micad-settings = { path = "../micad-settings" }
 # The one `com.mica.*` bus-name rule: the service registry takes
 # it rather than restating it.

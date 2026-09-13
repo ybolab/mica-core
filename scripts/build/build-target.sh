@@ -59,7 +59,7 @@ IMAGE="${FROM_ARGS[1]#MICA_BUILD_RUST=}"
 # The frontend is a separate, container-only producer. Its source is mounted
 # read-only and its generated tree stays outside the source checkout.
 APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
-bash "${WORKSPACE}/crates/apid/ui/build.sh"
+bash "${WORKSPACE}/crates/mica-apid/ui/build.sh"
 
 # The cargo caches are repo-local bind mounts, not docker volumes and not
 # $HOME/.cargo: `make clean` and `rm -rf _out` then mean what they say, and the
@@ -177,7 +177,7 @@ docker run --rm \
         # --locked makes Cargo.lock the decision and refuses a build that
         # would quietly update it.
         cargo build --release --locked --target "${TARGET}" \
-            -p micad -p apid -p mica-mqttd -p mica-mqtt-broker
+            -p mica-core -p mica-apid -p mica-mqttd -p mica-mqtt-broker
     '
 # mica-build-side: host
 

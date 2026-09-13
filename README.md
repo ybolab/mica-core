@@ -2,7 +2,7 @@
 
 The management daemon of Mica OS and what ships beside it: `micad` (the
 reconcilers over settings, network, radios, containers, updates and the
-system bus), `apid` (the HTTP API and the built-in UI under `crates/apid/ui/`),
+system bus), `apid` (the HTTP API and the built-in UI under `crates/mica-apid/ui/`),
 `mica-mqttd` and `mica-mqtt-broker`, with the shared crates
 `micad-settings`, `mica-busname`, `mica-ui-bundle` and `mica-mqtt-reference`.
 It is a repository of its own, standing on the `mica-build-env` substrate

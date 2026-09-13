@@ -8,8 +8,8 @@ update this file.
 ### Skill stack
 
 - `/pma` — workflow control, three-phase gate, task and plan tracking
-- `/pma-rust` — the workspace at the root (`micad`, `apid`, `mica-mqttd`, `mica-mqtt-broker`, `micad-settings`, `mica-busname`, `mica-ui-bundle`, `mica-mqtt-reference`, `mica-sftp-server`)
-- `/pma-web` — `crates/apid/ui/` (React + Vite, embedded into apid)
+- `/pma-rust` — the workspace under `crates/` (`mica-core`, which builds the `micad` executable; `mica-apid`, which builds `apid`; `mica-mqttd`, `mica-mqtt-broker`, `micad-settings`, `mica-busname`, `mica-ui-bundle`, `mica-mqtt-reference`, `mica-sftp-server`)
+- `/pma-web` — `crates/mica-apid/ui/` (React + Vite, embedded into apid)
 
 Every crate is under `crates/<package name>/`. The packaging
 (`packaging/deb/`) and the shell entry points (`scripts/gate/`, `scripts/build/`) are bash and Dockerfiles; `/pma`'s *Delivery*

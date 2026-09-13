@@ -336,7 +336,7 @@ impl Default for SystemInfoEvidence {
 /// values `micad --version` prints, read from the same place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonIdentity {
-    /// `CARGO_PKG_NAME`.
+    /// The daemon's name, `micad`: the executable, not the package.
     pub name: &'static str,
     /// `CARGO_PKG_VERSION`.
     pub version: &'static str,
@@ -349,7 +349,7 @@ impl DaemonIdentity {
     #[must_use]
     pub fn this_build() -> Self {
         Self {
-            name: env!("CARGO_PKG_NAME"),
+            name: "micad",
             version: env!("CARGO_PKG_VERSION"),
             commit: option_env!("MICA_BUILD_COMMIT").filter(|commit| !commit.trim().is_empty()),
         }

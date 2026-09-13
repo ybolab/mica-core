@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn every_code_is_published_in_the_route_that_serves_it() {
         let document: serde_json::Value =
-            serde_json::from_str(include_str!("../../apid/openapi.json"))
+            serde_json::from_str(include_str!("../../mica-apid/openapi.json"))
                 .expect("the committed openapi document is JSON");
         let described = |path: &str| -> String {
             document

@@ -10,6 +10,6 @@ set -euo pipefail
 
 exec bash "${MICA_DEB_REPO_ROOT}/scripts/build/build-deb.sh" \
     --producer "${MICA_DEB_PRODUCER}" \
-    --crates "mica-mqttd mica-mqtt-broker" \
+    --bins "mica-mqttd mica-mqtt-broker" \
     --arch "${MICA_DEB_ARCH}" \
     --stage "${MICA_DEB_STAGE}"

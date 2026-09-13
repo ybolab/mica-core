@@ -4,5 +4,5 @@
 #![forbid(unsafe_code)]
 
 fn main() -> anyhow::Result<()> {
-    apid::main()
+    mica_apid::main()
 }

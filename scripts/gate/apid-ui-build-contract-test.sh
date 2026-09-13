@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-REL_DIST="crates/apid/ui/dist"
+REL_DIST="crates/mica-apid/ui/dist"
 DIST_PROBE="${REL_DIST}/index.html"
-BUILD_SCRIPT="${ROOT}/crates/apid/ui/build.sh"
-CHECK_SCRIPT="${ROOT}/crates/apid/ui/run.sh"
+BUILD_SCRIPT="${ROOT}/crates/mica-apid/ui/build.sh"
+CHECK_SCRIPT="${ROOT}/crates/mica-apid/ui/run.sh"
 OUTPUT_REL="_out/apid-ui/dist"
 
 fail() {
@@ -47,8 +47,8 @@ if grep -Eq 'bun (install|run)|command -v bun' "${CHECK_SCRIPT}"; then
     fail "the frontend quality gate still owns a second Bun execution path"
 fi
 
-grep -q 'MICA_APID_UI_DIST_DIR' "${ROOT}/crates/apid/build.rs" ||
-    fail "crates/apid/build.rs does not require the generated UI directory"
+grep -q 'MICA_APID_UI_DIST_DIR' "${ROOT}/crates/mica-apid/build.rs" ||
+    fail "crates/mica-apid/build.rs does not require the generated UI directory"
 
 for entry in \
     "scripts/build/check.sh" \
