@@ -1,4 +1,4 @@
-# micad
+# mica-core
 
 The management daemon of Mica OS and what ships beside it: `micad` (the
 reconcilers over settings, network, radios, containers, updates and the

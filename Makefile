@@ -1,4 +1,4 @@
-# micad: the management daemon of Mica OS and what ships beside it -- micad,
+# mica-core: micad, the management daemon of Mica OS, and what ships beside it --
 # apid with its built-in UI, mica-mqttd and mica-mqtt-broker -- packed as the
 # Debian packages micad, mica-apid, mica-mqttd and mica-mqtt-broker. Heavy
 # lifting stays in the scripts; this file only routes.
