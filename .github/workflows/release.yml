@@ -44,7 +44,9 @@ jobs:
           [ "$(id -u)" -eq 0 ] || SUDO="sudo"
           $SUDO apt-get update
           $SUDO apt-get install -y --no-install-recommends dbus python3
-          make dbus-policy-test
+          # Root, because the test drops to an unprivileged uid to prove the
+          # policy refuses it; the runner user is not root.
+          $SUDO make dbus-policy-test
       - name: Pack and gate
         run: |
           set -euo pipefail
