@@ -67,24 +67,29 @@ pub trait LinkDelete: Send + Sync {
     async fn delete_link(&self, iface: &str) -> anyhow::Result<()>;
 }
 
-/// Production deleter running `ip link del dev <iface>`.
+/// Production deleter running `networkctl delete <iface>`.
 ///
-/// `iproute2` is in the base image, so this is a tool the appliance already
-/// carries rather than a new dependency; the alternative, hand-rolled netlink,
-/// would put a second engine next to the networkd this reconciler otherwise
-/// speaks through.
-pub struct IpLink;
+/// `networkctl` ships with the systemd the image already runs networkd from,
+/// and its `delete` verb is one RTM_DELLINK: the image carries no iproute2,
+/// and hand-rolled netlink would put a second engine next to the networkd this
+/// reconciler otherwise speaks through.
+pub struct NetworkctlDelete;
+
+impl NetworkctlDelete {
+    fn command(iface: &str) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("networkctl");
+        command.args(["delete", iface]);
+        command
+    }
+}
 
 #[async_trait::async_trait]
-impl LinkDelete for IpLink {
+impl LinkDelete for NetworkctlDelete {
     async fn delete_link(&self, iface: &str) -> anyhow::Result<()> {
-        let output = tokio::process::Command::new("ip")
-            .args(["link", "del", "dev", iface])
-            .output()
-            .await?;
+        let output = Self::command(iface).output().await?;
         if !output.status.success() {
             return Err(anyhow::anyhow!(
-                "ip link del dev {iface} failed: {}",
+                "networkctl delete {iface} failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
@@ -136,7 +141,7 @@ impl<R: NetworkReload, D: LinkDelete> NetworkReconciler<R, D> {
     }
 }
 
-impl NetworkReconciler<Networkd, IpLink> {
+impl NetworkReconciler<Networkd, NetworkctlDelete> {
     /// Production reconciler: target directory from `MOSD_NETWORK_DIR` if
     /// set, else the networkd runtime directory; keys under the directory of
     /// [`SETTINGS_PATH_ENV`].
@@ -144,7 +149,7 @@ impl NetworkReconciler<Networkd, IpLink> {
         let dir = std::env::var(NETWORK_DIR_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_NETWORK_DIR));
-        Self::new(dir, Networkd, IpLink, production_keystore())
+        Self::new(dir, Networkd, NetworkctlDelete, production_keystore())
     }
 }
 
@@ -191,11 +196,11 @@ impl<D: LinkDelete> KeyRotation<D> {
     }
 }
 
-impl KeyRotation<IpLink> {
+impl KeyRotation<NetworkctlDelete> {
     /// Production rotation, against the same key store the production
     /// reconciler renders from.
     pub fn production() -> Self {
-        Self::new(production_keystore(), IpLink)
+        Self::new(production_keystore(), NetworkctlDelete)
     }
 }
 
@@ -718,6 +723,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn the_production_delete_is_networkctl_delete() {
+        let command = NetworkctlDelete::command("wg0");
+        let command = command.as_std();
+        assert_eq!(command.get_program(), "networkctl");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["delete", "wg0"]);
+    }
+
     const GOLDEN_DHCP: &str = "[Match]\nName=eth0\n\n[Network]\nDHCP=yes\n";
     const GOLDEN_STATIC: &str = "[Match]\nName=eth1\n\n[Network]\n\
         Address=192.168.1.10/24\nGateway=192.168.1.1\nDNS=1.1.1.1\nDNS=9.9.9.9\n";
@@ -766,7 +779,9 @@ mod tests {
     impl LinkDelete for FailingLink {
         async fn delete_link(&self, iface: &str) -> anyhow::Result<()> {
             self.calls.lock().unwrap().push(format!("del {iface}"));
-            Err(anyhow::anyhow!("ip link del dev {iface} failed: no device"))
+            Err(anyhow::anyhow!(
+                "networkctl delete {iface} failed: no device"
+            ))
         }
     }
 
@@ -1523,7 +1538,7 @@ mod tests {
         // disk and the key in the kernel have diverged, and the caller would
         // otherwise be handed a public key the tunnel is not using.
         assert!(
-            err.to_string().contains("ip link del dev wg0 failed"),
+            err.to_string().contains("networkctl delete wg0 failed"),
             "{err}"
         );
         let private_key =

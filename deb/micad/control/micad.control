@@ -10,6 +10,9 @@ Description: mos management daemon
  power actions and update state. Ships the root-only bus policy for that name
  alongside the binary, so the daemon's access boundary travels with it.
  .
+ The binary also carries apid, which mica-apid reaches through an apid link
+ to it.
+ .
  The package owns its enablement: micad.service and the
  multi-user.target.wants symlink that starts it are both payload, so
  installing this package is what makes the daemon run.

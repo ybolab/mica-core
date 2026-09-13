@@ -17,8 +17,9 @@ make package-gate    # the gate over that pool
 make publish         # the release build-<commit12> of this commit
 ```
 
-Four packages leave here: `micad`, `mica-apid` (which also ships the
-committed OpenAPI document as `/usr/share/mica-apid/openapi.json`),
+Four packages leave here: `micad` (one binary carrying both micad and apid),
+`mica-apid` (the `/usr/bin/apid` link to it, and the committed OpenAPI
+document as `/usr/share/mica-apid/openapi.json`),
 `mica-mqttd` and `mica-mqtt-broker`. The assembly (`ybolab/mica-build`)
 imports them through `deps/packages/` and builds none; the API harness that
 boots the assembled image and drives apid over a socket lives there

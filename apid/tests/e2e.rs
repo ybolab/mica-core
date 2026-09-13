@@ -69,6 +69,27 @@ trait Mosd {
     fn get_state(&self, path: &str) -> zbus::Result<String>;
 }
 
+/// `apid --healthcheck` against `https_addr`, bounded so that an apid that
+/// ignored the flag and started serving cannot hang the test.
+fn healthcheck(https_addr: &str) -> anyhow::Result<bool> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_apid"))
+        .arg("--healthcheck")
+        .env_clear()
+        .env("APID_HTTPS_ADDR", https_addr)
+        .env("APID_STATE_DIR", "/nonexistent/apid-healthcheck")
+        .stdout(Stdio::null())
+        .spawn()?;
+    for _ in 0..200 {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status.success());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    anyhow::bail!("apid --healthcheck did not exit")
+}
+
 fn wait_for_line(stdout: ChildStdout, prefix: &'static str) -> anyhow::Result<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -189,6 +210,14 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
     let https_addr = field("https")?;
     let http_addr = field("http")?;
     let https_base = format!("https://{https_addr}");
+
+    // The boot health gate's probe: TLS to apid answering /healthz succeeds;
+    // the plain-HTTP redirect listener is not an HTTPS apid and fails.
+    assert!(healthcheck(&https_addr)?, "healthcheck against live apid");
+    assert!(
+        !healthcheck(&http_addr)?,
+        "healthcheck against the HTTP listener"
+    );
 
     let connection = zbus::connection::Builder::address(address.as_str())?
         .build()

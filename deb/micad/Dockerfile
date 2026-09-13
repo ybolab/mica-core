@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # check=skip=InvalidDefaultArgInFrom
-# The micad producer: the `micad` and `mica-apid` packages.
+# The micad producer: the `micad` and `mica-apid` packages -- one binary,
+# /usr/bin/micad, and the /usr/bin/apid link to it.
 #
 #   make os-deb-micad   ->  build-env/deb/build.sh --producer micad --arch <amd64|arm64>
 #
-# This file only STAGES and PACKS. The binaries were cross-compiled on an amd64
-# Rust builder by this producer's PREPARE hook and arrive through the `bin`
+# This file only STAGES and PACKS. The binary was cross-compiled on an amd64
+# Rust builder by this producer's PREPARE hook and arrives through the `bin`
 # context; the shared copyright file arrives through `family`, because the build
 # context is this producer's own directory. This
 # stage runs at the TARGET architecture because dpkg-shlibdeps resolves an
@@ -28,7 +29,7 @@ COPY --from=packer pack.sh /usr/local/bin/pack.sh
 COPY --from=family copyright /in/copyright
 COPY control/ /in/control/
 COPY --from=dist micad.service apid.service com.mica.micad.conf /in/dist/
-COPY --from=bin micad apid /in/bin/
+COPY --from=bin micad /in/bin/
 # The OpenAPI document, staged beside the binaries by prepare.sh.
 COPY --from=bin openapi.json /in/openapi.json
 
@@ -67,7 +68,8 @@ RUN set -eu; \
     install -d -m 0755 /stage/micad/etc/systemd/system/multi-user.target.wants; \
     ln -s /usr/lib/systemd/system/micad.service \
           /stage/micad/etc/systemd/system/multi-user.target.wants/micad.service; \
-    install -D -m 0755 /in/bin/apid               /stage/apid/usr/bin/apid; \
+    install -d -m 0755                            /stage/apid/usr/bin; \
+    ln -s micad                                   /stage/apid/usr/bin/apid; \
     install -D -m 0644 /in/dist/apid.service      /stage/apid/usr/lib/systemd/system/apid.service; \
     install -D -m 0644 /in/copyright              /stage/apid/usr/share/doc/mica-apid/copyright; \
     install -D -m 0644 /in/openapi.json           /stage/apid/usr/share/mica-apid/openapi.json; \

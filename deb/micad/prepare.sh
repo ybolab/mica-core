@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The micad producer's PREPARE hook: cross-compile micad and mica-apid's binaries, assert that
-# nothing this producer does not own was compiled with them, and leave the
+# The micad producer's PREPARE hook: cross-compile the micad binary -- micad, and
+# apid reached through its `apid` link -- assert that nothing this producer does
+# not own was compiled with it, and leave the
 # result in MICA_DEB_STAGE for build-env/deb/build.sh to pack.
 #
 # THE CRATE LIST LIVES HERE, per producer, because it is the one thing about
@@ -10,7 +11,7 @@ set -euo pipefail
 
 bash "${MICA_DEB_REPO_ROOT}/hack/build-deb.sh" \
     --producer "${MICA_DEB_PRODUCER}" \
-    --crates "micad apid" \
+    --crates micad \
     --arch "${MICA_DEB_ARCH}" \
     --stage "${MICA_DEB_STAGE}"
 # The committed OpenAPI document rides in the mica-apid payload as

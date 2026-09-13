@@ -2,7 +2,7 @@
 # Compile one producer's crates out of the micad workspace, prove the producer
 # boundary held, and stage the binaries for packaging.
 #
-#   bash hack/build-deb.sh --producer micad --crates "micad apid" \
+#   bash hack/build-deb.sh --producer micad --crates micad \
 #        --arch amd64 --stage <dir>
 #
 # WHY THIS FILE STILL EXISTS. Every producer in this repository is built by
@@ -155,11 +155,11 @@ mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MICA_BUILD_RUST=LOCAL_MI
 }
 RUST_IMAGE="${RUST_FROM[1]#MICA_BUILD_RUST=}"
 
-# Only the producer that owns APID needs the frontend. Finish that separate
+# Only the producer that owns micad -- whose binary links apid -- needs the frontend. Finish that separate
 # producer before entering the Rust-only cross-build image.
 APID_UI_ARGS=()
 for name in "${BINARIES[@]}"; do
-    if [ "${name}" = apid ]; then
+    if [ "${name}" = micad ]; then
         APID_UI_DIST="${REPO_ROOT}/_out/apid-ui/dist"
         bash "${WORKSPACE}/apid/ui/build.sh"
         APID_UI_ARGS=(
@@ -229,7 +229,7 @@ for name in "${BINARIES[@]}"; do
     }
 done
 
-# INDEPENDENCE, asserted rather than described. `cargo build -p micad -p apid` is
+# INDEPENDENCE, asserted rather than described. `cargo build -p micad` is
 # the intent; this is the evidence, and it is what a later gate can point at. A
 # binary here means the producer boundary leaked -- a stale target directory
 # reused, or a -p list that grew.

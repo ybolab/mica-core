@@ -9,6 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# apid is linked into the micad binary and reached through the `apid` name.
+apid = { path = "../apid" }
 micad-settings = { path = "../micad-settings" }
 # The one `com.mica.*` bus-name rule: the service registry takes
 # it rather than restating it.
@@ -31,7 +33,7 @@ hex = { workspace = true }
 # x25519-dalek derives the public half of a private key without a `wg` binary.
 base64 = { workspace = true }
 x25519-dalek = { workspace = true }
-# `process` for the `ip link del` teardown the network reconciler runs when a
+# `process` for the `networkctl delete` teardown the network reconciler runs when a
 # virtual device's unit goes away; networkd does not reap devices it created.
 tokio = { workspace = true, features = ["process", "signal", "time", "io-util"] }
 rustix = { workspace = true, features = ["process"] }
