@@ -43,7 +43,7 @@ do
 done
 
 mkdir -p "${BUILD_ROOT}/home" "${BUILD_ROOT}/work" "${OUTPUT}"
-image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_BUN_1)"
+image="$(bash "${REPO_ROOT}/build-env/from.sh" --ref IMAGE_MICA_BUILD_BASE)"
 
 if [ "${RUN_CHECKS}" = 1 ]; then
     echo "apid UI checks: ${image} -> ${OUTPUT}"
@@ -51,7 +51,7 @@ else
     echo "apid UI build: ${image} -> ${OUTPUT}"
 fi
 
-# mica-build-side: container-block -- the UI is built by the bun pinned as IMAGE_BUN_1
+# mica-build-side: container-block -- the UI is built by the bun inside mica-build-base, pinned as IMAGE_MICA_BUILD_BASE,
 # with the source mounted read-only; a host bun produces different chunk hashes, so
 # there is deliberately no host route here
 docker run --rm \

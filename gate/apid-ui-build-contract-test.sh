@@ -22,8 +22,11 @@ git -C "${ROOT}" check-ignore --no-index -q "${DIST_PROBE}" ||
 [ -f "${BUILD_SCRIPT}" ] ||
     fail "the built-in UI has no production build entry"
 
-grep -q 'IMAGE_BUN_1' "${BUILD_SCRIPT}" ||
-    fail "the production build does not select the pinned Bun image"
+grep -q 'IMAGE_MICA_BUILD_BASE' "${BUILD_SCRIPT}" ||
+    fail "the production build does not select the pinned mica-build-base image, whose bun builds the UI"
+if grep -q 'IMAGE_BUN_1' "${BUILD_SCRIPT}"; then
+    fail "the production build still selects IMAGE_BUN_1, a second bun"
+fi
 grep -q -- '-v "${HERE}:/source:ro"' "${BUILD_SCRIPT}" ||
     fail "the production build does not mount UI source read-only"
 grep -q -- '-v "${BUILD_ROOT}:/build"' "${BUILD_SCRIPT}" ||
