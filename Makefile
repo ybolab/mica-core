@@ -9,8 +9,10 @@
 # release every image reference resolves through (build-env/images.env). It is
 # fetched and verified at its pin (deps/build-env.json) by
 # scripts/build/build-env.sh and is gitignored, so a fresh clone has none.
-# `make deps` is the one target that may run without it.
-ifeq ($(filter deps,$(MAKECMDGOALS)),)
+# Only the targets that use no build-env image run without it; `make` alone
+# is `make help`.
+NO_BUILD_ENV_GOALS := help deps deps-check lint pool-decision-test release-check
+ifneq ($(filter-out $(NO_BUILD_ENV_GOALS),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(wildcard build-env/images.env),)
 $(error build-env/ is empty: the mica-build-env release is fetched at its pin. Run: make deps)
 endif
@@ -18,7 +20,7 @@ endif
 
 MICA_ARCH ?= arm64
 
-.PHONY: help deps deps-check rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults pool-decision-test deb pool package-gate preflight publish lint check
+.PHONY: help deps deps-check rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults pool-decision-test deb pool package-gate preflight publish release-check lint check
 
 help:
 	@echo "  deps                fetch and verify the mica-build-env release at its pin (deps/build-env.json) into build-env/; deps-check verifies build-env/ without the network"
@@ -28,7 +30,8 @@ help:
 	@echo "  deb                 every producer for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
 	@echo "  pool                every producer, both architectures, indexed"
 	@echo "  package-gate        the package gate over this repository's pool"
-	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (CI publishes; a developer machine does not)"
+	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (the release workflow publishes, for a v<VERSION> tag; a developer machine does not)"
+	@echo "  release-check       TAG=v<VERSION>: the tag may be released from HEAD (v<VERSION>, on origin/main), before pushing it"
 	@echo "  lint                shell hygiene of the tree"
 	@echo "  pool-decision-test  scripts/build/pool-decision.sh (does this commit build a pool) against fixture history, registry and releases"
 	@echo "  boot-shutdown-test  the native shutdown suite and the UAPI translation unit (BOOT_SHUTDOWN_ARM_ABI=1 adds the aarch64 compiler)"
@@ -88,6 +91,10 @@ package-gate:
 
 publish:
 	bash scripts/deb/publish.sh
+
+release-check:
+	@[ -n "$(TAG)" ] || { echo "usage: make release-check TAG=v<VERSION>" >&2; exit 1; }
+	bash scripts/build/release.sh check "$(TAG)"
 
 lint:
 	bash scripts/gate/shell-lint.sh
