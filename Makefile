@@ -18,7 +18,7 @@ endif
 
 MICA_ARCH ?= arm64
 
-.PHONY: help deps deps-check rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults deb pool package-gate preflight publish lint check
+.PHONY: help deps deps-check rust-gate dbus-policy-test apid-ui-build-contract-test boot-shutdown-test file-transaction-faults pool-decision-test deb pool package-gate preflight publish lint check
 
 help:
 	@echo "  deps                fetch and verify the mica-build-env release at its pin (deps/build-env.json) into build-env/; deps-check verifies build-env/ without the network"
@@ -30,9 +30,10 @@ help:
 	@echo "  package-gate        the package gate over this repository's pool"
 	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (CI publishes; a developer machine does not)"
 	@echo "  lint                shell hygiene of the tree"
+	@echo "  pool-decision-test  scripts/build/pool-decision.sh (does this commit build a pool) against fixture history, registry and releases"
 	@echo "  boot-shutdown-test  the native shutdown suite and the UAPI translation unit (BOOT_SHUTDOWN_ARM_ABI=1 adds the aarch64 compiler)"
 	@echo "  file-transaction-faults  mica-deploy's transaction code, interrupted before and after each observed IO"
-	@echo "  check               everything that runs from the pinned images: lint, apid-ui-build-contract-test, rust-gate, boot-shutdown-test, file-transaction-faults"
+	@echo "  check               everything that runs from the pinned images: lint, pool-decision-test, apid-ui-build-contract-test, rust-gate, boot-shutdown-test, file-transaction-faults"
 
 deps:
 	bash scripts/build/build-env.sh fetch
@@ -91,4 +92,7 @@ publish:
 lint:
 	bash scripts/gate/shell-lint.sh
 
-check: lint apid-ui-build-contract-test rust-gate boot-shutdown-test file-transaction-faults
+pool-decision-test:
+	bash scripts/gate/pool-decision-test.sh
+
+check: lint pool-decision-test apid-ui-build-contract-test rust-gate boot-shutdown-test file-transaction-faults

@@ -30,7 +30,7 @@ the fast path; everything else waits for explicit approval such as `proceed`.
 - The API harness that boots the assembled image and drives apid over a socket lives in the assembly (`mica-build:tests/apid-api/`); its build-time half pins phase literals against the OpenAPI document the `mica-apid` archive ships
 - Database / storage: none -- micad persists to `DATA/state` and `DATA/meta` as files (`mica:docs/design/`)
 - `crates/mica-deploy/tests/component-contracts/` is the contract between the assembly's component producer (`mica-build:build/`) and mica-deploy's reader; the assembly keeps the same files and refuses a divergence from the copy at the pinned commit
-- Quality gates: `make check` (lint, `apid-ui-build-contract-test`, `rust-gate`, `boot-shutdown-test`, `file-transaction-faults`); `make dbus-policy-test` where a `dbus-daemon` exists; `make pool` then `make package-gate` over the built archives
+- Quality gates: `make check` (lint, `pool-decision-test`, `apid-ui-build-contract-test`, `rust-gate`, `boot-shutdown-test`, `file-transaction-faults`); `make dbus-policy-test` where a `dbus-daemon` exists; `make pool` then `make package-gate` over the built archives; CI builds and publishes a pool only when `scripts/build/pool-decision.sh` finds a package, build or workflow input or an effective image digest changed since the nearest complete published pool
 - Build resources: no fixed CPU, memory or job quotas; use the host and tool defaults
 
 ### Documentation entry points

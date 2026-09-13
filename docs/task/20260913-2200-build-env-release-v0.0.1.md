@@ -36,6 +36,11 @@ Building on the mica-build-env v0.0.1 release
 - 2026-09-13 23:30: per-producer rebuild selection is a proposal only
   (`docs/plan/20260913-2330-per-producer-rebuild.md`); publication of the
   current candidate is blocked on the build-env images the pins name.
+- 2026-09-13 23:55: option A of the per-producer plan, chosen by the
+  coordinator: `scripts/build/pool-decision.sh` gates every CI step, and
+  `scripts/gate/pool-decision-test.sh` (`make pool-decision-test`, in
+  `make check`) holds it against fixtures. Local until the build-env image
+  blocker is resolved; option B deferred.
 - The independent mica-apid upgrade policy is a proposal only:
   `docs/plan/20260913-2230-independent-apid-upgrade.md`, acceptance case
   `scripts/gate/interface-dependency-test.sh` (not wired into `make check`).

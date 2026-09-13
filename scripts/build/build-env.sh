@@ -17,8 +17,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-PIN="${REPO_ROOT}/deps/build-env.json"
-DEST="${REPO_ROOT}/build-env"
+# MICA_BUILD_ENV_PIN and MICA_BUILD_ENV_DIR name another pin file and
+# directory: scripts/build/pool-decision.sh verifies a baseline commit's pin
+# beside the current one that way.
+PIN="${MICA_BUILD_ENV_PIN:-${REPO_ROOT}/deps/build-env.json}"
+DEST="${MICA_BUILD_ENV_DIR:-${REPO_ROOT}/build-env}"
 URL_BASE="${MICA_BUILD_ENV_RELEASES:-https://github.com/ybolab/mica-build-env/releases/download}"
 
 die() { echo "build-env.sh: error: $*" >&2; exit 1; }

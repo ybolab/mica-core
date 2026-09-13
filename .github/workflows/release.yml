@@ -8,6 +8,13 @@ name: release
 # is not public. The arm64 archives are cross-compiled by the pinned
 # IMAGE_MICA_BUILD_RUST and packed in the arm64 image of IMAGE_MICA_BUILD_BASE
 # under emulation; both are public indexes of the mica-build-env release.
+#
+# A commit that changes no package input builds no pool: when everything
+# changed since the nearest ancestor with a complete published pool is docs,
+# markdown, .gitignore or a release pin whose verified images.env names the
+# same IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE,
+# scripts/build/pool-decision.sh says pool=skip and nothing below runs. Any
+# other change, and anything it cannot establish, is pool=build.
 on:
   push:
     branches: [main]
@@ -25,15 +32,26 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The baseline is an ancestor of HEAD; a shallow clone has none.
+          fetch-depth: 0
+      - name: Whether this commit builds a pool
+        id: pool
+        run: bash scripts/build/pool-decision.sh
       - name: The mica-build-env release at its pin
+        if: steps.pool.outputs.pool == 'build'
         run: make deps
       - name: Emulation for the arm64 packaging image
+        if: steps.pool.outputs.pool == 'build'
         uses: docker/setup-qemu-action@v3
       - name: Prepare the check container network
+        if: steps.pool.outputs.pool == 'build'
         run: docker network inspect traefik >/dev/null 2>&1 || docker network create --label ai-agent=true traefik
       - name: Lint, the UI build contract and the Rust gate
+        if: steps.pool.outputs.pool == 'build'
         run: make check
       - name: The shipped D-Bus policy against a real dbus-daemon
+        if: steps.pool.outputs.pool == 'build'
         run: |
           set -euo pipefail
           SUDO=""
@@ -44,12 +62,13 @@ jobs:
           # policy refuses it; the runner user is not root.
           $SUDO make dbus-policy-test
       - name: Pack and gate
+        if: steps.pool.outputs.pool == 'build'
         run: |
           set -euo pipefail
           make pool
           make package-gate
       - name: Publish the pool of this commit
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.pool.outputs.pool == 'build'
         run: make publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

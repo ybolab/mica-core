@@ -1,6 +1,6 @@
 # 20260913-2330-per-producer-rebuild PROPOSAL: rebuild and publish only the producers whose inputs changed
 
-- **status**: proposed (not implemented)
+- **status**: option A implemented locally (coordinator choice 2026-09-13, not pushed); option B deferred
 - **createdAt**: 2026-09-13 23:30
 - **task**: `20260913-2200-build-env-release-v0.0.1` (notes)
 
