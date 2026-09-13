@@ -9,10 +9,10 @@ update this file.
 
 - `/pma` — workflow control, three-phase gate, task and plan tracking
 - `/pma-rust` — the workspace at the root (`micad`, `apid`, `mica-mqttd`, `mica-mqtt-broker`, `micad-settings`, `mica-busname`, `mica-ui-bundle`, `mica-mqtt-reference`, `mica-sftp-server`)
-- `/pma-web` — `apid/ui/` (React + Vite, embedded into apid)
+- `/pma-web` — `crates/apid/ui/` (React + Vite, embedded into apid)
 
-The packaging (`deb/`), the gate drivers (`gate/`), `hack/` and
-`tests/dbus-policy-test.sh` are bash and Dockerfiles; `/pma`'s *Delivery*
+Every crate is under `crates/<package name>/`. The packaging
+(`packaging/deb/`) and the shell entry points (`scripts/gate/`, `scripts/build/`) are bash and Dockerfiles; `/pma`'s *Delivery*
 rules apply to them directly.
 
 ### Triggers
@@ -25,7 +25,7 @@ the fast path; everything else waits for explicit approval such as `proceed`.
 ### Project-specific facts
 
 - Primary language / runtime: Rust `1.96` (`Cargo.toml` `rust-version`), compiled in the pinned `mica-build-rust` image; the UI in the bun of `mica-build-base`, pinned by digest as `IMAGE_MICA_BUILD_BASE` in `build-env/images.env`; the host carries no cargo
-- The build substrate is `build-env/`, the `mica-build-env` source pin (`deps/sources/mica-build-env.json`, fetched by `make deps`); `hack/build-deb.sh`, `hack/build-target.sh`, `hack/check.sh` and the producers under `deb/` derive the repository as their own root and refuse a missing substrate by name
+- The build substrate is `build-env/`, the `mica-build-env` source pin (`deps/sources/mica-build-env.json`, fetched by `make deps`); `scripts/build/build-deb.sh`, `scripts/build/build-target.sh`, `scripts/build/check.sh` and the producers under `packaging/deb/` derive the repository as their own root and refuse a missing substrate by name
 - Products (repository mica-core): five Debian packages per architecture -- `micad`, `mica-apid` (which also ships `/usr/share/mica-apid/openapi.json`), `mica-mqttd`, `mica-mqtt-broker`, `mica-sftp-server` (`/usr/lib/sftp-server`, the SFTP server dropbear runs; a board feature that boards select, not a dependency of the base system) -- versioned `VERSION+git<commit12>-1` (every crate's `[package] version` must equal `VERSION`; `hack/check.sh` asserts it) and published by this repository's CI as the public OCI artifacts `ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>`; the assembly (`mica-build`) imports them through `deps/packages/`
 - The API harness that boots the assembled image and drives apid over a socket lives in the assembly (`mica-build:tests/apid-api/`); its build-time half pins phase literals against the OpenAPI document the `mica-apid` archive ships
 - Database / storage: none -- micad persists to `DATA/state` and `DATA/meta` as files (`mica:docs/design/`)

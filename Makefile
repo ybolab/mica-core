@@ -22,7 +22,7 @@ help:
 	@echo "  deps                fetch build-env/ at its pin (deps/sources/); deps-check reads without downloading"
 	@echo "  deps-bump           rewrite the pin from the newest source artifact (DEP_TAG=build-<commit12> picks one)"
 	@echo "  build-env           the builder images, from the pins in build-env/images.env"
-	@echo "  rust-gate           hack/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
+	@echo "  rust-gate           scripts/build/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
 	@echo "  dbus-policy-test    prove the shipped micad D-Bus policy is root-only against a real dbus-daemon (needs dbus-daemon on the host)"
 	@echo "  apid-ui-build-contract-test  the built-in SPA builds as ignored production assets in the pinned Bun image"
 	@echo "  deb                 every producer for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
@@ -43,14 +43,14 @@ build-env:
 	bash build-env/build.sh
 
 rust-gate:
-	bash gate/rust-gate.sh
+	bash scripts/gate/rust-gate.sh
 
 dbus-policy-test:
-	bash tests/dbus-policy-test.sh
+	bash scripts/gate/dbus-policy-test.sh
 
 apid-ui-build-contract-test:
-	bash gate/apid-ui-build-contract-test.sh
-	bash apid/ui/run.sh
+	bash scripts/gate/apid-ui-build-contract-test.sh
+	bash crates/apid/ui/run.sh
 
 preflight:
 	bash build-env/deb/preflight.sh
@@ -77,6 +77,6 @@ publish:
 	bash build-env/deb/publish.sh
 
 lint:
-	bash gate/shell-lint.sh
+	bash scripts/gate/shell-lint.sh
 
 check: lint apid-ui-build-contract-test rust-gate

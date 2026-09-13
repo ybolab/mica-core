@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["micad", "micad-settings", "busname", "apid", "mqttd", "broker", "ui-bundle", "mqtt-reference", "sftp-server"]
+members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
@@ -15,7 +15,7 @@ all = { level = "warn", priority = -1 }
 
 [workspace.dependencies]
 # The one `com.mica.*` bus-name rule, shared by every consumer of it.
-mica-busname = { path = "busname" }
+mica-busname = { path = "crates/mica-busname" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -53,7 +53,7 @@ tough = { version = "=0.18.0", default-features = false }
 axum = "0.8"
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 # The OpenAPI document is generated from the handlers and committed as
-# `micad/apid/openapi.json`, so the spec cannot describe a route the code does
+# `crates/apid/openapi.json`, so the spec cannot describe a route the code does
 # not serve. Each route's path is one constant, read by the axum declaration
 # and by the `utoipa::path` attribute that documents it.
 #

@@ -1,0 +1,38 @@
+[package]
+name = "apid"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+axum-server = { workspace = true }
+chrono = { workspace = true }
+hmac = { workspace = true }
+futures-util = { workspace = true }
+mica-ui-bundle = { path = "../mica-ui-bundle" }
+micad-settings = { path = "../micad-settings" }
+rand = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["signal", "net", "fs", "io-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+utoipa = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
