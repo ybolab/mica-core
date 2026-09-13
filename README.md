@@ -1,7 +1,7 @@
 # mica-deploy
 
 Native boot and update tools for current signed file deployments. This workspace
-contains `mica-init`, `mica-shutdown` and `mica-deploy`; it accepts no earlier
+contains `mica-runkit` (reached as `init` and `shutdown`) and `mica-deploy`; it accepts no earlier
 disk, metadata or package format. It is a repository of its own, standing on
 the `mica-build-env` substrate fetched at its pin into `build-env/`:
 
@@ -15,13 +15,13 @@ make publish         # the release build-<commit12> of this commit
 ```
 
 Two packages leave here: `mica-deploy` (the device-side client) and
-`mica-lifecycle` (the static `mica-init` and `mica-shutdown` under
+`mica-lifecycle` (the static `mica-runkit` under
 `/usr/lib/mica/lifecycle/`, which the assembly's kernel component reads out
 of the archive and packs into the signed kernel; no root installs it). The
 assembly (`ybolab/mica-build`) imports both through `deps/packages/` and
 builds neither.
 
-`mica-init` runs from the signed UKI or FIT. It validates the selected
+`mica-runkit`, invoked as `init`, runs from the signed UKI or FIT. It validates the selected
 `mos/deployment/v1` envelope against the public keys embedded in that kernel,
 checks board/kernel associations, opens the authenticated SYSTEM and DATA
 partitions, and creates signed dm-verity mappings for root and support. Kernel

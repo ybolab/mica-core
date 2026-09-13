@@ -4,9 +4,10 @@ Architecture: @ARCH@
 Maintainer: mos build <mos@example.invalid>
 Section: admin
 Priority: optional
-Description: static native lifecycle executables for the signed kernel image
- mica-init and mica-shutdown, built static for this architecture, under
- /usr/lib/mica/lifecycle/. Not for installation into a root: the assembly's
- kernel component reads them out of this archive and packs them into the
- initramfs and the exit ramdisk of the signed kernel, where they are part
- of the authenticated kernel identity.
+Description: static native lifecycle executable for the signed kernel image
+ mica-runkit, built static for this architecture, under
+ /usr/lib/mica/lifecycle/. It selects its entry point by the name it is
+ invoked as: init or shutdown. Not for installation into a root: the
+ assembly's kernel component reads it out of this archive and packs it into
+ the initramfs, where init and the exit ramdisk's shutdown are links to the
+ one file, as part of the authenticated kernel identity.

@@ -60,11 +60,11 @@ BINARIES=()
 for b in ${BINS}; do BINARIES+=("${b}"); done
 
 # Every binary this crate declares, through cargo's auto-discovery: `mica-deploy`
-# from src/main.rs, the other two from their own filenames under src/bin/. A
+# from src/main.rs, `mica-runkit` from its directory under src/bin/. A
 # producer names the ones it OWNS in its prepare.sh, and the complement is what
 # the independence assertion looks for -- so a fourth binary added to this crate
 # is checked without any producer being edited.
-ALL_BINARIES=(mica-init mica-shutdown mica-deploy)
+ALL_BINARIES=(mica-runkit mica-deploy)
 
 # A binary this crate does not declare would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never
@@ -108,17 +108,15 @@ esac
 
 # Producer-private, so this producer has its own cache key and its own output
 # directory: sharing target/ with an interactive `cargo build`
-# would let a three-binary build satisfy the independence assertion below with
+# would let a two-binary build satisfy the independence assertion below with
 # the signing tool this producer must not ship. Gitignored through
 # .gitignore.
 TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
-# Both lifecycle executables use the existing GNU static route. Their caches
-# stay separate from the main-system deployment tool and from each other.
+# The lifecycle executable uses the existing GNU static route. Its cache stays
+# separate from the main-system deployment tool.
 release_binary() {
-    if [ "$1" = mica-init ]; then
-        printf '%s/startup-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
-    elif [ "$1" = mica-shutdown ]; then
-        printf '%s/shutdown-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
+    if [ "$1" = mica-runkit ]; then
+        printf '%s/runkit-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
     else
         printf '%s/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
     fi
@@ -167,15 +165,14 @@ docker run --rm \
         # it.
         bins=()
         for b in ${BINS}; do
-            if [ "$b" != mica-shutdown ] && [ "$b" != mica-init ]; then bins+=(--bin "$b"); fi
+            if [ "$b" != mica-runkit ]; then bins+=(--bin "$b"); fi
         done
         if [ "${#bins[@]}" -gt 0 ]; then
             cargo build --release --locked --target "${TARGET}" "${bins[@]}"
         fi
         for name in ${BINS}; do
-            if [ "$name" = mica-shutdown ] || [ "$name" = mica-init ]; then
-                static_directory=shutdown-static
-                if [ "$name" = mica-init ]; then static_directory=startup-static; fi
+            if [ "$name" = mica-runkit ]; then
+                static_directory=runkit-static
                 # Target-specific configuration leaves host build scripts and
                 # every other binary on their original dynamic GNU route.
                 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
@@ -215,8 +212,8 @@ for name in "${BINARIES[@]}"; do
     }
 done
 
-# INDEPENDENCE, asserted rather than described. `cargo build --bin mica-deploy
-# --bin mica-init` is the intent; this is the evidence, and it is what a later
+# INDEPENDENCE, asserted rather than described. `cargo build --bin mica-deploy`
+# alone is the intent; this is the evidence, and it is what a later
 # gate can point at. A binary here means the producer boundary leaked -- a stale
 # target directory reused, or a --bin list that grew -- and the one binary this
 # complement holds is the offline signing tool, which no device may carry.
@@ -227,7 +224,7 @@ for name in "${EXCLUDED[@]}"; do
     done < <(find "${TARGET_DIR}" -type f -name "${name}")
 done
 if [ -n "${stray}" ]; then
-    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. Each producer of this repository ships exactly the binaries it names: deploy the device-side mica-deploy, lifecycle the static mica-init and mica-shutdown. See README.md" >&2
+    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. Each producer of this repository ships exactly the binaries it names: deploy the device-side mica-deploy, lifecycle the static mica-runkit. See README.md" >&2
     exit 1
 fi
 echo "build-deb: ${TARGET_DIR} holds ${BINARIES[*]} and none of ${EXCLUDED[*]}"

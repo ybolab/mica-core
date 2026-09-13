@@ -1,13 +1,13 @@
-# The lifecycle producer: mica-init and mica-shutdown, static, packed as
-# mica-lifecycle. Same shape as deb/deploy/Dockerfile; the binaries arrive
-# through the `bin` context prepare.sh staged, already proven static and of
+# The lifecycle producer: mica-runkit, static, packed as mica-lifecycle. Same
+# shape as deb/deploy/Dockerfile; the binary arrives through the `bin`
+# context prepare.sh staged, already proven static and of
 # this architecture by hack/build-deb.sh.
 ARG MICA_BUILD_DEB
 FROM ${MICA_BUILD_DEB} AS pack
 COPY --from=packer pack.sh /usr/local/bin/pack.sh
 COPY --from=family copyright /in/copyright
 COPY control/ /in/control/
-COPY --from=bin mica-init mica-shutdown /in/
+COPY --from=bin mica-runkit /in/
 
 ARG MICA_DEB_VERSION
 ARG MICA_DEB_ARCH
@@ -17,8 +17,7 @@ ARG MICA_DEB_SOURCE_REPO
 ARG MICA_DEB_SOURCE_COMMIT
 
 RUN set -eu; \
-    install -D -m 0755 /in/mica-init /stage/usr/lib/mica/lifecycle/mica-init; \
-    install -D -m 0755 /in/mica-shutdown /stage/usr/lib/mica/lifecycle/mica-shutdown; \
+    install -D -m 0755 /in/mica-runkit /stage/usr/lib/mica/lifecycle/mica-runkit; \
     install -D -m 0644 /in/copyright /stage/usr/share/doc/mica-lifecycle/copyright; \
     pack.sh --root /stage --control /in/control/mica-lifecycle.control \
         --version "${MICA_DEB_VERSION}" --arch "${MICA_DEB_ARCH}" --out /out

@@ -1,5 +1,4 @@
 //! PID 1 for the authenticated, memory-only retained lifecycle payload.
-#![forbid(unsafe_code)]
 use anyhow::{Context, Result, ensure};
 use mica_deploy::boot::shutdown::{self, Ownership, Request, Supervisor, SystemIo};
 use std::{
@@ -57,7 +56,7 @@ fn shutdown(supervisor: &mut Supervisor, args: &[String]) -> Result<()> {
     )
 }
 
-fn main() {
+pub fn main() {
     let _ = rustix::process::setrlimit(
         rustix::process::Resource::Core,
         rustix::process::Rlimit {

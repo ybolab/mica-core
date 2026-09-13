@@ -1,7 +1,7 @@
-# mica-deploy: the native boot and deployment tools of Mica OS -- mica-init,
-# mica-shutdown and mica-deploy -- packed as the Debian packages mica-deploy
-# (the device-side client) and mica-lifecycle (the two static executables
-# the signed kernel image carries). Heavy lifting stays in the scripts; this
+# mica-deploy: the native boot and deployment tools of Mica OS -- mica-runkit
+# (init and shutdown) and mica-deploy -- packed as the Debian packages
+# mica-deploy (the device-side client) and mica-lifecycle (the static
+# executable the signed kernel image carries). Heavy lifting stays in the scripts; this
 # file only routes.
 
 # THE SOURCE DEPENDENCY, before anything else: build-env/ (mica-build-env) is

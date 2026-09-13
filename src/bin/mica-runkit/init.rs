@@ -1,5 +1,4 @@
 //! The authenticated initramfs PID 1. No network or shell policy is accepted.
-#![forbid(unsafe_code)]
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -613,7 +612,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
     native::switch_root()
 }
 
-fn main() {
+pub fn main() {
     let _ = rustix::process::setrlimit(
         rustix::process::Resource::Core,
         rustix::process::Rlimit {
