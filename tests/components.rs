@@ -1,14 +1,14 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use mos_deploy::components::{BootIdentity, component_id, parse_deployment, verify_deployment};
+use mica_deploy::components::{BootIdentity, component_id, parse_deployment, verify_deployment};
 use ring::{
     rand::SystemRandom,
     signature::{Ed25519KeyPair, KeyPair},
 };
 use serde_json::{Value, json};
 
-const PAYLOAD: &str = include_str!("../../../tests/component-contracts/deployment.json");
-const CASES: &str = include_str!("../../../tests/component-contracts/cases.json");
-const ENVELOPE: &str = include_str!("../../../tests/component-contracts/envelope.json");
+const PAYLOAD: &str = include_str!("component-contracts/deployment.json");
+const CASES: &str = include_str!("component-contracts/cases.json");
+const ENVELOPE: &str = include_str!("component-contracts/envelope.json");
 
 fn context() -> BootIdentity {
     serde_json::from_value(serde_json::from_str::<Value>(CASES).unwrap()["context"].clone())
@@ -68,7 +68,7 @@ fn board_formats_tree_levels_and_object_integrity() {
         }
     }
     let bytes = b"component";
-    let mut artifact = mos_deploy::components::Artifact {
+    let mut artifact = mica_deploy::components::Artifact {
         bytes: bytes.len() as u64,
         sha256: hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes)),
     };

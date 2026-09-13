@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use mos_deploy::catalog::{CatalogCheckpoint, CatalogRequest, verify_catalog};
+use mica_deploy::catalog::{CatalogCheckpoint, CatalogRequest, verify_catalog};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
 
@@ -16,10 +16,8 @@ fn signed(value: &Value) -> Vec<u8> {
     ).into_bytes()
 }
 fn catalog() -> Value {
-    let deployment: Value = serde_json::from_str(include_str!(
-        "../../../tests/component-contracts/deployment.json"
-    ))
-    .unwrap();
+    let deployment: Value =
+        serde_json::from_str(include_str!("component-contracts/deployment.json")).unwrap();
     let mut objects = std::collections::BTreeMap::new();
     for pointer in [
         "/kernel/boot/artifact",
@@ -39,7 +37,7 @@ fn verify(
     value: &Value,
     checkpoint: Option<&CatalogCheckpoint>,
     highest: u64,
-) -> anyhow::Result<mos_deploy::catalog::VerifiedCatalog> {
+) -> anyhow::Result<mica_deploy::catalog::VerifiedCatalog> {
     let key: [u8; 32] = signer().public_key().as_ref().try_into().unwrap();
     verify_catalog(
         &signed(value),

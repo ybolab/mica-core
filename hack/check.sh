@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# mos-build-side: container -- the same as pkgs/mosd/hack/check.sh, for the same reason and by the same two callers: tests/rust-gate.sh takes both workspaces into localhost/mos-build-rust-check, and since PLAN-080 backlog B7 the CI runner reaches this file only through that script. The PATH prepend below finds nothing in the image.
-# The gate for this workspace. It exists because `mos-deploy` is no longer a
-# member of the mosd workspace: the split gave it its own `[workspace]`, and
+# mos-build-side: container -- the same as micad:hack/check.sh, for the same reason and by the same two callers: tests/rust-gate.sh takes both workspaces into localhost/mos-build-rust-check, and since PLAN-080 backlog B7 the CI runner reaches this file only through that script. The PATH prepend below finds nothing in the image.
+# The gate for this workspace. It exists because `mica-deploy` is no longer a
+# member of the micad workspace: the split gave it its own `[workspace]`, and
 # from that moment `cargo clippy --workspace` and `cargo nextest run --workspace`
-# run from pkgs/mosd/ stopped reaching this crate. Without this script the code would
+# run from micad: stopped reaching this crate. Without this script the code would
 # ship unchecked with every other gate still green.
 #
-# Deliberately a line-for-line twin of pkgs/mosd/hack/check.sh, in the same order.
+# Deliberately a line-for-line twin of micad:hack/check.sh, in the same order.
 # Two gate definitions that differ only in where they run should read as the
 # same gate; a divergence should be visible as a diff, not hidden in phrasing.
 set -euo pipefail

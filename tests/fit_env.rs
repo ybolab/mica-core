@@ -1,4 +1,4 @@
-use mos_deploy::fit_env::{
+use mica_deploy::fit_env::{
     ENV_SIZE, Environment, FitLayout, Record, encode, parse_records, render_records,
 };
 use std::{

@@ -1,6 +1,6 @@
 //! Process-interruption and ENOSPC acceptance for the real transaction implementation.
 use base64::{Engine, engine::general_purpose::STANDARD};
-use mos_deploy::{
+use mica_deploy::{
     boot::BootKind,
     components::{authenticate_deployment, component_id},
     deployments::{BootBackend, BootReceipt, DeploymentStore, State},
@@ -25,7 +25,7 @@ fn store(root: &Path, fit: bool) -> DeploymentStore {
         root.join("store/system"),
         if fit {
             BootBackend::Fit {
-                layout: mos_deploy::fit_env::FitLayout::Cx3576,
+                layout: mica_deploy::fit_env::FitLayout::Cx3576,
                 firmware: root.join("store/firmware.img"),
             }
         } else {
@@ -102,10 +102,8 @@ fn seed(root: &Path, fit: bool, operation: &str) {
             12288
         ];
         let artifact = json!({"bytes":payload.len(),"sha256":hash(&payload)});
-        let mut d: Value = serde_json::from_slice(include_bytes!(
-            "../../../tests/component-contracts/deployment.json"
-        ))
-        .unwrap();
+        let mut d: Value =
+            serde_json::from_slice(include_bytes!("component-contracts/deployment.json")).unwrap();
         if fit {
             d["board"] = json!("cx3576");
             d["arch"] = json!("arm64");
@@ -171,7 +169,7 @@ fn seed(root: &Path, fit: bool, operation: &str) {
     if fit {
         let mut file = fs::File::create(root.join("store/firmware.img")).unwrap();
         file.set_len(18 * 1048576 - 32768).unwrap();
-        for (i, offset) in mos_deploy::fit_env::FitLayout::Cx3576
+        for (i, offset) in mica_deploy::fit_env::FitLayout::Cx3576
             .offsets()
             .into_iter()
             .enumerate()
@@ -227,9 +225,9 @@ fn seed(root: &Path, fit: bool, operation: &str) {
     }
     if !["install", "reuse"].contains(&operation) {
         if let BootBackend::Fit { firmware, .. } = &store.boot {
-            let mut environment = mos_deploy::fit_env::Environment::load(
+            let mut environment = mica_deploy::fit_env::Environment::load(
                 firmware,
-                mos_deploy::fit_env::FitLayout::Cx3576,
+                mica_deploy::fit_env::FitLayout::Cx3576,
             )
             .unwrap();
             environment.records[0].tries_left = Some(2);
@@ -294,23 +292,25 @@ fn validate(root: &Path, fit: bool) {
     );
     if let BootBackend::Fit { firmware, .. } = &store.boot {
         let bytes = fs::read(firmware).unwrap();
-        for offset in mos_deploy::fit_env::FitLayout::Cx3576.offsets() {
+        for offset in mica_deploy::fit_env::FitLayout::Cx3576.offsets() {
             // Either CRC-valid redundant copy must refer only to complete
             // deployments, even if a later read loses the newest copy.
             let mut isolated = tempfile::NamedTempFile::new().unwrap();
             isolated.as_file().set_len(18 * 1048576 - 32768).unwrap();
             isolated.seek(SeekFrom::Start(offset)).unwrap();
             isolated
-                .write_all(&bytes[offset as usize..offset as usize + mos_deploy::fit_env::ENV_SIZE])
+                .write_all(
+                    &bytes[offset as usize..offset as usize + mica_deploy::fit_env::ENV_SIZE],
+                )
                 .unwrap();
-            if let Ok(environment) = mos_deploy::fit_env::Environment::load(
+            if let Ok(environment) = mica_deploy::fit_env::Environment::load(
                 isolated.path(),
-                mos_deploy::fit_env::FitLayout::Cx3576,
+                mica_deploy::fit_env::FitLayout::Cx3576,
             ) {
                 let records = environment.records;
                 for record in records {
                     if !entries.iter().any(|entry| entry.id == record.id) {
-                        entries.push(mos_deploy::deployments::Entry {
+                        entries.push(mica_deploy::deployments::Entry {
                             id: record.id,
                             file: String::new(),
                             generation: record.generation,
@@ -600,9 +600,9 @@ fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
             "unlaunched trial was confirmed"
         );
         if let BootBackend::Fit { firmware, .. } = &store.boot {
-            let mut env = mos_deploy::fit_env::Environment::load(
+            let mut env = mica_deploy::fit_env::Environment::load(
                 firmware,
-                mos_deploy::fit_env::FitLayout::Cx3576,
+                mica_deploy::fit_env::FitLayout::Cx3576,
             )
             .unwrap();
             env.records[0].tries_left = Some(2);
@@ -628,7 +628,7 @@ fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
 #[test]
 #[ignore = "requires the bounded tmpfs provided by tests/file-ab-faults/run.sh"]
 fn replacement_capacity_uses_reclaimed_blocks_without_a_third_version() {
-    use mos_deploy::components::authenticate_deployment;
+    use mica_deploy::components::authenticate_deployment;
     let parent = std::env::var("MOS_TEST_SPACE_ROOT").unwrap();
     for insufficient in [false, true] {
         let root = TempDir::new_in(&parent).unwrap();
@@ -694,9 +694,9 @@ fn an_unconfirmed_running_trial_cannot_retire_the_other_deployment() {
             serde_json::from_slice(&fs::read(root.path().join("current-receipt.json")).unwrap())
                 .unwrap();
         if let BootBackend::Fit { firmware, .. } = &store.boot {
-            let mut env = mos_deploy::fit_env::Environment::load(
+            let mut env = mica_deploy::fit_env::Environment::load(
                 firmware,
-                mos_deploy::fit_env::FitLayout::Cx3576,
+                mica_deploy::fit_env::FitLayout::Cx3576,
             )
             .unwrap();
             env.records

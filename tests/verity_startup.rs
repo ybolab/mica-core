@@ -1,4 +1,4 @@
-use mos_deploy::{
+use mica_deploy::{
     boot::startup::verity::{table, verify_table},
     components::VerityImage,
 };

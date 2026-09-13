@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use mos_deploy::{
+use mica_deploy::{
     acquisition::Acquisition,
     boot::BootKind,
     components::BootIdentity,
@@ -20,7 +20,7 @@ use std::{
 
 #[derive(Parser)]
 #[command(
-    name = "mos-deploy",
+    name = "mica-deploy",
     version,
     about = "Manage authenticated file deployments"
 )]
@@ -81,7 +81,7 @@ struct Policy {
 
 fn receipt() -> Result<BootReceipt> {
     Ok(serde_json::from_slice(&read_bounded(
-        Path::new("/run/mos/boot.json"),
+        Path::new("/run/mica/boot.json"),
         4096,
     )?)?)
 }
@@ -169,8 +169,10 @@ fn require_mount(path: &str, filesystem: &str, writable: bool, number: u8) -> Re
 }
 
 fn policy() -> Result<(Policy, Vec<[u8; 32]>)> {
-    let policy: Policy =
-        serde_json::from_slice(&read_bounded(Path::new("/run/mos/boot-policy.json"), 4096)?)?;
+    let policy: Policy = serde_json::from_slice(&read_bounded(
+        Path::new("/run/mica/boot-policy.json"),
+        4096,
+    )?)?;
     ensure!(
         !policy.system_part_uuid.is_empty(),
         "missing SYSTEM binding"
@@ -194,7 +196,7 @@ fn main() -> Result<()> {
     if let Err(error) = &result
         && error.is::<SharedDataFailure>()
     {
-        std::fs::write("/run/mos/shared-data-failure", format!("{error:#}"))?;
+        std::fs::write("/run/mica/shared-data-failure", format!("{error:#}"))?;
     }
     result
 }
@@ -221,8 +223,8 @@ fn execute() -> Result<()> {
             }
         }
         BootKind::UbootFit => BootBackend::Fit {
-            layout: mos_deploy::fit_env::FitLayout::for_board(&policy.identity.board)?,
-            firmware: mos_deploy::deployments::boot_partition(
+            layout: mica_deploy::fit_env::FitLayout::for_board(&policy.identity.board)?,
+            firmware: mica_deploy::deployments::boot_partition(
                 &system,
                 backend,
                 &policy.identity.board,
@@ -268,7 +270,7 @@ fn execute() -> Result<()> {
             receipt.content_verified,
             "running content is not authenticated"
         );
-        mos_deploy::deployments::valid_id(&receipt.deployment_id)?;
+        mica_deploy::deployments::valid_id(&receipt.deployment_id)?;
         println!("{}", receipt.deployment_id);
         return Ok(());
     }
@@ -286,14 +288,14 @@ fn execute() -> Result<()> {
     let _lock = store.lock()?;
     if let Action::FirmwareReadback { manifest, record } = &cli.command {
         let envelope = read_bounded(manifest, 6500)?;
-        let firmware = mos_deploy::firmware::authenticate_firmware(&envelope, &keys)?;
+        let firmware = mica_deploy::firmware::authenticate_firmware(&envelope, &keys)?;
         ensure!(
             firmware.board == policy.identity.board && firmware.arch == policy.identity.arch,
             "firmware target differs from signed board policy"
         );
-        mos_deploy::firmware::verify_installed(&firmware, &store.boot)?;
+        mica_deploy::firmware::verify_installed(&firmware, &store.boot)?;
         if *record {
-            mos_deploy::deployments::atomic_write(
+            mica_deploy::deployments::atomic_write(
                 Path::new("/mnt/data/meta/firmware.json"),
                 &envelope,
             )?;

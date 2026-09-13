@@ -1,4 +1,4 @@
-use mos_deploy::boot::startup;
+use mica_deploy::boot::startup;
 use std::fs;
 
 #[test]

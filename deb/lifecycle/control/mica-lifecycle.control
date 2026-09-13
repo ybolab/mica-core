@@ -1,0 +1,12 @@
+Package: mica-lifecycle
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: mos build <mos@example.invalid>
+Section: admin
+Priority: optional
+Description: static native lifecycle executables for the signed kernel image
+ mica-init and mica-shutdown, built static for this architecture, under
+ /usr/lib/mica/lifecycle/. Not for installation into a root: the assembly's
+ kernel component reads them out of this archive and packs them into the
+ initramfs and the exit ramdisk of the signed kernel, where they are part
+ of the authenticated kernel identity.

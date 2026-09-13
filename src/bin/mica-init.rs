@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use mos_deploy::{
+use mica_deploy::{
     boot::{
         BootKind, copy_exitrd, exitrd_tmpfs_bytes, fit_selected, persistent_machine_id,
         selected_entry,
@@ -59,7 +59,7 @@ struct BootControl {
 
 impl BootControl {
     fn observe(&mut self) -> Result<shutdown::Snapshot> {
-        self.supervisor.observe("/sbin/mos-shutdown")
+        self.supervisor.observe("/sbin/mica-shutdown")
     }
 
     fn backing(&mut self, path: &str) -> Result<()> {
@@ -121,7 +121,7 @@ impl BootAttempt {
             .operation_deadline(control.supervisor.now_ms())?;
         SystemIo {
             supervisor: &mut control.supervisor,
-            executable: "/sbin/mos-shutdown",
+            executable: "/sbin/mica-shutdown",
         }
         .execute(
             &Operation::Retire {
@@ -294,7 +294,7 @@ fn verified_mount(
 
 fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<()> {
     let started = Instant::now();
-    ensure!(std::process::id() == 1, "mos-init must run as PID 1");
+    ensure!(std::process::id() == 1, "mica-init must run as PID 1");
     mount(control, "devtmpfs", "/dev", "devtmpfs", "nosuid,mode=0755")?;
     mount(control, "proc", "/proc", "proc", "nosuid,nodev,noexec")?;
     mount(control, "sysfs", "/sys", "sysfs", "nosuid,nodev,noexec")?;
@@ -312,9 +312,9 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
     // Arming is synchronous and precedes access to deployment storage. The
     // signed cmdline fixes the timeout; NOWAYOUT keeps it armed across exec.
     control.supervisor.arm()?;
-    eprintln!("mos-init: boot watchdog armed");
-    eprintln!("mos-init: pseudo-filesystems and signature policy ready");
-    let config: Config = serde_json::from_slice(&bounded_file("/etc/mos/boot.json", 4096)?)?;
+    eprintln!("mica-init: boot watchdog armed");
+    eprintln!("mica-init: pseudo-filesystems and signature policy ready");
+    let config: Config = serde_json::from_slice(&bounded_file("/etc/mica/boot.json", 4096)?)?;
     for uuid in [&config.system_part_uuid, &config.data_part_uuid] {
         ensure!(
             uuid.len() == 36 && uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'),
@@ -365,7 +365,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             (format!("fit:{id}"), id, false)
         }
     };
-    eprintln!("mos-init: selected deployment {id}");
+    eprintln!("mica-init: selected deployment {id}");
     control.storage.deployment = id.clone();
     let mut device = String::new();
     let discovery = Instant::now();
@@ -402,7 +402,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         system_device: device.clone(),
         board: config.identity.board.clone(),
     });
-    eprintln!("mos-init: SYSTEM mounted read-only");
+    eprintln!("mica-init: SYSTEM mounted read-only");
     let envelope = bounded_file(&format!("/system/deployments/{id}.json"), 24576)?;
     let deployment = verify_deployment(&envelope, &keys, &config.identity)?;
     let value = serde_json::to_value(&deployment)?;
@@ -520,18 +520,18 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         )?;
         Ok(())
     })()
-    .context(mos_deploy::deployments::SharedDataFailure)?;
-    eprintln!("mos-init: persistent DATA identity ready before system init");
-    fs::create_dir_all("/run/mos")?;
+    .context(mica_deploy::deployments::SharedDataFailure)?;
+    eprintln!("mica-init: persistent DATA identity ready before system init");
+    fs::create_dir_all("/run/mica")?;
     fs::write(
-        "/run/mos/boot.json",
+        "/run/mica/boot.json",
         serde_json::to_vec(&serde_json::json!({
             "deploymentId": id, "entry": selected, "kernelId": deployment.kernel.id,
             "rootfsId": deployment.rootfs.id, "contentVerified": true, "secureBoot": secure_boot,
             "backend": backend, "bootVerified": secure_boot || backend == BootKind::UbootFit,
         }))?,
     )?;
-    fs::write("/run/mos/deployment.json", &envelope)?;
+    fs::write("/run/mica/deployment.json", &envelope)?;
     let manifest = String::from_utf8(bounded_file("/exitrd.files", 8192)?)?;
     let retained_bytes = exitrd_tmpfs_bytes(Path::new("/exitrd"), &manifest)?;
     mount(
@@ -561,11 +561,11 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
     startup::validate_new_root(Path::new("/newroot"))?;
     for (source, target) in [
         ("/system", "/newroot/mnt/system"),
-        ("/support", "/newroot/run/mos-support"),
+        ("/support", "/newroot/run/mica-support"),
     ] {
         // /run moves below; keep the support mount in that tmpfs first.
         let destination = if source == "/support" {
-            "/run/mos-support"
+            "/run/mica-support"
         } else {
             target
         };
@@ -593,8 +593,8 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             },
         )?;
     }
-    fs::copy("/etc/mos/boot.json", "/newroot/run/mos/boot-policy.json")?;
-    eprintln!("mos-init: verified deployment {id}; support mounted before system init");
+    fs::copy("/etc/mica/boot.json", "/newroot/run/mica/boot-policy.json")?;
+    eprintln!("mica-init: verified deployment {id}; support mounted before system init");
     if let Ok(status) = fs::read_to_string("/newroot/proc/self/status") {
         let peak = status.lines().find_map(|line| {
             line.strip_prefix("VmHWM:")?
@@ -605,7 +605,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         });
         if let Some(peak) = peak {
             eprintln!(
-                "mos-init: metrics elapsedMs={} peakRssKiB={peak}",
+                "mica-init: metrics elapsedMs={} peakRssKiB={peak}",
                 started.elapsed().as_millis()
             );
         }
@@ -623,13 +623,13 @@ fn main() {
     );
     if let Some(result) = native::worker(&std::env::args().skip(1).collect::<Vec<_>>()) {
         if let Err(error) = result {
-            eprintln!("mos-init startup worker: {error:#}");
+            eprintln!("mica-init startup worker: {error:#}");
             std::process::exit(1);
         }
         return;
     }
     if std::process::id() != 1 {
-        eprintln!("mos-init must run as PID 1");
+        eprintln!("mica-init must run as PID 1");
         std::process::exit(1);
     }
     let mut control = BootControl {
@@ -640,21 +640,21 @@ fn main() {
     let error = boot(&mut control, &mut attempt)
         .err()
         .unwrap_or_else(|| anyhow::anyhow!("boot unexpectedly returned"));
-    let _ = shutdown::diagnostic(&format!("mos-init: boot refused: {error:#}"));
+    let _ = shutdown::diagnostic(&format!("mica-init: boot refused: {error:#}"));
     let mut recovery = error.is::<SharedSystemFailure>()
-        || error.is::<mos_deploy::deployments::SharedDataFailure>();
+        || error.is::<mica_deploy::deployments::SharedDataFailure>();
     let cleanup = (|| -> Result<()> {
         let budget = control.supervisor.begin_shutdown()?;
         let deadline = budget.operation_deadline(control.supervisor.now_ms())?;
         SystemIo {
             supervisor: &mut control.supervisor,
-            executable: "/sbin/mos-shutdown",
+            executable: "/sbin/mica-shutdown",
         }
         .execute(&Operation::Private, deadline)?;
         let deadline = budget.operation_deadline(control.supervisor.now_ms())?;
         SystemIo {
             supervisor: &mut control.supervisor,
-            executable: "/sbin/mos-shutdown",
+            executable: "/sbin/mica-shutdown",
         }
         .execute(&Operation::Quiesce, deadline)?;
         ensure!(
@@ -668,7 +668,7 @@ fn main() {
                 .context("boot selection could not be established")
                 .and_then(|selected| selected.retire_failed_confirmed(&mut control))
         {
-            let _ = shutdown::diagnostic(&format!("mos-init: recovery required: {error:#}"));
+            let _ = shutdown::diagnostic(&format!("mica-init: recovery required: {error:#}"));
             recovery = true;
         }
         let action = if recovery {
@@ -683,7 +683,7 @@ fn main() {
         shutdown::finish(
             &mut SystemIo {
                 supervisor: &mut control.supervisor,
-                executable: "/sbin/mos-shutdown",
+                executable: "/sbin/mica-shutdown",
             },
             budget,
             &control.storage,

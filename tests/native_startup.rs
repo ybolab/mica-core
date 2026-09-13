@@ -1,4 +1,4 @@
-use mos_deploy::boot::startup::native::{self, Operation};
+use mica_deploy::boot::startup::native::{self, Operation};
 use rustix::mount::MountFlags;
 use std::{
     fs,

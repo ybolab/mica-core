@@ -1,17 +1,34 @@
-# mos-deploy
+# mica-deploy
 
 Native boot and update tools for current signed file deployments. This workspace
-contains `mos-init` and `mos-deploy`; it accepts no earlier disk, metadata or
-package format.
+contains `mica-init`, `mica-shutdown` and `mica-deploy`; it accepts no earlier
+disk, metadata or package format. It is a repository of its own, standing on
+the `mica-build-env` substrate fetched at its pin into `build-env/`:
 
-`mos-init` runs from the signed UKI or FIT. It validates the selected
+```
+make deps            # build-env/ at deps/sources/mica-build-env.json
+make build-env       # the builder images
+make check           # lint, the Rust gate, the shutdown suite, the IO fault suite
+make pool            # mica-deploy and mica-lifecycle, both architectures, indexed
+make package-gate    # the gate over that pool
+make publish         # the release build-<commit12> of this commit
+```
+
+Two packages leave here: `mica-deploy` (the device-side client) and
+`mica-lifecycle` (the static `mica-init` and `mica-shutdown` under
+`/usr/lib/mica/lifecycle/`, which the assembly's kernel component reads out
+of the archive and packs into the signed kernel; no root installs it). The
+assembly (`ybolab/mica-build`) imports both through `deps/packages/` and
+builds neither.
+
+`mica-init` runs from the signed UKI or FIT. It validates the selected
 `mos/deployment/v1` envelope against the public keys embedded in that kernel,
 checks board/kernel associations, opens the authenticated SYSTEM and DATA
 partitions, and creates signed dm-verity mappings for root and support. Kernel
 modules and firmware come from the selected read-only support image before
 systemd starts. Persistent machine identity is established on DATA before PID 1.
 
-`mos-deploy` serializes mutations with the DATA transaction lock. Immutable
+`mica-deploy` serializes mutations with the DATA transaction lock. Immutable
 objects are verified and synced before the boot entry becomes visible. Native
 UEFI/FIT trial records and authenticated retained descriptors drive state
 reconciliation, confirmation, rollback and garbage collection.
@@ -19,18 +36,18 @@ reconciliation, confirmation, rollback and garbage collection.
 ## Device commands
 
 ```sh
-mos-deploy status
-mos-deploy booted
-mos-deploy probe
-mos-deploy check --source https://updates.example/v1/manifest.json --channel stable
-mos-deploy fetch --source https://updates.example/v1/manifest.json --channel stable
-mos-deploy import /path/to/update.mosupd
-mos-deploy install /mos/updates/verified/DEPLOYMENT_ID.json \
+mica-deploy status
+mica-deploy booted
+mica-deploy probe
+mica-deploy check --source https://updates.example/v1/manifest.json --channel stable
+mica-deploy fetch --source https://updates.example/v1/manifest.json --channel stable
+mica-deploy import /path/to/update.mosupd
+mica-deploy install /mos/updates/verified/DEPLOYMENT_ID.json \
   --objects /mos/updates/verified/objects
-mos-deploy confirm
-mos-deploy rollback
-mos-deploy gc
-mos-deploy firmware-readback
+mica-deploy confirm
+mica-deploy rollback
+mica-deploy gc
+mica-deploy firmware-readback
 ```
 
 `reject ID` retires a deployment, and `fail-boot` handles the authenticated

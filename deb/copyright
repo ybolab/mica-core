@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: mos
 Comment: Deployment binaries use the dependency licenses enforced by
- pkgs/mos-deploy/deny.toml. Full project license text follows.
+ pkgs/mica-deploy/deny.toml. Full project license text follows.
 
 Files: *
 Copyright: The mos project

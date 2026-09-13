@@ -1,6 +1,6 @@
 # cargo-deny 0.19.x configuration for the native deployment workspace.
 #
-# Deliberately SMALLER than pkgs/mosd/deny.toml, and the difference is the point.
+# Deliberately SMALLER than micad:deny.toml, and the difference is the point.
 # That file carries two exceptions, and neither one reaches this crate:
 #
 #   - the CC0-1.0 allowance exists for tiny-keccak, reached through
@@ -10,7 +10,7 @@
 #   - the RUSTSEC-2025-0134 ignore is for rustls-pemfile, "pulled in by
 #     axum-server tls-rustls". axum-server is apid's; nothing here serves HTTP.
 #
-# The same reasoning drops mosd's BSD-2-Clause and BSD-3-Clause allowances. Over
+# The same reasoning drops micad's BSD-2-Clause and BSD-3-Clause allowances. Over
 # there they are matched -- zerocopy is BSD-2, and encoding_rs, matchit and
 # subtle are BSD-3, all reached through apid and zbus. Nothing in this graph
 # carries either licence, which `cargo deny` says out loud as

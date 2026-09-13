@@ -1,4 +1,4 @@
-use mos_deploy::boot::{selected_entry, utf16_variable};
+use mica_deploy::boot::{selected_entry, utf16_variable};
 
 #[test]
 fn normalizes_only_native_deployment_entries() {
@@ -31,7 +31,7 @@ fn reads_efi_attributes_and_strict_utf16_termination() {
 
 #[test]
 fn preserves_only_the_bounded_exitrd_closure() {
-    use mos_deploy::boot::copy_exitrd;
+    use mica_deploy::boot::copy_exitrd;
     use std::{
         fs,
         os::unix::fs::{PermissionsExt, symlink},
@@ -90,7 +90,7 @@ fn preserves_only_the_bounded_exitrd_closure() {
 
 #[test]
 fn machine_identity_is_durable_and_never_regenerated_from_invalid_state() {
-    use mos_deploy::boot::persistent_machine_id;
+    use mica_deploy::boot::persistent_machine_id;
     use std::{
         fs,
         os::unix::fs::{PermissionsExt, symlink},
@@ -125,7 +125,7 @@ fn machine_identity_is_durable_and_never_regenerated_from_invalid_state() {
 }
 #[test]
 fn fit_selection_accepts_only_one_nul_terminated_deployment_digest() {
-    use mos_deploy::boot::{BootKind, fit_selected};
+    use mica_deploy::boot::{BootKind, fit_selected};
     let id = "a".repeat(64);
     assert_eq!(BootKind::for_board("cx3576").unwrap(), BootKind::UbootFit);
     assert_eq!(BootKind::for_board("s905x5m").unwrap(), BootKind::UbootFit);

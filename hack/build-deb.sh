@@ -4,11 +4,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "${HERE}/.." && pwd)"
-REPO_ROOT="$(cd "${WORKSPACE}/../.." && pwd)"
+REPO_ROOT="${WORKSPACE}"
 FROM_SH="${REPO_ROOT}/build-env/from.sh"
 for p in "${WORKSPACE}/Cargo.toml" "${FROM_SH}"; do
     [ -e "${p}" ] || {
-        echo "error: ${p} does not exist. pkgs/mos-deploy/hack/build-deb.sh derives the workspace as its own directory's parent and the repository as three levels above that; if this file moved, that arithmetic moved with it" >&2
+        echo "error: ${p} does not exist. hack/build-deb.sh derives the workspace as its own directory's parent, which is the repository; build-env/ is the mica-build-env source pin (make deps) that; if this file moved, that arithmetic moved with it" >&2
         exit 1
     }
 done
@@ -45,7 +45,7 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     *)
-        echo "usage: bash pkgs/mos-deploy/hack/build-deb.sh --producer <name> --bins \"<binary> ...\" --arch <amd64|arm64> --stage <dir>" >&2
+        echo "usage: bash hack/build-deb.sh --producer <name> --bins \"<binary> ...\" --arch <amd64|arm64> --stage <dir>" >&2
         exit 1
         ;;
     esac
@@ -59,12 +59,12 @@ done
 BINARIES=()
 for b in ${BINS}; do BINARIES+=("${b}"); done
 
-# Every binary this crate declares, through cargo's auto-discovery: `mos-deploy`
+# Every binary this crate declares, through cargo's auto-discovery: `mica-deploy`
 # from src/main.rs, the other two from their own filenames under src/bin/. A
 # producer names the ones it OWNS in its prepare.sh, and the complement is what
 # the independence assertion looks for -- so a fourth binary added to this crate
 # is checked without any producer being edited.
-ALL_BINARIES=(mos-init mos-shutdown mos-deploy)
+ALL_BINARIES=(mica-init mica-shutdown mica-deploy)
 
 # A binary this crate does not declare would make the complement below wrong in
 # the direction that matters: it would be treated as owned, and therefore never
@@ -107,17 +107,17 @@ arm64)
 esac
 
 # Producer-private, so this producer has its own cache key and its own output
-# directory: sharing pkgs/mos-deploy/target/ with an interactive `cargo build`
+# directory: sharing target/ with an interactive `cargo build`
 # would let a three-binary build satisfy the independence assertion below with
 # the signing tool this producer must not ship. Gitignored through
-# pkgs/mos-deploy/.gitignore.
+# .gitignore.
 TARGET_DIR="${WORKSPACE}/target-deb/${PRODUCER}"
 # Both lifecycle executables use the existing GNU static route. Their caches
 # stay separate from the main-system deployment tool and from each other.
 release_binary() {
-    if [ "$1" = mos-init ]; then
+    if [ "$1" = mica-init ]; then
         printf '%s/startup-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
-    elif [ "$1" = mos-shutdown ]; then
+    elif [ "$1" = mica-shutdown ]; then
         printf '%s/shutdown-static/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
     else
         printf '%s/%s/release/%s\n' "$TARGET_DIR" "$TRIPLE" "$1"
@@ -135,23 +135,23 @@ mapfile -t RUST_FROM < <(bash "${FROM_SH}" --arch=amd64 MOS_BUILD_RUST=LOCAL_MOS
 RUST_IMAGE="${RUST_FROM[1]#MOS_BUILD_RUST=}"
 
 # The repository at the fixed path /src, not where it happens to live, for the
-# reason pkgs/mosd/hack/build-target.sh gives: rustc records the paths it is
+# reason pkgs/micad/hack/build-target.sh gives: rustc records the paths it is
 # given, so mounting the checkout at its own path would make the binaries depend
 # on the directory the repository was cloned into.
 # mos-build-side: container-block -- the compiler is localhost/mos-build-rust's,
 # recorded in that image's /etc/mos-build/rust.env, and this block refuses an image that
 # carries no such record
 docker run --rm \
-    --label ai-agent=true --network traefik --name "ai-agent-mos-deploy-${PRODUCER}-$$" \
+    --label ai-agent=true --network traefik --name "ai-agent-mica-deploy-${PRODUCER}-$$" \
     --platform linux/amd64 \
     -v "${REPO_ROOT}:/src" \
     -v "${CARGO_CACHE}/registry:/usr/local/cargo/registry" \
     -v "${CARGO_CACHE}/git:/usr/local/cargo/git" \
-    -w /src/pkgs/mos-deploy \
+    -w /src \
     -e "TARGET=${TRIPLE}" \
     -e "ELF_ARCH=${ELF_ARCH}" \
     -e "BINS=${BINARIES[*]}" \
-    -e "CARGO_TARGET_DIR=/src/pkgs/mos-deploy/target-deb/${PRODUCER}" \
+    -e "CARGO_TARGET_DIR=/src/target-deb/${PRODUCER}" \
     --entrypoint /bin/bash \
     "${RUST_IMAGE}" -c '
         set -euo pipefail
@@ -167,15 +167,15 @@ docker run --rm \
         # it.
         bins=()
         for b in ${BINS}; do
-            if [ "$b" != mos-shutdown ] && [ "$b" != mos-init ]; then bins+=(--bin "$b"); fi
+            if [ "$b" != mica-shutdown ] && [ "$b" != mica-init ]; then bins+=(--bin "$b"); fi
         done
         if [ "${#bins[@]}" -gt 0 ]; then
             cargo build --release --locked --target "${TARGET}" "${bins[@]}"
         fi
         for name in ${BINS}; do
-            if [ "$name" = mos-shutdown ] || [ "$name" = mos-init ]; then
+            if [ "$name" = mica-shutdown ] || [ "$name" = mica-init ]; then
                 static_directory=shutdown-static
-                if [ "$name" = mos-init ]; then static_directory=startup-static; fi
+                if [ "$name" = mica-init ]; then static_directory=startup-static; fi
                 # Target-specific configuration leaves host build scripts and
                 # every other binary on their original dynamic GNU route.
                 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
@@ -215,8 +215,8 @@ for name in "${BINARIES[@]}"; do
     }
 done
 
-# INDEPENDENCE, asserted rather than described. `cargo build --bin mos-deploy
-# --bin mos-init` is the intent; this is the evidence, and it is what a later
+# INDEPENDENCE, asserted rather than described. `cargo build --bin mica-deploy
+# --bin mica-init` is the intent; this is the evidence, and it is what a later
 # gate can point at. A binary here means the producer boundary leaked -- a stale
 # target directory reused, or a --bin list that grew -- and the one binary this
 # complement holds is the offline signing tool, which no device may carry.
@@ -227,7 +227,7 @@ for name in "${EXCLUDED[@]}"; do
     done < <(find "${TARGET_DIR}" -type f -name "${name}")
 done
 if [ -n "${stray}" ]; then
-    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. This producer ships the DEVICE side of pkgs/mos-deploy and nothing else; mos-deploy is the release-host signing tool. See pkgs/mos-deploy/README.md" >&2
+    echo "error: the ${PRODUCER} producer's target directory holds binaries it does not own:${stray}. Each producer of this repository ships exactly the binaries it names: deploy the device-side mica-deploy, lifecycle the static mica-init and mica-shutdown. See README.md" >&2
     exit 1
 fi
 echo "build-deb: ${TARGET_DIR} holds ${BINARIES[*]} and none of ${EXCLUDED[*]}"

@@ -247,7 +247,7 @@ pub fn switch_root() -> Result<()> {
             "old root still contains startup files"
         );
     }
-    eprintln!("mos-init: old root startup files reclaimed");
+    eprintln!("mica-init: old root startup files reclaimed");
     rustix::mount::mount_move(".", "/")?;
     rustix::process::chroot(".")?;
     std::env::set_current_dir("/")?;

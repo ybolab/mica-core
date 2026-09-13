@@ -1,4 +1,4 @@
-use mos_deploy::boot::copy_exitrd;
+use mica_deploy::boot::copy_exitrd;
 use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
@@ -192,7 +192,7 @@ fn preserves_data_modes_and_materializes_runtime_directories() {
     let target = tempfile::tempdir().unwrap();
     member(source.path(), "shutdown", 0o755);
     let manifest = "shutdown\n";
-    let capacity = mos_deploy::boot::exitrd_tmpfs_bytes(source.path(), manifest).unwrap();
+    let capacity = mica_deploy::boot::exitrd_tmpfs_bytes(source.path(), manifest).unwrap();
     assert_eq!(capacity, (11 + 1) * 65536 + 1024 * 1024);
     copy_exitrd(source.path(), target.path(), manifest).unwrap();
     assert_eq!(

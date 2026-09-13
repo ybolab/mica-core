@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use mos_deploy::{
+use mica_deploy::{
     acquisition::Acquisition, components::component_id, deployments::DeploymentStore,
 };
 use ring::{
@@ -13,10 +13,8 @@ use tempfile::TempDir;
 fn archive() -> (Vec<u8>, [u8; 32], String) {
     let bytes = vec![42_u8; 12288];
     let sha = hex::encode(digest::digest(&digest::SHA256, &bytes));
-    let mut d: Value = serde_json::from_str(include_str!(
-        "../../../tests/component-contracts/deployment.json"
-    ))
-    .unwrap();
+    let mut d: Value =
+        serde_json::from_str(include_str!("component-contracts/deployment.json")).unwrap();
     for pointer in [
         "/kernel/boot/artifact",
         "/kernel/support/image",
@@ -54,7 +52,7 @@ fn fixture() -> (TempDir, DeploymentStore) {
     fs::create_dir_all(dir.path().join("esp/loader/entries")).unwrap();
     let store = DeploymentStore::new(
         dir.path().join("system"),
-        mos_deploy::deployments::BootBackend::Uefi {
+        mica_deploy::deployments::BootBackend::Uefi {
             esp: dir.path().join("esp"),
         },
         dir.path().join("meta"),
@@ -133,7 +131,7 @@ fn one_existing_destination_does_not_hide_other_destinations_for_the_same_digest
     let keys = [key];
     let length = u32::from_be_bytes(archive[8..12].try_into().unwrap()) as usize;
     let deployment =
-        mos_deploy::components::authenticate_deployment(&archive[12..12 + length], &keys).unwrap();
+        mica_deploy::components::authenticate_deployment(&archive[12..12 + length], &keys).unwrap();
     let path = store.object_paths(&deployment)[0].0.clone();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, vec![42; 12288]).unwrap();

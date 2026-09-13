@@ -1,5 +1,5 @@
-use mos_deploy::boot::shutdown::{Action, Budget, parse_mountinfo};
-use mos_deploy::boot::shutdown::{
+use mica_deploy::boot::shutdown::{Action, Budget, parse_mountinfo};
+use mica_deploy::boot::shutdown::{
     Block, Device, LifecycleIo, LoopIdentity, Mapping, Operation, Ownership, Released, Snapshot,
     release,
 };
@@ -497,7 +497,7 @@ fn accepts_the_pinned_systemd_exec_argv() {
 fn exact_final_actions_require_release_and_returned_calls_fail() {
     for action in [Action::Reboot, Action::Poweroff, Action::Halt] {
         let (owner, mut io) = fixture();
-        let error = mos_deploy::boot::shutdown::finish(
+        let error = mica_deploy::boot::shutdown::finish(
             &mut io,
             Budget::new(0, 60).unwrap(),
             &owner,
@@ -509,7 +509,7 @@ fn exact_final_actions_require_release_and_returned_calls_fail() {
         let (owner, mut io) = fixture();
         io.autoclear = true;
         assert!(
-            mos_deploy::boot::shutdown::finish(
+            mica_deploy::boot::shutdown::finish(
                 &mut io,
                 Budget::new(0, 60).unwrap(),
                 &owner,

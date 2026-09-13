@@ -1,4 +1,4 @@
-use mos_deploy::{
+use mica_deploy::{
     deployments::{BootBackend, BootReceipt, DeploymentStore, SharedDataFailure},
     fit_env::{Environment, Record, encode},
 };
@@ -28,7 +28,7 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt, PathBuf) {
             tries_left: None,
         },
     ];
-    for (slot, offset) in mos_deploy::fit_env::FitLayout::Cx3576
+    for (slot, offset) in mica_deploy::fit_env::FitLayout::Cx3576
         .offsets()
         .into_iter()
         .enumerate()
@@ -41,7 +41,7 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt, PathBuf) {
     let store = DeploymentStore::new(
         dir.path().join("system"),
         BootBackend::Fit {
-            layout: mos_deploy::fit_env::FitLayout::Cx3576,
+            layout: mica_deploy::fit_env::FitLayout::Cx3576,
             firmware: firmware.clone(),
         },
         dir.path().join("meta"),
@@ -55,7 +55,7 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt, PathBuf) {
         content_verified: true,
         secure_boot: false,
         boot_verified: true,
-        backend: mos_deploy::boot::BootKind::UbootFit,
+        backend: mica_deploy::boot::BootKind::UbootFit,
     };
     (dir, store, receipt, firmware)
 }
@@ -69,7 +69,7 @@ fn fit_content_failure_retires_only_an_uncounted_boot_with_a_fallback() {
             .unwrap()
     );
     assert_eq!(
-        Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576)
+        Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576)
             .unwrap()
             .records[0]
             .tries_left,
@@ -81,7 +81,7 @@ fn fit_content_failure_retires_only_an_uncounted_boot_with_a_fallback() {
             .retire_failed_confirmed(&receipt.deployment_id)
             .unwrap()
     );
-    let env = Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576).unwrap();
+    let env = Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576).unwrap();
     assert_eq!(env.records[0].tries_left, Some(0));
     assert_eq!(env.records[1].tries_left, None);
     assert!(store.retire_failed_confirmed(&"b".repeat(64)).is_err());
@@ -95,21 +95,21 @@ fn fit_confirmation_and_rollback_preserve_the_loader_and_fallback_counter() {
     assert_eq!(state.current.as_ref(), Some(&receipt.deployment_id));
     assert_eq!(state.fallback, Some("b".repeat(64)));
     assert!(
-        Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576)
+        Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576)
             .unwrap()
             .records[0]
             .tries_left
             .is_none()
     );
     store.rollback(&receipt).unwrap();
-    let env = Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576).unwrap();
+    let env = Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576).unwrap();
     assert_eq!(env.records[0].tries_left, Some(0));
     assert_eq!(env.records[1].tries_left, None);
     assert!(store.rollback(&receipt).is_err());
     assert_eq!(
-        before[..mos_deploy::fit_env::FitLayout::Cx3576.offsets()[0] as usize],
+        before[..mica_deploy::fit_env::FitLayout::Cx3576.offsets()[0] as usize],
         fs::read(&firmware).unwrap()
-            [..mos_deploy::fit_env::FitLayout::Cx3576.offsets()[0] as usize]
+            [..mica_deploy::fit_env::FitLayout::Cx3576.offsets()[0] as usize]
     );
 }
 
@@ -119,12 +119,12 @@ fn fit_confirmation_requires_the_running_kernel_and_consumed_attempt() {
     receipt.kernel_id = "e".repeat(64);
     assert!(store.confirm(&receipt).is_err());
     receipt.kernel_id = "c".repeat(64);
-    let mut env = Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576).unwrap();
+    let mut env = Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576).unwrap();
     env.records[0].tries_left = Some(3);
     env.save(&firmware).unwrap();
     assert!(store.confirm(&receipt).is_err());
     assert_eq!(
-        Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576)
+        Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576)
             .unwrap()
             .records[0]
             .tries_left,
@@ -143,7 +143,7 @@ fn fit_confirmation_reconciles_data_failure_without_refilling_attempts() {
             .is::<SharedDataFailure>()
     );
     assert_eq!(
-        Environment::load(&firmware, mos_deploy::fit_env::FitLayout::Cx3576)
+        Environment::load(&firmware, mica_deploy::fit_env::FitLayout::Cx3576)
             .unwrap()
             .records[0]
             .tries_left,

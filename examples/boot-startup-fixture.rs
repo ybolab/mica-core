@@ -1,7 +1,7 @@
 //! Disposable guest acceptance driver; never exported by a native producer.
 #![forbid(unsafe_code)]
 use anyhow::{Context, Result, ensure};
-use mos_deploy::{
+use mica_deploy::{
     boot::startup::{native, verity},
     components::VerityImage,
 };

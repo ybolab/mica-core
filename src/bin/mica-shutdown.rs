@@ -1,7 +1,7 @@
 //! PID 1 for the authenticated, memory-only retained lifecycle payload.
 #![forbid(unsafe_code)]
 use anyhow::{Context, Result, ensure};
-use mos_deploy::boot::shutdown::{self, Ownership, Request, Supervisor, SystemIo};
+use mica_deploy::boot::shutdown::{self, Ownership, Request, Supervisor, SystemIo};
 use std::{
     fs::{self, File},
     io::Read,
@@ -36,7 +36,7 @@ fn shutdown(supervisor: &mut Supervisor, args: &[String]) -> Result<()> {
     file.take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "excessive storage record");
     let owner: Ownership = serde_json::from_slice(&bytes)?;
-    mos_deploy::deployments::valid_id(&owner.deployment)?;
+    mica_deploy::deployments::valid_id(&owner.deployment)?;
     ensure!(
         owner.allow_extra_loops,
         "partial startup record is not an exitrd handoff"
@@ -89,7 +89,7 @@ fn main() {
         return;
     }
     if std::process::id() != 1 {
-        eprintln!("mos-shutdown requires PID 1");
+        eprintln!("mica-shutdown requires PID 1");
         std::process::exit(1);
     }
     let mut supervisor = Supervisor::new();

@@ -5,7 +5,7 @@ FROM ${MOS_BUILD_DEB} AS pack
 COPY --from=packer pack.sh /usr/local/bin/pack.sh
 COPY --from=family copyright /in/copyright
 COPY control/ /in/control/
-COPY --from=bin mos-deploy /in/mos-deploy
+COPY --from=bin mica-deploy /in/mica-deploy
 ARG MOS_DEB_VERSION
 ARG MOS_DEB_ARCH
 ARG SOURCE_DATE_EPOCH
@@ -13,9 +13,9 @@ ARG SOURCE_DATE_EPOCH
 ARG MOS_DEB_SOURCE_REPO
 ARG MOS_DEB_SOURCE_COMMIT
 RUN set -eu; \
-    install -D -m 0755 /in/mos-deploy /stage/usr/bin/mos-deploy; \
-    install -D -m 0644 /in/copyright /stage/usr/share/doc/mos-deploy/copyright; \
-    pack.sh --root /stage --control /in/control/mos-deploy.control \
+    install -D -m 0755 /in/mica-deploy /stage/usr/bin/mica-deploy; \
+    install -D -m 0644 /in/copyright /stage/usr/share/doc/mica-deploy/copyright; \
+    pack.sh --root /stage --control /in/control/mica-deploy.control \
         --version "${MOS_DEB_VERSION}" --arch "${MOS_DEB_ARCH}" --out /out
 FROM scratch AS out
 COPY --from=pack /out/ /

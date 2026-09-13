@@ -1,4 +1,4 @@
-Package: mos-deploy
+Package: mica-deploy
 Version: @VERSION@
 Architecture: @ARCH@
 Maintainer: mos build <mos@example.invalid>

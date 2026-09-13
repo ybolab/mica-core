@@ -1,4 +1,4 @@
-use mos_deploy::deployments::{BootBackend, BootReceipt, DeploymentStore};
+use mica_deploy::deployments::{BootBackend, BootReceipt, DeploymentStore};
 use std::fs;
 use tempfile::TempDir;
 
@@ -40,7 +40,7 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt) {
         content_verified: true,
         secure_boot: true,
         boot_verified: true,
-        backend: mos_deploy::boot::BootKind::Uefi,
+        backend: mica_deploy::boot::BootKind::Uefi,
     };
     (dir, store, receipt)
 }
@@ -195,8 +195,8 @@ fn a_rollback_boot_can_confirm_the_last_usable_deployment() {
 #[test]
 fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references() {
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use mos_deploy::components::component_id;
-    use mos_deploy::deployments::State;
+    use mica_deploy::components::component_id;
+    use mica_deploy::deployments::State;
     use ring::{
         digest,
         rand::SystemRandom,
@@ -216,10 +216,8 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
     let public: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
     let mut records = Vec::new();
     for generation in 1..=4 {
-        let mut d: Value = serde_json::from_slice(include_bytes!(
-            "../../../tests/component-contracts/deployment.json"
-        ))
-        .unwrap();
+        let mut d: Value =
+            serde_json::from_slice(include_bytes!("component-contracts/deployment.json")).unwrap();
         d["generation"] = json!(generation);
         d["rootfs"]["version"] = json!(format!("root-{generation}"));
         d["rootfs"]["id"] = json!(component_id(&d["rootfs"]).unwrap());
@@ -357,7 +355,7 @@ fn fallback_confirmation_retires_an_exhausted_candidate() {
 
 #[test]
 fn data_metadata_failure_is_classified_after_durable_confirmation() {
-    use mos_deploy::deployments::SharedDataFailure;
+    use mica_deploy::deployments::SharedDataFailure;
     let (_dir, store, receipt) = fixture();
     fs::create_dir(store.meta.join("deployments.pending")).unwrap();
     let error = store.confirm(&receipt).unwrap_err();
