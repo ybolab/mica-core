@@ -16,8 +16,8 @@ use crate::bus_client::BusSettings;
 use crate::settings_api::SettingsApi;
 
 /// The system-management interface location.
-const MOSD_PATH: &str = "/com/mos/micad";
-const MOSD_NAME: &str = "com.mica.micad";
+const MICAD_PATH: &str = "/com/mica/micad";
+const MICAD_NAME: &str = "com.mica.micad";
 
 const PASSWORD: &str = "hunter2secret";
 
@@ -152,10 +152,10 @@ async fn fake() -> Fake {
     let recorder = Recorder::default();
     let server = zbus::connection::Builder::address(address.as_str())
         .expect("bus address")
-        .name(MOSD_NAME)
+        .name(MICAD_NAME)
         .expect("well-known name")
         .serve_at(
-            MOSD_PATH,
+            MICAD_PATH,
             FakeMosd {
                 tree: configured_tree(PASSWORD),
                 recorder: recorder.clone(),

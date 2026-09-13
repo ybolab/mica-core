@@ -45,7 +45,7 @@ describe('facts the device could not observe', () => {
         board: { available: true }, release: { available: true }, kernel: { available: true },
         system: { available: true }, daemon: { available: true }, deployment: { available: true },
         uptime: { available: true, seconds: 60 },
-        packages: { available: true, count: 0, mosCount: 0, entries: [] },
+        packages: { available: true, count: 0, micaCount: 0, entries: [] },
       },
       '/api/v1/system/telemetry': { thermal: absent('x'), watchdog: absent('x'), reset: absent('x') },
     })

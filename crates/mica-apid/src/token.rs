@@ -1,7 +1,7 @@
 //! The bearer API token: its wire format, its digest, and the check that
 //! decides whether a presented one is a token this device stores.
 //!
-//! `docs/design/api.md` section 3.2 fixes the format as `mos_<id>_<secret>`,
+//! `docs/design/api.md` section 3.2 fixes the format as `mica_<id>_<secret>`,
 //! an id that is **not** secret beside a secret that is. The id is on the wire
 //! for a mechanical reason: with N tokens stored, an opaque blob forces a hash
 //! of the presented secret and a comparison against all N entries on every
@@ -26,7 +26,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// The wire format's leading field, which is what makes a leaked token
 /// recognisable as one in a log or a paste.
-const SCHEME: &str = "mos";
+const SCHEME: &str = "mica";
 
 /// The separator between the format's three fields.
 ///
@@ -37,7 +37,7 @@ const SEPARATOR: char = '_';
 /// Bytes of `OsRng` behind an id, hex-encoded to 8 characters.
 ///
 /// Section 3.2's prose says "an 8-byte hex `id`" while the worked example
-/// beside it -- `mos_3f2a9c41_...` -- shows eight hex CHARACTERS, which is four
+/// beside it -- `mica_3f2a9c41_...` -- shows eight hex CHARACTERS, which is four
 /// bytes. The model refused to settle it, bounding the id to lowercase hex of
 /// 1..64 characters rather than fixing a width, so both readings validate and
 /// the mint has to choose. **This picks the example: four bytes, eight hex
@@ -230,7 +230,7 @@ mod tests {
     }
 
     /// The mint's own output is the thing the check has to accept, and the
-    /// shape of it is the document's worked example: `mos_<8 hex>_<64 hex>`.
+    /// shape of it is the document's worked example: `mica_<8 hex>_<64 hex>`.
     #[test]
     fn a_minted_token_has_the_documented_shape_and_verifies() {
         let minted = mint(&[]).expect("an empty list leaves every id free");
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(parsed.id.len(), ID_BYTES * 2);
         assert_eq!(parsed.secret.len(), SECRET_BYTES * 2);
         assert_eq!(parsed.id, minted.id);
-        assert_eq!(minted.wire, format!("mos_{}_{}", parsed.id, parsed.secret));
+        assert_eq!(minted.wire, format!("mica_{}_{}", parsed.id, parsed.secret));
         assert!(micad_settings::is_api_token_id(&minted.id));
 
         assert!(verify(&[stored(&minted, "ci-deploy")], &minted.wire));
@@ -308,20 +308,20 @@ mod tests {
     fn nothing_but_the_format_parses() {
         for value in [
             "",
-            "mos",
-            "mos_",
-            "mos_3f2a9c41",
-            "mos_3f2a9c41_",
+            "mica",
+            "mica_",
+            "mica_3f2a9c41",
+            "mica_3f2a9c41_",
             "_3f2a9c41_9d4e",
-            "mos_3f2a9c41_9d4e_extra",
+            "mica_3f2a9c41_9d4e_extra",
             "sess_3f2a9c41_9d4e",
             "MICA_3f2a9c41_9d4e",
             // Uppercase hex is refused rather than folded, for the reason the
             // store refuses it in the digest: one value must have one spelling.
-            "mos_3F2A9C41_9d4e",
-            "mos_3f2a9c41_9D4E",
-            "mos_ci-deploy_9d4e",
-            "mos_3f2a9c41_zzzz",
+            "mica_3F2A9C41_9d4e",
+            "mica_3f2a9c41_9D4E",
+            "mica_ci-deploy_9d4e",
+            "mica_3f2a9c41_zzzz",
         ] {
             assert!(parse(value).is_none(), "{value:?} parsed");
         }
@@ -341,7 +341,7 @@ mod tests {
         assert!(!verify(std::slice::from_ref(&entry), &other.wire));
 
         // The stored entry's own id, carrying somebody else's secret.
-        let forged = format!("mos_{}_{}", entry.id, parse(&other.wire).unwrap().secret);
+        let forged = format!("mica_{}_{}", entry.id, parse(&other.wire).unwrap().secret);
         assert!(!verify(&[entry], &forged));
     }
 
@@ -359,19 +359,19 @@ mod tests {
     #[test]
     fn the_bearer_scheme_is_read_case_insensitively_and_nothing_else_is_read() {
         assert_eq!(
-            bearer_from_headers(&header("Bearer mos_a_b")),
-            Some("mos_a_b")
+            bearer_from_headers(&header("Bearer mica_a_b")),
+            Some("mica_a_b")
         );
         assert_eq!(
-            bearer_from_headers(&header("bearer mos_a_b")),
-            Some("mos_a_b")
+            bearer_from_headers(&header("bearer mica_a_b")),
+            Some("mica_a_b")
         );
         assert_eq!(
-            bearer_from_headers(&header("BEARER mos_a_b")),
-            Some("mos_a_b")
+            bearer_from_headers(&header("BEARER mica_a_b")),
+            Some("mica_a_b")
         );
-        assert_eq!(bearer_from_headers(&header("Basic mos_a_b")), None);
-        assert_eq!(bearer_from_headers(&header("mos_a_b")), None);
+        assert_eq!(bearer_from_headers(&header("Basic mica_a_b")), None);
+        assert_eq!(bearer_from_headers(&header("mica_a_b")), None);
         assert_eq!(bearer_from_headers(&HeaderMap::new()), None);
     }
 }

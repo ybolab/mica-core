@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "mica-ui-pack",
-    about = "Build and inspect deterministic mos UI packages"
+    about = "Build and inspect deterministic mica UI packages"
 )]
 struct Cli {
     #[command(subcommand)]

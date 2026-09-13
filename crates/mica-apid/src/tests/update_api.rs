@@ -28,7 +28,7 @@ fn update_app(update: serde_json::Value) -> (axum::Router, Arc<FakeSettings>, St
 }
 
 #[tokio::test]
-async fn the_state_read_answers_mosd_verbatim_and_requires_a_credential() {
+async fn the_state_read_answers_micad_verbatim_and_requires_a_credential() {
     let seeded = json!({
         "lifecycle": { "state": "ready", "deploymentId": "a".repeat(64) },
         "boot": { "deploymentId": "b".repeat(64), "contentVerified": true },
@@ -360,7 +360,7 @@ const CONFIG_PATH: &str = "/api/v1/update/config";
 /// The write route: administrator authority, the patch forwarded to micad
 /// verbatim, and the saved document answered.
 #[tokio::test]
-async fn the_config_write_takes_a_credential_and_hands_the_patch_to_mosd() {
+async fn the_config_write_takes_a_credential_and_hands_the_patch_to_micad() {
     let (router, fake, token) = update_app(json!({}));
     let patch = json!({ "source": { "channel": "beta" } });
 

@@ -244,10 +244,10 @@ export interface SystemInformation {
   daemon: AvailableFact & { name?: string; version?: string; commit?: string | null }
   packages: AvailableFact & {
     count?: number
-    mosCount?: number
+    micaCount?: number
     malformedRows?: number
     truncated?: boolean
-    entries?: { name: string; version: string; architecture: string; mos: boolean }[]
+    entries?: { name: string; version: string; architecture: string; mica: boolean }[]
   }
   deployment: AvailableFact & {
     id?: string

@@ -62,8 +62,8 @@ test('reads the observed network beside the desired configuration', async ({ pag
 test('restores Chinese and dark appearance preferences', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop appearance contract')
   await page.addInitScript(() => {
-    localStorage.setItem('mos.ui.locale', 'zh-CN')
-    localStorage.setItem('mos.ui.theme', 'dark')
+    localStorage.setItem('mica.ui.locale', 'zh-CN')
+    localStorage.setItem('mica.ui.theme', 'dark')
   })
   await page.goto('./')
 
@@ -188,7 +188,7 @@ test('reports a saved policy, which used to change nothing on the page', async (
 
 test('matches the approved responsive visual baseline', async ({ page }, testInfo) => {
   if (testInfo.project.name === 'tablet') {
-    await page.addInitScript(() => localStorage.setItem('mos.ui.theme', 'dark'))
+    await page.addInitScript(() => localStorage.setItem('mica.ui.theme', 'dark'))
     await page.goto('./applications')
     await page.getByRole('tab', { name: 'Catalog' }).click()
     await expect(page.locator('html')).toHaveClass(/dark/)
@@ -231,16 +231,16 @@ function payload(path: string, method: string): unknown {
   if (path === '/api/v1/meta') return { api: 'v1', settingsSchemaVersion: 4, daemon: 'micad 0.1.0' }
   if (path === '/api/v1/system/info') return {
     machineId: { available: true, id: '4f2e9c1a7b3d4e5f' },
-    board: { available: true, model: 'mos-cm4 rev 2', source: 'device-tree' },
-    kernel: { available: true, release: '6.6.52-mos', version: '#1 SMP' },
-    release: { available: true, name: 'mos', versionId: '2026.08.2', imageVersion: '2026.08.2', prettyName: 'mos 2026.08.2' },
+    board: { available: true, model: 'mica-cm4 rev 2', source: 'device-tree' },
+    kernel: { available: true, release: '6.6.52-mica', version: '#1 SMP' },
+    release: { available: true, name: 'mica', versionId: '2026.08.2', imageVersion: '2026.08.2', prettyName: 'mica 2026.08.2' },
     system: { available: true, version: '2026.08.2', package: 'mica-system', buildDate: '2026-08-19' },
     daemon: { available: true, name: 'micad', version: '0.1.0', commit: 'a3f9c1e' },
-    packages: { available: true, count: 214, mosCount: 12, entries: [] },
+    packages: { available: true, count: 214, micaCount: 12, entries: [] },
     slot: { available: true, booted: 'A', bootname: 'rootfs.0', bootStatus: 'good', primary: true },
     uptime: { available: true, seconds: 1231932 },
   }
-  if (path === '/api/v1/settings/hostname') return 'mos-cm4'
+  if (path === '/api/v1/settings/hostname') return 'mica-cm4'
   if (path === '/api/v1/network') return {
     configured: { eth0: { dhcp: true }, wg0: { kind: 'wireguard', dhcp: false, static: { address: '10.10.0.2/24', dns: [] }, wireguard: { listenPort: 51820, peers: [] } } },
     configuredCount: 2,
@@ -255,7 +255,7 @@ function payload(path: string, method: string): unknown {
   if (path === '/api/v1/ssh/authorized-keys') return { keys: [], notice: 'Every authorized key grants root on this appliance.' }
   if (path === '/api/v1/settings/wifi.client') return { enabled: true, interface: 'wlan0', networks: [] }
   if (path === '/api/v1/wifi/client/networks' || path.endsWith('/peers')) return []
-  if (path === '/api/v1/update') return { lifecycle: { state: 'ready', available: { name: 'mos', version: '2026.09.0', channel: 'stable' }, reboot_gate: { safe: true, reasons: [] }, client: { available: true } }, booted_slot: 'rootfs.0' }
+  if (path === '/api/v1/update') return { lifecycle: { state: 'ready', available: { name: 'mica', version: '2026.09.0', channel: 'stable' }, reboot_gate: { safe: true, reasons: [] }, client: { available: true } }, booted_slot: 'rootfs.0' }
   if (path === '/api/v1/settings/time.ntp.servers') return ['0.pool.ntp.org']
   if (path === '/api/v1/settings/time.timezone') return 'Etc/UTC'
   if (path === '/api/v1/time/status') return {

@@ -83,9 +83,9 @@ fn dbus_daemon() -> PathBuf {
 #[zbus::proxy(
     interface = "com.mica.micad1",
     default_service = "com.mica.micad",
-    default_path = "/com/mos/micad"
+    default_path = "/com/mica/micad"
 )]
-trait Mosd {
+trait Micad {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
     fn get_state(&self, path: &str) -> zbus::Result<String>;
     fn forget_service(&self, bus_name: &str) -> zbus::Result<()>;
@@ -163,7 +163,7 @@ struct Harness {
     /// string and make every log assertion below vacuous.
     log: Arc<Mutex<String>>,
     _bus: ChildGuard,
-    _mosd: ChildGuard,
+    _micad: ChildGuard,
     _dir: tempfile::TempDir,
 }
 
@@ -174,7 +174,7 @@ impl Harness {
         Self::start_with_scan(true).await
     }
 
-    /// The same, with `MOSD_SCAN` left unset so that dry-run's default decides
+    /// The same, with `MICAD_SCAN` left unset so that dry-run's default decides
     /// — which is what the daemon does in production under dry-run.
     async fn start_without_scan() -> Self {
         Self::start_with_scan(false).await
@@ -206,22 +206,22 @@ impl Harness {
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
 
-        // MOSD_DRY_RUN=1 is a hard safety requirement: production reconcilers
+        // MICAD_DRY_RUN=1 is a hard safety requirement: production reconcilers
         // and the systemd power control must never be constructed in a test.
-        // MOSD_SCAN=1 turns the one thing under test back on — the scan is
+        // MICAD_SCAN=1 turns the one thing under test back on — the scan is
         // passive and speaks only to the private bus named by
         // DBUS_SESSION_BUS_ADDRESS, so it reaches nothing on the host.
         let mut command = Command::new(env!("CARGO_BIN_EXE_micad"));
         command
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
-            .env("MOSD_BUS", "session")
-            .env("MOSD_DRY_RUN", "1")
-            .env("MOSD_SETTINGS_PATH", &settings_path)
-            .env("MOSD_CONFIG_DIR", &config_dir)
-            .env("MOSD_SHADOW_PATH", &shadow_path)
+            .env("MICAD_BUS", "session")
+            .env("MICAD_DRY_RUN", "1")
+            .env("MICAD_SETTINGS_PATH", &settings_path)
+            .env("MICAD_CONFIG_DIR", &config_dir)
+            .env("MICAD_SHADOW_PATH", &shadow_path)
             .stdout(Stdio::piped());
         if scan {
-            command.env("MOSD_SCAN", "1");
+            command.env("MICAD_SCAN", "1");
         }
         let mut micad_child = command.spawn().expect("spawn micad");
         // Drained on a thread, both so the daemon's log can be asserted on and
@@ -249,7 +249,7 @@ impl Harness {
             connection,
             log,
             _bus: bus,
-            _mosd: micad,
+            _micad: micad,
             _dir: dir,
         };
 
@@ -264,7 +264,7 @@ impl Harness {
 
         // The safety precondition, asserted before anything else runs: the
         // daemon under test is in dry-run, so no reconciler and no systemd
-        // power control was ever constructed. If someone drops MOSD_DRY_RUN
+        // power control was ever constructed. If someone drops MICAD_DRY_RUN
         // from the spawn above, every test here fails at its first line.
         assert_eq!(
             proxy.get_state("dry_run").await.expect("dry_run state"),
@@ -274,8 +274,8 @@ impl Harness {
         harness
     }
 
-    async fn proxy(&self) -> MosdProxy<'_> {
-        MosdProxy::new(&self.connection)
+    async fn proxy(&self) -> MicadProxy<'_> {
+        MicadProxy::new(&self.connection)
             .await
             .expect("com.mica.micad1 proxy")
     }
@@ -473,7 +473,7 @@ async fn a_vanished_service_is_retained_and_only_then_forgettable() {
     let introspectable = zbus::fdo::IntrospectableProxy::builder(&harness.connection)
         .destination("com.mica.micad")
         .expect("destination")
-        .path("/com/mos/micad")
+        .path("/com/mica/micad")
         .expect("path")
         .build()
         .await
@@ -678,7 +678,7 @@ async fn ext_is_an_ordinary_direct_class() {
     assert_eq!(entry["instance"], 9, "{entry:#}");
 }
 
-/// The dry-run gate: with `MOSD_SCAN` unset, a dry-run daemon constructs no
+/// The dry-run gate: with `MICAD_SCAN` unset, a dry-run daemon constructs no
 /// scan at all — no subscription, no probe, and no registry to forget from.
 ///
 /// The negative that matters is the last one, and it is the deterministic one:

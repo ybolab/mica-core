@@ -170,7 +170,7 @@ by name.
 
 `micad.service` declares `RequiresMountsFor=/var/lib/mica /mica`, and both paths
 are bind-mount targets: `var-lib-mica.mount` and the `/var/lib/mica` mountpoint
-directory are two halves of one mechanism, as are `mos.mount` and `/mica`, so
+directory are two halves of one mechanism, as are `mica.mount` and `/mica`, so
 one package owns all four. That package is `mica-system`
 (`rootfs/packages-src/system`), and `micad` names it in `Depends` rather than
 shipping the directories itself.
@@ -178,7 +178,7 @@ shipping the directories itself.
 `/mica` joined that line with PLAN-070 §5.2: system configuration lives in
 `/mica/config` on DATA, so a micad that started before the mount would come up on
 schema defaults. The ordering also puts micad after `mica-data-layout.service`,
-which runs `Before=mos.mount` and is what creates `/mica/config` at its declared
+which runs `Before=mica.mount` and is what creates `/mica/config` at its declared
 `0700`.
 
 The dependency is UNVERSIONED -- `mica-system` is not built from this

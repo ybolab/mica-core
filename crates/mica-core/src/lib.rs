@@ -1,33 +1,33 @@
 //! micad — management-plane daemon.
 //!
 //! Owns the settings tree (persisted via `micad-settings`) and a live-state
-//! tree, exposed on D-Bus as `com.mica.micad` / `/com/mos/micad` /
+//! tree, exposed on D-Bus as `com.mica.micad` / `/com/mica/micad` /
 //! `com.mica.micad1`. Configuration comes from the environment:
 //!
-//! - `MOSD_SETTINGS_PATH` — settings file (default
+//! - `MICAD_SETTINGS_PATH` — settings file (default
 //!   `/var/lib/mica/settings.toml`).
-//! - `MOSD_BUS` — `system` (default) or `session`.
-//! - `MOSD_SHADOW_PATH` — the shadow file a transient root password is written
-//!   into (default `/etc/shadow`, a symlink onto STATE on the mos image); the
+//! - `MICAD_BUS` — `system` (default) or `session`.
+//! - `MICAD_SHADOW_PATH` — the shadow file a transient root password is written
+//!   into (default `/etc/shadow`, a symlink onto STATE on the mica image); the
 //!   sshd reconciler honours the same variable.
-//! - `MOSD_META_MANIFEST_PATH` — the baked update configuration
+//! - `MICAD_META_MANIFEST_PATH` — the baked update configuration
 //!   (default `/usr/share/mica/meta/updates/manifest.json`, inside the
 //!   read-only root); layer 1 of PLAN-070 §5.1. Read once at startup, since
 //!   nothing on the device can write it. See
 //!   [`micad_settings::configuration`].
-//! - `MOSD_UPDATE_POLICY_PATH` — the operator document layer 1's defaults are
+//! - `MICAD_UPDATE_POLICY_PATH` — the operator document layer 1's defaults are
 //!   overridden by (default `/mica/config/updates.json`, on DATA). apid reads
 //!   the same two documents through the same resolver, so a status route and
 //!   the update subsystem cannot disagree. See [`update_policy`].
-//! - `MOSD_PROVISIONING_ROOT` — where the offline provisioning transport
+//! - `MICAD_PROVISIONING_ROOT` — where the offline provisioning transport
 //!   stages the media it found (default `/run/mica/provisioning`); tests point
 //!   it at a temporary directory. See [`provisioning_doc`].
-//! - `MOSD_DRY_RUN` — when `1`, first-boot provisioning is skipped, no
+//! - `MICAD_DRY_RUN` — when `1`, first-boot provisioning is skipped, no
 //!   reconcilers or service scan are constructed, power actions go to a no-op
 //!   control, and the live-state root carries `{"dry_run": true}`; used by
 //!   tests so the daemon never touches its host.
-//! - `MOSD_SCAN` — a one-way test hook over the service scan ([`scan`]): `1`
-//!   constructs the scan under `MOSD_DRY_RUN=1`, which alone constructs none.
+//! - `MICAD_SCAN` — a one-way test hook over the service scan ([`scan`]): `1`
+//!   constructs the scan under `MICAD_DRY_RUN=1`, which alone constructs none.
 //!   It can only turn the scan on; in production the scan is constructed
 //!   unconditionally and the variable ignored. The scan is passive — a match
 //!   rule and read-only bus calls writing only the in-RAM live-state tree — so
@@ -158,17 +158,17 @@ async fn serve() -> anyhow::Result<()> {
         )
         .init();
 
-    let settings_path = std::env::var("MOSD_SETTINGS_PATH")
+    let settings_path = std::env::var("MICAD_SETTINGS_PATH")
         .unwrap_or_else(|_| micad_settings::DEFAULT_PATH.to_string());
     // The `/mica/config/` namespace. Relocatable for the same reason the
     // settings path is — the bus tests run a real daemon against a temporary
     // tree — and by a variable of its own rather than derived from
     // `MICA_DATA_ROOT`, because what micad reads is the `/mica` BIND and what
     // `mica-data-layout` and `reset.rs` write is the pool underneath it.
-    let config_dir = std::env::var("MOSD_CONFIG_DIR")
+    let config_dir = std::env::var("MICAD_CONFIG_DIR")
         .unwrap_or_else(|_| micad_settings::DEFAULT_CONFIG_DIR.to_string());
-    let bus_kind = std::env::var("MOSD_BUS").unwrap_or_else(|_| "system".to_string());
-    let dry_run = std::env::var("MOSD_DRY_RUN").is_ok_and(|value| value == "1");
+    let bus_kind = std::env::var("MICAD_BUS").unwrap_or_else(|_| "system".to_string());
+    let dry_run = std::env::var("MICAD_DRY_RUN").is_ok_and(|value| value == "1");
 
     let store = Store::new(&settings_path, &config_dir);
     // **Fail closed on the medium** (PLAN-070 §5.2.6). System configuration
@@ -339,13 +339,13 @@ async fn serve() -> anyhow::Result<()> {
     // running no scan answers `ForgetService` with "there is no registry"
     // rather than with an empty one it would never fill.
     //
-    // Asymmetric on purpose: `MOSD_SCAN` can only ever turn the scan ON, for
+    // Asymmetric on purpose: `MICAD_SCAN` can only ever turn the scan ON, for
     // `tests/scan.rs`, which must run under dry-run and so cannot otherwise
     // reach it. A symmetric form reads tidier but would also let it switch the
-    // scan OFF, so one stray or mistyped variable (`MOSD_SCAN=0`,
-    // `MOSD_SCAN=true`) would silently disable the service registry on a real
+    // scan OFF, so one stray or mistyped variable (`MICAD_SCAN=0`,
+    // `MICAD_SCAN=true`) would silently disable the service registry on a real
     // device, with nothing left running to report that it had.
-    let scan_enabled = service_scan_enabled(dry_run, std::env::var("MOSD_SCAN").ok().as_deref());
+    let scan_enabled = service_scan_enabled(dry_run, std::env::var("MICAD_SCAN").ok().as_deref());
     let registry = scan_enabled.then(|| Arc::new(scan::Registry::new()));
     tracing::info!(
         settings_path,
@@ -366,7 +366,7 @@ async fn serve() -> anyhow::Result<()> {
     // Read under dry-run too -- it is a read of one file in /usr/share and
     // touches nothing -- so a test daemon reports the same shape a device
     // does, with the error saying the host has no baked manifest.
-    let meta_path = std::env::var("MOSD_META_MANIFEST_PATH").map_or_else(
+    let meta_path = std::env::var("MICAD_META_MANIFEST_PATH").map_or_else(
         |_| PathBuf::from(micad_settings::configuration::DEFAULT_MANIFEST_PATH),
         PathBuf::from,
     );
@@ -380,7 +380,7 @@ async fn serve() -> anyhow::Result<()> {
     }
     state.insert("meta".to_string(), meta.to_json());
 
-    let mut service = bus::MosdService::new(
+    let mut service = bus::MicadService::new(
         store,
         settings,
         reconcilers,
@@ -402,7 +402,7 @@ async fn serve() -> anyhow::Result<()> {
         // Same reasoning again: the rotation writes a private key onto STATE
         // and deletes a kernel device, so a dry-run daemon is never given one.
         service = service.with_wireguard(Arc::new(reconciler::network::KeyRotation::production()));
-        let policy_path = std::env::var("MOSD_UPDATE_POLICY_PATH").map_or_else(
+        let policy_path = std::env::var("MICAD_UPDATE_POLICY_PATH").map_or_else(
             |_| PathBuf::from(update_policy::DEFAULT_POLICY_PATH),
             PathBuf::from,
         );
@@ -428,7 +428,7 @@ async fn serve() -> anyhow::Result<()> {
     let builder = match bus_kind.as_str() {
         "system" => zbus::connection::Builder::system()?,
         "session" => zbus::connection::Builder::session()?,
-        other => anyhow::bail!("MOSD_BUS must be `system` or `session`, got `{other}`"),
+        other => anyhow::bail!("MICAD_BUS must be `system` or `session`, got `{other}`"),
     };
     let connection = builder
         .serve_at(bus::OBJECT_PATH, service)?
@@ -443,9 +443,9 @@ async fn serve() -> anyhow::Result<()> {
     if let Some(registry) = registry {
         let service_ref = connection
             .object_server()
-            .interface::<_, bus::MosdService>(bus::OBJECT_PATH)
+            .interface::<_, bus::MicadService>(bus::OBJECT_PATH)
             .await
-            .context("look up served MosdService")?;
+            .context("look up served MicadService")?;
         tokio::spawn(scan::run(connection.clone(), registry, service_ref));
     }
     // The automatic update driver: the check cadence under `policy = check`,
@@ -457,9 +457,9 @@ async fn serve() -> anyhow::Result<()> {
     if !dry_run {
         let service_ref = connection
             .object_server()
-            .interface::<_, bus::MosdService>(bus::OBJECT_PATH)
+            .interface::<_, bus::MicadService>(bus::OBJECT_PATH)
             .await
-            .context("look up served MosdService")?;
+            .context("look up served MicadService")?;
         tokio::spawn(update_auto::run(Arc::new(bus::BusRoutes::new(
             update_handle,
             service_ref,
@@ -482,7 +482,7 @@ async fn serve() -> anyhow::Result<()> {
 /// Directory holding STATE-backed data for a settings file at `settings_path`.
 ///
 /// The secrets live beside the settings file, so tests that redirect
-/// `MOSD_SETTINGS_PATH` into a temporary directory redirect the secrets with
+/// `MICAD_SETTINGS_PATH` into a temporary directory redirect the secrets with
 /// it and never touch the host's `/var/lib/mica`.
 fn state_dir_for(settings_path: &str) -> PathBuf {
     Path::new(settings_path)
@@ -495,9 +495,9 @@ fn state_dir_for(settings_path: &str) -> PathBuf {
 }
 
 /// Whether the service scan ([`scan`]) is constructed, from `dry_run` and the
-/// raw value of `MOSD_SCAN` (`None` when it is unset).
+/// raw value of `MICAD_SCAN` (`None` when it is unset).
 ///
-/// One-way by construction. Production is unconditionally on; `MOSD_SCAN` is
+/// One-way by construction. Production is unconditionally on; `MICAD_SCAN` is
 /// read only to lift dry-run's suppression, so no value of it can take the
 /// service registry away from a device that would otherwise have one.
 fn service_scan_enabled(dry_run: bool, scan_override: Option<&str>) -> bool {
@@ -606,11 +606,11 @@ mod tests {
         assert!(!line.contains('\n'), "got {line:?}");
     }
 
-    /// The pin on the asymmetry: in production `MOSD_SCAN` is inert. A gate
-    /// that read the variable symmetrically would let `MOSD_SCAN=0` — or any
+    /// The pin on the asymmetry: in production `MICAD_SCAN` is inert. A gate
+    /// that read the variable symmetrically would let `MICAD_SCAN=0` — or any
     /// typo — switch the service registry off on a real device.
     #[test]
-    fn production_ignores_mosd_scan_entirely() {
+    fn production_ignores_micad_scan_entirely() {
         for value in [
             None,
             Some("1"),
@@ -621,8 +621,8 @@ mod tests {
         ] {
             assert!(
                 service_scan_enabled(false, value),
-                "production must scan whatever MOSD_SCAN holds; \
-                 got service_scan=false for MOSD_SCAN={value:?}"
+                "production must scan whatever MICAD_SCAN holds; \
+                 got service_scan=false for MICAD_SCAN={value:?}"
             );
         }
     }
@@ -634,15 +634,15 @@ mod tests {
         for value in [None, Some("0"), Some(""), Some("true"), Some("yes")] {
             assert!(
                 !service_scan_enabled(true, value),
-                "dry-run must construct no scan unless MOSD_SCAN is exactly `1`; \
-                 got service_scan=true for MOSD_SCAN={value:?}"
+                "dry-run must construct no scan unless MICAD_SCAN is exactly `1`; \
+                 got service_scan=true for MICAD_SCAN={value:?}"
             );
         }
     }
 
     /// The one combination that turns the scan back on.
     #[test]
-    fn dry_run_plus_mosd_scan_one_constructs_the_scan() {
+    fn dry_run_plus_micad_scan_one_constructs_the_scan() {
         assert!(service_scan_enabled(true, Some("1")));
     }
 }

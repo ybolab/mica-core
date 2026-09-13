@@ -212,7 +212,7 @@ fn preserves_data_modes_and_materializes_runtime_directories() {
     }
     assert_eq!(
         fs::read(target.path().join("etc/initrd-release")).unwrap(),
-        b"ID=mos-exitrd\n"
+        b"ID=mica-exitrd\n"
     );
 }
 

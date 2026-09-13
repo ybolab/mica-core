@@ -1,11 +1,11 @@
 Package: mica-sftp-server
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: net
 Priority: optional
 Depends: ${shlibs:Depends}
-Description: mos SFTP server
+Description: mica SFTP server
  /usr/lib/sftp-server, the program dropbear runs for the sftp subsystem: an
  SFTP version 3 server on stdin and stdout, running as the logged-in user with
  no privilege handling of its own. It serves what OpenSSH's sftp and scp (which

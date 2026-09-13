@@ -87,9 +87,9 @@ fn error_name(err: &zbus::Error) -> &str {
 #[zbus::proxy(
     interface = "com.mica.micad1",
     default_service = "com.mica.micad",
-    default_path = "/com/mos/micad"
+    default_path = "/com/mica/micad"
 )]
-trait Mosd {
+trait Micad {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
     fn set_settings(&self, path: &str, value_json: &str) -> zbus::Result<String>;
     fn get_task(&self, id: &str) -> zbus::Result<String>;
@@ -139,23 +139,23 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     let shadow_path = dir.path().join("shadow");
     let marker_path = dir.path().join("transient-root-password");
     std::fs::write(&shadow_path, SHADOW)?;
-    // MOSD_DRY_RUN=1 is a hard safety requirement: production reconcilers
+    // MICAD_DRY_RUN=1 is a hard safety requirement: production reconcilers
     // must never be constructed in tests.
-    let _mosd_guard = ChildGuard(
+    let _micad_guard = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_micad"))
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
-            .env("MOSD_BUS", "session")
-            .env("MOSD_DRY_RUN", "1")
-            .env("MOSD_SETTINGS_PATH", &settings_path)
-            .env("MOSD_CONFIG_DIR", &config_dir)
-            .env("MOSD_SHADOW_PATH", &shadow_path)
+            .env("MICAD_BUS", "session")
+            .env("MICAD_DRY_RUN", "1")
+            .env("MICAD_SETTINGS_PATH", &settings_path)
+            .env("MICAD_CONFIG_DIR", &config_dir)
+            .env("MICAD_SHADOW_PATH", &shadow_path)
             .spawn()?,
     );
 
     let connection = zbus::connection::Builder::address(address.as_str())?
         .build()
         .await?;
-    let proxy = MosdProxy::new(&connection).await?;
+    let proxy = MicadProxy::new(&connection).await?;
 
     // Wait for the daemon to claim the well-known name.
     let defaults = tokio::time::timeout(Duration::from_secs(10), async {
@@ -168,7 +168,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     })
     .await?;
     let defaults: serde_json::Value = serde_json::from_str(&defaults)?;
-    assert_eq!(defaults["hostname"], "mos");
+    assert_eq!(defaults["hostname"], "mica");
     // No tree-wide `schema_version` any more: PLAN-070 §5.2.3 put the version
     // on each document, so the addressed tree carries none at all.
     assert!(defaults.get("schema_version").is_none());
@@ -256,7 +256,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     // Power actions. Assert the safety precondition FIRST: the daemon under
     // test must be in dry-run, where its PowerControl is the no-op one and
     // `Systemd` — the only thing that can reach the host system bus — is never
-    // constructed. If someone drops MOSD_DRY_RUN from the spawn above, this
+    // constructed. If someone drops MICAD_DRY_RUN from the spawn above, this
     // fails before a single power method is invoked rather than after.
     let dry_run = proxy.get_state("dry_run").await?;
     assert_eq!(
@@ -293,7 +293,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
     // read the interface back out of the daemon instead of trusting the rename.
     let introspectable = zbus::fdo::IntrospectableProxy::builder(&connection)
         .destination("com.mica.micad")?
-        .path("/com/mos/micad")?
+        .path("/com/mica/micad")?
         .build()
         .await?;
     let xml = introspectable.introspect().await?;
@@ -478,7 +478,7 @@ async fn bus_roundtrip() -> anyhow::Result<()> {
         let reply: Result<String, zbus::Error> = connection
             .call_method(
                 Some("com.mica.micad"),
-                "/com/mos/micad",
+                "/com/mica/micad",
                 Some("com.mica.micad1"),
                 member,
                 &(),

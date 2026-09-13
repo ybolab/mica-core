@@ -3,7 +3,7 @@
 //!
 //! Two renders, one unit. `time.ntp.servers` becomes a `[Time]` drop-in under
 //! `/run/systemd/timesyncd.conf.d/`, beside — never inside — the pinned base
-//! policy the image ships in `/etc/systemd/timesyncd.conf.d/50-mos.conf`:
+//! policy the image ships in `/etc/systemd/timesyncd.conf.d/50-mica.conf`:
 //! polling, retry and saved-clock intervals are PLAN-044 base policy, and
 //! nothing here reads or writes them. `/run` and not STATE because the file is
 //! derived entirely from the settings tree and re-rendered before the unit is
@@ -39,9 +39,9 @@ use crate::fswrite::write_config;
 /// The one unit this reconciler converges.
 const TIMESYNCD_UNIT: &str = "systemd-timesyncd.service";
 /// Where the managed server list is rendered. `60-` so it sorts after the
-/// shipped `50-mos.conf` and under a name the read-only `/etc` copy cannot
+/// shipped `50-mica.conf` and under a name the read-only `/etc` copy cannot
 /// shadow (drop-ins of the SAME name resolve to `/etc` first).
-const DEFAULT_SERVERS_PATH: &str = "/run/systemd/timesyncd.conf.d/60-mos-servers.conf";
+const DEFAULT_SERVERS_PATH: &str = "/run/systemd/timesyncd.conf.d/60-mica-servers.conf";
 /// Where the presentation timezone is published for on-device consumers.
 const DEFAULT_TIMEZONE_PATH: &str = "/run/mica/timezone";
 /// Where zone files live, for the reconcile-time existence check.
@@ -112,7 +112,7 @@ fn render_servers(time: &TimeSettings) -> String {
     let mut out = String::from(
         "# Managed NTP servers, rendered by micad from `time.ntp.servers`\n\
          # (docs/design/time.md). The pinned base sync policy lives in\n\
-         # /etc/systemd/timesyncd.conf.d/50-mos.conf and is never written here.\n\
+         # /etc/systemd/timesyncd.conf.d/50-mica.conf and is never written here.\n\
          [Time]\n",
     );
     if !time.ntp.servers.is_empty() {
@@ -247,7 +247,7 @@ mod tests {
     /// What `apply` renders for a configured server list.
     const GOLDEN_SERVERS: &str = "# Managed NTP servers, rendered by micad from `time.ntp.servers`\n\
          # (docs/design/time.md). The pinned base sync policy lives in\n\
-         # /etc/systemd/timesyncd.conf.d/50-mos.conf and is never written here.\n\
+         # /etc/systemd/timesyncd.conf.d/50-mica.conf and is never written here.\n\
          [Time]\nNTP=0.pool.ntp.org 192.0.2.7\n";
 
     fn settings(servers: &[&str], timezone: &str) -> Settings {
@@ -265,8 +265,8 @@ mod tests {
     /// Reconciler rendering into directories that do not exist yet, over a
     /// fixture zoneinfo tree carrying exactly `UTC` and `Europe/Berlin`.
     fn fixture(dir: &Path, active: &str) -> (TimeReconciler<MockUnitControl>, PathBuf, PathBuf) {
-        let servers = dir.join("timesyncd.conf.d").join("60-mos-servers.conf");
-        let timezone = dir.join("mos").join("timezone");
+        let servers = dir.join("timesyncd.conf.d").join("60-mica-servers.conf");
+        let timezone = dir.join("mica").join("timezone");
         let zoneinfo = dir.join("zoneinfo");
         std::fs::create_dir_all(zoneinfo.join("Europe")).unwrap();
         std::fs::write(zoneinfo.join("UTC"), "TZif").unwrap();

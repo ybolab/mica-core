@@ -62,7 +62,7 @@ export function AppShell() {
             <span className="logo-mark">m</span>
             <span className="flex min-w-0 flex-col leading-tight">
               <strong className="text-sm font-semibold">{t('shell.product')}</strong>
-              <small className="truncate font-mono text-xs text-chrome-muted">{hostname.data ?? 'mos'}</small>
+              <small className="truncate font-mono text-xs text-chrome-muted">{hostname.data ?? 'mica'}</small>
             </span>
           </Link>
           <nav className="hidden flex-none justify-center gap-0.5 md:flex" aria-label={t('shell.navigationLabel')}>
@@ -109,7 +109,7 @@ export function AppShell() {
                     <span className="logo-mark bg-primary text-primary-foreground">m</span>
                     <span className="flex min-w-0 flex-col leading-tight">
                       <strong className="text-sm font-semibold">{t('shell.product')}</strong>
-                      <small className="truncate font-mono text-xs text-muted-foreground">{hostname.data ?? 'mos'}</small>
+                      <small className="truncate font-mono text-xs text-muted-foreground">{hostname.data ?? 'mica'}</small>
                     </span>
                   </div>
                   <SheetClose render={<Button variant="ghost" size="icon" aria-label={t('common.actions.close')} />}><X /></SheetClose>

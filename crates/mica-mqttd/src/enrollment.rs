@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 use crate::topic::Application;
 
 /// The management service is never an MQTT application-data source.
-const MOSD_SERVICE: &str = "com.mica.micad";
+const MICAD_SERVICE: &str = "com.mica.micad";
 
 /// The exact services admitted to MQTT.
 #[derive(Debug, Clone, Default)]
@@ -25,7 +25,7 @@ impl Enrollment {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid mos service name or for
+    /// Returns an error for an invalid mica service name or for
     /// `com.mica.micad`, which is structurally excluded from MQTT even if a
     /// package accidentally creates a manifest with that name.
     pub fn from_names<I, S>(names: I) -> anyhow::Result<Self>
@@ -36,9 +36,9 @@ impl Enrollment {
         let mut applications = BTreeMap::new();
         for name in names {
             let name = name.as_ref();
-            if name == MOSD_SERVICE {
+            if name == MICAD_SERVICE {
                 bail!(
-                    "{MOSD_SERVICE} is the local management service and cannot be enrolled in MQTT"
+                    "{MICAD_SERVICE} is the local management service and cannot be enrolled in MQTT"
                 );
             }
             let application = Application::from_enrollment(name)

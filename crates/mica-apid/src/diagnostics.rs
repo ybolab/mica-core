@@ -199,7 +199,7 @@ fn schema() -> Rule {
     ]);
     let packages = obj(vec![
         ("count", S),
-        ("mosCount", S),
+        ("micaCount", S),
         ("malformedRows", S),
         ("truncated", S),
         (
@@ -208,7 +208,7 @@ fn schema() -> Rule {
                 ("name", S),
                 ("version", S),
                 ("architecture", S),
-                ("mos", S),
+                ("mica", S),
             ])),
         ),
     ]);
@@ -1353,12 +1353,12 @@ mod tests {
             "release": {
                 "board": { "available": true, "model": "Vendor CX3576", "source": "devicetree" },
                 "release": { "available": true, "id": "debian", "prettyName": "Debian 13" },
-                "kernel": { "available": true, "release": "6.1.115-mos", "version": "#1 SMP" },
+                "kernel": { "available": true, "release": "6.1.115-mica", "version": "#1 SMP" },
             },
             "system": {
                 "machineId": { "available": true, "id": "0123456789abcdef0123456789abcdef" },
                 "board": { "available": true, "model": "Vendor CX3576", "source": "devicetree" },
-                "kernel": { "available": true, "release": "6.1.115-mos", "version": "#1 SMP" },
+                "kernel": { "available": true, "release": "6.1.115-mica", "version": "#1 SMP" },
                 "release": { "available": true, "id": "debian" },
                 "system": {
                     "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "micad",
@@ -1367,9 +1367,9 @@ mod tests {
                     "fileEpoch": { "available": true, "epoch": 1577836800, "date": "2020-01-01T00:00:00Z" },
                 },
                 "daemon": { "name": "micad", "version": "0.1.0", "commit": "00b674ec0ffe" },
-                "packages": { "available": true, "count": 2, "mosCount": 1, "malformedRows": 0, "truncated": false,
-                    "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true },
-                                { "name": "systemd", "version": "257.7-1", "architecture": "arm64", "mos": false }] },
+                "packages": { "available": true, "count": 2, "micaCount": 1, "malformedRows": 0, "truncated": false,
+                    "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mica": true },
+                                { "name": "systemd", "version": "257.7-1", "architecture": "arm64", "mica": false }] },
                 "deployment": { "available": true, "id": "a".repeat(64), "confirmed": true },
                 "uptime": { "available": true, "seconds": 4242 },
                 // Unclassified: a member no schema names must not ship.
@@ -1406,7 +1406,7 @@ mod tests {
                             "space": { "totalBytes": 1000, "usedBytes": 850, "freeBytes": 100, "reservedBytes": 50, "usedPercent": 85 }, "pressure": "warning",
                             "check": { "recorded": true, "unit": "systemd-fsck@dev-mmcblk0p11.service", "activeState": "inactive", "result": "success", "exitStatus": 0 } }],
                 "namespaces": { "sharedCapacityTier": "data", "detail": "one pool",
-                    "binds": [{ "name": "mos", "mount": "/mica", "source": "/mnt/data/mica", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
+                    "binds": [{ "name": "mica", "mount": "/mica", "source": "/mnt/data/mica", "owner": "system", "readiness": "ready", "mounted": true, "device": "/dev/mmcblk0p11", "readOnly": false, "sourceIsDirectory": true, "probe": { "attempted": true, "passed": true } }] },
                 "media": [{ "name": "mmcblk0", "kind": "emmc", "sizeBytes": 32000000000u64, "model": "DG4032", "rotational": false,
                             "health": { "supported": true, "source": "sysfs", "raw": { "lifeTime": "0x01 0x01", "preEolInfo": "0x01" }, "lifetimeEstimates": [{ "raw": "0x01", "usedPercentMin": 0, "usedPercentMax": 10 }], "preEol": "normal" } }],
                 "policy": { "warningPercent": 80, "warningClearPercent": 75, "criticalPercent": 90, "criticalClearPercent": 85, "watchedTiers": ["data"] },
@@ -1511,7 +1511,7 @@ mod tests {
             ("/schemaVersion", json!(5)),
             ("/collectedAt", json!("2026-09-02T00:00:00Z")),
             ("/release/board/model", json!("Vendor CX3576")),
-            ("/release/kernel/release", json!("6.1.115-mos")),
+            ("/release/kernel/release", json!("6.1.115-mica")),
             (
                 "/system/machineId/id",
                 json!("0123456789abcdef0123456789abcdef"),
@@ -1730,7 +1730,7 @@ mod tests {
     /// snapshot versioned, redacted and carrying the collection record.
     #[tokio::test]
     async fn a_collection_over_answering_sources_is_complete() {
-        let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
+        let fake = FakeSettings::new(json!({ "hostname": "mica", "network": {}, "access": {} }));
         fake.set_state_entry("update", json!({ "boot": {"deploymentId":"a".repeat(64)} }));
         fake.set_state_entry("health", json!({ "var": { "status": "ok", "detail": "" } }));
         let collected = Collector::new(&fake).collect().await;
@@ -1766,18 +1766,18 @@ mod tests {
 
     #[tokio::test]
     async fn the_snapshot_keeps_native_deployment_evidence_and_drops_source_credentials() {
-        let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
+        let fake = FakeSettings::new(json!({ "hostname": "mica", "network": {}, "access": {} }));
         let id = "a".repeat(64);
         fake.set_system_info(json!({
             "deployment": {"available":true,"id":id,"generation":7,"kernelId":"b".repeat(64),
                 "rootfsId":"c".repeat(64),"confirmed":true,"contentVerified":true,"secureBoot":false,"bootVerified":true,"backend":"uboot-fit"}
         }));
         fake.set_state_entry("update", json!({
-            "boot":{"deploymentId":id,"entry":format!("mos-{id}.conf"),"kernelId":"b".repeat(64),
+            "boot":{"deploymentId":id,"entry":format!("mica-{id}.conf"),"kernelId":"b".repeat(64),
                 "rootfsId":"c".repeat(64),"contentVerified":true,"secureBoot":false,"bootVerified":true,"backend":"uboot-fit"},
             "state":{"highestGeneration":8,"current":id,"fallback":"d".repeat(64),
                 "candidate":null,"failed":["e".repeat(64)]},
-            "deployments":[{"id":id,"file":format!("mos-{id}.conf"),"generation":7,
+            "deployments":[{"id":id,"file":format!("mica-{id}.conf"),"generation":7,
                 "triesLeft":null,"version":"1.7.0","kernelId":"b".repeat(64),
                 "kernelRelease":"6.12.107","rootfsId":"c".repeat(64)}],
             "rollback":{"permitted":true,"target":"d".repeat(64)},
@@ -1810,7 +1810,7 @@ mod tests {
     /// asked, and the snapshot is still produced — within the bound.
     #[tokio::test]
     async fn slow_sources_are_abandoned_within_the_deadline() {
-        let fake = FakeSettings::new(json!({ "hostname": "mos", "network": {}, "access": {} }));
+        let fake = FakeSettings::new(json!({ "hostname": "mica", "network": {}, "access": {} }));
         fake.set_diagnostic_delay(Duration::from_millis(300));
         let collector = Collector::new(&fake)
             .with_bounds(Duration::from_millis(500), Duration::from_millis(200));
@@ -1932,7 +1932,7 @@ mod tests {
         }
 
         let api = HalfFailing(FakeSettings::new(
-            json!({ "hostname": "mos", "network": {}, "access": {} }),
+            json!({ "hostname": "mica", "network": {}, "access": {} }),
         ));
         let collected = Collector::new(&api).collect().await;
         assert_eq!(

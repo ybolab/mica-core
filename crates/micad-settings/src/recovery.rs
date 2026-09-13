@@ -37,7 +37,7 @@ use crate::model::ResetTier;
 /// Where a board's declaration is read from on the device.
 ///
 /// **Absent means the board declares none.** A board with no implemented
-/// physical action ships no declaration, which is the state both mos boards
+/// physical action ships no declaration, which is the state both mica boards
 /// are in; a board whose BSP implements one renders exactly the
 /// `BOARD_RECOVERY_ACTIONS` / `RECOVERY_*` lines of its `boards/<board>/board.env`
 /// here, so the file on the device is a subset of the board definition the
@@ -56,11 +56,11 @@ pub const CMDLINE_PATH_ENV: &str = "MICA_RECOVERY_CMDLINE_PATH";
 
 /// The kernel command-line parameter a board's mechanism sets.
 ///
-/// `mos.recovery=<intent>`. A bootloader menu entry that appends it is the
+/// `mica.recovery=<intent>`. A bootloader menu entry that appends it is the
 /// industry-standard shape this interface expects; nothing bespoke is invented
 /// at the system layer, and a board free to choose its own parameter would
 /// make the system layer per-board.
-pub const INTENT_PARAMETER: &str = "mos.recovery";
+pub const INTENT_PARAMETER: &str = "mica.recovery";
 
 /// The board key listing the actions a board implements.
 pub const ACTIONS_KEY: &str = "BOARD_RECOVERY_ACTIONS";
@@ -204,7 +204,7 @@ pub struct RecoveryAction {
     /// audit trail records, because "which declared action produced it" is the
     /// question an audit of a reset has to answer.
     pub name: String,
-    /// The `mos.recovery=` value the board's mechanism sets.
+    /// The `mica.recovery=` value the board's mechanism sets.
     pub intent: String,
     /// What the presence assertion is called: the mechanism the reader
     /// validates and the suffix the audit event carries.
@@ -234,7 +234,7 @@ pub struct RecoveryAction {
 /// broken".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declaration {
-    /// The board declares no physical recovery action. Both mos boards.
+    /// The board declares no physical recovery action. Both mica boards.
     None,
     /// The board declares these, in file order.
     Actions(Vec<RecoveryAction>),
@@ -665,7 +665,7 @@ RECOVERY_GRUB_RECOVERY_ENTRY_TIER=none
 
     #[test]
     fn an_empty_list_is_a_board_that_declares_none() {
-        // The shipped spelling on both mos boards: the key is declared, and
+        // The shipped spelling on both mica boards: the key is declared, and
         // what it declares is that there is no action.
         let declaration = Declaration::parse("BOARD_RECOVERY_ACTIONS=\"\"\n");
         assert_eq!(declaration, Declaration::None);
@@ -774,21 +774,21 @@ RECOVERY_GRUB_RECOVERY_ENTRY_TIER=none
     #[test]
     fn an_intent_is_read_off_the_command_line_and_only_from_the_parameter() {
         assert_eq!(
-            intent_from_cmdline("root=/dev/mmcblk0p6 mos.recovery=recovery quiet"),
+            intent_from_cmdline("root=/dev/mmcblk0p6 mica.recovery=recovery quiet"),
             Ok(Some("recovery"))
         );
         assert_eq!(intent_from_cmdline("root=/dev/mmcblk0p6 quiet"), Ok(None));
         // A parameter that merely contains the name is not the parameter.
-        assert_eq!(intent_from_cmdline("not.mos.recovery=recovery"), Ok(None));
-        assert_eq!(intent_from_cmdline("mos.recoveryx=recovery"), Ok(None));
+        assert_eq!(intent_from_cmdline("not.mica.recovery=recovery"), Ok(None));
+        assert_eq!(intent_from_cmdline("mica.recoveryx=recovery"), Ok(None));
     }
 
     #[test]
     fn a_malformed_command_line_yields_no_intent_at_all() {
         for cmdline in [
-            "mos.recovery=recovery mos.recovery=factory",
-            "mos.recovery=",
-            "quiet mos.recovery",
+            "mica.recovery=recovery mica.recovery=factory",
+            "mica.recovery=",
+            "quiet mica.recovery",
         ] {
             assert!(
                 intent_from_cmdline(cmdline).is_err(),

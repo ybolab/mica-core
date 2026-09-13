@@ -1,11 +1,11 @@
 Package: mica-mqtt-broker
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: admin
 Priority: optional
 Depends: micad (= @VERSION@), passwd, ${shlibs:Depends}
-Description: mos MQTT broker
+Description: mica MQTT broker
  An rumqttd broker, TCP only and MQTT 3.1.1, listening on the address the
  device itself is configured with. The listen address, the port and the auth
  flag are deliberately absent from the unit: micad renders all three from the

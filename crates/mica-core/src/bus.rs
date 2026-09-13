@@ -42,7 +42,7 @@ use crate::update_policy::{LoadedPolicy, PolicyStore};
 /// Well-known bus name owned by the daemon.
 pub const BUS_NAME: &str = "com.mica.micad";
 /// Object path the service is registered at.
-pub const OBJECT_PATH: &str = "/com/mos/micad";
+pub const OBJECT_PATH: &str = "/com/mica/micad";
 
 /// True when `a` and `b` overlap by dot segments in either direction:
 /// one path is a segment-wise prefix of the other. The root path (`""` or
@@ -74,7 +74,7 @@ struct Inner {
 /// The `com.mica.micad1` service: settings tree, live-state tree, store,
 /// reconcilers, the power control, the update installer client and the shadow
 /// file a transient root password is written into.
-pub struct MosdService {
+pub struct MicadService {
     store: Store,
     reconcilers: Arc<Vec<Box<dyn Reconciler>>>,
     power: Box<dyn PowerControl>,
@@ -193,7 +193,7 @@ impl WireguardRotate for NoRotation {
     }
 }
 
-impl MosdService {
+impl MicadService {
     /// Build the service around loaded `settings` and an initial live-state
     /// root (an empty object, or `{"dry_run": true}` in dry-run mode).
     ///
@@ -844,7 +844,7 @@ async fn reconcile_subtree(
 ///
 /// Two callers ask it: the reconcile loop, where `path` is a reconciler's
 /// declared subtree and the answer is "this subsystem is refused"; and
-/// [`MosdService::persist_setting`], where `path` is the write and the answer
+/// [`MicadService::persist_setting`], where `path` is the write and the answer
 /// is "this write repairs that document". One relation, because they are one
 /// question about the same table — which capabilities that document gates.
 ///
@@ -913,7 +913,7 @@ async fn publish_task_transition(queue: &ApplyQueue, inner: &RwLock<Inner>, reco
             return;
         }
     };
-    if let Err(err) = MosdService::task_changed(&emitter, &json).await {
+    if let Err(err) = MicadService::task_changed(&emitter, &json).await {
         tracing::warn!(error = %err, task_id = record.id, "emit TaskChanged failed");
     }
 }
@@ -1051,7 +1051,7 @@ fn transient_to_fdo(err: anyhow::Error) -> fdo::Error {
 }
 
 #[zbus::interface(name = "com.mica.micad1")]
-impl MosdService {
+impl MicadService {
     /// JSON-encoded settings value at dot-path `path` (`""` = whole tree).
     async fn get_settings(&self, path: &str) -> Result<String, SettingsFault> {
         let inner = self.inner.read().await;
@@ -1600,7 +1600,7 @@ impl MosdService {
 /// The four service routes the automatic driver reaches, and the ONE hop a
 /// test cannot build.
 ///
-/// `main.rs` moves the [`MosdService`] into the object server and hands the
+/// `main.rs` moves the [`MicadService`] into the object server and hands the
 /// driver an [`InterfaceRef`] to it, so the install and the reboot automation
 /// calls are the object server's own — the very instance `InstallUpdate` and
 /// `Reboot` land on, which is what makes "the automatic path meets the gates
@@ -1630,7 +1630,7 @@ pub trait ServedDaemon: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl ServedDaemon for InterfaceRef<MosdService> {
+impl ServedDaemon for InterfaceRef<MicadService> {
     async fn update_state(&self) -> fdo::Result<String> {
         self.get().await.refresh_update_state().await
     }
@@ -1804,7 +1804,7 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        BusRoutes, DocumentRefusal, Inner, MosdService, ServedDaemon, fdo, paths_overlap,
+        BusRoutes, DocumentRefusal, Inner, MicadService, ServedDaemon, fdo, paths_overlap,
         record_policy_action, run_apply_worker,
     };
     use crate::deployment::{DeploymentClient, Status};
@@ -1841,7 +1841,7 @@ mod tests {
         candidate.id = "e".repeat(64);
         candidate.generation = 3;
         candidate.tries_left = Some(3);
-        candidate.file = format!("mos-{}+3.conf", candidate.id);
+        candidate.file = format!("mica-{}+3.conf", candidate.id);
         status.state.candidate = Some(candidate.id.clone());
         status.state.highest_generation = 3;
         status.deployments.push(candidate);
@@ -1960,14 +1960,14 @@ mod tests {
     /// the native backend call log are returned alongside.
     fn service_with_deployments(
         native: MockDeployments,
-    ) -> (MosdService, CallLog, CallLog, tempfile::TempDir) {
+    ) -> (MicadService, CallLog, CallLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(&dir);
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let deployment_calls = Arc::clone(&native.calls);
-        let service = MosdService::new(
+        let service = MicadService::new(
             store,
             micad_settings::Settings::default(),
             Vec::new(),
@@ -1994,7 +1994,7 @@ mod tests {
     }
 
     /// [`service_with_deployments`] over a default native backend mock.
-    fn service_with_mock() -> (MosdService, Arc<Mutex<Vec<String>>>, tempfile::TempDir) {
+    fn service_with_mock() -> (MicadService, Arc<Mutex<Vec<String>>>, tempfile::TempDir) {
         let (service, calls, _deployment_calls, dir) =
             service_with_deployments(MockDeployments::default());
         (service, calls, dir)
@@ -2002,7 +2002,7 @@ mod tests {
 
     /// A service with one reconciler for each subtree that makes an accidental
     /// `apply_all` visible in the call log.
-    fn service_with_recording_reconcilers() -> (MosdService, CallLog, tempfile::TempDir) {
+    fn service_with_recording_reconcilers() -> (MicadService, CallLog, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
@@ -2023,7 +2023,7 @@ mod tests {
                 calls: Arc::clone(&calls),
             }) as Box<dyn crate::reconciler::Reconciler>
         };
-        let service = MosdService::new(
+        let service = MicadService::new(
             store_in(&dir),
             settings,
             vec![
@@ -2129,7 +2129,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
-        let service = Arc::new(MosdService::new(
+        let service = Arc::new(MicadService::new(
             store_in(&dir),
             micad_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
@@ -2174,7 +2174,7 @@ mod tests {
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
-        let service = Arc::new(MosdService::new(
+        let service = Arc::new(MicadService::new(
             store_in(&dir),
             micad_settings::Settings::default(),
             vec![Box::new(BlockingReconciler {
@@ -2233,7 +2233,7 @@ mod tests {
     }
 
     /// Poll `update.install.status` until it reads `want` or ~2s elapse.
-    async fn wait_for_install_status(service: &MosdService, want: &str) {
+    async fn wait_for_install_status(service: &MicadService, want: &str) {
         for _ in 0..200 {
             let state = service
                 .get_state("update.install.status")
@@ -2933,7 +2933,7 @@ mod tests {
     ///
     /// No reconcilers: this exercises the bus method's own contract, and the
     /// reconcile it triggers is the network reconciler's own tests' subject.
-    fn service_with_wireguard() -> (MosdService, tempfile::TempDir) {
+    fn service_with_wireguard() -> (MicadService, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut settings = micad_settings::Settings::default();
         settings.network.insert(
@@ -2951,7 +2951,7 @@ mod tests {
                 ..micad_settings::IfaceSettings::default()
             },
         );
-        let service = MosdService::new(
+        let service = MicadService::new(
             store_in(&dir),
             settings,
             Vec::new(),
@@ -3369,7 +3369,9 @@ mod tests {
         path
     }
 
-    async fn service_over(dir: &tempfile::TempDir) -> (MosdService, CallLog, Vec<DocumentRefusal>) {
+    async fn service_over(
+        dir: &tempfile::TempDir,
+    ) -> (MicadService, CallLog, Vec<DocumentRefusal>) {
         let shadow_path = dir.path().join("shadow");
         std::fs::write(&shadow_path, SHADOW).expect("seed shadow");
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -3389,7 +3391,7 @@ mod tests {
             .load_with_refusals()
             .expect("load the poured namespace");
         let refusals = loaded.refusals.clone();
-        let service = MosdService::new(
+        let service = MicadService::new(
             store,
             loaded.settings,
             vec![
@@ -3580,14 +3582,14 @@ mod tests {
     //
     // What is under test here is the wiring, not a model of it: the real
     // `UpdateLifecycle` the manual `CheckUpdate`/`FetchUpdate` routes call,
-    // the real `MosdService` the manual `InstallUpdate`/`Reboot` routes land
+    // the real `MicadService` the manual `InstallUpdate`/`Reboot` routes land
     // on, and the real `BusRoutes` — the production `AutoRoutes`
     // implementation — over both. The only substitution is
     // [`ServedDaemon`]'s `self.get().await` hop, which needs a live bus
     // connection and is one line per route.
 
     /// The served-object hop, and nothing else. See [`ServedDaemon`].
-    struct TestServed(Arc<MosdService>);
+    struct TestServed(Arc<MicadService>);
 
     #[async_trait::async_trait]
     impl ServedDaemon for TestServed {
@@ -3662,7 +3664,7 @@ mod tests {
     /// One device, wired the way `main.rs` wires it.
     struct Device {
         dir: tempfile::TempDir,
-        service: Arc<MosdService>,
+        service: Arc<MicadService>,
         lifecycle: Arc<crate::update_lifecycle::UpdateLifecycle>,
         routes: Arc<BusRoutes<TestServed>>,
         power: CallLog,
@@ -3685,7 +3687,7 @@ mod tests {
             let descriptor = verified_descriptor(&dir, STAGED_BUNDLE);
             let power = Arc::new(Mutex::new(Vec::new()));
             let deployment_calls = Arc::clone(&native.calls);
-            let service = MosdService::new(
+            let service = MicadService::new(
                 store_in(&dir),
                 micad_settings::Settings::default(),
                 Vec::new(),

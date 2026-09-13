@@ -18,7 +18,7 @@ describe('the interface this session arrived on', () => {
   /// A name-based session cannot be attributed to one interface, so it must
   /// not be attributed to the one being edited either.
   it('claims nothing when the browser connected by name', () => {
-    expect(isSessionInterface(['192.168.1.24/24'], 'mos-edge-07.local')).toBe(false)
+    expect(isSessionInterface(['192.168.1.24/24'], 'mica-edge-07.local')).toBe(false)
   })
 })
 

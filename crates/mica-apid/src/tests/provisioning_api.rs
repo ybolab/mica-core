@@ -20,8 +20,8 @@ const STATUS_PATH: &str = "/api/v1/provisioning/status";
 /// defaults, and the test would pass without anything having been read. This
 /// is `meta.example/updates/manifest.json`.
 const BAKED_MANIFEST: &str = r#"{
-  "schema": "mos/meta/v1",
-  "product": { "vendor": "example", "model": "mos-appliance" },
+  "schema": "mica/meta/v1",
+  "product": { "vendor": "example", "model": "mica-appliance" },
   "update": {
     "source": "https://baked.example/v1/manifest.json",
     "channel": "stable",
@@ -107,7 +107,7 @@ async fn the_status_resolves_an_isolated_fleet_document_without_activity_state()
         None,
         Some(
             r#"{
-              "schema": "mos/fleet-config/v1",
+              "schema": "mica/fleet-config/v1",
               "enabled": true,
               "reporting": false,
               "url": "https://fleet.example.invalid"
@@ -159,7 +159,7 @@ async fn fleet_url_absence_and_null_stay_distinct_while_both_use_baked() {
             }),
         ),
         (
-            Some(r#"{ "schema": "mos/fleet-config/v1", "reporting": false }"#),
+            Some(r#"{ "schema": "mica/fleet-config/v1", "reporting": false }"#),
             json!({ "fleet": { "reporting": false } }),
             json!({
                 "enabled": true,
@@ -168,7 +168,7 @@ async fn fleet_url_absence_and_null_stay_distinct_while_both_use_baked() {
             }),
         ),
         (
-            Some(r#"{ "schema": "mos/fleet-config/v1", "reporting": false, "url": null }"#),
+            Some(r#"{ "schema": "mica/fleet-config/v1", "reporting": false, "url": null }"#),
             json!({ "fleet": { "reporting": false, "url": null } }),
             json!({
                 "enabled": true,
@@ -192,13 +192,13 @@ async fn fleet_url_absence_and_null_stay_distinct_while_both_use_baked() {
 async fn fleet_enabled_and_reporting_overrides_resolve_without_activity() {
     let cases = [
         (
-            r#"{ "schema": "mos/fleet-config/v1", "enabled": true }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "enabled": true }"#,
             json!({ "fleet": { "enabled": true } }),
             json!({ "enabled": true, "reporting": true, "url": null }),
         ),
         (
             r#"{
-              "schema": "mos/fleet-config/v1",
+              "schema": "mica/fleet-config/v1",
               "enabled": false,
               "reporting": true,
               "url": "https://fleet.example.invalid"
@@ -238,7 +238,7 @@ async fn valid_https_fleet_urls_preserve_the_complete_location() {
         "https://192.0.2.1:8443/report",
         "https://[2001:db8::1]/report?device=1",
     ] {
-        let document = json!({ "schema": "mos/fleet-config/v1", "url": url }).to_string();
+        let document = json!({ "schema": "mica/fleet-config/v1", "url": url }).to_string();
         let (tree, token) = with_token(applied_tree());
         let (router, _meta) = provisioning_app_with_documents(tree, None, Some(&document));
         let response = bearer(&router, "GET", STATUS_PATH, &token).await;
@@ -278,7 +278,7 @@ async fn assert_fleet_document_rejected(document: &str, case: &str, hidden: &[&s
 #[tokio::test]
 async fn repair1_null_fleet_enabled_fails_closed_without_disclosure() {
     assert_fleet_document_rejected(
-        r#"{ "schema": "mos/fleet-config/v1", "enabled": null }"#,
+        r#"{ "schema": "mica/fleet-config/v1", "enabled": null }"#,
         "null enabled",
         &["enabled", "null"],
     )
@@ -288,7 +288,7 @@ async fn repair1_null_fleet_enabled_fails_closed_without_disclosure() {
 #[tokio::test]
 async fn repair1_null_fleet_reporting_fails_closed_without_disclosure() {
     assert_fleet_document_rejected(
-        r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
+        r#"{ "schema": "mica/fleet-config/v1", "reporting": null }"#,
         "null reporting",
         &["reporting", "null"],
     )
@@ -298,7 +298,7 @@ async fn repair1_null_fleet_reporting_fails_closed_without_disclosure() {
 #[tokio::test]
 async fn repair1_space_in_fleet_url_host_fails_closed_without_disclosure() {
     assert_fleet_document_rejected(
-        r#"{ "schema": "mos/fleet-config/v1", "url": "https://bad host/REJECTED-FLEET-SENTINEL" }"#,
+        r#"{ "schema": "mica/fleet-config/v1", "url": "https://bad host/REJECTED-FLEET-SENTINEL" }"#,
         "space in host",
         &["REJECTED-FLEET-SENTINEL"],
     )
@@ -308,7 +308,7 @@ async fn repair1_space_in_fleet_url_host_fails_closed_without_disclosure() {
 #[tokio::test]
 async fn repair1_invalid_bracketed_fleet_url_host_fails_closed_without_disclosure() {
     assert_fleet_document_rejected(
-        r#"{ "schema": "mos/fleet-config/v1", "url": "https://[]/REJECTED-FLEET-SENTINEL" }"#,
+        r#"{ "schema": "mica/fleet-config/v1", "url": "https://[]/REJECTED-FLEET-SENTINEL" }"#,
         "invalid bracketed host",
         &["REJECTED-FLEET-SENTINEL"],
     )
@@ -318,7 +318,7 @@ async fn repair1_invalid_bracketed_fleet_url_host_fails_closed_without_disclosur
 #[tokio::test]
 async fn repair1_fleet_url_userinfo_fails_closed_without_disclosure() {
     assert_fleet_document_rejected(
-        r#"{ "schema": "mos/fleet-config/v1", "url": "https://REJECTED-FLEET-SENTINEL@fleet.example/path" }"#,
+        r#"{ "schema": "mica/fleet-config/v1", "url": "https://REJECTED-FLEET-SENTINEL@fleet.example/path" }"#,
         "userinfo",
         &["REJECTED-FLEET-SENTINEL"],
     )
@@ -336,35 +336,35 @@ async fn invalid_fleet_documents_fail_closed_without_disclosing_rejected_values(
             "unsupported schema",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "enabled": "REJECTED-FLEET-SENTINEL" }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "enabled": "REJECTED-FLEET-SENTINEL" }"#,
             "incorrect enabled type",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "reporting": 7 }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "reporting": 7 }"#,
             "incorrect reporting type",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "url": true }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "url": true }"#,
             "incorrect URL type",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "url": "http://REJECTED-FLEET-SENTINEL" }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "url": "http://REJECTED-FLEET-SENTINEL" }"#,
             "non-HTTPS URL",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "unknown": "REJECTED-FLEET-SENTINEL" }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "unknown": "REJECTED-FLEET-SENTINEL" }"#,
             "unknown field",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "signingKeys": ["REJECTED-FLEET-SENTINEL"] }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "signingKeys": ["REJECTED-FLEET-SENTINEL"] }"#,
             "anchor field",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "enabled": false, "enabled": true }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "enabled": false, "enabled": true }"#,
             "duplicate field",
         ),
         (
-            r#"{ "schema": "mos/fleet-config/v1", "url": "REJECTED-FLEET-SENTINEL" "#,
+            r#"{ "schema": "mica/fleet-config/v1", "url": "REJECTED-FLEET-SENTINEL" "#,
             "malformed JSON",
         ),
     ];

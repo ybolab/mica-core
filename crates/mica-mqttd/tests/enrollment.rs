@@ -3,7 +3,7 @@
 use mica_mqttd::enrollment::Enrollment;
 
 #[test]
-fn a_direct_mos_service_is_admitted_only_when_explicitly_enrolled() {
+fn a_direct_mica_service_is_admitted_only_when_explicitly_enrolled() {
     let enrollment = Enrollment::from_names(["com.mica.sensor.abc123"])
         .expect("the application package enrolled a valid direct service name");
 
@@ -54,7 +54,7 @@ async fn directory_entries_are_exact_enrollments() {
 }
 
 #[tokio::test]
-async fn a_directory_entry_cannot_enroll_mosd() {
+async fn a_directory_entry_cannot_enroll_micad() {
     let directory = tempfile::tempdir().expect("create enrollment directory");
     std::fs::write(directory.path().join("com.mica.micad"), "").expect("write unsafe enrollment");
 

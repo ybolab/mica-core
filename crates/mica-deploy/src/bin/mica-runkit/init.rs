@@ -230,7 +230,7 @@ fn verified_mount(
             .blocks
             .iter()
             .any(|b| b.mapping.as_ref().is_some_and(|m| m.name == name)),
-        "MOS mapping already exists before creation"
+        "MICA mapping already exists before creation"
     );
     let creation = run(
         control,
@@ -358,7 +358,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         }
         BootKind::UbootFit => {
             let id = fit_selected(&bounded_file(
-                "/sys/firmware/devicetree/base/chosen/mos,deployment-id",
+                "/sys/firmware/devicetree/base/chosen/mica,deployment-id",
                 65,
             )?)?;
             (format!("fit:{id}"), id, false)
@@ -414,7 +414,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
         control,
         &format!("/system/{}", paths.rootfs),
         &format!("/system/roots/{}/rootfs.roothash.p7s", deployment.rootfs.id),
-        "mos-root",
+        "mica-root",
         "/newroot",
         &deployment.rootfs.content,
     )?;
@@ -425,7 +425,7 @@ fn boot(control: &mut BootControl, attempt: &mut Option<BootAttempt>) -> Result<
             "/system/kernels/{}/support.roothash.p7s",
             deployment.kernel.id
         ),
-        "mos-support",
+        "mica-support",
         "/support",
         &deployment.kernel.support,
     )?;

@@ -1,7 +1,7 @@
 //! End-to-end test: private `dbus-daemon --session` + real `micad` + real
 //! `apid`, driven over HTTPS/HTTP with a real client.
 //!
-//! Everything lives in tempdirs on ephemeral ports; `MOSD_DRY_RUN=1` keeps
+//! Everything lives in tempdirs on ephemeral ports; `MICAD_DRY_RUN=1` keeps
 //! the host untouched. A missing `dbus-daemon` is a failure, never a skip.
 
 use std::io::{BufRead, BufReader};
@@ -41,8 +41,8 @@ fn dbus_daemon() -> PathBuf {
         })
 }
 
-fn find_mosd() -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("MOSD_BIN") {
+fn find_micad() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("MICAD_BIN") {
         return Ok(PathBuf::from(path));
     }
     let exe = std::env::current_exe().context("locate test executable")?;
@@ -53,7 +53,7 @@ fn find_mosd() -> anyhow::Result<PathBuf> {
         .join("micad");
     anyhow::ensure!(
         candidate.exists(),
-        "micad binary not found at {}; build it with `cargo build -p mica-core` or set MOSD_BIN",
+        "micad binary not found at {}; build it with `cargo build -p mica-core` or set MICAD_BIN",
         candidate.display()
     );
     Ok(candidate)
@@ -62,9 +62,9 @@ fn find_mosd() -> anyhow::Result<PathBuf> {
 #[zbus::proxy(
     interface = "com.mica.micad1",
     default_service = "com.mica.micad",
-    default_path = "/com/mos/micad"
+    default_path = "/com/mica/micad"
 )]
-trait Mosd {
+trait Micad {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
     fn get_state(&self, path: &str) -> zbus::Result<String>;
 }
@@ -178,14 +178,14 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config_dir)?;
     let shadow_path = dir.path().join("shadow");
     std::fs::write(&shadow_path, "root:!:20000:0:99999:7:::\n")?;
-    let _mosd_guard = ChildGuard(
-        Command::new(find_mosd()?)
+    let _micad_guard = ChildGuard(
+        Command::new(find_micad()?)
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
-            .env("MOSD_BUS", "session")
-            .env("MOSD_DRY_RUN", "1")
-            .env("MOSD_SETTINGS_PATH", &settings_path)
-            .env("MOSD_CONFIG_DIR", &config_dir)
-            .env("MOSD_SHADOW_PATH", &shadow_path)
+            .env("MICAD_BUS", "session")
+            .env("MICAD_DRY_RUN", "1")
+            .env("MICAD_SETTINGS_PATH", &settings_path)
+            .env("MICAD_CONFIG_DIR", &config_dir)
+            .env("MICAD_SHADOW_PATH", &shadow_path)
             .spawn()?,
     );
 
@@ -222,7 +222,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
     let connection = zbus::connection::Builder::address(address.as_str())?
         .build()
         .await?;
-    let proxy = MosdProxy::new(&connection).await?;
+    let proxy = MicadProxy::new(&connection).await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         while proxy.get_settings("").await.is_err() {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -245,7 +245,7 @@ async fn web_flow_end_to_end() -> anyhow::Result<()> {
             response
                 .text()
                 .await?
-                .contains("<title>mos console</title>")
+                .contains("<title>mica console</title>")
         );
     }
     let index = admin
@@ -663,14 +663,14 @@ async fn a_poured_document_is_adopted_and_its_secret_reaches_no_served_record() 
     )?;
     let shadow_path = dir.path().join("shadow");
     std::fs::write(&shadow_path, "root:!:20000:0:99999:7:::\n")?;
-    let _mosd_guard = ChildGuard(
-        Command::new(find_mosd()?)
+    let _micad_guard = ChildGuard(
+        Command::new(find_micad()?)
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
-            .env("MOSD_BUS", "session")
-            .env("MOSD_DRY_RUN", "1")
-            .env("MOSD_SETTINGS_PATH", &settings_path)
-            .env("MOSD_CONFIG_DIR", &config_dir)
-            .env("MOSD_SHADOW_PATH", &shadow_path)
+            .env("MICAD_BUS", "session")
+            .env("MICAD_DRY_RUN", "1")
+            .env("MICAD_SETTINGS_PATH", &settings_path)
+            .env("MICAD_CONFIG_DIR", &config_dir)
+            .env("MICAD_SHADOW_PATH", &shadow_path)
             .spawn()?,
     );
 
@@ -695,7 +695,7 @@ async fn a_poured_document_is_adopted_and_its_secret_reaches_no_served_record() 
     let connection = zbus::connection::Builder::address(address.as_str())?
         .build()
         .await?;
-    let proxy = MosdProxy::new(&connection).await?;
+    let proxy = MicadProxy::new(&connection).await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         while proxy.get_settings("").await.is_err() {
             tokio::time::sleep(Duration::from_millis(50)).await;

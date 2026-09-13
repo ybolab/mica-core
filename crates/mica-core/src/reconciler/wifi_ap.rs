@@ -42,7 +42,7 @@ use crate::identity;
 /// configuration from.
 const DEFAULT_CONFIG_DIR: &str = "/etc/hostapd";
 /// Environment variable overriding the hostapd configuration directory.
-const CONFIG_DIR_ENV: &str = "MOSD_HOSTAPD_DIR";
+const CONFIG_DIR_ENV: &str = "MICAD_HOSTAPD_DIR";
 /// Directory networkd reads runtime unit files from.
 ///
 /// Deliberately the same directory and the same override the network and
@@ -50,10 +50,10 @@ const CONFIG_DIR_ENV: &str = "MOSD_HOSTAPD_DIR";
 /// directory, and a test that redirects one must redirect the others with it.
 const DEFAULT_NETWORK_DIR: &str = "/run/systemd/network";
 /// Environment variable overriding the networkd unit directory.
-const NETWORK_DIR_ENV: &str = "MOSD_NETWORK_DIR";
+const NETWORK_DIR_ENV: &str = "MICAD_NETWORK_DIR";
 /// Environment variable naming the settings file, whose directory is the
 /// STATE-backed directory the per-device AP key lives under.
-const SETTINGS_PATH_ENV: &str = "MOSD_SETTINGS_PATH";
+const SETTINGS_PATH_ENV: &str = "MICAD_SETTINGS_PATH";
 /// Mode of the rendered configuration: owner-only, because it carries the
 /// pre-shared key.
 const CONFIG_MODE: u32 = 0o600;
@@ -61,11 +61,11 @@ const CONFIG_MODE: u32 = 0o600;
 ///
 /// Two independent properties, both required:
 ///
-/// - it does **not** contain `-mos-`, which is the pattern the network
+/// - it does **not** contain `-mica-`, which is the pattern the network
 ///   reconciler sweeps for. A unit matching that pattern is deleted on the
 ///   network reconciler's next pass, leaving the access point without an
 ///   address and without a DHCP server while every unit test still passes.
-/// - `90-` sorts after the network reconciler's `50-mos-…` and after the
+/// - `90-` sorts after the network reconciler's `50-mica-…` and after the
 ///   image's `80-dhcp.network`, and networkd applies the first matching unit
 ///   in lexical order — so an interface the operator configured explicitly
 ///   under `network.<iface>` keeps winning.
@@ -78,7 +78,7 @@ const CONFIG_HEADER: &str = "# Managed by micad from wifi.ap. Do not edit.\n";
 const MAX_SSID_BYTES: usize = 32;
 /// Prefix of a derived SSID, matching the derived hostname's family so a
 /// device's access point is recognisably the same device.
-const SSID_PREFIX: &str = "mos-";
+const SSID_PREFIX: &str = "mica-";
 /// Characters of the device identifier a derived SSID carries; the same count
 /// the derived hostname uses.
 const SSID_ID_CHARS: usize = 8;
@@ -176,7 +176,7 @@ impl WifiApReconciler<Systemd, Networkd> {
     /// The state directory is derived from the settings path rather than taken
     /// as a constructor argument, because `super::all()` takes none and the
     /// daemon's own derivation is exactly this: the secrets live beside the
-    /// settings file, so a test that redirects `MOSD_SETTINGS_PATH` into a
+    /// settings file, so a test that redirects `MICAD_SETTINGS_PATH` into a
     /// temporary directory redirects the secrets with it.
     pub fn production() -> Self {
         let config_dir = std::env::var(CONFIG_DIR_ENV)
@@ -503,7 +503,7 @@ fn render_networkd(interface: &str, address: &str) -> Result<String> {
 /// Derived from the device identity and nothing else — never from a secret —
 /// so the same device always advertises the same name and two devices do not
 /// collide. The prefix and the identifier length match the derived hostname's,
-/// so an operator seeing `mos-1a2b3c4d` on the air knows which device it is.
+/// so an operator seeing `mica-1a2b3c4d` on the air knows which device it is.
 ///
 /// `chars().take(..)` rather than a byte slice, so an identifier shorter than
 /// [`SSID_ID_CHARS`] yields a short SSID instead of a panic.
@@ -794,7 +794,7 @@ mod tests {
     const GOLDEN_CONFIG: &str = "# Managed by micad from wifi.ap. Do not edit.\n\
         interface=wlan0\n\
         driver=nl80211\n\
-        ssid=mos-lab\n\
+        ssid=mica-lab\n\
         country_code=DE\n\
         ieee80211d=1\n\
         hw_mode=g\n\
@@ -900,7 +900,7 @@ mod tests {
     fn lab_ap() -> WifiApSettings {
         WifiApSettings {
             mode: ApMode::Always,
-            ssid: Some("mos-lab".to_string()),
+            ssid: Some("mica-lab".to_string()),
             psk: Some("labsecret1".to_string()),
             channel: 11,
             country_code: "DE".to_string(),
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn the_render_matches_the_golden_file() {
         assert_eq!(
-            render_config(&lab_ap(), "mos-lab", "labsecret1").unwrap(),
+            render_config(&lab_ap(), "mica-lab", "labsecret1").unwrap(),
             GOLDEN_CONFIG
         );
     }
@@ -956,14 +956,14 @@ mod tests {
     fn the_render_is_deterministic() {
         let ap = lab_ap();
         assert_eq!(
-            render_config(&ap, "mos-lab", "labsecret1").unwrap(),
-            render_config(&ap.clone(), "mos-lab", "labsecret1").unwrap()
+            render_config(&ap, "mica-lab", "labsecret1").unwrap(),
+            render_config(&ap.clone(), "mica-lab", "labsecret1").unwrap()
         );
     }
 
     #[test]
     fn the_render_is_wpa2_psk_and_never_open() {
-        let rendered = render_config(&lab_ap(), "mos-lab", "labsecret1").unwrap();
+        let rendered = render_config(&lab_ap(), "mica-lab", "labsecret1").unwrap();
 
         for expected in [
             "wpa=2\n",
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn the_country_code_is_emitted_and_advertised() {
-        let rendered = render_config(&lab_ap(), "mos-lab", "labsecret1").unwrap();
+        let rendered = render_config(&lab_ap(), "mica-lab", "labsecret1").unwrap();
 
         assert!(rendered.contains("country_code=DE\n"), "{rendered}");
         assert!(
@@ -1017,7 +1017,7 @@ mod tests {
                 ..lab_ap()
             };
             assert!(
-                render_config(&ap, "mos-lab", "labsecret1").is_err(),
+                render_config(&ap, "mica-lab", "labsecret1").is_err(),
                 "channel {bad} was accepted"
             );
         }
@@ -1026,7 +1026,7 @@ mod tests {
                 channel: good,
                 ..lab_ap()
             };
-            let rendered = render_config(&ap, "mos-lab", "labsecret1").unwrap();
+            let rendered = render_config(&ap, "mica-lab", "labsecret1").unwrap();
             assert!(
                 rendered.contains(&format!("channel={good}\n")),
                 "{rendered}"
@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(
             rendered,
             GOLDEN_CONFIG.replace(
-                "ssid=mos-lab\n",
+                "ssid=mica-lab\n",
                 &format!("ssid2={}\n", hex::encode(hostile.as_bytes()))
             ),
             "the render must be the golden file with only the SSID directive changed"
@@ -1095,7 +1095,7 @@ mod tests {
             );
         }
         for plain in [
-            "mos-lab",
+            "mica-lab",
             "with space",
             "with#hash",
             "with'quote",
@@ -1115,7 +1115,7 @@ mod tests {
         assert!(validate_ssid("").is_err(), "an empty SSID was accepted");
         assert!(validate_ssid(&"a".repeat(33)).is_err(), "33 bytes accepted");
         assert!(validate_ssid(&"a".repeat(32)).is_ok(), "32 bytes rejected");
-        assert!(validate_ssid("mos-lab").is_ok());
+        assert!(validate_ssid("mica-lab").is_ok());
         assert!(
             render_config(&lab_ap(), &"a".repeat(33), "labsecret1").is_err(),
             "hostapd rejects the whole file on an over-long SSID"
@@ -1127,7 +1127,7 @@ mod tests {
         let pmk = "0123456789abcdef".repeat(4);
         assert_eq!(pmk.len(), 64);
 
-        let rendered = render_config(&lab_ap(), "mos-lab", &pmk).unwrap();
+        let rendered = render_config(&lab_ap(), "mica-lab", &pmk).unwrap();
 
         assert!(
             rendered.contains(&format!("wpa_psk={pmk}\n")),
@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn a_key_hostapd_cannot_carry_is_an_error_that_does_not_name_it() {
         for bad in ["short7X", &"x".repeat(64), "has\nnewlineXX", "trailingX "] {
-            let err = render_config(&lab_ap(), "mos-lab", bad).unwrap_err();
+            let err = render_config(&lab_ap(), "mica-lab", bad).unwrap_err();
             let chain = format!("{err:#}");
             assert!(chain.contains("pre-shared key"), "{bad:?} produced {chain}");
             assert!(
@@ -1151,7 +1151,7 @@ mod tests {
         // The boundaries themselves are accepted.
         for good in ["8charsXX", &"y".repeat(63)] {
             assert!(
-                render_config(&lab_ap(), "mos-lab", good).is_ok(),
+                render_config(&lab_ap(), "mica-lab", good).is_ok(),
                 "{good:?} is a legal WPA2 passphrase and was rejected"
             );
         }
@@ -1186,7 +1186,7 @@ mod tests {
     #[test]
     fn the_derived_ssid_is_stable_and_distinct_per_device() {
         assert_eq!(derived_ssid(DEVICE_ID), derived_ssid(DEVICE_ID));
-        assert_eq!(derived_ssid(DEVICE_ID), "mos-1a2b3c4d");
+        assert_eq!(derived_ssid(DEVICE_ID), "mica-1a2b3c4d");
         assert_ne!(
             derived_ssid(DEVICE_ID),
             derived_ssid("ffffffffffffffffffffffffffffffff"),
@@ -1209,12 +1209,12 @@ mod tests {
 
         let state = reconciler.apply(&settings_with(ap)).await.unwrap();
 
-        assert_eq!(state["ssid"], json!("mos-1a2b3c4d"));
+        assert_eq!(state["ssid"], json!("mica-1a2b3c4d"));
         assert_eq!(state["ssidSource"], json!("derived"));
         assert!(
             std::fs::read_to_string(&paths.config)
                 .unwrap()
-                .contains("ssid=mos-1a2b3c4d\n")
+                .contains("ssid=mica-1a2b3c4d\n")
         );
     }
 
@@ -1225,12 +1225,12 @@ mod tests {
 
         let state = reconciler.apply(&settings_with(lab_ap())).await.unwrap();
 
-        assert_eq!(state["ssid"], json!("mos-lab"));
+        assert_eq!(state["ssid"], json!("mica-lab"));
         assert_eq!(state["ssidSource"], json!("settings"));
         let rendered = std::fs::read_to_string(&paths.config).unwrap();
-        assert!(rendered.contains("ssid=mos-lab\n"), "{rendered}");
+        assert!(rendered.contains("ssid=mica-lab\n"), "{rendered}");
         assert!(
-            !rendered.contains("mos-1a2b3c4d"),
+            !rendered.contains("mica-1a2b3c4d"),
             "the configured SSID was overridden by the derived one: {rendered}"
         );
     }
@@ -1499,7 +1499,7 @@ mod tests {
         reconciler.apply(&settings_with(lab_ap())).await.unwrap();
         assert!(paths.networkd().exists());
 
-        // The network reconciler deletes every `*-mos-*.network` it did not
+        // The network reconciler deletes every `*-mica-*.network` it did not
         // itself render. Sharing a directory with it means this reconciler's
         // unit has to be outside that pattern, and running the real thing over
         // the same directory is the only check that says so.
@@ -1533,7 +1533,7 @@ mod tests {
         reconciler.apply(&settings_with(lab_ap())).await.unwrap();
 
         let name = networkd_file_name("wlan0");
-        for earlier in ["50-mos-wlan0.network", "80-dhcp.network"] {
+        for earlier in ["50-mica-wlan0.network", "80-dhcp.network"] {
             assert!(
                 name.as_str() > earlier,
                 "networkd applies the first matching unit in lexical order, so \
@@ -1724,7 +1724,7 @@ mod tests {
 
         let state = reconciler
             .apply(&settings_with(WifiApSettings {
-                ssid: Some("mos-annex".to_string()),
+                ssid: Some("mica-annex".to_string()),
                 ..lab_ap()
             }))
             .await
@@ -1739,7 +1739,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&paths.config)
                 .unwrap()
-                .contains("ssid=mos-annex\n")
+                .contains("ssid=mica-annex\n")
         );
         assert_eq!(state["accessPoint"], json!("applied"));
     }

@@ -269,7 +269,7 @@ fn materialize_exitrd(
         target.set_permissions(metadata.permissions())?;
     }
     let mut release = create(RELEASE)?;
-    release.write_all(b"ID=mos-exitrd\n")?;
+    release.write_all(b"ID=mica-exitrd\n")?;
     release.set_permissions(fs::Permissions::from_mode(0o644))?;
     Ok(capacity)
 }
@@ -422,7 +422,7 @@ impl std::error::Error for BootError {}
 
 pub fn selected_entry(entry: &str) -> Result<String, BootError> {
     let stem = entry
-        .strip_prefix("mos-")
+        .strip_prefix("mica-")
         .and_then(|s| s.strip_suffix(".conf"))
         .ok_or(BootError("invalid deployment entry"))?;
     let (id, counter) = stem

@@ -12,13 +12,13 @@
 //! already lives and is never restated anywhere else:
 //!
 //! - `/etc/machine-id`, seeded by systemd from the U-Boot environment
-//!   (`rootfs/overlay/usr/lib/mica/mos-machine-id`).
+//!   (`rootfs/overlay/usr/lib/mica/mica-machine-id`).
 //! - `/usr/share/mica/manifest.tsv`, the shipped bill of materials
 //!   `rootfs/compose/90-pack.Dockerfile` writes before the package manager is
 //!   purged: one row per installed package, `package\tversion\tarchitecture`,
-//!   `#`-prefixed header. `verify/src/checks-root.ts` (`packed-mos-manifest`)
+//!   `#`-prefixed header. `verify/src/checks-root.ts` (`packed-mica-manifest`)
 //!   holds an image to that shape and to the ONE `+git<commit>[.dirty]-<rev>`
-//!   stamp every mos row shares; this module parses the same shape and
+//!   stamp every mica row shares; this module parses the same shape and
 //!   reports the stamp it finds, consistent or not.
 //! - `/usr/share/mica/release-identity.env`, which
 //!   `rootfs/compose/compose-install.sh` writes from the arguments of the
@@ -104,7 +104,7 @@ pub const MAX_MANIFEST_ROWS: usize = 4096;
 
 /// The packages whose manifest row names the system (image) version, in
 /// order of preference: the system metapackage where the image has one, and
-/// the management daemon otherwise. Both are mos rows and therefore carry the
+/// the management daemon otherwise. Both are mica rows and therefore carry the
 /// pool's git stamp.
 const SYSTEM_VERSION_PACKAGES: [&str; 2] = ["mica-system", "micad"];
 
@@ -113,7 +113,7 @@ const SYSTEM_VERSION_PACKAGES: [&str; 2] = ["mica-system", "micad"];
 pub struct PackageRow {
     /// Debian package name.
     pub name: String,
-    /// Debian version string, which for mos rows ends in the git stamp.
+    /// Debian version string, which for mica rows ends in the git stamp.
     pub version: String,
     /// Debian architecture.
     pub architecture: String,
@@ -121,9 +121,9 @@ pub struct PackageRow {
 
 impl PackageRow {
     /// Whether this row is one of this repository's packages, by the rule
-    /// `verify/src/checks-root.ts` applies: the name starts with `mos`.
+    /// `verify/src/checks-root.ts` applies: the name starts with `mica`.
     #[must_use]
-    pub fn is_mos(&self) -> bool {
+    pub fn is_mica(&self) -> bool {
         self.name.starts_with("mica")
     }
 }
@@ -139,7 +139,7 @@ pub struct Manifest {
     pub truncated: bool,
 }
 
-/// The `+git<commit>[.dirty]-<rev>` stamp at the end of a mos package version.
+/// The `+git<commit>[.dirty]-<rev>` stamp at the end of a mica package version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitStamp {
     /// The abbreviated commit, 12 lowercase hex characters.
@@ -682,14 +682,14 @@ pub fn info_json(
 }
 
 /// The `system` member: the image version by way of the system package's
-/// manifest row, the git stamp the mos rows share, the date of the commit
+/// manifest row, the git stamp the mica rows share, the date of the commit
 /// that stamp names, and the pinned file epoch the root carries.
 ///
 /// The two times are DIFFERENT FACTS and are named apart on purpose.
 /// `commitDate` is when the source was committed, so it moves with the tree
 /// and is the same for every rebuild of one commit. `fileEpoch` is the
 /// `SOURCE_DATE_EPOCH` `build/src/geometry.ts` pins to a constant, which is
-/// why every file in every mos image carries it; naming it `buildDate` — as
+/// why every file in every mica image carries it; naming it `buildDate` — as
 /// this surface once did — reported 2020-01-01 as the day each image was
 /// made, on every image ever built.
 fn system_json(manifest: &Manifest, file_epoch: Option<u64>, commit_date: Option<&str>) -> Json {
@@ -699,7 +699,7 @@ fn system_json(manifest: &Manifest, file_epoch: Option<u64>, commit_date: Option
     let mut stamps: Vec<String> = manifest
         .rows
         .iter()
-        .filter(|row| row.is_mos())
+        .filter(|row| row.is_mica())
         .map(|row| {
             parse_git_stamp(&row.version)
                 .map_or_else(|| "unstamped".to_string(), |stamp| stamp.spelled())
@@ -810,7 +810,7 @@ fn file_epoch_json(file_epoch: Option<u64>) -> Json {
     Json::Object(node)
 }
 
-/// The `packages` member: every manifest row, with the mos ones marked.
+/// The `packages` member: every manifest row, with the mica ones marked.
 fn packages_json(manifest: &Manifest) -> Json {
     let entries: Vec<Json> = manifest
         .rows
@@ -820,14 +820,14 @@ fn packages_json(manifest: &Manifest) -> Json {
                 "name": row.name,
                 "version": row.version,
                 "architecture": row.architecture,
-                "mos": row.is_mos(),
+                "mica": row.is_mica(),
             })
         })
         .collect();
     json!({
         "available": true,
         "count": manifest.rows.len(),
-        "mosCount": manifest.rows.iter().filter(|row| row.is_mos()).count(),
+        "micaCount": manifest.rows.iter().filter(|row| row.is_mica()).count(),
         "malformedRows": manifest.malformed,
         "truncated": manifest.truncated,
         "entries": entries,
@@ -870,7 +870,7 @@ mod tests {
             b"PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n# a comment\n",
         );
         write(DT_MODEL_PATH, b"Vendor CX3576 Board\0");
-        write(KERNEL_RELEASE_PATH, b"6.1.115-mos\n");
+        write(KERNEL_RELEASE_PATH, b"6.1.115-mica\n");
         write(
             KERNEL_VERSION_PATH,
             b"#1 SMP PREEMPT Mon Sep 1 00:00:00 UTC 2026\n",
@@ -886,7 +886,7 @@ mod tests {
         // test that wants the development branch writes the marker itself.
         write(
             BAKED_META_MANIFEST_PATH,
-            b"{ \"schema\": \"mos/meta/v1\", \"update\": { \"source\": null } }\n",
+            b"{ \"schema\": \"mica/meta/v1\", \"update\": { \"source\": null } }\n",
         );
         dir
     }
@@ -900,8 +900,8 @@ mod tests {
         assert_eq!(manifest.rows[1].name, "mica-apid");
         assert_eq!(manifest.rows[1].version, "0.1.0+git00b674ec0ffe-1");
         assert_eq!(manifest.rows[1].architecture, "arm64");
-        assert!(manifest.rows[1].is_mos());
-        assert!(!manifest.rows[0].is_mos());
+        assert!(manifest.rows[1].is_mica());
+        assert!(!manifest.rows[0].is_mica());
     }
 
     /// A row that is not three fields is counted, not silently dropped and
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(info["machineId"]["id"], "0123456789abcdef0123456789abcdef");
         assert_eq!(info["board"]["model"], "Vendor CX3576 Board");
         assert_eq!(info["board"]["source"], "devicetree");
-        assert_eq!(info["kernel"]["release"], "6.1.115-mos");
+        assert_eq!(info["kernel"]["release"], "6.1.115-mica");
         assert!(
             info["kernel"]["version"]
                 .as_str()
@@ -1032,9 +1032,9 @@ mod tests {
         assert_eq!(info["daemon"]["name"], "micad");
         assert_eq!(info["daemon"]["commit"], "00b674ec0ffe");
         assert_eq!(info["packages"]["count"], 5);
-        assert_eq!(info["packages"]["mosCount"], 3);
+        assert_eq!(info["packages"]["micaCount"], 3);
         assert_eq!(info["packages"]["entries"][3]["name"], "micad");
-        assert_eq!(info["packages"]["entries"][3]["mos"], true);
+        assert_eq!(info["packages"]["entries"][3]["mica"], true);
         assert_eq!(info["deployment"]["id"], "a".repeat(64));
         assert_eq!(info["deployment"]["kernelId"], "c".repeat(64));
         assert_eq!(info["deployment"]["rootfsId"], "d".repeat(64));

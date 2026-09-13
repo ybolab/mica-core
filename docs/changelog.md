@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-13 21:20 [progress]
+
+mica-apid is its own executable and producer; micad no longer carries apid.
+Every legacy mos name in this repository is mica, with no compatibility: the
+D-Bus object /com/mica/micad, MICAD_* variables, the mica account, the pool
+subdirectory, boot entry, verity and U-Boot names, and the core-owned schema
+ids. The signed update contract shared with mica-build (mos/deployment,
+kernel, rootfs, update-catalog, update-envelope, firmware schema ids and the
+MOSUPD01 archive magic) waits for mica-build's re-signed fixtures. Not yet
+published.
+
 ## 2026-09-13 20:45 [progress]
 
 The apid executable is `mica-apid` (`/usr/bin/mica-apid`, a link to `micad`;

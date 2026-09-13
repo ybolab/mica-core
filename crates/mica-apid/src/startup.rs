@@ -402,7 +402,7 @@ mod tests {
             "apiVersions": api_versions,
         });
         fs::write(
-            staging.join("mos-ui.json"),
+            staging.join("mica-ui.json"),
             serde_json::to_vec(&manifest).expect("serialise manifest"),
         )
         .expect("write manifest");
@@ -917,7 +917,7 @@ mod tests {
         let path = root("manifest-is-garbage");
         fs::create_dir_all(path.join("bundles/1")).expect("create bundles");
         fs::write(path.join("bundles/1/index.html"), b"<!doctype html>").expect("write index");
-        fs::write(path.join("bundles/1/mos-ui.json"), b"\x00\xff not json")
+        fs::write(path.join("bundles/1/mica-ui.json"), b"\x00\xff not json")
             .expect("write manifest");
         symlink("bundles/1", path.join("current")).expect("symlink");
 
@@ -925,7 +925,7 @@ mod tests {
         fs::create_dir_all(path.join("bundles/1")).expect("create bundles");
         fs::write(path.join("bundles/1/index.html"), b"<!doctype html>").expect("write index");
         fs::write(
-            path.join("bundles/1/mos-ui.json"),
+            path.join("bundles/1/mica-ui.json"),
             br#"{"name":"n","version":"1","immutableDir":"a","apiVersions":[]}"#,
         )
         .expect("write manifest");

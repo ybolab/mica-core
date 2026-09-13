@@ -1,4 +1,4 @@
-//! Shared `.mos-ui.zip` validation, deterministic packing, and safe extraction.
+//! Shared `.mica-ui.zip` validation, deterministic packing, and safe extraction.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -19,7 +19,7 @@ pub const MAX_ENTRIES: usize = 4096;
 pub const MAX_DEPTH: usize = 32;
 pub const MAX_PATH_BYTES: usize = 240;
 pub const MAX_EXPANSION_RATIO: u64 = 100;
-pub const MANIFEST_NAME: &str = "mos-ui.json";
+pub const MANIFEST_NAME: &str = "mica-ui.json";
 pub const INDEX_NAME: &str = "index.html";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -488,8 +488,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         fixture(&source);
-        let first = temp.path().join("one.mos-ui.zip");
-        let second = temp.path().join("two.mos-ui.zip");
+        let first = temp.path().join("one.mica-ui.zip");
+        let second = temp.path().join("two.mica-ui.zip");
         let info = pack(&source, &first).unwrap();
         pack(&source, &second).unwrap();
         assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
@@ -510,7 +510,7 @@ mod tests {
         fs::create_dir_all(source.join("assets")).unwrap();
         fs::write(source.join(INDEX_NAME), "<!doctype html>").unwrap();
         fs::write(source.join("assets/app.js"), "console.log(1)").unwrap();
-        let output = temp.path().join("generated.mos-ui.zip");
+        let output = temp.path().join("generated.mica-ui.zip");
         let manifest = PackageManifest {
             schema_version: 1,
             name: "demo".to_string(),

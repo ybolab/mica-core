@@ -55,7 +55,7 @@ running boot failure. `discard` clears the bounded acquisition workspace.
 Commands derive their trust and partition policy from the authenticated boot;
 there is no user-space trust override.
 
-Online distribution uses signed `mos/catalog/v1` metadata with revision and
+Online distribution uses signed `mica/catalog/v1` metadata with revision and
 freshness checks. Offline `MOSUPD01` archives contain the same signed deployment
 and bounded digest/length-addressed objects. The installer preserves current and
 fallback objects when acquisition, capacity checks or publication fail.

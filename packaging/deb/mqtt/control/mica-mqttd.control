@@ -1,11 +1,11 @@
 Package: mica-mqttd
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: admin
 Priority: optional
 Depends: micad (= @VERSION@), passwd, ${shlibs:Depends}
-Description: mos D-Bus to MQTT application bridge
+Description: mica D-Bus to MQTT application bridge
  Publishes the item trees of explicitly enrolled applications onto an MQTT
  broker, and carries write topics back to SetValue only when it is started in
  full mode. It owns /usr/lib/mica/mqtt-applications.d, the enrollment directory

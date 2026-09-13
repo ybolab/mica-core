@@ -1,5 +1,5 @@
 [Unit]
-Description=mos MQTT broker (rumqttd, TCP only, MQTT 3.1.1)
+Description=mica MQTT broker (rumqttd, TCP only, MQTT 3.1.1)
 After=network.target micad.service
 Wants=micad.service
 

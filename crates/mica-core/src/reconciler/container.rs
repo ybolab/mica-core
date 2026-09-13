@@ -171,7 +171,7 @@ impl<C: UnitControl> ContainerReconciler<C> {
         // container ever running.
         //
         // This is not orchestration. The integrator wrote `WantedBy=` and
-        // Quadlet already acted on it; mos is making an instruction that was
+        // Quadlet already acted on it; mica is making an instruction that was
         // given take effect, not deciding anything about what should run or in
         // what order.
         let mut started = Vec::new();

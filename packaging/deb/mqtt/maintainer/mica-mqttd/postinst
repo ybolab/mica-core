@@ -29,7 +29,7 @@ esac
 
 NAME=mica-mqttd
 ID=970
-COMMENT="mos MQTT bridge"
+COMMENT="mica MQTT bridge"
 
 # The group first, because useradd --gid names it. Both halves of the pin are
 # checked -- the name and the numeric id -- because either can be taken

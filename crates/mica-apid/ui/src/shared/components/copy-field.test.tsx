@@ -13,11 +13,11 @@ describe('the copy field', () => {
   it('copies the value and confirms it', async () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
-    renderPanel(<CopyField value="mos_tok_abcdef" label="Copy" />)
+    renderPanel(<CopyField value="mica_tok_abcdef" label="Copy" />)
 
     await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
-    expect(writeText).toHaveBeenCalledWith('mos_tok_abcdef')
+    expect(writeText).toHaveBeenCalledWith('mica_tok_abcdef')
     expect(await screen.findByText('Copied')).toBeTruthy()
   })
 
@@ -27,7 +27,7 @@ describe('the copy field', () => {
   it('reports a refused copy instead of claiming success', async () => {
     const writeText = vi.fn(() => Promise.reject(new Error('Document is not focused')))
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
-    renderPanel(<CopyField value="mos_tok_abcdef" label="Copy" />)
+    renderPanel(<CopyField value="mica_tok_abcdef" label="Copy" />)
 
     await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 

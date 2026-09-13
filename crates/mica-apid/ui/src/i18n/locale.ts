@@ -2,7 +2,7 @@ export const supportedLocales = ['en', 'zh-CN'] as const
 
 export type Locale = (typeof supportedLocales)[number]
 
-export const LOCALE_STORAGE_KEY = 'mos.ui.locale'
+export const LOCALE_STORAGE_KEY = 'mica.ui.locale'
 
 export function normalizeLocale(value: string | null | undefined): Locale | undefined {
   const normalized = value?.trim().toLowerCase()

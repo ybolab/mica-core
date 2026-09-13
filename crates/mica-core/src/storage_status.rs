@@ -10,7 +10,7 @@
 //! the partition table, `rootfs/overlay/etc/fstab.in` mounts DATA at
 //! [`DATA_MOUNT`], and PLAN-063 binds `/mnt/data/mica` at `/mica` and
 //! `/mnt/data/srv` at `/srv` through
-//! `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, after
+//! `rootfs/overlay/etc/systemd/system/{mica,srv}.mount`, after
 //! `rootfs/overlay/usr/lib/mica/mica-data-layout` has created the roots
 //! fail-closed. Nothing here formats anything or moves a partition boundary,
 //! and there is deliberately no method on this module, on the bus or in the
@@ -99,14 +99,14 @@ pub const DATA_MOUNT: &str = "/mnt/data";
 /// The bind namespaces carved out of the DATA filesystem, with
 /// the source each is bound from.
 ///
-/// Transcribed from `rootfs/overlay/etc/systemd/system/{mos,srv}.mount`, which
+/// Transcribed from `rootfs/overlay/etc/systemd/system/{mica,srv}.mount`, which
 /// are the contract; `rootfs/overlay/usr/lib/mica/mica-data-layout` creates the
 /// sources. They are NOT tiers: both live on the one DATA filesystem and
 /// share its single capacity pool, which is why they carry no capacity of
 /// their own below and why `status_json` says so in as many words.
 pub const BINDS: &[BindSpec] = &[
     BindSpec {
-        name: "mos",
+        name: "mica",
         mount: "/mica",
         source: "/mnt/data/mica",
         owner: "system",
@@ -276,7 +276,7 @@ pub struct MediumEvidence {
     /// Vendor identity: the mmc product name, or the SCSI/NVMe model.
     pub model: Option<String>,
     /// Whether the kernel calls the medium rotational. `false` on every
-    /// medium mos runs on today; recorded rather than assumed.
+    /// medium mica runs on today; recorded rather than assumed.
     pub rotational: Option<bool>,
     /// Wear/EOL, or why there is none.
     pub health: MediaHealth,
@@ -449,7 +449,7 @@ fn parse_project_quotas(csv: &str) -> Option<BTreeMap<u32, ProjectUsage>> {
 const DATA_DIRECTORIES: [&str; 8] = [
     "state",
     "meta",
-    "mos",
+    "mica",
     "srv",
     "cache",
     "tmp",
@@ -626,7 +626,7 @@ pub fn status_json(evidence: &StorageEvidence, pressure: &PressureTracker) -> Js
             "directories": DATA_DIRECTORIES.map(|name| json!({
                 "name": name,
                 "usedBytes": evidence.directory_bytes.get(name),
-                "project": match name { "mos" | "srv" => Some(100), "cache" | "tmp" | "var" => Some(101), "containers" => Some(102), _ => None },
+                "project": match name { "mica" | "srv" => Some(100), "cache" | "tmp" | "var" => Some(101), "containers" => Some(102), _ => None },
             })),
             "projectQuotas": evidence.project_quotas,
         },
@@ -1189,7 +1189,7 @@ impl HostStorage {
     /// operator, so `/srv` gets no probe and says so rather than getting a
     /// silent pass.
     fn probe(&self, spec: &BindSpec, mount: Option<&MountEvidence>) -> Option<ProbeOutcome> {
-        if spec.name != "mos" {
+        if spec.name != "mica" {
             return Some(ProbeOutcome::NotAttempted(format!(
                 "{} is outside the system readiness probe namespace; no probe write is authorized",
                 spec.mount
@@ -1906,7 +1906,7 @@ mod tests {
             directory_bytes: BTreeMap::new(),
             project_quotas: None,
             tiers,
-            binds: [("mos".to_string(), bound("/dev/mmcblk0p11"))]
+            binds: [("mica".to_string(), bound("/dev/mmcblk0p11"))]
                 .into_iter()
                 .collect(),
             media: vec![MediumEvidence {
@@ -2122,13 +2122,13 @@ mod tests {
 
         // Both binds observed, both on the DATA device, and the probe ran in
         // the system namespace only.
-        let mos = &evidence.binds["mos"];
+        let mica = &evidence.binds["mica"];
         assert_eq!(
-            mos.mount.as_ref().map(|mount| mount.device.as_str()),
+            mica.mount.as_ref().map(|mount| mount.device.as_str()),
             Some("/dev/mmcblk0p11")
         );
-        assert_eq!(mos.source_is_directory, Some(true));
-        assert_eq!(mos.probe, Some(ProbeOutcome::Passed));
+        assert_eq!(mica.source_is_directory, Some(true));
+        assert_eq!(mica.probe, Some(ProbeOutcome::Passed));
         // The probe cleans up after itself: a readiness check that leaves
         // files behind is a slow leak on the filesystem it is vouching for.
         let leftovers: Vec<_> = std::fs::read_dir(path.join("mica/updates/staging"))
@@ -2149,7 +2149,7 @@ mod tests {
         }
 
         assert_eq!(
-            classify_readiness(mos, evidence.data_tier(), Pressure::Normal),
+            classify_readiness(mica, evidence.data_tier(), Pressure::Normal),
             Readiness::Ready
         );
 
@@ -2207,7 +2207,7 @@ mod tests {
             .await
             .expect("the fixture observes");
 
-        for name in ["mos", "srv"] {
+        for name in ["mica", "srv"] {
             let bind = &evidence.binds[name];
             assert_eq!(bind.mount, None, "{name} is not mounted in this fixture");
             assert_eq!(bind.source_is_directory, None, "{name} has no source yet");
@@ -2217,7 +2217,7 @@ mod tests {
                 "{name} must be unavailable, so no writer falls back elsewhere"
             );
         }
-        match &evidence.binds["mos"].probe {
+        match &evidence.binds["mica"].probe {
             Some(ProbeOutcome::NotAttempted(reason)) => {
                 assert!(reason.contains("/mica"), "{reason}")
             }

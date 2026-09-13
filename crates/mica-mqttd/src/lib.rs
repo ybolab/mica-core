@@ -6,7 +6,7 @@
 //! subscribes to micad. Device identity arrives as runtime configuration, so no
 //! system setting, state, signal, method or action becomes an MQTT item.
 //!
-//! # The protocol is the mos-native grammar, and only that
+//! # The protocol is the mica-native grammar, and only that
 //!
 //! `N|R|W/<deviceId>/<class>/<instance>/<path>` with `{"value": ...}`
 //! payloads, a keepalive-triggered rate-limited full republish terminated by

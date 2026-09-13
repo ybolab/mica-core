@@ -27,7 +27,7 @@ function AuthFrame({ title, copy, children }: { title: string; copy: string; chi
         <CardContent className="flex flex-col gap-5 p-6 sm:p-8">
           <div className="flex items-center gap-2.5">
             <span className="logo-mark size-8 text-base">m</span>
-            <strong className="font-condensed text-xl leading-none font-semibold">mos</strong>
+            <strong className="font-condensed text-xl leading-none font-semibold">mica</strong>
           </div>
           <div className="flex flex-col gap-1">
             <h1 className="text-lg font-semibold tracking-tight">{title}</h1>

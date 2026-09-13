@@ -1,5 +1,5 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: mos
+Upstream-Name: mica
 Comment: One copyright file for every package this producer family emits --
  micad, mica-apid, mica-mqttd, mica-mqtt-broker, mica-sftp-server, mica-deploy
  and mica-lifecycle -- installed per package as
@@ -16,12 +16,12 @@ Comment: One copyright file for every package this producer family emits --
  .
  The full licence text is carried HERE rather than referenced. Pointing at
  Debian's shared common-licenses directory is an archive convention, and the
- mos image does not ship that directory -- the reference would dangle on the
+ mica image does not ship that directory -- the reference would dangle on the
  device. The text below is the repository's own LICENSE file, copied rather
  than retyped.
 
 Files: *
-Copyright: The mos project
+Copyright: The mica project
 License: Apache-2.0
 
 License: Apache-2.0

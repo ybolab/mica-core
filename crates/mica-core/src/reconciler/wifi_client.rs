@@ -32,7 +32,7 @@ use super::systemd::{Systemd, UnitControl, is_active, is_enabled};
 /// per-interface configuration from.
 const DEFAULT_CONFIG_DIR: &str = "/etc/wpa_supplicant";
 /// Environment variable overriding the wpa_supplicant configuration directory.
-const CONFIG_DIR_ENV: &str = "MOSD_WPA_SUPPLICANT_DIR";
+const CONFIG_DIR_ENV: &str = "MICAD_WPA_SUPPLICANT_DIR";
 /// Directory networkd reads runtime unit files from.
 ///
 /// Deliberately the same directory and the same override the network
@@ -40,16 +40,16 @@ const CONFIG_DIR_ENV: &str = "MOSD_WPA_SUPPLICANT_DIR";
 /// a test that redirects one must redirect the other with it.
 const DEFAULT_NETWORK_DIR: &str = "/run/systemd/network";
 /// Environment variable overriding the networkd unit directory.
-const NETWORK_DIR_ENV: &str = "MOSD_NETWORK_DIR";
+const NETWORK_DIR_ENV: &str = "MICAD_NETWORK_DIR";
 /// Mode of the rendered configuration: owner-only, because it carries PSKs.
 const CONFIG_MODE: u32 = 0o600;
 /// Prefix of the networkd units this reconciler owns.
 ///
-/// `90-` sorts after the network reconciler's `50-mos-…` and the image's
+/// `90-` sorts after the network reconciler's `50-mica-…` and the image's
 /// `80-dhcp.network`, so an interface the operator configured explicitly keeps
 /// winning: networkd applies the first matching unit in lexical order.
 ///
-/// The prefix deliberately does **not** contain `-mos-`: that is the pattern
+/// The prefix deliberately does **not** contain `-mica-`: that is the pattern
 /// the network reconciler sweeps for, and a file matching it would be deleted
 /// on the network reconciler's next pass.
 const NETWORKD_PREFIX: &str = "90-wifi-client-";
@@ -1056,7 +1056,7 @@ mod tests {
             .unwrap();
         assert!(paths.networkd().exists());
 
-        // The network reconciler deletes every `*-mos-*.network` it did not
+        // The network reconciler deletes every `*-mica-*.network` it did not
         // itself render. Sharing a directory with it means the station's unit
         // has to be outside that pattern, and this is the check that says so.
         NetworkReconciler::new(

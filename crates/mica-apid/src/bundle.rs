@@ -44,7 +44,7 @@ pub const DEFAULT_ROOT: &str = "/mica/ui";
 pub const NO_CUSTOM_BUNDLE: &str = "no custom bundle is active; the built-in UI is being served";
 
 /// The optional manifest at the root of a bundle tree (§5.3).
-const MANIFEST_NAME: &str = "mos-ui.json";
+const MANIFEST_NAME: &str = "mica-ui.json";
 /// The one file every bundle must have at its root (§5.3, §6.1 class 2).
 const INDEX_NAME: &str = "index.html";
 /// Mode for the root and every directory beneath it (§5.2).
@@ -52,7 +52,7 @@ const DIR_MODE: u32 = 0o755;
 /// Mode for every file in the store (§5.2).
 const FILE_MODE: u32 = 0o644;
 
-/// `mos-ui.json`. A bundle without one is valid — see [`CompatCheck::NotRun`].
+/// `mica-ui.json`. A bundle without one is valid — see [`CompatCheck::NotRun`].
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Manifest {
     /// Human-readable bundle name.
@@ -147,7 +147,7 @@ pub enum Rejection {
         /// The link count found.
         links: u64,
     },
-    /// `mos-ui.json` is present but does not parse.
+    /// `mica-ui.json` is present but does not parse.
     ManifestUnparsable(String),
     /// The declared range and the served set have no member in common — the
     /// one and only trigger in §6.1 class 5.
@@ -1168,7 +1168,7 @@ fn validate_tree(root: &Path) -> anyhow::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Read `mos-ui.json` from the root of a tree. Absent is `None` and valid;
+/// Read `mica-ui.json` from the root of a tree. Absent is `None` and valid;
 /// present-but-unparsable is a rejection (§5.3 step 2).
 fn read_manifest(root: &Path) -> anyhow::Result<Option<Manifest>> {
     let path = root.join(MANIFEST_NAME);

@@ -5,7 +5,7 @@
 //! [`rumqttd::Config`] in code, and blocks in [`rumqttd::Broker::start`].
 //!
 //! Building the config in code rather than handing rumqttd its own TOML is the
-//! point: everything below that is not in the mos-owned file is not a knob.
+//! point: everything below that is not in the mica-owned file is not a knob.
 //! There is no HTTP console, no Prometheus listener, no cluster and no bridge,
 //! and none of those can be turned on by editing a file on the device.
 //!
@@ -23,11 +23,11 @@ use rumqttd::{Broker, ConnectionSettings, RouterConfig, ServerSettings};
 
 mod config;
 
-/// The MQTT broker for mos application item trees and local clients.
+/// The MQTT broker for mica application item trees and local clients.
 #[derive(Debug, Parser)]
 #[command(name = "mica-mqtt-broker", version)]
 struct Args {
-    /// The mos-owned broker configuration, rendered by micad from the `mqtt`
+    /// The mica-owned broker configuration, rendered by micad from the `mqtt`
     /// settings subtree before this unit is started.
     #[arg(long)]
     config: PathBuf,
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Build the whole [`rumqttd::Config`] from the two things the mos-owned file
+/// Build the whole [`rumqttd::Config`] from the two things the mica-owned file
 /// decides: where to listen, and who may log in.
 ///
 /// A function rather than a block inside `main` so that the shape of what gets
@@ -173,9 +173,9 @@ fn broker_config(listen: SocketAddr, auth: Option<HashMap<String, String>>) -> r
     // decision, not something to smuggle in here by handing rumqttd a map it
     // will race against itself.
     let v4 = HashMap::from([(
-        "mos".to_string(),
+        "mica".to_string(),
         ServerSettings {
-            name: "mos".to_string(),
+            name: "mica".to_string(),
             listen,
             tls: None,
             next_connection_delay_ms: 0,
@@ -255,9 +255,9 @@ mod tests {
             v4.keys().collect::<Vec<_>>()
         );
         let settings = v4
-            .get("mos")
-            .expect("the single listener is named `mos`; the name is what rumqttd logs");
-        assert_eq!(settings.name, "mos");
+            .get("mica")
+            .expect("the single listener is named `mica`; the name is what rumqttd logs");
+        assert_eq!(settings.name, "mica");
         assert_eq!(
             settings.listen, listen,
             "the listener binds what micad rendered"
@@ -296,8 +296,8 @@ mod tests {
             broker_config(loopback(1883), auth)
                 .v4
                 .expect("v4 is always served")
-                .remove("mos")
-                .expect("the single listener is named `mos`")
+                .remove("mica")
+                .expect("the single listener is named `mica`")
                 .connections
         };
 
@@ -363,7 +363,7 @@ mod tests {
         wait_until_listening(listen);
 
         let mut options =
-            rumqttc::MqttOptions::new("mos-broker-test", listen.ip().to_string(), listen.port());
+            rumqttc::MqttOptions::new("mica-broker-test", listen.ip().to_string(), listen.port());
         options.set_keep_alive(Duration::from_secs(5));
         // Bound to a name, not to `_`: dropping the client closes the request
         // channel and ends the event loop before it can see a CONNACK.

@@ -26,7 +26,7 @@ async fn a_bundle_that_intersects_the_served_set_remains_the_root_ui() {
     let manifest = r#"{"name":"demo","version":"1.0",
         "immutableDir":"assets","apiVersions":["v0","v1"]}"#;
     let bundle = install_declaring(
-        &[("index.html", CUSTOM_INDEX), ("mos-ui.json", manifest)],
+        &[("index.html", CUSTOM_INDEX), ("mica-ui.json", manifest)],
         SERVED_API_VERSIONS,
     );
     let store = Store::new(bundle.path());
@@ -49,6 +49,6 @@ async fn a_bundle_that_intersects_the_served_set_remains_the_root_ui() {
     assert!(
         body_string(built_in)
             .await
-            .contains("<title>mos console</title>")
+            .contains("<title>mica console</title>")
     );
 }

@@ -127,7 +127,7 @@ fn baked_configuration(manifest_path: &Path) -> Result<(Value, BTreeMap<String, 
         .context("baked manifest is missing")?;
     let document: Value = serde_json::from_slice(manifest).context("parse baked manifest")?;
     ensure!(
-        document["schema"] == "mos/meta/v1",
+        document["schema"] == "mica/meta/v1",
         "unsupported baked manifest schema"
     );
     let digests = files

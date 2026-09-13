@@ -46,7 +46,7 @@ const DEFAULT_IDENTITY_PATH: &str = "/run/mica/mqttd-device.env";
 ///
 /// Nothing in the image sets it; the override exists so tests run entirely
 /// inside a temporary directory and never touch the host's `/run`.
-const CONFIG_PATH_ENV: &str = "MOSD_MQTT_BROKER_CONFIG";
+const CONFIG_PATH_ENV: &str = "MICAD_MQTT_BROKER_CONFIG";
 /// Mode of the rendered config: world-readable, owner-writable.
 ///
 /// The broker runs as the unprivileged `mica-mqtt-broker` account and micad
@@ -519,7 +519,7 @@ mod tests {
         active: &str,
         file_state: &str,
     ) -> (MqttReconciler<MockUnitControl>, PathBuf) {
-        let config = dir.join("mos").join("mqtt-broker.toml");
+        let config = dir.join("mica").join("mqtt-broker.toml");
         (
             MqttReconciler::new(config.clone(), MockUnitControl::new(active, file_state)),
             config,

@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemeMode, 'system'>
 
-export const THEME_STORAGE_KEY = 'mos.ui.theme'
+export const THEME_STORAGE_KEY = 'mica.ui.theme'
 
 /// The value `<meta name="theme-color">` falls back to before the stylesheet
 /// has resolved, or in a test environment that computes no styles. The live

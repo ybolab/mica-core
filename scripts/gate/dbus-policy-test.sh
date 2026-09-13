@@ -88,7 +88,7 @@ LITTLE = ord('l')
 METHOD_CALL, METHOD_RETURN, ERROR, SIGNAL = 1, 2, 3, 4
 # Header field code -> its variant type. Only the codes this client uses.
 FIELD_TYPE = {1: 'o', 2: 's', 3: 's', 4: 's', 5: 'u', 6: 's', 7: 's', 8: 'g'}
-PATH = '/com/mos/micad'
+PATH = '/com/mica/micad'
 IFACE = 'com.mica.micad1'
 
 
@@ -431,7 +431,7 @@ start_server() {
     head -n1 "${log}"
 }
 
-owned_mosd=$(start_server "${NAME}" "${WORK}/server-micad.log")
+owned_micad=$(start_server "${NAME}" "${WORK}/server-micad.log")
 owned_ctl=$(start_server com.mica.control "${WORK}/server-ctl.log")
 
 as_root() { python3 "${CLIENT}" "$@" 2>&1 | tail -n1; }
@@ -450,7 +450,7 @@ echo
 
 # --- 0. the harness itself works ---------------------------------------------
 # Without these the whole suite could be measuring a bus nobody can reach.
-check "root owns ${NAME} (the daemon's own identity)" "OWNED" "${owned_mosd}"
+check "root owns ${NAME} (the daemon's own identity)" "OWNED" "${owned_micad}"
 check "root owns the control name" "OWNED" "${owned_ctl}"
 check "nobody can connect and own an unrestricted name" "OWNED" \
     "$(as_nobody own "${SOCK}" com.mica.unprivileged)"
@@ -556,7 +556,7 @@ chmod 0777 "${MQTTD_SOCK}"
 # signal plus a management signal. The bridge must receive neither even if a
 # future regression or hostile system service emits them.
 setsid python3 "${CLIENT}" serve "${MQTTD_SOCK}" "${NAME}" ItemsChanged \
-    com.mica.Item1 /com/mos/micad com.mica.micad1/SettingsChanged \
+    com.mica.Item1 /com/mica/micad com.mica.micad1/SettingsChanged \
     >"${WORK}/mqttd-server.log" 2>&1 &
 SERVER_PIDS+=($!)
 for _ in $(seq 1 50); do
@@ -584,7 +584,7 @@ echo
 # configuration, not a micad call.
 check "mqttd: the bridge's uid CANNOT call the removed GetDeviceId member" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetDeviceId /com/mos/micad)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetDeviceId /com/mica/micad)"
 
 echo
 # The network-facing bridge has no system-management read, write, action, or
@@ -634,7 +634,7 @@ check "mqttd: the bridge's uid CANNOT call com.mica.micad1.GetUpdateState" \
     "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetUpdateState)"
 check "mqttd: the bridge's uid CANNOT call com.mica.micad1.GetSettings" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mos/micad)"
+    "$(as_mqttd call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mica/micad)"
 # SettingsChanged carries the settings VALUE, including the web admin password
 # hash. The bridge cannot receive this broadcast.
 check "mqttd: the bridge's uid CANNOT receive com.mica.micad1.SettingsChanged" "NONE" \
@@ -669,7 +669,7 @@ check "mqttd: the control uid is connected (so its refusals are policy, not auth
     "$(connectivity "$(as_other call "${MQTTD_SOCK}" org.freedesktop.DBus org.freedesktop.DBus GetId /org/freedesktop/DBus)")"
 check "mqttd: another unprivileged uid CANNOT call micad either" \
     "ERROR org.freedesktop.DBus.Error.AccessDenied" \
-    "$(as_other call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mos/micad)"
+    "$(as_other call "${MQTTD_SOCK}" "${NAME}" com.mica.micad1 GetSettings /com/mica/micad)"
 check "mqttd: another unprivileged uid CANNOT receive SettingsChanged" "NONE" \
     "$(as_other recv "${MQTTD_SOCK}" "${NAME}" SettingsChanged 3)"
 

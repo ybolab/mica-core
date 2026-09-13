@@ -96,7 +96,7 @@ impl Status {
                 ensure!(
                     ["", "+3", "+2-1", "+1-2", "+0-3"].iter().any(|suffix| {
                         status.boot.entry
-                            == format!("mos-{}{suffix}.conf", status.boot.deployment_id)
+                            == format!("mica-{}{suffix}.conf", status.boot.deployment_id)
                     }),
                     "running boot entry identity mismatch"
                 );
@@ -314,10 +314,10 @@ pub(crate) mod tests {
         let kernel = "c".repeat(64);
         let root = "d".repeat(64);
         let deployments = [(&current, 2), (&fallback, 1)].map(|(id, generation)| json!({
-            "id":id,"file":format!("mos-{id}.conf"),"generation":generation,"triesLeft":null,
+            "id":id,"file":format!("mica-{id}.conf"),"generation":generation,"triesLeft":null,
             "version":format!("test-{generation}"),"kernelId":kernel,"kernelRelease":"6.12.107","rootfsId":root,
         }));
-        json!({"boot":{"deploymentId":current,"entry":format!("mos-{current}.conf"),"kernelId":kernel,
+        json!({"boot":{"deploymentId":current,"entry":format!("mica-{current}.conf"),"kernelId":kernel,
             "rootfsId":root,"contentVerified":true,"secureBoot":true,"bootVerified":true,"backend":"uefi"},
             "state":{"highestGeneration":2,"current":current,"fallback":fallback,"candidate":null,"failed":[]},"deployments":deployments})
     }
@@ -339,7 +339,7 @@ pub(crate) mod tests {
         assert_eq!(status.phase().0, "validating");
         assert_eq!(status.rollback()["reason"], "candidate_pending");
         value["boot"]["deploymentId"] = "b".repeat(64).into();
-        value["boot"]["entry"] = format!("mos-{}.conf", "b".repeat(64)).into();
+        value["boot"]["entry"] = format!("mica-{}.conf", "b".repeat(64)).into();
         assert_eq!(
             Status::parse(&value.to_string()).unwrap().phase().0,
             "reboot-required"

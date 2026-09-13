@@ -1,7 +1,7 @@
 Package: mica-deploy
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: admin
 Priority: optional
 Depends: ${shlibs:Depends}, mount

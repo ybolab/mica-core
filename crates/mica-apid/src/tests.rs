@@ -45,13 +45,13 @@ fn test_app(tree: serde_json::Value) -> (Router, Arc<FakeSettings>) {
 }
 
 fn unconfigured_tree() -> serde_json::Value {
-    json!({ "hostname": "mos", "network": {}, "access": {} })
+    json!({ "hostname": "mica", "network": {}, "access": {} })
 }
 
 fn configured_tree(password: &str) -> serde_json::Value {
     let hash = auth::hash_password(password).unwrap();
     json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": {},
         "access": { "webAdmin": { "password_hash": hash } },
     })
@@ -83,8 +83,8 @@ async fn body_string(response: Response<axum::body::Body>) -> String {
 // applying a write after apid gives the request back, so the response must
 // say "not confirmed" (504) rather than "unreachable" (503).
 #[tokio::test]
-async fn a_mosd_call_timeout_has_its_own_api_classification() {
-    let err = anyhow::Error::new(crate::bus_client::MosdCallTimeout::new(
+async fn a_micad_call_timeout_has_its_own_api_classification() {
+    let err = anyhow::Error::new(crate::bus_client::MicadCallTimeout::new(
         "SetSettings",
         std::time::Duration::from_secs(5),
     ));
@@ -107,7 +107,7 @@ async fn a_mosd_call_timeout_has_its_own_api_classification() {
 // A task payload that reached apid but does not match the bus contract is a
 // daemon failure, not a connectivity outage, and must match OpenAPI's 500.
 #[tokio::test]
-async fn an_invalid_task_payload_is_a_mosd_failure() {
+async fn an_invalid_task_payload_is_a_micad_failure() {
     let parse_error =
         serde_json::from_str::<TaskRecord>("{}").expect_err("an empty object is not a task record");
     let err = anyhow::Error::new(InvalidTaskPayload(parse_error));
@@ -302,7 +302,7 @@ async fn cookie_api_access_requires_csrf_only_for_mutations() {
 #[tokio::test]
 async fn network_api_reports_configured_and_observed_interfaces() {
     let (router, fake) = test_app(json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": { "eth0": { "dhcp": true } },
         "access": {
             "webAdmin": { "password_hash": auth::hash_password("hunter2secret").unwrap() }
@@ -450,7 +450,7 @@ fn comment_of(line: &str) -> &str {
 fn ssh_tree(keys: serde_json::Value) -> serde_json::Value {
     let hash = auth::hash_password("hunter2secret").unwrap();
     json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": {},
         "access": {
             "webAdmin": { "password_hash": hash },
@@ -838,7 +838,7 @@ fn ui_package_bytes(api_version: &str) -> Vec<u8> {
     .unwrap();
     std::fs::write(source.join("assets/app.js"), "console.log('uploaded')").unwrap();
     std::fs::write(
-        source.join("mos-ui.json"),
+        source.join("mica-ui.json"),
         serde_json::to_vec(&json!({
             "schemaVersion": 1,
             "name": "uploaded",
@@ -849,7 +849,7 @@ fn ui_package_bytes(api_version: &str) -> Vec<u8> {
         .unwrap(),
     )
     .unwrap();
-    let package = temp.path().join("uploaded.mos-ui.zip");
+    let package = temp.path().join("uploaded.mica-ui.zip");
     mica_ui_bundle::pack(&source, &package).unwrap();
     std::fs::read(package).unwrap()
 }
@@ -1275,7 +1275,7 @@ async fn ambiguous_reserved_prefixes_cannot_cross_asset_roots() {
         let body = body_string(response).await;
         assert!(!body.contains("CUSTOM-"), "{path} crossed into custom UI");
         assert!(
-            !body.contains("<title>mos console</title>"),
+            !body.contains("<title>mica console</title>"),
             "{path} used a guarded miss as built-in SPA navigation"
         );
     }
@@ -1733,7 +1733,7 @@ async fn every_asset_response_carries_nosniff_and_its_cache_class() {
         "immutableDir":"assets","apiVersions":["v1"]}"#;
     let bundle = install_bundle(&[
         ("index.html", "<!doctype html><title>custom</title>"),
-        ("mos-ui.json", manifest),
+        ("mica-ui.json", manifest),
         ("assets/app.a1b2c3.js", "//real"),
         ("assets/logo.svg", "<svg/>"),
         ("robots.txt", "User-agent: *"),
@@ -1899,7 +1899,7 @@ fn audit_events(lines: &[serde_json::Value]) -> Vec<(String, String)> {
 fn mqtt_tree(enabled: bool) -> serde_json::Value {
     let hash = auth::hash_password("hunter2secret").unwrap();
     json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": {},
         "access": { "webAdmin": { "password_hash": hash } },
         "mqtt": {
@@ -2060,7 +2060,7 @@ async fn the_mqtt_open_listener_warning_tracks_the_configuration_not_the_page() 
 // assertions look for.
 fn secret_tree(password: &str) -> serde_json::Value {
     json!({
-        "hostname": "mos",
+        "hostname": "mica",
         // The field the denylist's fail-closed entry exists for. No shipped
         // schema has it — `WireguardConfig` carries no private key and never
         // will — so the fixture plants the hypothetical the entry guards
@@ -2090,7 +2090,7 @@ fn secret_tree(password: &str) -> serde_json::Value {
             ],
         },
         "wifi": {
-            "ap": { "ssid": "mos-ap", "psk": "ap-plaintext-marker" },
+            "ap": { "ssid": "mica-ap", "psk": "ap-plaintext-marker" },
             "client": {
                 "networks": [
                     { "ssid": "home", "psk": "home-plaintext-marker" },
@@ -2182,7 +2182,7 @@ async fn the_settings_root_answers_the_dot_paths_value_for_a_session() {
     let response = bearer(&router, "GET", "/api/v1/settings/hostname", &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_api_headers(&response, "/api/v1/settings/hostname");
-    assert_eq!(body_string(response).await, r#""mos""#);
+    assert_eq!(body_string(response).await, r#""mica""#);
 
     // A subtree, and a scalar reached through one: the passthrough has no
     // shape of its own to impose.
@@ -2208,16 +2208,16 @@ async fn the_settings_root_answers_the_dot_paths_value_for_a_session() {
 async fn the_state_root_answers_the_dot_paths_value_for_a_session() {
     let (tree, token) = with_token(secret_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
-    fake.set_state_entry("hostname", json!({ "applied": "mos" }));
+    fake.set_state_entry("hostname", json!({ "applied": "mica" }));
 
     let response = bearer(&router, "GET", "/api/v1/state/hostname", &token).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_api_headers(&response, "/api/v1/state/hostname");
-    assert_eq!(body_string(response).await, r#"{"applied":"mos"}"#);
+    assert_eq!(body_string(response).await, r#"{"applied":"mica"}"#);
 
     let response = bearer(&router, "GET", "/api/v1/state/hostname.applied", &token).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_string(response).await, r#""mos""#);
+    assert_eq!(body_string(response).await, r#""mica""#);
 }
 
 // The time-status surface (PLAN-044): authenticated, read-only, and micad's
@@ -2408,7 +2408,7 @@ async fn normal_apid_exposes_no_format_or_repartition_action() {
 async fn the_two_roots_do_not_answer_for_each_other() {
     let (tree, token) = with_token(secret_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
-    fake.set_state_entry("hostname", json!({ "applied": "mos" }));
+    fake.set_state_entry("hostname", json!({ "applied": "mica" }));
 
     // `hostname` exists in both, with different values.
     let settings = bearer(&router, "GET", "/api/v1/settings/hostname", &token).await;
@@ -2651,7 +2651,7 @@ async fn a_dot_path_that_names_a_secret_field_answers_the_sentinel() {
 // errors, which are §2.4's `micad_unreachable` fallback row and cannot reach
 // the other three.
 fn method_error(name: &'static str, message: &str) -> zbus::Error {
-    let reply_to = zbus::message::Message::method_call("/com/mos/micad", "GetSettings")
+    let reply_to = zbus::message::Message::method_call("/com/mica/micad", "GetSettings")
         .expect("a well-formed method call")
         .build(&())
         .expect("an empty body serialises");
@@ -2679,13 +2679,13 @@ struct FailingSettings {
 impl FailingSettings {
     fn error(&self) -> anyhow::Error {
         if self.timeout {
-            return anyhow::Error::new(crate::bus_client::MosdCallTimeout::new(
+            return anyhow::Error::new(crate::bus_client::MicadCallTimeout::new(
                 "GetState",
                 std::time::Duration::from_secs(5),
             ));
         }
         match self.fdo_name {
-            Some(name) => method_error(name, MOSD_MESSAGE).into(),
+            Some(name) => method_error(name, MICAD_MESSAGE).into(),
             None => anyhow::anyhow!("no connection to micad"),
         }
     }
@@ -2693,7 +2693,7 @@ impl FailingSettings {
 
 // The text micad is pretending to have sent, which §2.4 requires apid to carry
 // through untouched.
-const MOSD_MESSAGE: &str = "invalid settings value at `network.eth0.100`: unknown field `100`";
+const MICAD_MESSAGE: &str = "invalid settings value at `network.eth0.100`: unknown field `100`";
 
 #[async_trait::async_trait]
 impl SettingsApi for FailingSettings {
@@ -2867,7 +2867,7 @@ fn the_zbus_error_survives_the_conversion_to_anyhow() {
 // No row is route-dependent any more. fdo `InvalidArgs` was 422
 // `settings_rejected` everywhere except the live-state route, where apid
 // rewrote it to 404 because `GetState` had a single producer for the name;
-// `GetState` now raises `MOSD_NOT_FOUND` for a dot-path that resolves to
+// `GetState` now raises `MICAD_NOT_FOUND` for a dot-path that resolves to
 // nothing, so the same name means the same thing on both routes and the
 // table is read straight.
 #[tokio::test]
@@ -2914,7 +2914,7 @@ async fn each_fdo_error_name_gets_its_own_envelope() {
             assert_eq!(error["source"], "micad", "{fdo_name}");
             // §2.4: apid substituting its own phrasing would hide every
             // message micad learns to produce.
-            assert_eq!(error["message"], MOSD_MESSAGE, "{fdo_name}");
+            assert_eq!(error["message"], MICAD_MESSAGE, "{fdo_name}");
             // §2.4's optional member, which these routes DO name.
             assert_eq!(
                 error["path"],
@@ -2929,7 +2929,7 @@ async fn each_fdo_error_name_gets_its_own_envelope() {
 // not be made at all, which is a statement about this server rather than
 // about the request. 503, because apid itself is up and answering.
 #[tokio::test]
-async fn an_unreachable_mosd_is_503_with_retry_after() {
+async fn an_unreachable_micad_is_503_with_retry_after() {
     // No `MethodError` at all, and a `MethodError` under a name §2.4's table
     // does not list: both are the fallback.
     for fdo_name in [None, Some("org.freedesktop.DBus.Error.UnknownObject")] {
@@ -2990,7 +2990,7 @@ async fn a_dot_path_that_does_not_exist_is_404_and_a_rejection_stays_422() {
 // not resolve, and apid answered 404 by reading that name against a fact
 // about `GetState` -- that it had exactly one producer for it -- which was
 // true but private to this one route. micad's `get_state` now raises
-// `MOSD_NOT_FOUND`, the name every other read on the bus already uses for a
+// `MICAD_NOT_FOUND`, the name every other read on the bus already uses for a
 // path that names nothing, so §2.4's shared classifier answers this without a
 // special case.
 //
@@ -3235,7 +3235,7 @@ async fn the_api_password_change_rejects_a_malformed_body_with_the_envelope() {
 // fixture.
 fn kinds_tree(password: &str) -> serde_json::Value {
     json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": {
             "eth0": { "dhcp": true },
             "eth1": { "dhcp": false },
@@ -3282,12 +3282,12 @@ const OTHER_PEER_KEY: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
 // tree is served over D-Bus and over `GET /api/v1/state/network`.
 fn network_state() -> serde_json::Value {
     json!({
-        "eth0": { "file": "50-mos-eth0.network", "dhcp": true, "kind": "physical" },
-        "eth1": { "file": "50-mos-eth1.network", "dhcp": false, "kind": "physical" },
-        "eth0.100": { "file": "50-mos-eth0.100.network", "dhcp": false, "kind": "vlan" },
-        "br0": { "file": "50-mos-br0.network", "dhcp": true, "kind": "bridge" },
+        "eth0": { "file": "50-mica-eth0.network", "dhcp": true, "kind": "physical" },
+        "eth1": { "file": "50-mica-eth1.network", "dhcp": false, "kind": "physical" },
+        "eth0.100": { "file": "50-mica-eth0.100.network", "dhcp": false, "kind": "vlan" },
+        "br0": { "file": "50-mica-br0.network", "dhcp": true, "kind": "bridge" },
         "wg0": {
-            "file": "50-mos-wg0.network",
+            "file": "50-mica-wg0.network",
             "dhcp": false,
             "kind": "wireguard",
             "publicKey": PEER_KEY,
@@ -3664,7 +3664,7 @@ fn health_app_with_token(uptime: serde_json::Value) -> (Router, Arc<FakeSettings
 // and fails every state read. A health route reading a cached flag instead of
 // the bus would report `ok` here.
 #[tokio::test]
-async fn health_reports_an_unreachable_mosd_and_still_answers_200() {
+async fn health_reports_an_unreachable_micad_and_still_answers_200() {
     let (router, token) = failing_app(None).await;
 
     let response = bearer(&router, "GET", "/api/v1/health", &token).await;
@@ -3909,7 +3909,7 @@ fn seeded_token(index: usize) -> (serde_json::Value, String) {
             "hash": crate::token::digest(&secret),
             "created": 1,
         }),
-        format!("mos_{id}_{secret}"),
+        format!("mica_{id}_{secret}"),
     )
 }
 
@@ -4778,7 +4778,7 @@ async fn a_body_of_the_wrong_shape_is_refused_and_not_written() {
 // A write micad refuses is classified by §2.4's table exactly as a read is:
 // the route adds no second opinion, and micad's own message comes through.
 #[tokio::test]
-async fn a_write_mosd_refuses_carries_mosds_classification() {
+async fn a_write_micad_refuses_carries_mosds_classification() {
     for (fdo_name, code, status) in [
         (
             "org.freedesktop.DBus.Error.InvalidArgs",
@@ -4809,7 +4809,7 @@ async fn a_write_mosd_refuses_carries_mosds_classification() {
         let error = envelope(response).await;
         assert_eq!(error["code"], code, "{fdo_name}");
         assert_eq!(error["source"], "micad", "{fdo_name}");
-        assert_eq!(error["message"], MOSD_MESSAGE, "{fdo_name}");
+        assert_eq!(error["message"], MICAD_MESSAGE, "{fdo_name}");
         assert_eq!(error["path"], json!("hostname"), "{fdo_name}");
     }
 }
@@ -6817,7 +6817,7 @@ async fn power_actions_report_admission_failures() {
             let error = envelope(response).await;
             assert_eq!(error["code"], code);
             if name.is_some() {
-                assert_eq!(error["message"], MOSD_MESSAGE);
+                assert_eq!(error["message"], MICAD_MESSAGE);
             }
         }
     }
@@ -6834,7 +6834,7 @@ async fn power_actions_report_unconfirmed_timeouts() {
 }
 
 #[tokio::test]
-async fn power_actions_accept_only_after_mosd_dispatch() {
+async fn power_actions_accept_only_after_micad_dispatch() {
     let (tree, token) = with_token(configured_tree("hunter2secret"));
     let (router, fake) = test_app(tree);
     for (path, expected) in [(REBOOT_PATH, "reboot"), (POWEROFF_PATH, "power_off")] {
@@ -7038,7 +7038,7 @@ async fn a_failed_transient_password_names_no_dot_path() {
         "PUT",
         "/api/v1/settings/hostname",
         &token,
-        r#""mos""#,
+        r#""mica""#,
     )
     .await;
     assert_eq!(envelope(response).await["path"], "hostname");
@@ -7147,7 +7147,7 @@ fn full_setup_body() -> String {
 #[tokio::test]
 async fn the_setup_network_tree_is_merged_with_the_stored_one_before_it_is_judged() {
     let (router, fake) = test_app(json!({
-        "hostname": "mos",
+        "hostname": "mica",
         "network": { "eth1": { "kind": "physical", "dhcp": false } },
         "access": {},
     }));

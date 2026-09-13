@@ -43,7 +43,7 @@ const INDEX: &str = "index.html";
 
 /// The optional manifest §5.3 reads at install time; read here for the one
 /// field §4.3 needs at request time.
-const MANIFEST: &str = "mos-ui.json";
+const MANIFEST: &str = "mica-ui.json";
 
 /// `GET /` — §4.1's one exception to rule 3.
 ///
@@ -158,7 +158,7 @@ fn serve_file(root: &Path, file: &Path) -> Option<Response> {
     Some(asset_response(body, Some(mime::content_type(file)), class))
 }
 
-/// The directory §5.3's `mos-ui.json` declares immutable, for §4.3's third
+/// The directory §5.3's `mica-ui.json` declares immutable, for §4.3's third
 /// cache class.
 ///
 /// Read per request, from the served tree. The store validates and records the

@@ -1,5 +1,5 @@
 [Unit]
-Description=mos management daemon
+Description=mica management daemon
 After=dbus.service
 # main.rs deliberately hard-fails when STATE is unwritable; without this
 # ordering that policy can race the mount, and Restart=on-failure under the
@@ -22,7 +22,7 @@ Restart=on-failure
 
 # Sandboxing for a root daemon. micad must keep root and broad file access —
 # it rewrites /etc/shadow, renders under /run/mica and /run/systemd/network,
-# writes ~/.ssh/authorized_keys into /root and /home/mos, and owns STATE — so
+# writes ~/.ssh/authorized_keys into /root and /home/mica, and owns STATE — so
 # ProtectSystem=, ProtectHome= and a capability bounding set are not
 # candidates. Everything below is: micad execs nothing setuid, needs no
 # realtime, maps nothing writable-executable, and speaks only unix/netlink/inet

@@ -34,7 +34,7 @@ esac
 
 NAME=mica-mqtt-broker
 ID=969
-COMMENT="mos MQTT broker"
+COMMENT="mica MQTT broker"
 
 # The group first, because useradd --gid names it. Both halves of the pin are
 # checked -- the name and the numeric id -- because either can be taken

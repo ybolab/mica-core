@@ -22,7 +22,7 @@ fn fixture() -> (Ownership, Fake) {
     let mapping = Mapping {
         generation: 1,
         device: device(253, 0),
-        name: "mos-root".into(),
+        name: "mica-root".into(),
         uuid: "CRYPT-VERITY-owned".into(),
         table: "0 8 verity 1 7:0 7:0 4096 4096 1 1 sha256 hash salt".into(),
     };

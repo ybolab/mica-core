@@ -1113,7 +1113,7 @@ mod tests {
         FakeDaemon::set(
             &scene.daemon.reboot,
             Err(
-                "reboot refused by the safe-to-reboot gate: mos-vision reports blocking"
+                "reboot refused by the safe-to-reboot gate: mica-vision reports blocking"
                     .to_string(),
             ),
         );
@@ -1285,7 +1285,7 @@ mod tests {
     /// `crate::bus::tests::the_automatic_path_against_a_closed_gate_arms_no_override`.
     #[tokio::test]
     async fn a_closed_reboot_gate_defers_and_the_driver_takes_no_way_around_it() {
-        const CLOSED: &str = "reboot refused by the safe-to-reboot gate: mos-vision reports \
+        const CLOSED: &str = "reboot refused by the safe-to-reboot gate: mica-vision reports \
                               blocking: recording. An administrator can lift a health block \
                               with SetRebootOverride (POST /api/v1/update/reboot-override).";
 

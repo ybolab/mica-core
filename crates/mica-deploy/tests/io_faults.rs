@@ -54,7 +54,7 @@ fn receipt(d: &Value, fit: bool) -> BootReceipt {
         entry: if fit {
             format!("fit:{id}")
         } else {
-            format!("mos-{id}.conf")
+            format!("mica-{id}.conf")
         },
         deployment_id: id,
         kernel_id: d["kernel"]["id"].as_str().unwrap().into(),
@@ -71,7 +71,7 @@ fn paths(root: &Path, d: &Value, fit: bool) -> Vec<PathBuf> {
         if fit {
             root.join(format!("store/system/kernels/{kernel}/boot.itb"))
         } else {
-            root.join(format!("store/esp/EFI/mos/kernels/{kernel}.efi"))
+            root.join(format!("store/esp/EFI/mica/kernels/{kernel}.efi"))
         },
         root.join(format!("store/system/kernels/{kernel}/support.img")),
         root.join(format!(
@@ -180,9 +180,9 @@ fn seed(root: &Path, fit: bool, operation: &str) {
     } else {
         for record in &records {
             write(
-                &root.join(format!("store/esp/loader/entries/mos-{}.conf", record.id)),
+                &root.join(format!("store/esp/loader/entries/mica-{}.conf", record.id)),
                 format!(
-                    "title MOS\nversion {}\nsort-key mos\nefi /EFI/mos/kernels/{}.efi\n",
+                    "title MICA\nversion {}\nsort-key mica\nefi /EFI/mica/kernels/{}.efi\n",
                     record.generation, record.kernel_id
                 )
                 .as_bytes(),
@@ -235,8 +235,8 @@ fn seed(root: &Path, fit: bool, operation: &str) {
         } else {
             let id = component_id(&deployments[2]).unwrap();
             fs::rename(
-                root.join(format!("store/esp/loader/entries/mos-{id}+3.conf")),
-                root.join(format!("store/esp/loader/entries/mos-{id}+2-1.conf")),
+                root.join(format!("store/esp/loader/entries/mica-{id}+3.conf")),
+                root.join(format!("store/esp/loader/entries/mica-{id}+2-1.conf")),
             )
             .unwrap();
         }
@@ -610,9 +610,10 @@ fn install_requires_the_confirmed_running_receipt_and_reconciles_activation() {
         } else {
             fs::rename(
                 root.path()
-                    .join(format!("store/esp/loader/entries/mos-{candidate}+3.conf")),
-                root.path()
-                    .join(format!("store/esp/loader/entries/mos-{candidate}+2-1.conf")),
+                    .join(format!("store/esp/loader/entries/mica-{candidate}+3.conf")),
+                root.path().join(format!(
+                    "store/esp/loader/entries/mica-{candidate}+2-1.conf"
+                )),
             )
             .unwrap();
         }
@@ -710,7 +711,7 @@ fn an_unconfirmed_running_trial_cannot_retire_the_other_deployment() {
                         .join("store/esp/loader/entries")
                         .join(entry.file),
                     root.path().join(format!(
-                        "store/esp/loader/entries/mos-{}+2-1.conf",
+                        "store/esp/loader/entries/mica-{}+2-1.conf",
                         entry.id
                     )),
                 )

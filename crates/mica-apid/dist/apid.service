@@ -1,5 +1,5 @@
 [Unit]
-Description=mos API daemon (serves the web dashboard)
+Description=mica API daemon (serves the web dashboard)
 After=network.target micad.service
 Wants=micad.service
 # StateDirectory below lives under /var/lib; apid persists its TLS material,

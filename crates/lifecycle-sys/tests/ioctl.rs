@@ -36,7 +36,7 @@ fn device_mapper_requests_refuse_unrelated_descriptors() {
     );
     let status = lifecycle_sys::DmStatus {
         device: 0xfd00,
-        name: "mos-root".into(),
+        name: "mica-root".into(),
         uuid: "CRYPT-VERITY-owned".into(),
         targets: 1,
         open_count: 0,

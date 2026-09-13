@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn task_collection_keeps_mosd_order_across_hex_counter_widths() {
+    fn task_collection_keeps_micad_order_across_hex_counter_widths() {
         let registry = TaskRegistry::new();
         registry.subscribed();
         let generation = registry.generation();

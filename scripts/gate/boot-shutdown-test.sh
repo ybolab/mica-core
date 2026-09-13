@@ -23,7 +23,7 @@ mkdir -p "$CACHE/target" "$REPO/_out/cargo/registry" "$REPO/_out/cargo/git"
 # /srv paths map identically; /root and /work are translated above for siblings.
 # mica-build-side: container-block -- pinned native and UAPI fixture toolchain.
 timeout 110 docker run --rm --label ai-agent=true --network traefik \
-    --name "ai-agent-mos-boot-shutdown-$$" \
+    --name "ai-agent-mica-boot-shutdown-$$" \
     -v "$HOST_REPO:/src:ro" -v "$HOST_REPO/_out/b3-rust/target:/target" \
     -v "$HOST_REPO/_out/cargo/registry:/usr/local/cargo/registry" \
     -v "$HOST_REPO/_out/cargo/git:/usr/local/cargo/git" \

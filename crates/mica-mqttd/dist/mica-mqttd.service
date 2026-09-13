@@ -1,6 +1,6 @@
 [Unit]
-Description=mos MQTT bridge (publishes explicitly enrolled application item trees)
-Documentation=file:///usr/share/doc/mos/bus.md
+Description=mica MQTT bridge (publishes explicitly enrolled application item trees)
+Documentation=file:///usr/share/doc/mica/bus.md
 After=network.target micad.service
 Wants=micad.service
 # micad renders this before starting the bridge. A missing identity skips the
@@ -22,7 +22,7 @@ Type=simple
 #
 #     MICA_MQTT_BROKER_HOST=10.0.0.2
 #     MICA_MQTT_BROKER_PORT=1883
-#     MICA_MQTT_CLIENT_ID=mos-<serial>
+#     MICA_MQTT_CLIENT_ID=mica-<serial>
 #     MICA_MQTT_MODE=read-only
 #
 # The leading `-` on EnvironmentFile makes an absent file a non-error: an

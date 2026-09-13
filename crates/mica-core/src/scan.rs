@@ -6,7 +6,7 @@
 //! woken for a name it would only discard. A name that gains an owner is
 //! probed once and published; a name that loses its owner is **retained**
 //! with `connected: false` until an operator drops it through
-//! [`ForgetService`](crate::bus::MosdService::forget_service).
+//! [`ForgetService`](crate::bus::MicadService::forget_service).
 //!
 //! # Best-effort, never refused
 //!
@@ -44,7 +44,7 @@ use zbus::object_server::InterfaceRef;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, fdo};
 
-use crate::bus::{BUS_NAME, MosdService};
+use crate::bus::{BUS_NAME, MicadService};
 
 /// Live-state key the whole registry is published under.
 pub const STATE_KEY: &str = "services";
@@ -177,7 +177,7 @@ impl Entry {
 /// Every `com.mica.*` service micad has seen, keyed by bus name.
 ///
 /// Shared between the scan task, which fills it, and
-/// [`MosdService`](crate::bus::MosdService), whose `ForgetService` empties one
+/// [`MicadService`](crate::bus::MicadService), whose `ForgetService` empties one
 /// entry of it. The lock is a plain [`Mutex`] and is never held across an
 /// await: every method takes it, finishes, and hands back an owned snapshot
 /// for the caller to publish.
@@ -355,7 +355,7 @@ async fn probe(connection: &Connection, name: &str) -> Probe {
 async fn record_appearance(
     connection: &Connection,
     registry: &Registry,
-    service: &InterfaceRef<MosdService>,
+    service: &InterfaceRef<MicadService>,
     name: &str,
 ) {
     // Never micad itself: the registry is micad's view of the OTHER services on
@@ -369,7 +369,7 @@ async fn record_appearance(
     // because `arg0namespace='com.mica'` matches the namespace as well as the
     // names under it.
     let Some(parsed) = mica_busname::parse(name) else {
-        tracing::debug!(service = name, "not a mos bus name; not registered");
+        tracing::debug!(service = name, "not a mica bus name; not registered");
         return;
     };
     let probe = probe(connection, name).await;
@@ -405,7 +405,7 @@ async fn record_appearance(
 /// Mark `name` disconnected and publish, if the registry carries it at all.
 async fn record_disappearance(
     registry: &Registry,
-    service: &InterfaceRef<MosdService>,
+    service: &InterfaceRef<MicadService>,
     name: &str,
 ) {
     if let Some(snapshot) = registry.disconnect(name) {
@@ -415,7 +415,7 @@ async fn record_disappearance(
 }
 
 /// Write a registry snapshot into the live-state tree.
-async fn publish(service: &InterfaceRef<MosdService>, snapshot: Json) {
+async fn publish(service: &InterfaceRef<MicadService>, snapshot: Json) {
     service.get().await.publish_services(snapshot).await;
 }
 
@@ -446,11 +446,11 @@ fn name_owner_changed_rule() -> zbus::Result<MatchRule<'static>> {
 /// is caught by the signal even if it missed the sweep. A name seen twice is
 /// simply probed twice; the entry is keyed by name and the second answer wins.
 ///
-/// Never constructed under `MOSD_DRY_RUN=1` (see `main.rs`).
+/// Never constructed under `MICAD_DRY_RUN=1` (see `main.rs`).
 pub async fn run(
     connection: Connection,
     registry: Arc<Registry>,
-    service: InterfaceRef<MosdService>,
+    service: InterfaceRef<MicadService>,
 ) {
     let rule = match name_owner_changed_rule() {
         Ok(rule) => rule,

@@ -29,7 +29,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 /// Default STATE-backed directory holding the settings file and the secrets.
 ///
-/// `/var/lib/mica` is a bind mount whose source is `/mnt/data/state/mos`.
+/// `/var/lib/mica` is a bind mount whose source is `/mnt/data/state/mica`.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/mica";
 
 /// Sub-directory of the state directory holding plaintext secrets.

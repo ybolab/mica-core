@@ -499,7 +499,7 @@ mod tests {
     async fn fixed_readers_render_both_members_available() {
         let source = HostFailureEvidence::new(
             Box::new(FixedJournal(
-                b"2026-09-02T00:00:00+0000 mos systemd[1]: Failed to start x.service.\n".to_vec(),
+                b"2026-09-02T00:00:00+0000 mica systemd[1]: Failed to start x.service.\n".to_vec(),
             )),
             Box::new(FixedUnits(vec![unit("x.service")])),
         );

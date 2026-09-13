@@ -61,7 +61,7 @@ async fn the_system_info_route_answers_mosds_surface_read_only() {
         "board": { "available": false, "detail": "no device-tree model" },
         "system": { "available": true, "version": "0.1.0+git00b674ec0ffe-1", "package": "micad",
                     "gitStamp": { "available": true, "commit": "00b674ec0ffe", "dirty": false, "consistent": true } },
-        "packages": { "available": true, "count": 1, "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mos": true }] },
+        "packages": { "available": true, "count": 1, "entries": [{ "name": "micad", "version": "0.1.0+git00b674ec0ffe-1", "architecture": "arm64", "mica": true }] },
         "slot": { "available": true, "booted": "rootfs.0" },
         "uptime": { "available": true, "seconds": 99 },
         // A field the live denylist covers must not pass through this
@@ -162,7 +162,7 @@ async fn the_telemetry_and_network_status_routes_are_read_only_observations() {
 // micad failures on the three reads travel under §2.4's classification like
 // every other bus read.
 #[tokio::test]
-async fn the_three_reads_classify_a_mosd_failure() {
+async fn the_three_reads_classify_a_micad_failure() {
     let (router, token) = failing_app(None).await;
     for path in [
         "/api/v1/system/info",
@@ -282,7 +282,7 @@ async fn a_snapshot_is_collected_listed_exported_and_deleted() {
     assert_eq!(header_value(&response, CACHE_CONTROL), "no-store");
     assert_eq!(
         header_value(&response, CONTENT_DISPOSITION),
-        "attachment; filename=\"mos-diagnostics-01234567-1.json\""
+        "attachment; filename=\"mica-diagnostics-01234567-1.json\""
     );
     let text = body_string(response).await;
     for marker in [

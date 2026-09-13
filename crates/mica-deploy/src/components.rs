@@ -268,7 +268,7 @@ impl Deployment {
             rootfs: format!("roots/{}/rootfs.img", self.rootfs.id),
             support: format!("kernels/{}/support.img", self.kernel.id),
             boot: if self.kernel.boot.format == "uki" {
-                format!("EFI/mos/kernels/{}.efi", self.kernel.id)
+                format!("EFI/mica/kernels/{}.efi", self.kernel.id)
             } else {
                 format!("kernels/{}/boot.itb", self.kernel.id)
             },

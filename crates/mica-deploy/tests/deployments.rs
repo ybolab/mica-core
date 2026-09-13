@@ -24,9 +24,9 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt) {
     let fallback = "b".repeat(64);
     for (id, suffix, generation) in [(&current, "+2-1", 2), (&fallback, "", 1)] {
         fs::write(
-            uefi_esp(&store).join(format!("loader/entries/mos-{id}{suffix}.conf")),
+            uefi_esp(&store).join(format!("loader/entries/mica-{id}{suffix}.conf")),
             format!(
-                "title MOS\nversion {generation}\nsort-key mos\nefi /EFI/mos/kernels/{}.efi\n",
+                "title MICA\nversion {generation}\nsort-key mica\nefi /EFI/mica/kernels/{}.efi\n",
                 "c".repeat(64)
             ),
         )
@@ -34,7 +34,7 @@ fn fixture() -> (TempDir, DeploymentStore, BootReceipt) {
     }
     let receipt = BootReceipt {
         deployment_id: current.clone(),
-        entry: format!("mos-{current}.conf"),
+        entry: format!("mica-{current}.conf"),
         kernel_id: "c".repeat(64),
         rootfs_id: "d".repeat(64),
         content_verified: true,
@@ -77,7 +77,7 @@ fn confirms_only_the_authenticated_running_trial_and_retains_fallback() {
     assert!(
         uefi_esp(&store)
             .join(format!(
-                "loader/entries/mos-{}+2-1.conf",
+                "loader/entries/mica-{}+2-1.conf",
                 receipt.deployment_id
             ))
             .exists()
@@ -91,7 +91,10 @@ fn confirms_only_the_authenticated_running_trial_and_retains_fallback() {
     assert_eq!(state.fallback.as_deref(), Some("b".repeat(64).as_str()));
     assert!(
         uefi_esp(&store)
-            .join(format!("loader/entries/mos-{}.conf", receipt.deployment_id))
+            .join(format!(
+                "loader/entries/mica-{}.conf",
+                receipt.deployment_id
+            ))
             .exists()
     );
     assert_eq!(store.confirm(&receipt).unwrap().current, state.current);
@@ -102,10 +105,13 @@ fn a_durable_confirmation_is_visible_before_its_data_state_write() {
     let (_dir, store, receipt) = fixture();
     fs::rename(
         uefi_esp(&store).join(format!(
-            "loader/entries/mos-{}+2-1.conf",
+            "loader/entries/mica-{}+2-1.conf",
             receipt.deployment_id
         )),
-        uefi_esp(&store).join(format!("loader/entries/mos-{}.conf", receipt.deployment_id)),
+        uefi_esp(&store).join(format!(
+            "loader/entries/mica-{}.conf",
+            receipt.deployment_id
+        )),
     )
     .unwrap();
     let state = store.effective_state().unwrap();
@@ -125,14 +131,14 @@ fn rollback_exhausts_current_without_refilling_fallback_attempts() {
     assert!(
         uefi_esp(&store)
             .join(format!(
-                "loader/entries/mos-{}+0-3.conf",
+                "loader/entries/mica-{}+0-3.conf",
                 receipt.deployment_id
             ))
             .exists()
     );
     assert!(
         uefi_esp(&store)
-            .join(format!("loader/entries/mos-{}.conf", "b".repeat(64)))
+            .join(format!("loader/entries/mica-{}.conf", "b".repeat(64)))
             .exists()
     );
     assert!(store.reject(&"b".repeat(64)).is_err());
@@ -146,14 +152,14 @@ fn rollback_requires_a_confirmed_running_deployment_and_no_candidate() {
     receipt.content_verified = false;
     assert!(store.rollback(&receipt).is_err());
     receipt.content_verified = true;
-    let fallback = uefi_esp(&store).join(format!("loader/entries/mos-{}.conf", "b".repeat(64)));
+    let fallback = uefi_esp(&store).join(format!("loader/entries/mica-{}.conf", "b".repeat(64)));
     let fallback_bytes = fs::read(&fallback).unwrap();
     fs::remove_file(&fallback).unwrap();
-    let candidate = uefi_esp(&store).join(format!("loader/entries/mos-{}+3.conf", "e".repeat(64)));
+    let candidate = uefi_esp(&store).join(format!("loader/entries/mica-{}+3.conf", "e".repeat(64)));
     fs::write(
         &candidate,
         format!(
-            "title MOS\nversion 3\nsort-key mos\nefi /EFI/mos/kernels/{}.efi\n",
+            "title MICA\nversion 3\nsort-key mica\nefi /EFI/mica/kernels/{}.efi\n",
             "c".repeat(64)
         ),
     )
@@ -169,7 +175,7 @@ fn rollback_requires_a_confirmed_running_deployment_and_no_candidate() {
 fn refuses_ambiguous_entries_and_symbolic_state_files() {
     let (_dir, store, receipt) = fixture();
     let duplicate = uefi_esp(&store).join(format!(
-        "loader/entries/mos-{}+1-2.conf",
+        "loader/entries/mica-{}+1-2.conf",
         receipt.deployment_id
     ));
     fs::write(&duplicate, "version 2\n").unwrap();
@@ -185,7 +191,7 @@ fn a_rollback_boot_can_confirm_the_last_usable_deployment() {
     store.confirm(&receipt).unwrap();
     store.reject(&receipt.deployment_id).unwrap();
     receipt.deployment_id = "b".repeat(64);
-    receipt.entry = format!("mos-{}.conf", receipt.deployment_id);
+    receipt.entry = format!("mica-{}.conf", receipt.deployment_id);
     let state = store.confirm(&receipt).unwrap();
     assert_eq!(state.current, Some(receipt.deployment_id));
     assert_eq!(state.fallback, None);
@@ -250,15 +256,15 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
             "shared support",
         )
         .unwrap();
-        fs::create_dir_all(uefi_esp(&store).join("EFI/mos/kernels")).unwrap();
+        fs::create_dir_all(uefi_esp(&store).join("EFI/mica/kernels")).unwrap();
         fs::write(
-            uefi_esp(&store).join(format!("EFI/mos/kernels/{kernel_id}.efi")),
+            uefi_esp(&store).join(format!("EFI/mica/kernels/{kernel_id}.efi")),
             "shared kernel",
         )
         .unwrap();
         if generation == 2 || generation == 3 {
             fs::write(
-                uefi_esp(&store).join(format!("loader/entries/mos-{id}.conf")),
+                uefi_esp(&store).join(format!("loader/entries/mica-{id}.conf")),
                 format!("version {generation}\n"),
             )
             .unwrap();
@@ -275,7 +281,7 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
         })
         .unwrap();
     receipt.deployment_id = records[2].0.clone();
-    receipt.entry = format!("mos-{}.conf", receipt.deployment_id);
+    receipt.entry = format!("mica-{}.conf", receipt.deployment_id);
     receipt.rootfs_id = records[2].1.clone();
     receipt.kernel_id = records[2].2.clone();
     let fallback = store
@@ -300,7 +306,7 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
         );
         assert!(
             uefi_esp(&store)
-                .join(format!("EFI/mos/kernels/{}.efi", record.2))
+                .join(format!("EFI/mica/kernels/{}.efi", record.2))
                 .exists()
         );
     }
@@ -315,8 +321,8 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
         store
             .system
             .join(format!("deployments/{}.pending", records[3].0)),
-        uefi_esp(&store).join(format!("EFI/mos/kernels/{}.partial", records[0].2)),
-        uefi_esp(&store).join(format!("loader/entries/mos-{}+3.pending", records[3].0)),
+        uefi_esp(&store).join(format!("EFI/mica/kernels/{}.partial", records[0].2)),
+        uefi_esp(&store).join(format!("loader/entries/mica-{}+3.pending", records[3].0)),
         store.meta.join("deployments.pending"),
     ];
     for path in &interrupted {
@@ -335,14 +341,14 @@ fn collection_keeps_two_bootable_deployments_and_discards_stale_state_references
 fn fallback_confirmation_retires_an_exhausted_candidate() {
     let (_dir, store, receipt) = fixture();
     let mut state = store.confirm(&receipt).unwrap();
-    fs::remove_file(uefi_esp(&store).join(format!("loader/entries/mos-{}.conf", "b".repeat(64))))
+    fs::remove_file(uefi_esp(&store).join(format!("loader/entries/mica-{}.conf", "b".repeat(64))))
         .unwrap();
     state.fallback = None;
     let candidate = "e".repeat(64);
     state.candidate = Some(candidate.clone());
     store.save_state(&state).unwrap();
     fs::write(
-        uefi_esp(&store).join(format!("loader/entries/mos-{candidate}+0-3.conf")),
+        uefi_esp(&store).join(format!("loader/entries/mica-{candidate}+0-3.conf")),
         "version 3\n",
     )
     .unwrap();
@@ -362,7 +368,10 @@ fn data_metadata_failure_is_classified_after_durable_confirmation() {
     assert!(error.is::<SharedDataFailure>());
     assert!(
         uefi_esp(&store)
-            .join(format!("loader/entries/mos-{}.conf", receipt.deployment_id))
+            .join(format!(
+                "loader/entries/mica-{}.conf",
+                receipt.deployment_id
+            ))
             .is_file()
     );
     fs::remove_dir(store.meta.join("deployments.pending")).unwrap();

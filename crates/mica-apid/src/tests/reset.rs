@@ -22,7 +22,7 @@ const RECOVERY_PATH: &str = "/api/v1/recovery/credential";
 ///
 /// A mechanism is a BOARD fact and neither shipped board declares one
 /// (`docs/design/recovery.md` §4), so this is a fixture's name for a door no
-/// mos device has — never a value read out of the tree, which would be a claim
+/// mica device has — never a value read out of the tree, which would be a claim
 /// the board table does not support.
 const FIXTURE_MECHANISM: &str = "boot-menu";
 
@@ -929,7 +929,7 @@ fn marker(mechanism: &str, seconds: u64) -> String {
     json!({ "mechanism": mechanism, "channel": "/dev/tty0", "expires": expires }).to_string()
 }
 
-/// **The shipped state of both mos boards.** A board that declares no physical
+/// **The shipped state of both mica boards.** A board that declares no physical
 /// recovery action refuses presence, and the refusal says so — an operator
 /// told only "none is asserted" would go looking for a door that does not
 /// exist on this hardware.

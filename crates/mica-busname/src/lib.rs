@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-/// The prefix every mos service name carries.
+/// The prefix every mica service name carries.
 pub const PREFIX: &str = "com.mica.";
 
 /// A parsed `com.mica.*` service name, borrowing from the source string.
@@ -34,7 +34,7 @@ pub struct BusName<'a> {
 /// class and every suffix component are non-empty.
 ///
 /// ```
-/// let service = mica_busname::parse("com.mica.sensor.abc123").expect("a mos name");
+/// let service = mica_busname::parse("com.mica.sensor.abc123").expect("a mica name");
 /// assert_eq!(service.class, "sensor");
 /// assert_eq!(service.suffix, Some("abc123"));
 ///

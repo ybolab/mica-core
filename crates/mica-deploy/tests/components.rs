@@ -33,7 +33,7 @@ fn shared_golden_identity_and_paths() {
     );
     assert_eq!(
         descriptor.paths().unwrap().boot,
-        format!("EFI/mos/kernels/{}.efi", descriptor.kernel.id)
+        format!("EFI/mica/kernels/{}.efi", descriptor.kernel.id)
     );
 }
 

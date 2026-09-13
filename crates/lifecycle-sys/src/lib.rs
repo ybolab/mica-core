@@ -506,7 +506,7 @@ mod dm_tests {
     fn status() -> DmStatus {
         DmStatus {
             device: 0xfd00,
-            name: "mos-root".into(),
+            name: "mica-root".into(),
             uuid: "CRYPT-VERITY-owned".into(),
             targets: 2,
             open_count: 0,
@@ -520,7 +520,7 @@ mod dm_tests {
         b.header.flags = DM_READONLY | DM_ACTIVE | if table { DM_TABLE } else { 0 };
         b.header.target_count = 2;
         b.header.event_nr = 7;
-        put_string(&mut b.header.name, "mos-root").unwrap();
+        put_string(&mut b.header.name, "mica-root").unwrap();
         put_string(&mut b.header.uuid, "CRYPT-VERITY-owned").unwrap();
         b
     }

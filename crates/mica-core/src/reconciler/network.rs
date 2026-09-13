@@ -13,14 +13,14 @@ use crate::wgkeys::Keystore;
 /// Directory networkd reads runtime unit files from.
 const DEFAULT_NETWORK_DIR: &str = "/run/systemd/network";
 /// Environment variable overriding the networkd unit directory.
-const NETWORK_DIR_ENV: &str = "MOSD_NETWORK_DIR";
+const NETWORK_DIR_ENV: &str = "MICAD_NETWORK_DIR";
 /// Environment variable naming the settings file, whose directory is the
 /// STATE-backed directory the WireGuard keys live under.
 ///
 /// The same variable the access-point reconciler reads for the same reason: a
 /// test that redirects it redirects the secrets with it, and never writes a key
 /// into the host's `/var/lib/mica`.
-const SETTINGS_PATH_ENV: &str = "MOSD_SETTINGS_PATH";
+const SETTINGS_PATH_ENV: &str = "MICAD_SETTINGS_PATH";
 
 /// Asks the network stack to pick up freshly rendered unit files.
 #[async_trait::async_trait]
@@ -142,7 +142,7 @@ impl<R: NetworkReload, D: LinkDelete> NetworkReconciler<R, D> {
 }
 
 impl NetworkReconciler<Networkd, NetworkctlDelete> {
-    /// Production reconciler: target directory from `MOSD_NETWORK_DIR` if
+    /// Production reconciler: target directory from `MICAD_NETWORK_DIR` if
     /// set, else the networkd runtime directory; keys under the directory of
     /// [`SETTINGS_PATH_ENV`].
     pub fn production() -> Self {
@@ -609,27 +609,27 @@ fn render_unit(iface: &str, cfg: &IfaceSettings, master: Option<&str>, vlans: &[
     out
 }
 
-/// Whether `file_name` is one this reconciler wrote: `50-mos-<iface>.network`
-/// or, for a virtual link, `50-mos-<iface>.netdev`.
+/// Whether `file_name` is one this reconciler wrote: `50-mica-<iface>.network`
+/// or, for a virtual link, `50-mica-<iface>.netdev`.
 ///
-/// Anchored to the exact prefix, not `contains("-mos-")`: the wifi reconcilers
+/// Anchored to the exact prefix, not `contains("-mica-")`: the wifi reconcilers
 /// embed the interface name in their unit names, and an interface like
-/// `a-mos-b` (legal — `-` is a valid name character) would otherwise make this
+/// `a-mica-b` (legal — `-` is a valid name character) would otherwise make this
 /// sweep delete a sibling reconciler's unit on every pass, in a permanent
 /// delete/re-render flap.
-fn is_mos_managed(file_name: &str) -> bool {
-    file_name.starts_with("50-mos-")
+fn is_mica_managed(file_name: &str) -> bool {
+    file_name.starts_with("50-mica-")
         && (file_name.ends_with(".network") || file_name.ends_with(".netdev"))
 }
 
-/// The interface a swept `50-mos-<iface>.netdev` created, and nothing for any
+/// The interface a swept `50-mica-<iface>.netdev` created, and nothing for any
 /// other file.
 ///
 /// The swept file names are the exact set of virtual devices this reconciler
 /// is giving up, which is what makes them the exact set to delete.
-fn mos_netdev_iface(file_name: &str) -> Option<&str> {
+fn mica_netdev_iface(file_name: &str) -> Option<&str> {
     file_name
-        .strip_prefix("50-mos-")
+        .strip_prefix("50-mica-")
         .and_then(|rest| rest.strip_suffix(".netdev"))
 }
 
@@ -654,7 +654,7 @@ impl<R: NetworkReload, D: LinkDelete> Reconciler for NetworkReconciler<R, D> {
         // only, so the device has to go and be built again.
         let mut recreate = BTreeSet::new();
         for (iface, cfg) in &settings.network {
-            let file_name = format!("50-mos-{iface}.network");
+            let file_name = format!("50-mica-{iface}.network");
             let unit = render_unit(
                 iface,
                 cfg,
@@ -677,7 +677,7 @@ impl<R: NetworkReload, D: LinkDelete> Reconciler for NetworkReconciler<R, D> {
             state.insert(iface.clone(), entry);
             rendered.insert(file_name);
             if let Some(netdev) = render_netdev(iface, cfg, &self.keys) {
-                let netdev_name = format!("50-mos-{iface}.netdev");
+                let netdev_name = format!("50-mica-{iface}.netdev");
                 let path = self.target_dir.join(&netdev_name);
                 if std::fs::read_to_string(&path).is_ok_and(|previous| previous != netdev) {
                     recreate.insert(iface.clone());
@@ -693,8 +693,8 @@ impl<R: NetworkReload, D: LinkDelete> Reconciler for NetworkReconciler<R, D> {
             let Some(file_name) = file_name.to_str() else {
                 continue;
             };
-            if is_mos_managed(file_name) && !rendered.contains(file_name) {
-                if let Some(iface) = mos_netdev_iface(file_name) {
+            if is_mica_managed(file_name) && !rendered.contains(file_name) {
+                if let Some(iface) = mica_netdev_iface(file_name) {
                     torn_down.insert(iface.to_string());
                 }
                 std::fs::remove_file(entry.path())?;
@@ -950,7 +950,7 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let rendered = std::fs::read_to_string(dir.path().join("50-mos-eth0.network")).unwrap();
+        let rendered = std::fs::read_to_string(dir.path().join("50-mica-eth0.network")).unwrap();
         assert_eq!(rendered, GOLDEN_DHCP);
     }
 
@@ -962,7 +962,7 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let rendered = std::fs::read_to_string(dir.path().join("50-mos-eth1.network")).unwrap();
+        let rendered = std::fs::read_to_string(dir.path().join("50-mica-eth1.network")).unwrap();
         assert_eq!(rendered, GOLDEN_STATIC);
     }
 
@@ -980,7 +980,7 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let rendered = std::fs::read_to_string(dir.path().join("50-mos-eth2.network")).unwrap();
+        let rendered = std::fs::read_to_string(dir.path().join("50-mica-eth2.network")).unwrap();
         assert_eq!(rendered, GOLDEN_EMPTY);
     }
 
@@ -992,15 +992,15 @@ mod tests {
 
         let state = reconciler.apply(&settings).await.unwrap();
 
-        let dhcp = std::fs::read_to_string(dir.path().join("50-mos-eth0.network")).unwrap();
-        let static_ = std::fs::read_to_string(dir.path().join("50-mos-eth1.network")).unwrap();
+        let dhcp = std::fs::read_to_string(dir.path().join("50-mica-eth0.network")).unwrap();
+        let static_ = std::fs::read_to_string(dir.path().join("50-mica-eth1.network")).unwrap();
         assert_eq!(dhcp, GOLDEN_DHCP);
         assert_eq!(static_, GOLDEN_STATIC);
         assert_eq!(
             state,
             json!({
-                "eth0": { "file": "50-mos-eth0.network", "dhcp": true, "kind": "physical" },
-                "eth1": { "file": "50-mos-eth1.network", "dhcp": false, "kind": "physical" },
+                "eth0": { "file": "50-mica-eth0.network", "dhcp": true, "kind": "physical" },
+                "eth1": { "file": "50-mica-eth1.network", "dhcp": false, "kind": "physical" },
             })
         );
         assert_eq!(*calls.lock().unwrap(), vec!["reload".to_string()]);
@@ -1009,18 +1009,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removes_stale_mos_managed_files_but_keeps_foreign_files() {
+    async fn removes_stale_mica_managed_files_but_keeps_foreign_files() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, calls) = reconciler_in(dir.path());
-        std::fs::write(dir.path().join("50-mos-eth9.network"), "stale").unwrap();
+        std::fs::write(dir.path().join("50-mica-eth9.network"), "stale").unwrap();
         std::fs::write(dir.path().join("80-dhcp.network"), "foreign").unwrap();
         let settings = settings_with(&[("eth0", dhcp_iface())]);
 
         reconciler.apply(&settings).await.unwrap();
 
-        assert!(!dir.path().join("50-mos-eth9.network").exists());
+        assert!(!dir.path().join("50-mica-eth9.network").exists());
         assert!(dir.path().join("80-dhcp.network").exists());
-        assert!(dir.path().join("50-mos-eth0.network").exists());
+        assert!(dir.path().join("50-mica-eth0.network").exists());
         assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
@@ -1052,22 +1052,22 @@ mod tests {
         let err = reconciler.apply(&settings).await.unwrap_err();
 
         assert!(err.to_string().contains("gateway"), "{err}");
-        assert!(!dir.path().join("50-mos-eth1.network").exists());
+        assert!(!dir.path().join("50-mica-eth1.network").exists());
     }
 
     #[tokio::test]
-    async fn sweep_spares_a_wifi_unit_whose_iface_embeds_mos() {
+    async fn sweep_spares_a_wifi_unit_whose_iface_embeds_mica() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, _calls) = reconciler_in(dir.path());
         // The wifi reconcilers embed the interface in their unit names, and
-        // `a-mos-b` is a legal interface name; the sweep must only ever eat
-        // its own `50-mos-*` namespace.
-        std::fs::write(dir.path().join("90-wifi-client-a-mos-b.network"), "wifi").unwrap();
+        // `a-mica-b` is a legal interface name; the sweep must only ever eat
+        // its own `50-mica-*` namespace.
+        std::fs::write(dir.path().join("90-wifi-client-a-mica-b.network"), "wifi").unwrap();
         let settings = settings_with(&[("eth0", dhcp_iface())]);
 
         reconciler.apply(&settings).await.unwrap();
 
-        assert!(dir.path().join("90-wifi-client-a-mos-b.network").exists());
+        assert!(dir.path().join("90-wifi-client-a-mica-b.network").exists());
     }
 
     #[tokio::test]
@@ -1081,9 +1081,9 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let netdev = std::fs::read_to_string(dir.path().join("50-mos-eth0.100.netdev")).unwrap();
-        let parent = std::fs::read_to_string(dir.path().join("50-mos-eth0.network")).unwrap();
-        let child = std::fs::read_to_string(dir.path().join("50-mos-eth0.100.network")).unwrap();
+        let netdev = std::fs::read_to_string(dir.path().join("50-mica-eth0.100.netdev")).unwrap();
+        let parent = std::fs::read_to_string(dir.path().join("50-mica-eth0.network")).unwrap();
+        let child = std::fs::read_to_string(dir.path().join("50-mica-eth0.100.network")).unwrap();
         assert_eq!(netdev, GOLDEN_VLAN_NETDEV);
         // networkd creates the VLAN only because the parent's unit names it.
         assert_eq!(parent, GOLDEN_VLAN_PARENT);
@@ -1100,15 +1100,15 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let netdev = std::fs::read_to_string(dir.path().join("50-mos-br0.netdev")).unwrap();
-        let port = std::fs::read_to_string(dir.path().join("50-mos-eth1.network")).unwrap();
-        let bridge = std::fs::read_to_string(dir.path().join("50-mos-br0.network")).unwrap();
+        let netdev = std::fs::read_to_string(dir.path().join("50-mica-br0.netdev")).unwrap();
+        let port = std::fs::read_to_string(dir.path().join("50-mica-eth1.network")).unwrap();
+        let bridge = std::fs::read_to_string(dir.path().join("50-mica-br0.network")).unwrap();
         assert_eq!(netdev, GOLDEN_BRIDGE_NETDEV);
         assert_eq!(port, GOLDEN_BRIDGE_PORT);
         // The bridge itself carries the addressing its ports gave up.
         assert_eq!(bridge, "[Match]\nName=br0\n\n[Network]\nDHCP=yes\n");
         // A bridge has no netdev-less port file left behind and no VLAN line.
-        assert!(!dir.path().join("50-mos-eth1.netdev").exists());
+        assert!(!dir.path().join("50-mica-eth1.netdev").exists());
     }
 
     #[tokio::test]
@@ -1126,8 +1126,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!dir.path().join("50-mos-eth0.100.netdev").exists());
-        assert!(!dir.path().join("50-mos-eth0.100.network").exists());
+        assert!(!dir.path().join("50-mica-eth0.100.netdev").exists());
+        assert!(!dir.path().join("50-mica-eth0.100.network").exists());
         // The device is deleted BEFORE the reload, and the swept `.network`
         // asks for no deletion of its own: networkd would otherwise leave the
         // VLAN passing traffic until the next boot.
@@ -1163,7 +1163,7 @@ mod tests {
 
         // Netdev properties are applied when the device is created, so a
         // rewritten file alone would leave the old id in the kernel.
-        let netdev = std::fs::read_to_string(dir.path().join("50-mos-eth0.100.netdev")).unwrap();
+        let netdev = std::fs::read_to_string(dir.path().join("50-mica-eth0.100.netdev")).unwrap();
         assert!(netdev.contains("Id=200"), "{netdev}");
         assert_eq!(
             *calls.lock().unwrap(),
@@ -1199,7 +1199,7 @@ mod tests {
     async fn sweeps_a_stale_netdev_but_spares_a_foreign_one() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, _calls) = reconciler_in(dir.path());
-        std::fs::write(dir.path().join("50-mos-br9.netdev"), "stale").unwrap();
+        std::fs::write(dir.path().join("50-mica-br9.netdev"), "stale").unwrap();
         std::fs::write(dir.path().join("70-vpn.netdev"), "foreign").unwrap();
 
         reconciler
@@ -1207,7 +1207,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!dir.path().join("50-mos-br9.netdev").exists());
+        assert!(!dir.path().join("50-mica-br9.netdev").exists());
         assert!(dir.path().join("70-vpn.netdev").exists());
     }
 
@@ -1219,8 +1219,8 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let netdev = std::fs::read_to_string(dir.path().join("50-mos-wg0.netdev")).unwrap();
-        let unit = std::fs::read_to_string(dir.path().join("50-mos-wg0.network")).unwrap();
+        let netdev = std::fs::read_to_string(dir.path().join("50-mica-wg0.netdev")).unwrap();
+        let unit = std::fs::read_to_string(dir.path().join("50-mica-wg0.network")).unwrap();
         assert_eq!(
             netdev,
             format!(
@@ -1261,7 +1261,7 @@ mod tests {
 
         reconciler.apply(&settings).await.unwrap();
 
-        let netdev = std::fs::read_to_string(dir.path().join("50-mos-wg0.netdev")).unwrap();
+        let netdev = std::fs::read_to_string(dir.path().join("50-mica-wg0.netdev")).unwrap();
         // Absent optionals render no line at all: an empty `ListenPort=` would
         // be a port, and networkd picking one is what a client wants.
         assert!(!netdev.contains("ListenPort"), "{netdev}");
@@ -1293,7 +1293,7 @@ mod tests {
             first,
             json!({
                 "wg0": {
-                    "file": "50-mos-wg0.network",
+                    "file": "50-mica-wg0.network",
                     "dhcp": false,
                     "kind": "wireguard",
                     "publicKey": public_key,
@@ -1362,7 +1362,7 @@ mod tests {
             .unwrap();
         reconciler.apply(&Settings::default()).await.unwrap();
 
-        assert!(!dir.path().join("50-mos-wg0.netdev").exists());
+        assert!(!dir.path().join("50-mica-wg0.netdev").exists());
         // A changed netdev is a recreated device, and a swept one is a deleted
         // device: a tunnel joins the same mechanism the VLAN uses.
         assert_eq!(

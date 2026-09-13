@@ -11,14 +11,14 @@ afterEach(() => {
 
 /// A device following the image on both keys: nothing in `operator`.
 const bakedOnly = {
-  baked: { update: { source: 'https://updates.mos.example/repo', channel: 'stable', policy: 'check' } },
+  baked: { update: { source: 'https://updates.mica.example/repo', channel: 'stable', policy: 'check' } },
   operator: {},
-  effective: { update: { source: 'https://updates.mos.example/repo', channel: 'stable', policy: 'check' } },
+  effective: { update: { source: 'https://updates.mica.example/repo', channel: 'stable', policy: 'check' } },
 }
 
 /// The same device re-pointed at another server and moved to `beta`.
 const repointed = {
-  baked: { update: { source: 'https://updates.mos.example/repo', channel: 'stable', policy: 'check' } },
+  baked: { update: { source: 'https://updates.mica.example/repo', channel: 'stable', policy: 'check' } },
   operator: { update: { source: 'https://mirror.site.example/repo', channel: 'beta' } },
   effective: { update: { source: 'https://mirror.site.example/repo', channel: 'beta', policy: 'check' } },
 }
@@ -28,7 +28,7 @@ const policy = {
     policy: {
       policy: 'check',
       checkIntervalMinutes: 1440,
-      sourceUrl: 'https://updates.mos.example/repo',
+      sourceUrl: 'https://updates.mica.example/repo',
       channel: 'stable',
       rebootPolicy: 'manual',
       maintenanceWindows: [],
@@ -43,7 +43,7 @@ describe('the automatic update policy', () => {
     renderPanel(<AutomaticUpdatesPanel />)
 
     expect(await screen.findByText('https://mirror.site.example/repo')).toBeTruthy()
-    expect(screen.getByText('set here — the image says https://updates.mos.example/repo')).toBeTruthy()
+    expect(screen.getByText('set here — the image says https://updates.mica.example/repo')).toBeTruthy()
     expect(screen.getByText('beta')).toBeTruthy()
     expect(screen.getByText('set here — the image says stable')).toBeTruthy()
   })

@@ -288,7 +288,7 @@ impl FakeSettings {
     fn update_call(&self, call: &str) -> anyhow::Result<()> {
         self.update_log.lock().unwrap().push(call.to_string());
         if let Some((name, message)) = self.update_refusal.lock().unwrap().clone() {
-            let reply_to = zbus::message::Message::method_call("/com/mos/micad", "CheckUpdate")
+            let reply_to = zbus::message::Message::method_call("/com/mica/micad", "CheckUpdate")
                 .expect("a well-formed method call")
                 .build(&())
                 .expect("an empty body serialises");

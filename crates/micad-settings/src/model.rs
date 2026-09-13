@@ -59,7 +59,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            hostname: "mos".to_string(),
+            hostname: "mica".to_string(),
             network: BTreeMap::new(),
             access: AccessSettings::default(),
             provisioning: ProvisioningSettings::default(),
@@ -77,7 +77,7 @@ impl Default for Settings {
 /// Exactly two knobs, deliberately. There is no enable or pause switch here,
 /// in the API or in the UI — `systemd-timesyncd` is an always-running base
 /// service — and the polling, retry and saved-clock intervals are pinned base
-/// policy shipped in `/etc/systemd/timesyncd.conf.d/50-mos.conf`, never
+/// policy shipped in `/etc/systemd/timesyncd.conf.d/50-mica.conf`, never
 /// settings. Machine, RTC, API and log time stay UTC; the timezone below is
 /// presentation only.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -224,7 +224,7 @@ fn validate_time_settings(time: &TimeSettings) -> Result<(), String> {
 /// switch gates is whether `/etc/containers/systemd` is bound from STATE.
 /// Unbound, that path is the empty directory inside the read-only verity root,
 /// Quadlet finds nothing to parse, and no container unit exists to be started.
-/// The default is false because mos does not build rootless, so containers run
+/// The default is false because mica does not build rootless, so containers run
 /// root-capable and turning this on grants root-equivalent capability to
 /// whatever can write a `.container` file into STATE. That is the switch's
 /// purpose, not a side effect.
@@ -1253,7 +1253,7 @@ mod tests {
         let text = toml::to_string(&settings).unwrap();
         let parsed: Settings = toml::from_str(&text).unwrap();
         assert_eq!(parsed, settings);
-        assert_eq!(parsed.hostname, "mos");
+        assert_eq!(parsed.hostname, "mica");
         assert!(parsed.network.is_empty());
         assert!(parsed.access.web_admin.is_none());
         assert_eq!(parsed.access.ssh, SshSettings::default());

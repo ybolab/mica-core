@@ -187,7 +187,7 @@ fn online_catalog_and_resumed_objects_converge_on_the_offline_ready_format() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let source = format!("http://{}/v1/manifest.json", listener.local_addr().unwrap());
     let object_url = format!("http://{}/v1/objects/{sha}", listener.local_addr().unwrap());
-    let payload = serde_json::to_vec(&json!({"schema":"mos/catalog/v1","revision":1,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
+    let payload = serde_json::to_vec(&json!({"schema":"mica/catalog/v1","revision":1,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
         "channels":[{"board":"x64","channel":"stable","releaseId":"test","generation":1}],
         "releases":[{"id":"test","channel":"stable","notes":"Resume test","deployment":descriptor,"objects":[{"sha256":sha,"bytes":12288,"url":object_url}]}]})).unwrap();
     let signer = Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap();
@@ -295,7 +295,7 @@ fn serve(
 }
 
 fn signed_catalog(key: &[u8; 32], descriptor: &str, sha: &str, object_url: &str) -> String {
-    let payload = serde_json::to_vec(&json!({"schema":"mos/catalog/v1","revision":1,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
+    let payload = serde_json::to_vec(&json!({"schema":"mica/catalog/v1","revision":1,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
         "channels":[{"board":"x64","channel":"stable","releaseId":"test","generation":1}],
         "releases":[{"id":"test","channel":"stable","notes":"Transfer test","deployment":descriptor,"objects":[{"sha256":sha,"bytes":12288,"url":object_url}]}]})).unwrap();
     let signer = Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap();

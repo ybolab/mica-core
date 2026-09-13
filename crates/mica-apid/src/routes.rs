@@ -265,7 +265,7 @@ impl AppState {
     ///
     /// Test-only for the bundle root's reason: the shipped location is fixed
     /// and nothing configures it. It takes the manifest and derives the tree,
-    /// which is also the shape `MOSD_META_MANIFEST_PATH` gives the micad side.
+    /// which is also the shape `MICAD_META_MANIFEST_PATH` gives the micad side.
     #[cfg(test)]
     pub fn with_meta_manifest(mut self, manifest: impl Into<std::path::PathBuf>) -> Self {
         self.meta_manifest = Arc::new(manifest.into());
@@ -582,8 +582,8 @@ pub(crate) const STATE_SPELLINGS: (&str, &str, &str) =
 /// vocabulary has no name that separates a missing dot-path or a read-only
 /// one from a bad value, so micad coins its own for those and keeps the
 /// standard names for everything else.
-const MOSD_NOT_FOUND: &str = "com.mica.micad1.Error.NotFound";
-const MOSD_READ_ONLY: &str = "com.mica.micad1.Error.ReadOnly";
+const MICAD_NOT_FOUND: &str = "com.mica.micad1.Error.NotFound";
+const MICAD_READ_ONLY: &str = "com.mica.micad1.Error.ReadOnly";
 const FDO_INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 const FDO_IO_ERROR: &str = "org.freedesktop.DBus.Error.IOError";
 const FDO_FAILED: &str = "org.freedesktop.DBus.Error.Failed";
@@ -1284,7 +1284,7 @@ pub(crate) async fn api_v1_ui_bundles(
     }
 }
 
-/// Stream a `.mos-ui.zip` to DATA, validate and extract it off the async worker,
+/// Stream a `.mica-ui.zip` to DATA, validate and extract it off the async worker,
 /// then install it without changing the active generation.
 #[utoipa::path(
     post,
@@ -1321,7 +1321,7 @@ pub(crate) async fn api_v1_ui_upload(
             &source,
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "ui_package_type",
-            "upload a .mos-ui.zip as application/zip",
+            "upload a .mica-ui.zip as application/zip",
         );
     }
     if request
@@ -1950,11 +1950,11 @@ pub(crate) struct ApiHealth {
 }
 
 /// The bounded call to micad expired.
-const HEALTH_MOSD_TIMEOUT: &str = "micad_timeout";
+const HEALTH_MICAD_TIMEOUT: &str = "micad_timeout";
 /// The call could not be made, or micad refused it.
-const HEALTH_MOSD_UNREACHABLE: &str = "micad_unreachable";
+const HEALTH_MICAD_UNREACHABLE: &str = "micad_unreachable";
 /// micad answered, and what it answered is not the documented shape.
-const HEALTH_MOSD_BAD_ANSWER: &str = "micad_bad_answer";
+const HEALTH_MICAD_BAD_ANSWER: &str = "micad_bad_answer";
 
 // Never serve this from `access_cache`: that cache answers from apid's own
 // memory, so a health route reading it would report micad healthy for as long
@@ -1997,20 +1997,20 @@ pub(crate) async fn api_v1_health(
                 Some(format!(
                     "micad answered GetState(\"{HEALTH_PROBE_PATH}\") with {value}, which is not a count of seconds"
                 )),
-                Some(HEALTH_MOSD_BAD_ANSWER),
+                Some(HEALTH_MICAD_BAD_ANSWER),
             ),
         },
         // The code is decided from the error's TYPE, not from the sentence it
-        // renders to (PLAN-076 B4): `MosdCallTimeout` is the one the bounded
+        // renders to (PLAN-076 B4): `MicadCallTimeout` is the one the bounded
         // call raises, and everything else is "the call did not happen".
         Err(err) => {
             let code = if err
-                .downcast_ref::<crate::bus_client::MosdCallTimeout>()
+                .downcast_ref::<crate::bus_client::MicadCallTimeout>()
                 .is_some()
             {
-                HEALTH_MOSD_TIMEOUT
+                HEALTH_MICAD_TIMEOUT
             } else {
-                HEALTH_MOSD_UNREACHABLE
+                HEALTH_MICAD_UNREACHABLE
             };
             ("unreachable", None, Some(format!("{err:#}")), Some(code))
         }
@@ -2816,7 +2816,7 @@ pub(crate) async fn api_v1_diagnostics_collect(
 /// Export one diagnostic snapshot.
 ///
 /// The stored bytes, verbatim and already redacted, as an attachment named
-/// `mos-diagnostics-<machine id prefix>-<id>.json` so a browser saves it
+/// `mica-diagnostics-<machine id prefix>-<id>.json` so a browser saves it
 /// under a name support can file. Never cached.
 #[utoipa::path(
     get,
@@ -2853,7 +2853,7 @@ pub(crate) async fn api_v1_diagnostics_snapshot(
                 })
                 .unwrap_or_else(|| "unknown".to_string());
             let disposition =
-                format!("attachment; filename=\"mos-diagnostics-{machine}-{snapshot_id}.json\"");
+                format!("attachment; filename=\"mica-diagnostics-{machine}-{snapshot_id}.json\"");
             (
                 StatusCode::OK,
                 [
@@ -3009,7 +3009,7 @@ pub(crate) struct MintedToken {
     id: String,
     /// The label as it was submitted.
     name: String,
-    /// The whole token, `mos_<id>_<secret>`.
+    /// The whole token, `mica_<id>_<secret>`.
     ///
     /// **It appears here and nowhere else, ever.** Only the SHA-256 digest is
     /// stored, so a token that is lost is replaced and never recovered -- the
@@ -3957,7 +3957,7 @@ pub(crate) async fn api_v1_wifi_networks_remove(
 // settings setter validates only that the tree still deserializes
 // (`Settings::set` in `micad-settings/src/model.rs`), and the reconciler that
 // does enforce them runs *after* the save with its verdict deliberately not
-// propagated to the caller (`MosdService::write_setting` in `micad/src/bus.rs`). A raw
+// propagated to the caller (`MicadService::write_setting` in `micad/src/bus.rs`). A raw
 // passthrough therefore answers 204 to a bridge naming a port that does not
 // exist and leaves the device's networking broken, with the only evidence in a
 // later state read. These routes run [`validate_entries`] over the candidate
@@ -4820,7 +4820,7 @@ pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response
             ApiError::micad("micad_failed", format!("{err:#}")),
         )
     } else if err
-        .downcast_ref::<crate::bus_client::MosdCallTimeout>()
+        .downcast_ref::<crate::bus_client::MicadCallTimeout>()
         .is_some()
     {
         (
@@ -4834,11 +4834,11 @@ pub(crate) fn bus_api_error(err: &anyhow::Error, path: Option<&str>) -> Response
                 // is the most specific thing left to say.
                 let message = message.clone().unwrap_or_else(|| name.to_string());
                 match name.as_str() {
-                    MOSD_NOT_FOUND => (
+                    MICAD_NOT_FOUND => (
                         StatusCode::NOT_FOUND,
                         ApiError::micad("settings_not_found", message),
                     ),
-                    MOSD_READ_ONLY => (
+                    MICAD_READ_ONLY => (
                         StatusCode::CONFLICT,
                         ApiError::micad("settings_read_only", message),
                     ),
@@ -4896,7 +4896,7 @@ fn is_task_not_found(err: &anyhow::Error) -> bool {
         .is_some()
         || matches!(
             err.downcast_ref::<zbus::Error>(),
-            Some(zbus::Error::MethodError(name, _, _)) if name.as_str() == MOSD_NOT_FOUND
+            Some(zbus::Error::MethodError(name, _, _)) if name.as_str() == MICAD_NOT_FOUND
         )
 }
 
@@ -5377,7 +5377,7 @@ pub(crate) struct SetupRequest {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SetupToken {
-    /// The whole token, `mos_<id>_<secret>`.
+    /// The whole token, `mica_<id>_<secret>`.
     ///
     /// **It appears here and nowhere else, ever**, exactly as the mint route's
     /// does: only the SHA-256 digest is stored. The id is not a separate
@@ -5951,7 +5951,7 @@ pub(crate) async fn api_v1_claim(
 /// mechanism is a change to a board's declaration and to the BSP that
 /// implements it, and to no flow, route or tier.
 ///
-/// **Both shipped boards declare NONE**, so on a fielded mos device this
+/// **Both shipped boards declare NONE**, so on a fielded mica device this
 /// capability is answered with nothing at all and every presence-gated flow
 /// refuses with [`NoPresence::BoardDeclaresNone`].
 pub(crate) const PRESENCE_CAPABILITY: &str = "recovery.presence";
@@ -6242,7 +6242,7 @@ impl Presence for MarkerPresence {
             .with_context(|| format!("open {}", assertion.channel.display()))?;
         writeln!(
             channel,
-            "mos recovery: the new administrator password is {secret}"
+            "mica recovery: the new administrator password is {secret}"
         )?;
         channel.flush()?;
         Ok(())
@@ -6540,7 +6540,7 @@ pub(crate) async fn api_v1_recovery_credential(
     // spender would move the guard rather than add one.
     //
     // **The hold is bounded**, which is what makes a lock on an
-    // unauthenticated route acceptable: `bus_client`'s `MOSD_CALL_TIMEOUT`
+    // unauthenticated route acceptable: `bus_client`'s `MICAD_CALL_TIMEOUT`
     // bounds each micad call, the hash is one argon2id, and the publish is a
     // write to the console the BOARD declared. Once one rotation has
     // succeeded, every further request takes an uncontended lock, reads a

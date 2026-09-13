@@ -104,7 +104,7 @@ impl CacheClass {
 
 /// Classify a bundle-relative path.
 ///
-/// `immutable_dir` is the directory §5.3's optional `mos-ui.json` declares
+/// `immutable_dir` is the directory §5.3's optional `mica-ui.json` declares
 /// cacheable; `None` is the default for a bundle that declares nothing, and it
 /// means `no-cache` for everything. The manifest is read by the installer, not
 /// here.

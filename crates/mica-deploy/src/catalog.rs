@@ -123,7 +123,7 @@ pub fn verify_catalog(
     ensure!(serde_json::to_vec(&raw)? == payload, "noncanonical catalog");
     let catalog: Catalog = serde_json::from_value(raw)?;
     ensure!(
-        catalog.schema == "mos/catalog/v1"
+        catalog.schema == "mica/catalog/v1"
             && catalog.revision > 0
             && catalog.revision <= 9_007_199_254_740_991
             && catalog.releases.len() <= 128

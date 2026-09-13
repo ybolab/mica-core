@@ -10,7 +10,7 @@
 //! declaration ([`micad_settings::Declaration`]), and nothing in this file
 //! names a board, a bootloader or a console device.
 //!
-//! **Both shipped boards declare NONE**, so on a fielded mos device today
+//! **Both shipped boards declare NONE**, so on a fielded mica device today
 //! every path through here refuses and writes nothing. That is the honest
 //! state rather than a stub: the flows become reachable when a board declares
 //! an action AND its BSP implements it, and not before.
@@ -302,7 +302,7 @@ RECOVERY_BOOT_MENU_FACTORY_CHANNEL=/dev/tty0
 RECOVERY_BOOT_MENU_FACTORY_TIER=full-factory
 ";
 
-    /// What both shipped mos boards declare.
+    /// What both shipped mica boards declare.
     const DECLARES_NONE: &str = "BOARD_RECOVERY_ACTIONS=\"\"\n";
 
     struct Device {
@@ -378,7 +378,7 @@ RECOVERY_BOOT_MENU_FACTORY_TIER=full-factory
 
     #[test]
     fn a_declared_action_asserts_presence_and_the_audit_names_it() {
-        let mut device = Device::new("root=/dev/sda2 mos.recovery=recovery", Some(DECLARED));
+        let mut device = Device::new("root=/dev/sda2 mica.recovery=recovery", Some(DECLARED));
         assert_eq!(
             device.run(),
             Outcome::Asserted {
@@ -416,7 +416,7 @@ RECOVERY_BOOT_MENU_FACTORY_TIER=full-factory
 
     #[test]
     fn an_action_that_declares_a_tier_stages_it_and_the_audit_names_both() {
-        let mut device = Device::new("mos.recovery=factory", Some(DECLARED));
+        let mut device = Device::new("mica.recovery=factory", Some(DECLARED));
         assert_eq!(
             device.run(),
             Outcome::Asserted {
@@ -463,37 +463,37 @@ RECOVERY_BOOT_MENU_FACTORY_TIER=full-factory
         let cases: &[(&str, &str, Option<&str>, &str)] = &[
             (
                 "a board that declares none, which is both shipped boards",
-                "mos.recovery=recovery",
+                "mica.recovery=recovery",
                 Some(DECLARES_NONE),
                 "refused-board-declares-none",
             ),
             (
                 "a board with no declaration file at all",
-                "mos.recovery=recovery",
+                "mica.recovery=recovery",
                 None,
                 "refused-board-declares-none",
             ),
             (
                 "an intent no declared action names",
-                "mos.recovery=wipe-everything",
+                "mica.recovery=wipe-everything",
                 Some(DECLARED),
                 "refused-unknown-intent",
             ),
             (
                 "a declaration this build cannot read",
-                "mos.recovery=recovery",
+                "mica.recovery=recovery",
                 Some("BOARD_RECOVERY_ACTIONS=\"A\"\nRECOVERY_A_INTENT=recovery\n"),
                 "refused-declaration-unreadable",
             ),
             (
                 "a command line naming the parameter twice",
-                "mos.recovery=recovery mos.recovery=factory",
+                "mica.recovery=recovery mica.recovery=factory",
                 Some(DECLARED),
                 REFUSED_MALFORMED_INTENT,
             ),
             (
                 "a command line naming the parameter with no value",
-                "mos.recovery=",
+                "mica.recovery=",
                 Some(DECLARED),
                 REFUSED_MALFORMED_INTENT,
             ),

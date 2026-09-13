@@ -1,4 +1,4 @@
-//! The bounded MOS boot record inside U-Boot's redundant MMC environment.
+//! The bounded MICA boot record inside U-Boot's redundant MMC environment.
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{File, OpenOptions},
@@ -40,7 +40,7 @@ impl FitLayout {
     }
 }
 const MAX_GENERATION: u64 = 9_007_199_254_740_991;
-const KEY: &[u8] = b"mos_entries=";
+const KEY: &[u8] = b"mica_entries=";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {

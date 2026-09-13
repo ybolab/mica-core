@@ -66,7 +66,7 @@ export function UiManagementPage() {
         <FilePicker
           label={t('system.uiManager.packageFile')}
           hint={t('system.uiManager.packageHint')}
-          accept=".zip,.mos-ui.zip,application/zip"
+          accept=".zip,.mica-ui.zip,application/zip"
           chooseLabel={t('system.uiManager.choose')}
           emptyLabel={t('system.uiManager.noFile')}
           submitLabel={t('system.uiManager.upload')}

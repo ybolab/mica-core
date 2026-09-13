@@ -28,16 +28,16 @@ use anyhow::{Context, Result, anyhow};
 /// Restated rather than shared with the sshd reconciler: that module is private
 /// to `reconciler`, and this constant is read from `main` to configure the bus
 /// service. The two must name the same file, which they do by construction —
-/// `/etc/shadow` is a symlink onto STATE on the mos image.
+/// `/etc/shadow` is a symlink onto STATE on the mica image.
 pub const DEFAULT_SHADOW: &str = "/etc/shadow";
 /// Environment variable overriding [`DEFAULT_SHADOW`]. The same variable the
 /// sshd reconciler honours, so one override redirects both and a test can point
 /// the whole daemon at a temporary file.
-pub const SHADOW_ENV: &str = "MOSD_SHADOW_PATH";
+pub const SHADOW_ENV: &str = "MICAD_SHADOW_PATH";
 
 /// Name of the marker file, resolved beside the shadow file rather than at a
 /// fixed path: the shadow file is `/var/lib/mica/shadow` once `var-lib-mica.mount`
-/// is up and `/mnt/data/state/mos/shadow` before it, and both must name the same
+/// is up and `/mnt/data/state/mica/shadow` before it, and both must name the same
 /// STATE-backed marker.
 const MARKER_NAME: &str = "transient-root-password";
 /// Mode of the marker: owner read/write only. Its content is a password hash,
@@ -76,12 +76,12 @@ pub fn production_shadow_path() -> PathBuf {
 /// Marker recording the transient hash for the shadow file at `shadow_path`.
 ///
 /// Derived from the shadow path, never hardcoded, so a caller working on an
-/// alternate path — `mica-seed-state`'s `/mnt/data/state/mos/shadow`, or a test's
+/// alternate path — `mica-seed-state`'s `/mnt/data/state/mica/shadow`, or a test's
 /// temporary file — gets the marker that belongs to it.
 ///
 /// The symlink is resolved first, and that is why this is not one line.
 /// `Path::with_file_name` is lexical: it rewrites the last component of the
-/// string and resolves nothing. On the mos image `/etc/shadow` is a symlink onto
+/// string and resolves nothing. On the mica image `/etc/shadow` is a symlink onto
 /// STATE, so writing the shadow file follows the link and succeeds while a
 /// marker placed "beside" it lexically lands in the literal `/etc/`, a
 /// dm-verity squashfs. The write then fails with `Read-only file system (os
@@ -305,8 +305,8 @@ mod tests {
         );
         // The early path mica-seed-state uses, before var-lib-mica.mount is up.
         assert_eq!(
-            transient_marker_path(Path::new("/mnt/data/state/mos/shadow")),
-            Path::new("/mnt/data/state/mos/transient-root-password")
+            transient_marker_path(Path::new("/mnt/data/state/mica/shadow")),
+            Path::new("/mnt/data/state/mica/transient-root-password")
         );
         // Derived, not hardcoded: an arbitrary directory follows the file.
         assert_eq!(
@@ -318,7 +318,7 @@ mod tests {
     /// The case production passes, and the one the three above miss.
     ///
     /// Every path in the test above is already resolved. The only path micad
-    /// ever hands this function on a device is `/etc/shadow`, which on the mos
+    /// ever hands this function on a device is `/etc/shadow`, which on the mica
     /// image is a SYMLINK onto STATE -- and `Path::with_file_name` is lexical,
     /// so a marker resolved lexically lands in the literal `/etc/`, a
     /// read-only dm-verity squashfs: micad fails with `os error 30`, apid

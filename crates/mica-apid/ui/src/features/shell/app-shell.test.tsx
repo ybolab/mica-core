@@ -9,7 +9,7 @@ import { AppShell } from './app-shell'
 const routes = {
   '/api/v1/health': { apid: 'ok', micad: 'ok', checkedAt: 183_900 },
   '/api/v1/system/info': { release: { available: true, imageVersion: '2026.08.2' }, deployment: { available: true, id: '9e12aa77bb33cc44' } },
-  '/api/v1/settings/hostname': 'mos-cm4',
+  '/api/v1/settings/hostname': 'mica-cm4',
   '/api/v1/claim': { state: 'claimed', rotationRequired: false },
 }
 
@@ -33,7 +33,7 @@ describe('the shell', () => {
     stubFetch(routes)
     renderShell()
 
-    expect((await screen.findAllByText('mos-cm4')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('mica-cm4')).length).toBeGreaterThan(0)
     expect(await screen.findByText('2026.08.2')).toBeTruthy()
     expect(await screen.findByText('9e12aa77bb33')).toBeTruthy()
   })

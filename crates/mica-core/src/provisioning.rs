@@ -41,7 +41,7 @@ pub const DEFAULT_PROFILE_PATH: &str = "/usr/lib/mica/profile.conf";
 const PROFILE_KEY: &str = "MICA_PROFILE";
 
 /// Prefix of a seeded hostname.
-const HOSTNAME_PREFIX: &str = "mos-";
+const HOSTNAME_PREFIX: &str = "mica-";
 
 /// How many leading hex characters of the device identifier the seeded hostname
 /// carries. Eight hex characters is 32 bits, enough that two devices on one
@@ -98,7 +98,7 @@ pub enum Outcome {
 ///
 /// When `settings.provisioning.state` is `pending`:
 /// [`identity::ensure_identity`] establishes `provisioning.deviceId` and both
-/// per-device secrets on `state_dir`; `hostname` becomes `mos-<first eight hex
+/// per-device secrets on `state_dir`; `hostname` becomes `mica-<first eight hex
 /// chars of deviceId>`, but only while it is still the built-in default, so an
 /// operator who has already named the device keeps that name;
 /// `access.ssh.enabled` is taken from the image profile at `profile_path`,
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(device_id.len(), 32, "device_id must be 16 bytes of hex");
         assert_eq!(settings.provisioning.state, ProvisioningState::Complete);
         assert_eq!(settings.provisioning.seeded_generation, 1);
-        assert_eq!(settings.hostname, format!("mos-{}", &device_id[..8]));
+        assert_eq!(settings.hostname, format!("mica-{}", &device_id[..8]));
         assert!(
             !settings.access.ssh.enabled,
             "prod profile must not open SSH"
@@ -474,7 +474,7 @@ mod tests {
             "MICA_PROFILE=devel\n",
             "MICA_PROFILE = dev extra\n",
             "MICA_VARIANT=cx3576\n",
-            "MOSPROFILE=dev\n",
+            "MICAPROFILE=dev\n",
             "MICA_PROFILE_EXTRA=dev\n",
             "\u{0}\u{1}garbage\u{2}\n",
         ] {
@@ -597,11 +597,11 @@ mod tests {
         let b = "fedcba9876543210fedcba9876543210";
         // Same identity, two independent devices, two independent runs.
         assert_eq!(seed(a), seed(a));
-        assert_eq!(seed(a), "mos-01234567");
+        assert_eq!(seed(a), "mica-01234567");
         // A different identity must produce a different name, or two devices on
         // one LAN would collide.
         assert_ne!(seed(a), seed(b));
-        assert_eq!(seed(b), "mos-fedcba98");
+        assert_eq!(seed(b), "mica-fedcba98");
 
         // The two identities differ only after the eighth character, so this
         // catches a hostname built from a fixed prefix rather than the identity.
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(seed(a), seed(c));
 
         // Shorter than the window: a short name, not a panic.
-        assert_eq!(seed("abc"), "mos-abc");
+        assert_eq!(seed("abc"), "mica-abc");
     }
 
     // A failing save must not leave a tree claiming `complete`.

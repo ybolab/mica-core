@@ -32,7 +32,7 @@ pub fn ensure_state_dir(dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Load the atomic `identity.pem` from `dir`, generating a self-signed pair on
-/// first start: CN `mos`, SANs `DNS:mos`, `DNS:localhost`, `IP:127.0.0.1`,
+/// first start: CN `mica`, SANs `DNS:mica`, `DNS:localhost`, `IP:127.0.0.1`,
 /// with rcgen's default long validity. The complete pair is synced and published
 /// with mode 0600 in one rename, so interruption cannot leave mismatched halves.
 pub fn load_or_generate_certificate(dir: &Path) -> anyhow::Result<Certificate> {
@@ -47,14 +47,14 @@ pub fn load_or_generate_certificate(dir: &Path) -> anyhow::Result<Certificate> {
     }
 
     let mut params =
-        rcgen::CertificateParams::new(vec!["mos".to_string(), "localhost".to_string()])
+        rcgen::CertificateParams::new(vec!["mica".to_string(), "localhost".to_string()])
             .context("build certificate params")?;
     params
         .subject_alt_names
         .push(rcgen::SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "mos");
+        .push(rcgen::DnType::CommonName, "mica");
     let key_pair = rcgen::KeyPair::generate().context("generate certificate key pair")?;
     let cert = params
         .self_signed(&key_pair)

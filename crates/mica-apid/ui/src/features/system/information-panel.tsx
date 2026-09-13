@@ -50,7 +50,7 @@ export function InformationPanel() {
           <Panel title={t('system.information.packages.title')} description={t('system.information.packages.description')} action={<PackageOpen className="size-5 text-muted-foreground" />} contentClassName="gap-3">
             {!value.packages.available ? <Callout tone="warning"><Unavailable fact={value.packages} /></Callout> : (
               <>
-                <p className="text-sm text-muted-foreground">{t('system.information.packages.summary', { count: value.packages.count ?? 0, mosCount: value.packages.mosCount ?? 0 })}</p>
+                <p className="text-sm text-muted-foreground">{t('system.information.packages.summary', { count: value.packages.count ?? 0, micaCount: value.packages.micaCount ?? 0 })}</p>
                 <DataTable<PackageEntry>
                   rows={value.packages.entries ?? []}
                   rowKey={(entry) => `${entry.name}-${entry.architecture}`}

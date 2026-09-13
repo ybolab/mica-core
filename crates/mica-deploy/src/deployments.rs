@@ -132,7 +132,7 @@ pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 
 pub fn valid_id(id: &str) -> Result<()> {
     ensure!(
-        selected_entry(&format!("mos-{id}.conf"))? == id,
+        selected_entry(&format!("mica-{id}.conf"))? == id,
         "invalid ID"
     );
     Ok(())
@@ -350,7 +350,7 @@ impl DeploymentStore {
                 .file_name()
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("invalid entry name"))?;
-            if !file.starts_with("mos-") || !file.ends_with(".conf") {
+            if !file.starts_with("mica-") || !file.ends_with(".conf") {
                 continue;
             }
             let id = selected_entry(&file)?;
@@ -436,7 +436,7 @@ impl DeploymentStore {
                 let directory = esp.join("loader/entries");
                 fs::rename(
                     directory.join(&entry.file),
-                    directory.join(format!("mos-{}{suffix}", entry.id)),
+                    directory.join(format!("mica-{}{suffix}", entry.id)),
                 )?;
                 sync_directory(&directory)
             }
@@ -732,7 +732,7 @@ impl DeploymentStore {
             &retained,
         )];
         if let BootBackend::Uefi { esp } = &self.boot {
-            artifacts.push((esp.join("EFI/mos/kernels"), ".efi", ".partial", &kernels));
+            artifacts.push((esp.join("EFI/mica/kernels"), ".efi", ".partial", &kernels));
         }
         for (parent, suffix, temporary_suffix, keep) in artifacts {
             ensure!(
@@ -952,7 +952,7 @@ impl DeploymentStore {
             (
                 match &self.boot {
                     BootBackend::Uefi { esp } => {
-                        esp.join(format!("EFI/mos/kernels/{}.efi", deployment.kernel.id))
+                        esp.join(format!("EFI/mica/kernels/{}.efi", deployment.kernel.id))
                     }
                     BootBackend::Fit { .. } => self
                         .system
@@ -1105,13 +1105,13 @@ impl DeploymentStore {
         // The entry is the activation commit. All referenced bytes are durable.
         match &self.boot {
             BootBackend::Uefi { esp } => {
-                sync_directory(&esp.join("EFI/mos/kernels"))?;
+                sync_directory(&esp.join("EFI/mica/kernels"))?;
                 let entry = format!(
-                    "title MOS {}\nversion {}\nsort-key mos\nefi /EFI/mos/kernels/{}.efi\n",
+                    "title MICA {}\nversion {}\nsort-key mica\nefi /EFI/mica/kernels/{}.efi\n",
                     deployment.version, deployment.generation, deployment.kernel.id
                 );
                 atomic_write(
-                    &esp.join(format!("loader/entries/mos-{id}+3.conf")),
+                    &esp.join(format!("loader/entries/mica-{id}+3.conf")),
                     entry.as_bytes(),
                 )?;
             }

@@ -50,10 +50,10 @@ fn boot_records_are_bounded_canonical_and_unambiguous() {
 fn environment_crc_matches_an_independent_zlib_fixture() {
     // Python zlib.crc32 over the 65,531-byte, NUL-padded environment data.
     let bytes = encode(&records(), 7).unwrap();
-    assert_eq!(&bytes[..4], &0x11c9_ba95_u32.to_le_bytes());
+    assert_eq!(&bytes[..4], &0xc280_0412_u32.to_le_bytes());
     assert_eq!(
         hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)),
-        "d838abdadeb95278a750625f26e8f018df50123da48b0e2970bd36453a689565"
+        "91f6bfd298a72e948eff9b04908c9c01487e102bc5a806a6827ba4e4954554a3"
     );
 }
 

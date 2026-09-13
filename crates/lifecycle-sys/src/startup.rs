@@ -392,8 +392,8 @@ mod tests {
     fn load_is_bounded_readonly_single_verity_with_terminated_aligned_spec() {
         let created = DmCreated {
             device: 1,
-            name: "mos-root".into(),
-            uuid: "MOS-test".into(),
+            name: "mica-root".into(),
+            uuid: "MICA-test".into(),
         };
         let mut target = DmTarget {
             sector: 0,

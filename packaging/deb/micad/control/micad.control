@@ -1,11 +1,11 @@
 Package: micad
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: admin
 Priority: optional
 Depends: default-dbus-system-bus | dbus-system-bus, mica-profile, mica-system, ${shlibs:Depends}
-Description: mos management daemon
+Description: mica management daemon
  Owns the com.mica.micad D-Bus interface: the settings tree, device health,
  power actions and update state. Ships the root-only bus policy for that name
  alongside the binary, so the daemon's access boundary travels with it.

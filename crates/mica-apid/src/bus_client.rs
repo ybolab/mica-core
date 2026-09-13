@@ -25,21 +25,21 @@ use crate::task_registry::{TaskRecord, TaskRegistry};
 /// Five seconds is deliberately a fault-containment bound rather than normal
 /// flow control: queued writes return promptly, while reads and actions get a
 /// finite answer when the bus or daemon wedges.
-const MOSD_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+const MICAD_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A call crossed [`MOSD_CALL_TIMEOUT`].
+/// A call crossed [`MICAD_CALL_TIMEOUT`].
 ///
 /// Kept as a concrete error inside `anyhow` so the HTTP boundary can separate
 /// "the outcome was not confirmed" (504) from "the daemon was unreachable"
 /// (503). In particular, dropping the future does not cancel work already
 /// accepted by micad.
 #[derive(Debug)]
-pub(crate) struct MosdCallTimeout {
+pub(crate) struct MicadCallTimeout {
     operation: &'static str,
     timeout: Duration,
 }
 
-impl std::fmt::Display for MosdCallTimeout {
+impl std::fmt::Display for MicadCallTimeout {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
@@ -49,9 +49,9 @@ impl std::fmt::Display for MosdCallTimeout {
     }
 }
 
-impl std::error::Error for MosdCallTimeout {}
+impl std::error::Error for MicadCallTimeout {}
 
-impl MosdCallTimeout {
+impl MicadCallTimeout {
     pub(crate) fn new(operation: &'static str, timeout: Duration) -> Self {
         Self { operation, timeout }
     }
@@ -60,9 +60,9 @@ impl MosdCallTimeout {
 #[zbus::proxy(
     interface = "com.mica.micad1",
     default_service = "com.mica.micad",
-    default_path = "/com/mos/micad"
+    default_path = "/com/mica/micad"
 )]
-trait Mosd {
+trait Micad {
     fn get_settings(&self, path: &str) -> zbus::Result<String>;
     fn set_settings(&self, path: &str, value_json: &str) -> zbus::Result<String>;
     fn get_task(&self, id: &str) -> zbus::Result<String>;
@@ -165,7 +165,7 @@ pub(crate) async fn watch_connection(
     connection: &zbus::Connection,
     cache: &AccessCache,
 ) -> anyhow::Result<()> {
-    let proxy = MosdProxy::new(connection).await?;
+    let proxy = MicadProxy::new(connection).await?;
     let stream = proxy.receive_settings_changed().await?;
     cache.subscribed();
     let mut stream = pin!(stream);
@@ -184,7 +184,7 @@ pub(crate) async fn watch_task_connection(
     registry: &TaskRegistry,
     audit: Option<&Audit>,
 ) -> anyhow::Result<()> {
-    let proxy = MosdProxy::new(connection).await?;
+    let proxy = MicadProxy::new(connection).await?;
     let stream = proxy.receive_task_changed().await?;
     registry.subscribed();
     let mut stream = pin!(stream);
@@ -211,7 +211,7 @@ pub(crate) async fn watch_task_connection(
 /// as an apid crash.
 pub struct BusSettings {
     bus: BusKind,
-    proxy: Mutex<Option<MosdProxy<'static>>>,
+    proxy: Mutex<Option<MicadProxy<'static>>>,
 }
 
 impl BusSettings {
@@ -224,7 +224,7 @@ impl BusSettings {
     }
 
     /// Return the cached proxy, connecting first when necessary.
-    async fn proxy(&self) -> anyhow::Result<MosdProxy<'static>> {
+    async fn proxy(&self) -> anyhow::Result<MicadProxy<'static>> {
         if let Some(proxy) = self.proxy.lock().await.as_ref() {
             return Ok(proxy.clone());
         }
@@ -238,11 +238,11 @@ impl BusSettings {
                 BusKind::System => zbus::Connection::system().await,
                 BusKind::Session => zbus::Connection::session().await,
             }?;
-            anyhow::Ok(MosdProxy::new(&connection).await?)
+            anyhow::Ok(MicadProxy::new(&connection).await?)
         };
-        let proxy = tokio::time::timeout(MOSD_CALL_TIMEOUT, connect)
+        let proxy = tokio::time::timeout(MICAD_CALL_TIMEOUT, connect)
             .await
-            .map_err(|_| MosdCallTimeout::new("connect to micad", MOSD_CALL_TIMEOUT))??;
+            .map_err(|_| MicadCallTimeout::new("connect to micad", MICAD_CALL_TIMEOUT))??;
 
         let mut cached = self.proxy.lock().await;
         if let Some(existing) = cached.as_ref() {
@@ -263,7 +263,7 @@ impl BusSettings {
     where
         F: Future<Output = zbus::Result<T>>,
     {
-        match tokio::time::timeout(MOSD_CALL_TIMEOUT, call).await {
+        match tokio::time::timeout(MICAD_CALL_TIMEOUT, call).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(err)) => {
                 self.reset().await;
@@ -271,7 +271,7 @@ impl BusSettings {
             }
             Err(_) => {
                 self.reset().await;
-                Err(MosdCallTimeout::new(operation, MOSD_CALL_TIMEOUT).into())
+                Err(MicadCallTimeout::new(operation, MICAD_CALL_TIMEOUT).into())
             }
         }
     }
@@ -288,7 +288,7 @@ impl BusSettings {
     /// failure needs a second client.
     pub async fn with_connection(connection: &zbus::Connection) -> anyhow::Result<Self> {
         let client = Self::new(BusKind::Session);
-        *client.proxy.lock().await = Some(MosdProxy::new(connection).await?);
+        *client.proxy.lock().await = Some(MicadProxy::new(connection).await?);
         Ok(client)
     }
 }

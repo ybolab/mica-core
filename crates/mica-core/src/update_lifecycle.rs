@@ -181,7 +181,7 @@ async fn read_client_output(stream: impl AsyncRead + Unpin, limit: usize) -> Res
 }
 
 /// The client a daemon that was never handed one has: none. The default in
-/// [`crate::bus::MosdService`], so a dry-run daemon can neither spawn a
+/// [`crate::bus::MicadService`], so a dry-run daemon can neither spawn a
 /// process nor claim it could.
 pub struct NoClient;
 

@@ -12,9 +12,9 @@ const routes = {
     uptime: { available: true, seconds: 1_231_932 },
   },
   '/api/v1/network': { configured: {}, configuredCount: 0, observed: { available: true, interfaceCount: 1, interfaces: [{ index: 2, name: 'eth0', operationalState: 'routable', addresses: ['192.168.1.24/24'] }] } },
-  '/api/v1/settings/hostname': 'mos-cm4',
+  '/api/v1/settings/hostname': 'mica-cm4',
   '/api/v1/tasks': [{ id: 'task-1', operation: 'set', dotPath: 'hostname', source: 'api', status: 'finished', outcome: 'succeeded', enqueuedAt: FIVE_MINUTES_AGO, foldedCount: 0 }],
-  '/api/v1/update': { lifecycle: { state: 'ready', available: { name: 'mos', version: '2026.09.0' } } },
+  '/api/v1/update': { lifecycle: { state: 'ready', available: { name: 'mica', version: '2026.09.0' } } },
   '/api/v1/time/status': { status: 'synchronized', synchronized: true },
 }
 
@@ -28,7 +28,7 @@ describe('the overview', () => {
     stubFetch(routes)
     renderRoute(<OverviewPage />)
 
-    expect(await screen.findByText('mos-cm4')).toBeTruthy()
+    expect(await screen.findByText('mica-cm4')).toBeTruthy()
     expect(await screen.findByText(/eth0/)).toBeTruthy()
     expect(await screen.findByText('14d 6h')).toBeTruthy()
     expect(await screen.findByText('hostname')).toBeTruthy()

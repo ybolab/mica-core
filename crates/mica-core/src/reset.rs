@@ -51,7 +51,7 @@ pub const DATA_ROOT_ENV: &str = "MICA_DATA_ROOT";
 pub const DEFAULT_DATA_ROOT: &str = "/mnt/data";
 
 /// The system-owned DATA namespace, relative to the pool root.
-const SYSTEM_DIR: &str = "mos";
+const SYSTEM_DIR: &str = "mica";
 /// The user-owned DATA namespace, relative to the pool root.
 const USER_DIR: &str = "srv";
 
@@ -102,7 +102,7 @@ const CONFIG_DIR: &str = "config";
 
 /// The `/mica` subtrees the application layer owns, which tier 2 clears.
 ///
-/// §2.1 footnote `[^apps-mos]`: `/mica` is the system-owned namespace and tier
+/// §2.1 footnote `[^apps-mica]`: `/mica` is the system-owned namespace and tier
 /// 2 does not empty it. `ui/`, `updates/` — an acquired deployment is not
 /// application data — and the `home/`/`root/` backing directories are not
 /// opened.
@@ -390,8 +390,8 @@ fn clear_application_state(roots: &Roots) -> Result<()> {
         clear_contents(&path).with_context(|| format!("clear {}", path.display()))?;
     }
     reseed_tree(&roots.containers(), &["networks", "tmp"])?;
-    // §2.1 marks `/srv` `cleared` and not `re-seeded`, footnote `[^apps-mos]`:
-    // the product gives that namespace to the operator, so mos recreates the
+    // §2.1 marks `/srv` `cleared` and not `re-seeded`, footnote `[^apps-mica]`:
+    // the product gives that namespace to the operator, so mica recreates the
     // mount point and never its contents. Clearing the contents and keeping
     // the directory is exactly that.
     let user = roots.user();
@@ -630,7 +630,7 @@ mod tests {
         }
         // The settings store and the per-device secrets live on STATE too, and
         // no tier may reach them.
-        fs::create_dir_all(roots.state.join("mos/secrets")).unwrap();
+        fs::create_dir_all(roots.state.join("mica/secrets")).unwrap();
 
         write(&roots.system().join("apps/inventory/db.sqlite"), "app data");
         write(&roots.containers().join("overlay/layer"), "layer");
@@ -644,7 +644,7 @@ mod tests {
         write(&roots.user().join("operator/report.csv"), "operator data");
         write(&roots.state.join("quadlet/web.container"), "unit");
         write(&roots.state.join("systemd-units/vendor.service"), "unit");
-        write(&roots.state.join("mos/secrets/device-password"), "secret");
+        write(&roots.state.join("mica/secrets/device-password"), "secret");
         (dir, roots)
     }
 
@@ -672,7 +672,7 @@ mod tests {
             "retained"
         );
         assert_eq!(
-            fs::read_to_string(roots.state.join("mos/secrets/device-password")).unwrap(),
+            fs::read_to_string(roots.state.join("mica/secrets/device-password")).unwrap(),
             "secret",
             "a tier reached the per-device secrets"
         );

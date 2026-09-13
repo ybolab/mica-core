@@ -36,7 +36,7 @@ impl CodedReason {
 // ---------------------------------------------------------------------------
 // `update.lifecycle.code` for state `failed`: an operation this daemon ran
 // did not produce its outcome. Minted at the six sites that construct one, so
-// no classifier reads mos's own sentences back.
+// no classifier reads mica's own sentences back.
 // ---------------------------------------------------------------------------
 
 /// `mica-deploy` could not be run to completion: spawn failed, or the bound on

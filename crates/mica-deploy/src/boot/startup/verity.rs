@@ -93,7 +93,7 @@ fn control() -> Result<File> {
 /// the worker exits; the kernel authenticates the PKCS#7 before table load returns.
 pub fn open(loop_device: &str, name: &str, signature: &Path, image: &VerityImage) -> Result<()> {
     ensure!(
-        ["mos-root", "mos-support"].contains(&name),
+        ["mica-root", "mica-support"].contains(&name),
         "invalid startup mapping name"
     );
     let meta = fs::symlink_metadata(loop_device)?;
@@ -133,7 +133,7 @@ pub fn open(loop_device: &str, name: &str, signature: &Path, image: &VerityImage
         .context("insert root hash signature key")?;
     let fd = control()?;
     let uuid = format!(
-        "MOS-VERITY-{}-{name}",
+        "MICA-VERITY-{}-{name}",
         fs::read_to_string("/proc/sys/kernel/random/uuid")?.trim()
     );
     let created = lifecycle_sys::dm_create(&fd, name, &uuid).context("create verity device")?;

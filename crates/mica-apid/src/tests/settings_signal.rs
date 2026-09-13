@@ -145,7 +145,7 @@ async fn the_settings_changed_subscription_feeds_the_access_cache() {
         .expect("bus address")
         .name("com.mica.micad")
         .expect("well-known name")
-        .serve_at("/com/mos/micad", FakeMosd)
+        .serve_at("/com/mica/micad", FakeMosd)
         .expect("serve com.mica.micad1")
         .build()
         .await

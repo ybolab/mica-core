@@ -52,15 +52,15 @@ describe('first-run setup', () => {
   it('offers the one-time recovery token with a way to copy it', async () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
-    stubFetch({ 'POST /api/v1/setup': { token: 'mos_recovery_abcdef', csrfToken: 'csrf' } })
+    stubFetch({ 'POST /api/v1/setup': { token: 'mica_recovery_abcdef', csrfToken: 'csrf' } })
     renderPanel(withTheme(<SetupView />))
 
     await userEvent.type(screen.getByLabelText('Admin password'), 'correct-horse')
     await userEvent.type(screen.getByLabelText('Confirm password'), 'correct-horse')
     await userEvent.click(screen.getByRole('button', { name: 'Configure device' }))
 
-    expect(await screen.findByText('mos_recovery_abcdef')).toBeTruthy()
+    expect(await screen.findByText('mica_recovery_abcdef')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('mos_recovery_abcdef'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('mica_recovery_abcdef'))
   })
 })

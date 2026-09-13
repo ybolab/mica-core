@@ -1,7 +1,7 @@
 Package: mica-lifecycle
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: mos build <mos@example.invalid>
+Maintainer: mica build <mica@example.invalid>
 Section: admin
 Priority: optional
 Description: static native lifecycle executable for the signed kernel image

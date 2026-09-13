@@ -169,14 +169,14 @@ mod tests {
             fail: false,
         });
         let settings = Settings {
-            hostname: "mos-test".to_string(),
+            hostname: "mica-test".to_string(),
             ..Settings::default()
         };
 
         let state = reconciler.apply(&settings).await.unwrap();
 
-        assert_eq!(*calls.lock().unwrap(), vec!["mos-test".to_string()]);
-        assert_eq!(state, json!({ "hostname": "mos-test" }));
+        assert_eq!(*calls.lock().unwrap(), vec!["mica-test".to_string()]);
+        assert_eq!(state, json!({ "hostname": "mica-test" }));
         assert_eq!(reconciler.name(), "hostname");
         assert_eq!(reconciler.subtree(), "hostname");
     }

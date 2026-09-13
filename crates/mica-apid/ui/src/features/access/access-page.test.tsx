@@ -73,7 +73,7 @@ describe('the access page forms', () => {
   it('mints a token, reveals it once and offers a copy control', async () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
-    stubFetch({ ...routes, 'POST /api/v1/tokens': { id: 'tok_new', name: 'ci', created: 1_756_100_000, token: 'mos_tok_secret' } })
+    stubFetch({ ...routes, 'POST /api/v1/tokens': { id: 'tok_new', name: 'ci', created: 1_756_100_000, token: 'mica_tok_secret' } })
     renderPanel(<AccessPage />)
 
     await userEvent.click(await screen.findByRole('button', { name: 'Mint token' }))
@@ -81,7 +81,7 @@ describe('the access page forms', () => {
     await userEvent.type(within(dialog).getByLabelText('New token label'), 'ci')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create token' }))
 
-    expect(await screen.findByText('mos_tok_secret')).toBeTruthy()
+    expect(await screen.findByText('mica_tok_secret')).toBeTruthy()
     expect((await screen.findAllByText('Token created.')).length).toBeGreaterThan(0)
   })
 

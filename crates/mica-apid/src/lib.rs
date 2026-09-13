@@ -2,7 +2,7 @@
 //!
 //! Serves the management web interface over HTTPS with a self-signed
 //! certificate and talks to `micad` exclusively over D-Bus
-//! (`com.mica.micad` / `/com/mos/micad` / `com.mica.micad1`).
+//! (`com.mica.micad` / `/com/mica/micad` / `com.mica.micad1`).
 //!
 //! Configuration is taken from the environment:
 //!
@@ -12,7 +12,7 @@
 //! - `APID_STATE_DIR` — certificate and key storage, the persisted
 //!   login-backoff counters and the audit ring (default `/var/lib/mica/apid`).
 //! - `APID_BUS` — `system` (default) or `session`; same semantics as
-//!   `MOSD_BUS`.
+//!   `MICAD_BUS`.
 //!
 //! After both listeners are bound the daemon prints exactly one line to
 //! stdout — `APID_LISTENING https=<addr> http=<addr>` — and routes all

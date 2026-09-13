@@ -55,18 +55,18 @@ const DEFAULT_PASSWD: &str = "/etc/passwd";
 ///
 /// **One key set, rendered for every managed login account.** Keys are not
 /// per-user in the settings tree, so every entry of `access.ssh.authorizedKeys`
-/// is a root key as much as it is a `mos` key, and the web UI says so.
+/// is a root key as much as it is a `mica` key, and the web UI says so.
 ///
 /// **A constant list, deliberately not a scan of `/etc/passwd`.** Scanning
 /// would grant key access to any account a future package adds — a privilege
 /// decision inherited from a dependency rather than made in review. The
 /// account database is read only for where each of these accounts lives.
-const MANAGED_LOGIN_ACCOUNTS: [&str; 2] = ["root", "mos"];
+const MANAGED_LOGIN_ACCOUNTS: [&str; 2] = ["root", "mica"];
 /// Environment variable overriding the environment file path.
-const ENVIRONMENT_FILE_ENV: &str = "MOSD_DROPBEAR_ENV";
+const ENVIRONMENT_FILE_ENV: &str = "MICAD_DROPBEAR_ENV";
 /// Environment variable overriding the account database path. Nothing in the
 /// image sets it; the override exists for tests.
-const PASSWD_ENV: &str = "MOSD_PASSWD_PATH";
+const PASSWD_ENV: &str = "MICAD_PASSWD_PATH";
 /// Mode of the environment file: world-readable arguments, owner-writable.
 const ENVIRONMENT_FILE_MODE: u32 = 0o644;
 /// Mode of `~/.ssh`.
@@ -701,12 +701,12 @@ mod tests {
         environment: PathBuf,
         passwd: PathBuf,
         root_home: PathBuf,
-        mos_home: PathBuf,
+        mica_home: PathBuf,
         /// The `root` account's key file — the path the goldens below are
         /// written against.
         keys: PathBuf,
-        /// The `mos` account's key file, holding the same bytes as `keys`.
-        mos_keys: PathBuf,
+        /// The `mica` account's key file, holding the same bytes as `keys`.
+        mica_keys: PathBuf,
         shadow: PathBuf,
     }
 
@@ -720,16 +720,16 @@ mod tests {
         )
     }
 
-    /// An `/etc/passwd` naming `root` and `mos` at the given homes, with a
+    /// An `/etc/passwd` naming `root` and `mica` at the given homes, with a
     /// system account between them.
-    fn passwd_for(root_home: &Path, mos_home: &Path) -> String {
+    fn passwd_for(root_home: &Path, mica_home: &Path) -> String {
         let (uid, gid) = own_ids();
         format!(
             "root:x:{uid}:{gid}:root:{}:/bin/bash\n\
              daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
-             mos:x:{uid}:{gid}:mos operator:{}:/bin/bash\n",
+             mica:x:{uid}:{gid}:mica operator:{}:/bin/bash\n",
             root_home.display(),
-            mos_home.display()
+            mica_home.display()
         )
     }
 
@@ -742,21 +742,25 @@ mod tests {
         file_state: &str,
     ) -> (SshdReconciler<MockUnitControl>, Paths) {
         let root_home = dir.join("root");
-        let mos_home = dir.join("home").join("mos");
+        let mica_home = dir.join("home").join("mica");
         let paths = Paths {
             environment: dir.join("run").join("mica").join("dropbear.env"),
             passwd: dir.join("passwd"),
             keys: root_home.join(".ssh").join("authorized_keys"),
-            mos_keys: mos_home.join(".ssh").join("authorized_keys"),
+            mica_keys: mica_home.join(".ssh").join("authorized_keys"),
             root_home,
-            mos_home,
+            mica_home,
             shadow: dir.join("shadow"),
         };
-        for home in [&paths.root_home, &paths.mos_home] {
+        for home in [&paths.root_home, &paths.mica_home] {
             std::fs::create_dir_all(home).unwrap();
             std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        std::fs::write(&paths.passwd, passwd_for(&paths.root_home, &paths.mos_home)).unwrap();
+        std::fs::write(
+            &paths.passwd,
+            passwd_for(&paths.root_home, &paths.mica_home),
+        )
+        .unwrap();
         std::fs::write(&paths.shadow, SHADOW).unwrap();
         std::fs::set_permissions(&paths.shadow, std::fs::Permissions::from_mode(SHADOW_MODE))
             .unwrap();
@@ -953,7 +957,7 @@ mod tests {
         for directory in [
             paths.environment.parent().unwrap(),
             paths.keys.parent().unwrap(),
-            paths.mos_keys.parent().unwrap(),
+            paths.mica_keys.parent().unwrap(),
             dir.path(),
         ] {
             let leftovers: Vec<_> = std::fs::read_dir(directory)
@@ -1209,7 +1213,7 @@ mod tests {
                 watched: vec![
                     paths.environment.clone(),
                     paths.keys.clone(),
-                    paths.mos_keys.clone(),
+                    paths.mica_keys.clone(),
                 ],
                 seen: std::sync::Mutex::new(Vec::new()),
             },
@@ -1334,7 +1338,7 @@ mod tests {
                     );
                     assert_eq!(state["transientPasswordActive"], json!(transient), "{case}");
                     assert_eq!(state["permitRootLogin"], json!(permit_root_login), "{case}");
-                    for keys in [&paths.keys, &paths.mos_keys] {
+                    for keys in [&paths.keys, &paths.mica_keys] {
                         assert_eq!(
                             std::fs::read_to_string(keys).unwrap(),
                             format!("{}\n", canonical(REAL_ED25519_LINE)),
@@ -1466,7 +1470,7 @@ mod tests {
         for path in [
             &paths.environment,
             &paths.keys,
-            &paths.mos_keys,
+            &paths.mica_keys,
             &paths.shadow,
         ] {
             assert!(
@@ -1484,7 +1488,7 @@ mod tests {
             state["authorizedKeysPaths"],
             json!([
                 paths.keys.display().to_string(),
-                paths.mos_keys.display().to_string(),
+                paths.mica_keys.display().to_string(),
             ])
         );
         assert!(
@@ -1711,7 +1715,7 @@ mod tests {
         let before = std::fs::read(&paths.keys).unwrap();
         assert!(!before.is_empty(), "nothing was rendered to protect");
         assert_eq!(
-            std::fs::read(&paths.mos_keys).unwrap(),
+            std::fs::read(&paths.mica_keys).unwrap(),
             before,
             "the good apply must have rendered both accounts alike"
         );
@@ -1721,7 +1725,7 @@ mod tests {
             .await
             .expect_err(&format!("{what} must fail the apply"));
 
-        for path in [&paths.keys, &paths.mos_keys] {
+        for path in [&paths.keys, &paths.mica_keys] {
             assert_eq!(
                 std::fs::read(path).unwrap(),
                 before,
@@ -2029,7 +2033,7 @@ mod tests {
             state["authorizedKeysPaths"],
             json!([
                 paths.keys.display().to_string(),
-                paths.mos_keys.display().to_string(),
+                paths.mica_keys.display().to_string(),
             ]),
             "every rendered path is named, in managed-account order"
         );
@@ -2081,7 +2085,7 @@ mod tests {
             .await
             .unwrap();
 
-        for file in [&paths.keys, &paths.mos_keys] {
+        for file in [&paths.keys, &paths.mica_keys] {
             let ssh_dir = file.parent().unwrap();
             assert_eq!(mode_of(file), 0o600, "{}", file.display());
             assert_eq!(mode_of(ssh_dir), 0o700, "{}", ssh_dir.display());
@@ -2096,7 +2100,7 @@ mod tests {
     async fn an_existing_ssh_directory_is_brought_to_0700() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
-        let ssh_dir = paths.mos_home.join(".ssh");
+        let ssh_dir = paths.mica_home.join(".ssh");
         std::fs::create_dir(&ssh_dir).unwrap();
         std::fs::set_permissions(&ssh_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(ssh_dir.join("known_hosts"), "operator data").unwrap();
@@ -2121,7 +2125,7 @@ mod tests {
     async fn a_writable_home_fails_the_apply_before_anything_is_written() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
-        std::fs::set_permissions(&paths.mos_home, std::fs::Permissions::from_mode(0o775)).unwrap();
+        std::fs::set_permissions(&paths.mica_home, std::fs::Permissions::from_mode(0o775)).unwrap();
 
         let err = reconciler
             .apply(&settings_with_keys(vec![raw_key(
@@ -2133,7 +2137,7 @@ mod tests {
 
         let message = format!("{err:#}");
         assert!(
-            message.contains(&paths.mos_home.display().to_string()),
+            message.contains(&paths.mica_home.display().to_string()),
             "{message}"
         );
         assert!(message.contains("group- or world-writable"), "{message}");
@@ -2141,10 +2145,10 @@ mod tests {
             !paths.keys.exists(),
             "root's keys changed on a failed apply"
         );
-        assert!(!paths.mos_keys.exists());
+        assert!(!paths.mica_keys.exists());
         assert!(!paths.environment.exists());
         assert!(calls(&reconciler).is_empty());
-        assert_eq!(mode_of(&paths.mos_home), 0o775);
+        assert_eq!(mode_of(&paths.mica_home), 0o775);
     }
 
     /// The home is writable by the account and micad is root: a `~/.ssh`
@@ -2155,7 +2159,7 @@ mod tests {
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
         let elsewhere = dir.path().join("elsewhere");
         std::fs::create_dir(&elsewhere).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, paths.mos_home.join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, paths.mica_home.join(".ssh")).unwrap();
 
         let err = reconciler
             .apply(&settings_with(ssh_settings(true)))
@@ -2174,7 +2178,7 @@ mod tests {
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
         let victim = dir.path().join("victim");
         std::fs::write(&victim, "untouched").unwrap();
-        let ssh_dir = paths.mos_home.join(".ssh");
+        let ssh_dir = paths.mica_home.join(".ssh");
         std::fs::create_dir(&ssh_dir).unwrap();
         std::os::unix::fs::symlink(&victim, ssh_dir.join(".authorized_keys.micad-tmp")).unwrap();
         std::os::unix::fs::symlink(&victim, ssh_dir.join("authorized_keys")).unwrap();
@@ -2189,13 +2193,13 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
         assert!(
-            !std::fs::symlink_metadata(&paths.mos_keys)
+            !std::fs::symlink_metadata(&paths.mica_keys)
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
         assert_eq!(
-            std::fs::read_to_string(&paths.mos_keys).unwrap(),
+            std::fs::read_to_string(&paths.mica_keys).unwrap(),
             format!("{}\n", canonical(REAL_ED25519_LINE))
         );
     }
@@ -2207,10 +2211,10 @@ mod tests {
     fn a_fifo_planted_as_the_key_file_neither_hangs_the_apply_nor_survives_it() {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
-        std::fs::create_dir(paths.mos_home.join(".ssh")).unwrap();
+        std::fs::create_dir(paths.mica_home.join(".ssh")).unwrap();
         rustix::fs::mknodat(
             rustix::fs::CWD,
-            &paths.mos_keys,
+            &paths.mica_keys,
             rustix::fs::FileType::Fifo,
             Mode::from_raw_mode(0o600),
             0,
@@ -2231,7 +2235,7 @@ mod tests {
             .expect("the apply must not block on a FIFO");
         result.unwrap();
         assert!(
-            std::fs::symlink_metadata(&paths.mos_keys)
+            std::fs::symlink_metadata(&paths.mica_keys)
                 .unwrap()
                 .file_type()
                 .is_file()
@@ -2283,7 +2287,7 @@ mod tests {
             canonical(REAL_ED25519_LINE),
             canonical(REAL_RSA_LINE)
         );
-        for path in [&paths.keys, &paths.mos_keys] {
+        for path in [&paths.keys, &paths.mica_keys] {
             assert_eq!(
                 std::fs::read_to_string(path).unwrap(),
                 expected,
@@ -2325,9 +2329,9 @@ mod tests {
             .unwrap();
 
         assert!(paths.keys.exists());
-        assert!(paths.mos_keys.exists());
+        assert!(paths.mica_keys.exists());
         assert!(!daemon_home.join(".ssh").exists());
-        assert_eq!(MANAGED_LOGIN_ACCOUNTS, ["root", "mos"]);
+        assert_eq!(MANAGED_LOGIN_ACCOUNTS, ["root", "mica"]);
     }
 
     /// An account the database does not name, or whose home does not exist,
@@ -2339,12 +2343,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (reconciler, paths) = fixture(dir.path(), "inactive", "disabled");
         let passwd = std::fs::read_to_string(&paths.passwd).unwrap();
-        let without_mos: String = passwd
+        let without_mica: String = passwd
             .lines()
-            .filter(|line| !line.starts_with("mos:"))
+            .filter(|line| !line.starts_with("mica:"))
             .map(|line| format!("{line}\n"))
             .collect();
-        std::fs::write(&paths.passwd, without_mos).unwrap();
+        std::fs::write(&paths.passwd, without_mica).unwrap();
 
         let state = reconciler
             .apply(&settings_with(ssh_settings(true)))
@@ -2352,19 +2356,19 @@ mod tests {
             .expect("a missing account must not fail the reconcile");
 
         assert!(paths.keys.exists());
-        assert!(!paths.mos_home.join(".ssh").exists());
+        assert!(!paths.mica_home.join(".ssh").exists());
         assert_eq!(
             state["authorizedKeysPaths"],
             json!([paths.keys.display().to_string()])
         );
 
         std::fs::write(&paths.passwd, passwd).unwrap();
-        std::fs::remove_dir(&paths.mos_home).unwrap();
+        std::fs::remove_dir(&paths.mica_home).unwrap();
         let state = reconciler
             .apply(&settings_with(ssh_settings(true)))
             .await
             .expect("a missing home must not fail the reconcile");
-        assert!(!paths.mos_home.exists(), "a home is not created");
+        assert!(!paths.mica_home.exists(), "a home is not created");
         assert_eq!(
             state["authorizedKeysPaths"],
             json!([paths.keys.display().to_string()])
@@ -2375,15 +2379,15 @@ mod tests {
     fn the_account_entry_is_found_by_exact_name() {
         let passwd = "mosx:x:5:5::/nowhere:/bin/sh\n\
                       broken:x:notanumber:1::/x:/bin/sh\n\
-                      mos:x:1000:1000:mos operator:/home/mos:/bin/bash\n";
+                      mica:x:1000:1000:mica operator:/home/mica:/bin/bash\n";
 
         assert_eq!(
-            find_account(passwd, "mos"),
+            find_account(passwd, "mica"),
             Some(Account {
-                name: "mos".to_string(),
+                name: "mica".to_string(),
                 uid: 1000,
                 gid: 1000,
-                home: PathBuf::from("/home/mos"),
+                home: PathBuf::from("/home/mica"),
             })
         );
         assert_eq!(find_account(passwd, "broken"), None);
@@ -2409,7 +2413,7 @@ mod tests {
             .await
             .unwrap();
 
-        for path in [&paths.keys, &paths.mos_keys] {
+        for path in [&paths.keys, &paths.mica_keys] {
             assert!(path.exists(), "{} must not be deleted", path.display());
             assert_eq!(
                 std::fs::read_to_string(path).unwrap(),
@@ -2422,7 +2426,7 @@ mod tests {
 
     /// A key the operator removes stops granting access to every account in the
     /// same reconcile. A rewrite that reached only `root` would leave the key
-    /// live for `mos`, which is the removal silently not happening.
+    /// live for `mica`, which is the removal silently not happening.
     #[tokio::test]
     async fn removing_one_key_of_three_rewrites_every_account_file_without_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -2450,7 +2454,7 @@ mod tests {
             canonical(REAL_ED25519_SECOND_LINE)
         );
         let removed_blob = canonical(REAL_RSA_LINE);
-        for path in [&paths.keys, &paths.mos_keys] {
+        for path in [&paths.keys, &paths.mica_keys] {
             let content = std::fs::read_to_string(path).unwrap();
             assert_eq!(content, expected, "{} was not rewritten", path.display());
             assert!(
@@ -2477,7 +2481,7 @@ mod tests {
             .await
             .unwrap();
         let before = std::fs::read(&paths.keys).unwrap();
-        assert_eq!(std::fs::read(&paths.mos_keys).unwrap(), before);
+        assert_eq!(std::fs::read(&paths.mica_keys).unwrap(), before);
 
         // Valid first entry, rejected second: a renderer that wrote as it went
         // would have put the good prefix somewhere before failing.
@@ -2489,7 +2493,7 @@ mod tests {
             .await
             .expect_err("an invalid list must fail the apply");
 
-        for path in [&paths.keys, &paths.mos_keys] {
+        for path in [&paths.keys, &paths.mica_keys] {
             assert_eq!(
                 std::fs::read(path).unwrap(),
                 before,

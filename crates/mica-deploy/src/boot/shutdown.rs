@@ -443,7 +443,7 @@ impl Snapshot {
             if let Some(block) = self.blocks.iter().find(|b| b.device == expected.device) {
                 ensure!(
                     block.mapping.as_ref() == Some(expected),
-                    "reused or changed MOS mapping"
+                    "reused or changed MICA mapping"
                 );
             }
         }
@@ -638,9 +638,11 @@ pub fn release(io: &mut impl LifecycleIo, budget: Budget, owner: &Ownership) -> 
     );
     let mut names = BTreeSet::new();
     ensure!(
-        owner.mappings.iter().all(
-            |m| ["mos-root", "mos-support"].contains(&m.name.as_str()) && names.insert(&m.name)
-        ),
+        owner
+            .mappings
+            .iter()
+            .all(|m| ["mica-root", "mica-support"].contains(&m.name.as_str())
+                && names.insert(&m.name)),
         "invalid owned mapping name"
     );
     io.execute(&Operation::Private, budget.operation_deadline(io.now_ms())?)?;
@@ -1257,12 +1259,12 @@ fn checked_verity_table(
     let parameters: Vec<_> = target.parameters.split_whitespace().collect();
     ensure!(
         parameters.len() >= 10 && parameters[0] == "1",
-        "unsupported MOS verity table"
+        "unsupported MICA verity table"
     );
     let providers = BTreeSet::from([Device::parse(parameters[1])?, Device::parse(parameters[2])?]);
     ensure!(
         providers == *slaves && providers.len() == 1 && providers.iter().all(|d| d.major == 7),
-        "DM table providers differ from live MOS loop dependencies"
+        "DM table providers differ from live MICA loop dependencies"
     );
     Ok(format!(
         "{} {} {} {}",
@@ -1273,7 +1275,7 @@ fn checked_verity_table(
     ))
 }
 
-fn read_mos_table(
+fn read_mica_table(
     control: &File,
     device: Device,
     path: &Path,
@@ -1433,11 +1435,12 @@ fn snapshot() -> Result<Snapshot> {
         let mapping = if path.join("dm").is_dir() {
             let dm_name = read_text(path.join("dm/name"), 256)?.trim().to_owned();
             let uuid = read_text(path.join("dm/uuid"), 256)?.trim().to_owned();
-            // Only MOS tables need content identity. Foreign holders remain
+            // Only MICA tables need content identity. Foreign holders remain
             // visible but are never passed to a removal command.
-            let table = if ["mos-root", "mos-support"].contains(&dm_name.as_str()) {
+            let table = if ["mica-root", "mica-support"].contains(&dm_name.as_str()) {
                 let control = dm_control()?;
-                let (table, _) = read_mos_table(&control, device, &path, &dm_name, &uuid, &slaves)?;
+                let (table, _) =
+                    read_mica_table(&control, device, &path, &dm_name, &uuid, &slaves)?;
                 drop(control);
                 ensure!(
                     disk_generation(&path)? == generation
@@ -1692,7 +1695,7 @@ fn perform(op: &Operation) -> Result<()> {
         }
         Operation::RemoveMapping(expected) => {
             ensure!(
-                ["mos-root", "mos-support"].contains(&expected.name.as_str()),
+                ["mica-root", "mica-support"].contains(&expected.name.as_str()),
                 "foreign mapping removal refused"
             );
             let state = snapshot()?;
@@ -1709,7 +1712,7 @@ fn perform(op: &Operation) -> Result<()> {
             );
             let path = sysfs()?.join("class/block").join(&block.name);
             let control = dm_control()?;
-            let (table, status) = read_mos_table(
+            let (table, status) = read_mica_table(
                 &control,
                 expected.device,
                 &path,
@@ -1870,7 +1873,7 @@ mod tests {
         let provider = Device { major: 7, minor: 0 };
         let status = lifecycle_sys::DmStatus {
             device: rustix::fs::makedev(253, 0),
-            name: "mos-root".into(),
+            name: "mica-root".into(),
             uuid: "CRYPT-VERITY-owned".into(),
             targets: 1,
             open_count: 0,
@@ -1888,7 +1891,7 @@ mod tests {
                 &status,
                 std::slice::from_ref(&target),
                 device,
-                "mos-root",
+                "mica-root",
                 "CRYPT-VERITY-owned",
                 &slaves,
                 80
@@ -1902,7 +1905,7 @@ mod tests {
             let mut slaves = slaves.clone();
             match case {
                 0 => status.device = rustix::fs::makedev(253, 1),
-                1 => status.name = "mos-support".into(),
+                1 => status.name = "mica-support".into(),
                 2 => status.uuid = "reused".into(),
                 3 => status.targets = 2,
                 4 => target.sector = 1,
@@ -1920,7 +1923,7 @@ mod tests {
                     &status,
                     &[target],
                     device,
-                    "mos-root",
+                    "mica-root",
                     "CRYPT-VERITY-owned",
                     &slaves,
                     80

@@ -229,13 +229,13 @@ fn handle_application_event(
     }
 }
 
-/// Match ownership changes in the mos namespace.
+/// Match ownership changes in the mica namespace.
 ///
 /// The signal comes from the bus daemon, not from the named service. The
 /// runtime checks the exact enrollment before asking for an owner or creating
 /// an Item1 proxy, so an unregistered service such as micad is observed only as
 /// a string and is never called or subscribed to.
-fn mos_owner_rule() -> zbus::Result<MatchRule<'static>> {
+fn mica_owner_rule() -> zbus::Result<MatchRule<'static>> {
     Ok(MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .sender("org.freedesktop.DBus")?
@@ -437,7 +437,7 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     };
     let source = Bounded::new(BusSource::new(connection.clone()), APPLICATION_CALL_TIMEOUT);
 
-    let owner_rule = mos_owner_rule()?;
+    let owner_rule = mica_owner_rule()?;
     let mut owners = Box::pin(MessageStream::for_match_rule(owner_rule, &connection, None).await?);
     let bus = zbus::fdo::DBusProxy::new(&connection).await?;
 
@@ -615,15 +615,15 @@ mod tests {
 
     use super::{
         ActiveApplication, ApplicationEvent, Incoming, forward, handle_application_event,
-        mos_owner_rule,
+        mica_owner_rule,
     };
     use crate::bridge::Bridge;
     use crate::config::{Mode, Timings};
     use crate::item::Item;
 
     #[test]
-    fn the_bus_filters_discovery_to_the_mos_namespace() {
-        let rule = mos_owner_rule().expect("valid mos ownership rule");
+    fn the_bus_filters_discovery_to_the_mica_namespace() {
+        let rule = mica_owner_rule().expect("valid mica ownership rule");
         let rendered = rule.to_string();
         assert!(rendered.contains("arg0namespace='com.mica'"), "{rendered}");
         assert!(rendered.contains("member='NameOwnerChanged'"), "{rendered}");

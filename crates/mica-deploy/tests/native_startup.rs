@@ -78,7 +78,7 @@ fn loop_and_dm_creation_refuse_regular_descriptors() {
         rustix::io::Errno::NOTTY
     );
     assert_eq!(
-        lifecycle_sys::dm_create(&file, "mos-root", "MOS-test").unwrap_err(),
+        lifecycle_sys::dm_create(&file, "mica-root", "MICA-test").unwrap_err(),
         rustix::io::Errno::NOTTY
     );
     assert_eq!(file.metadata().unwrap().len(), 0);

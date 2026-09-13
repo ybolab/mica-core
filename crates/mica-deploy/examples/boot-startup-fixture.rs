@@ -20,13 +20,13 @@ fn target(device: &str, image: &VerityImage) -> Result<lifecycle_sys::DmTarget> 
     verity::table(
         rustix::fs::major(dev),
         rustix::fs::minor(dev),
-        "cryptsetup:mos-root",
+        "cryptsetup:mica-root",
         image,
     )
 }
 fn live() -> Result<Vec<lifecycle_sys::DmTarget>> {
     let fd = File::open("/dev/mapper/control")?;
-    let device = fs::metadata("/dev/mapper/mos-root")?.rdev();
+    let device = fs::metadata("/dev/mapper/mica-root")?.rdev();
     let status = lifecycle_sys::dm_status(&fd, device)?;
     Ok(lifecycle_sys::dm_table(&fd, &status)?)
 }
@@ -54,13 +54,13 @@ fn run() -> Result<()> {
         "open" => {
             ensure!(args.len() == 4, "open device signature descriptor");
             let image = descriptor(&args[3])?;
-            verity::open(&args[1], "mos-root", Path::new(&args[2]), &image)?;
+            verity::open(&args[1], "mica-root", Path::new(&args[2]), &image)?;
             print_table(live()?);
         }
         "table" => print_table(live()?),
         "status" => {
             let fd = File::open("/dev/mapper/control")?;
-            let device = fs::metadata("/dev/mapper/mos-root")?.rdev();
+            let device = fs::metadata("/dev/mapper/mica-root")?.rdev();
             lifecycle_sys::dm_status(&fd, device)?;
             println!("READONLY_STATUS_PASS");
         }
@@ -74,12 +74,12 @@ fn run() -> Result<()> {
             let mut mutated = expected.clone();
             if mode == "omit-signature" {
                 mutated.parameters = mutated.parameters.replace(
-                    "3 panic_on_corruption root_hash_sig_key_desc cryptsetup:mos-root",
+                    "3 panic_on_corruption root_hash_sig_key_desc cryptsetup:mica-root",
                     "1 panic_on_corruption",
                 );
             }
             let fd = File::open("/dev/mapper/control")?;
-            let created = lifecycle_sys::dm_create(&fd, "mos-root", "MOS-startup-mutation")?;
+            let created = lifecycle_sys::dm_create(&fd, "mica-root", "MICA-startup-mutation")?;
             let loaded = lifecycle_sys::dm_load_verity(&fd, &created, &mutated);
             if mode == "skip-key" {
                 ensure!(
@@ -101,7 +101,7 @@ fn run() -> Result<()> {
         }
         "read" => {
             let mut bytes = Vec::new();
-            File::open("/dev/mapper/mos-root")?.read_to_end(&mut bytes)?;
+            File::open("/dev/mapper/mica-root")?.read_to_end(&mut bytes)?;
             ensure!(bytes.len() >= 8192, "short authenticated read");
             println!("AUTHENTICATED_READ_PASS {}", bytes.len());
         }

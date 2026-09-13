@@ -1,4 +1,4 @@
-//! The mos-owned broker configuration, and the credentials file beside it.
+//! The mica-owned broker configuration, and the credentials file beside it.
 //!
 //! Neither format is rumqttd's. rumqttd reads a large TOML of its own with a
 //! router section, per-listener sections and a console block; none of that is
@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// The whole of the mos-owned broker configuration.
+/// The whole of the mica-owned broker configuration.
 ///
 /// All three keys are required. micad renders this file from the `mqtt`
 /// settings subtree immediately before it starts the unit, so a missing key
@@ -51,12 +51,12 @@ impl BrokerConfig {
     }
 }
 
-/// Parse the mos-owned configuration from TOML text.
+/// Parse the mica-owned configuration from TOML text.
 pub fn parse(text: &str) -> Result<BrokerConfig> {
     Ok(toml::from_str(text)?)
 }
 
-/// Read and parse the mos-owned configuration.
+/// Read and parse the mica-owned configuration.
 ///
 /// Every error names the path. This binary is started by systemd with no
 /// arguments an operator ever sees, so the journal line is the only place the

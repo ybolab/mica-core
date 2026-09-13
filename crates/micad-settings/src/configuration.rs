@@ -100,7 +100,7 @@ pub enum ConfigError {
 pub const DEFAULT_MANIFEST_PATH: &str = "/usr/share/mica/meta/updates/manifest.json";
 
 /// The baked document's first key, and the one value of it this reader accepts.
-pub const MANIFEST_SCHEMA_TAG: &str = "mos/meta/v1";
+pub const MANIFEST_SCHEMA_TAG: &str = "mica/meta/v1";
 
 /// What the device does on its own, and the one key that says it.
 ///
@@ -281,7 +281,7 @@ impl BakedManifest {
     /// moves the request; it never moves the credential, and a
     /// non-same-origin source is fetched anonymously.
     ///
-    /// Written before its first caller on purpose: mos authenticates to no
+    /// Written before its first caller on purpose: mica authenticates to no
     /// update source yet, and the rule has to exist before the first
     /// credential does because the failure it prevents is silent
     /// (PLAN-070 §2.1).
@@ -445,7 +445,7 @@ pub const DEFAULT_UPDATES_PATH: &str = "/mica/config/updates.json";
 /// document does not name is a key that takes its default — but checked when
 /// present, so a `fleet.json` poured into this path is refused rather than
 /// read.
-pub const UPDATES_SCHEMA_TAG: &str = "mos/update-config/v1";
+pub const UPDATES_SCHEMA_TAG: &str = "mica/update-config/v1";
 
 /// Longest administrative reboot-gate override a policy may allow, and the
 /// built-in default. One hour: long enough to carry a maintenance action,
@@ -1189,7 +1189,7 @@ pub fn resolve(baked: &BakedUpdate, document: UpdatesDocument) -> EffectivePolic
 pub const DEFAULT_FLEET_PATH: &str = "/mica/config/fleet.json";
 
 /// The only fleet document schema this development tree accepts.
-const FLEET_SCHEMA_TAG: &str = "mos/fleet-config/v1";
+const FLEET_SCHEMA_TAG: &str = "mica/fleet-config/v1";
 
 /// The operator's desired fleet overlay, before baked defaults are applied.
 #[derive(Debug, Deserialize)]
@@ -1406,8 +1406,8 @@ mod tests {
     #[test]
     fn fleet_document_rejects_explicit_null_booleans() {
         for document in [
-            r#"{ "schema": "mos/fleet-config/v1", "enabled": null }"#,
-            r#"{ "schema": "mos/fleet-config/v1", "reporting": null }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "enabled": null }"#,
+            r#"{ "schema": "mica/fleet-config/v1", "reporting": null }"#,
         ] {
             assert!(serde_json::from_str::<super::FleetDocument>(document).is_err());
         }
@@ -1512,7 +1512,7 @@ mod tests {
         std::fs::write(
             path,
             r#"{
-              "schema": "mos/update-config/v1",
+              "schema": "mica/update-config/v1",
               "policy": "check",
               "checkIntervalMinutes": null,
               "source": { "channel": "beta", "maxBytes": 123456789 },
@@ -1735,7 +1735,7 @@ mod tests {
             (r#"{ "source": { "repoDir": "/tmp/mirror" } }"#, "repoDir"),
             (r#"{ "source": { "maxBytes": 1 } }"#, "maxBytes"),
             (r#"{ "autoCheck": { "intervalMinutes": 60 } }"#, "autoCheck"),
-            (r#"{ "schema": "mos/update-config/v1" }"#, "schema"),
+            (r#"{ "schema": "mica/update-config/v1" }"#, "schema"),
         ] {
             let err = write_updates(&path, patch).expect_err("{patch} is not a key of the patch");
             assert!(

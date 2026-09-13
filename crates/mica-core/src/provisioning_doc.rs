@@ -100,7 +100,7 @@ use crate::identity;
 pub const DOCUMENT_VERSION: u32 = 1;
 
 /// The one file name a document may have, at the root of a source.
-pub const DOCUMENT_FILE_NAME: &str = "mos-provisioning.toml";
+pub const DOCUMENT_FILE_NAME: &str = "mica-provisioning.toml";
 
 /// Where the transport unit stages the sources it found, read-only.
 ///
@@ -114,7 +114,7 @@ pub const DEFAULT_STAGING_ROOT: &str = "/run/mica/provisioning";
 /// The medium is operator-supplied and is read at boot by a daemon whose
 /// failure stops the device from being manageable, so the size is bounded
 /// before the bytes are: a stick carrying a 4 GiB file named
-/// `mos-provisioning.toml` must be a legible refusal and not an
+/// `mica-provisioning.toml` must be a legible refusal and not an
 /// out-of-memory kill during early boot. 64 KiB is two orders of magnitude
 /// past any real document — the largest one this schema can express is a
 /// device id, a password, 32 authorized keys and a handful of networks.
@@ -915,10 +915,10 @@ pub fn digest_of(document: &ProvisioningDocument) -> String {
     ))
 }
 
-/// The staging root to read, honouring the `MOSD_PROVISIONING_ROOT` test hook.
+/// The staging root to read, honouring the `MICAD_PROVISIONING_ROOT` test hook.
 #[must_use]
 pub fn staging_root_from_env() -> PathBuf {
-    std::env::var_os("MOSD_PROVISIONING_ROOT")
+    std::env::var_os("MICAD_PROVISIONING_ROOT")
         .map_or_else(|| PathBuf::from(DEFAULT_STAGING_ROOT), PathBuf::from)
 }
 
@@ -1718,7 +1718,7 @@ timezone = "Europe/Berlin"
             Some("fedcba9876543210fedcba9876543210"),
             "seeding must keep the injected identity, not mint over it"
         );
-        assert_eq!(settings.hostname, "mos-fedcba98");
+        assert_eq!(settings.hostname, "mica-fedcba98");
         assert_eq!(settings.provisioning.state, ProvisioningState::Complete);
         assert_eq!(settings.provisioning.seeded_generation, 1);
         // The document record survives seeding's own save.
@@ -1798,7 +1798,7 @@ timezone = "Europe/Berlin"
         assert_eq!(Source::Boot.dir_name(), "boot");
         assert_eq!(Source::Media.as_str(), "media");
         assert_eq!(Source::Media.dir_name(), "media");
-        assert_eq!(DOCUMENT_FILE_NAME, "mos-provisioning.toml");
+        assert_eq!(DOCUMENT_FILE_NAME, "mica-provisioning.toml");
         assert_eq!(DEFAULT_STAGING_ROOT, "/run/mica/provisioning");
     }
 
@@ -1807,7 +1807,7 @@ timezone = "Europe/Berlin"
     fn the_staging_root_defaults_to_the_documented_location() {
         // SAFETY-adjacent: this test reads and does not write the variable, so
         // it cannot race another test's environment.
-        if std::env::var_os("MOSD_PROVISIONING_ROOT").is_none() {
+        if std::env::var_os("MICAD_PROVISIONING_ROOT").is_none() {
             assert_eq!(staging_root_from_env(), PathBuf::from(DEFAULT_STAGING_ROOT));
         }
     }

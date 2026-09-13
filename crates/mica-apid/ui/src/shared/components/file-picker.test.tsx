@@ -10,7 +10,7 @@ function render(props: Partial<Parameters<typeof FilePicker>[0]> = {}) {
   const onSubmit = vi.fn()
   const view = renderPanel(
     <FilePicker
-      label="mos UI package"
+      label="mica UI package"
       accept=".zip"
       chooseLabel="Choose file"
       emptyLabel="No file chosen"
@@ -32,13 +32,13 @@ describe('the file picker', () => {
     expect(screen.getByText('No file chosen')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Upload package' }).hasAttribute('disabled')).toBe(true)
 
-    const file = new File(['zip'], 'kiosk.mos-ui.zip', { type: 'application/zip' })
+    const file = new File(['zip'], 'kiosk.mica-ui.zip', { type: 'application/zip' })
     // The real input is hidden and out of the tab order on purpose: the button
     // beside it is the control a user operates, so there is no accessible name
     // to query it by.
     await userEvent.upload(view.container.querySelector('input[type=file]')!, file)
 
-    expect(await screen.findByText('kiosk.mos-ui.zip')).toBeTruthy()
+    expect(await screen.findByText('kiosk.mica-ui.zip')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: 'Upload package' }))
     expect(onSubmit).toHaveBeenCalledWith(file)
   })

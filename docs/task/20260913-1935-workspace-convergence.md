@@ -66,3 +66,25 @@ Converging the repository into one crate workspace
   `mica-apid` and refused `apid` (RED), then passed.
 - Retained: the retired mica-deploy's refs, bundles and release assets are at
   `.retained/mica-deploy/20260913/` (gitignored, verified against its manifest).
+
+### 2026-09-13 user and base naming: standalone mica-apid, every mos name is mica
+
+- User, in this issue: mica-apid is its own executable (like mica-sftp-server),
+  so an apid upgrade never repacks micad. 20b7569: micad no longer links apid;
+  packaging/deb/apid packs mica-apid alone. Test-first: tests/executable.rs in
+  mica-core (micad answers as micad under any name) was RED, then GREEN.
+- Base contract (mica-system-base 960ffe6, user instruction to base: every
+  legacy mos name becomes mica, no compatibility): the D-Bus object is
+  /com/mica/micad; environment variables MOSD_* are MICAD_*; the operator
+  account is mica (home /home/mica); the provisioning file is
+  mica-provisioning.toml; the DATA pool subdirectory is mica; the storage bind
+  label is mica; token scheme, TLS names, UI keys, boot entry and EFI names,
+  the `mica.recovery=` kernel parameter, the verity device mica-root, the
+  U-Boot environment key mica_entries and the schema ids of the core-owned
+  documents (meta, fleet-config, update-config, catalog, updates) are mica.
+- Kept, as the signed update contract shared with mica-build: the schema ids
+  mos/deployment/v1, mos/kernel/v1, mos/rootfs/v1, mos/update-catalog/v1,
+  mos/update-envelope/v1, mos/firmware/v1, the component archive magic
+  MOSUPD01 and tests/component-contracts/ (signed fixtures that mica-build
+  produces and mirrors). Also kept: build-env's mos-<arch> buildx builders, and
+  history in CHANGELOG files and docs.

@@ -1,5 +1,5 @@
 [Unit]
-Description=mos MQTT reference application
+Description=mica MQTT reference application
 After=dbus.service
 Before=mica-mqttd.service
 
@@ -9,8 +9,8 @@ BusName=com.mica.mqttsample.reference
 ExecStart=/usr/bin/mica-mqtt-reference
 Restart=on-failure
 RestartSec=5s
-User=mos
-Group=mos
+User=mica
+Group=mica
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes

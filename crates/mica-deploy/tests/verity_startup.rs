@@ -17,14 +17,14 @@ fn image() -> VerityImage {
 #[test]
 fn signed_geometry_translates_to_one_complete_verity_target() {
     let image = image();
-    let target = table(7, 3, "mos-root-signature", &image).unwrap();
+    let target = table(7, 3, "mica-root-signature", &image).unwrap();
     assert_eq!(target.sector, 0);
     assert_eq!(target.length, 16);
     assert_eq!(target.kind, "verity");
     assert_eq!(
         target.parameters,
         format!(
-            "1 7:3 7:3 4096 4096 2 2 sha256 {} {} 3 panic_on_corruption root_hash_sig_key_desc mos-root-signature",
+            "1 7:3 7:3 4096 4096 2 2 sha256 {} {} 3 panic_on_corruption root_hash_sig_key_desc mica-root-signature",
             image.root_hash, image.verity.salt
         )
     );
@@ -71,7 +71,7 @@ fn no_geometry_fallback_or_optional_signature() {
             _ => image.verity.salt = "-".into(),
         }
         assert!(
-            table(7, 0, "mos-root-signature", &image).is_err(),
+            table(7, 0, "mica-root-signature", &image).is_err(),
             "{mutation}"
         );
     }

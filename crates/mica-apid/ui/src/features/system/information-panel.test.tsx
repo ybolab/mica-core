@@ -10,8 +10,8 @@ function information(overrides: Partial<SystemInformation> = {}): SystemInformat
   return {
     machineId: { ...available, id: '7f1c2ad0f0e4' },
     board: { ...available, model: 'Radxa CM3576', source: 'device-tree' },
-    kernel: { ...available, release: '6.12.0-mos', version: '#1 SMP' },
-    release: { ...available, prettyName: 'mos 2026.09', imageVersion: '2026.09.0' },
+    kernel: { ...available, release: '6.12.0-mica', version: '#1 SMP' },
+    release: { ...available, prettyName: 'mica 2026.09', imageVersion: '2026.09.0' },
     system: {
       ...available,
       version: '2026.09.0',
@@ -21,9 +21,9 @@ function information(overrides: Partial<SystemInformation> = {}): SystemInformat
       fileEpoch: { available: true, epoch: 1_577_836_800, date: '2020-01-01T00:00:00Z' },
     },
     daemon: { ...available, name: 'micad', version: '0.4.1', commit: 'abc1234' },
-    packages: { ...available, count: 2, mosCount: 1, entries: [
-      { name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mos: true },
-      { name: 'busybox', version: '1.36.1', architecture: 'arm64', mos: false },
+    packages: { ...available, count: 2, micaCount: 1, entries: [
+      { name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mica: true },
+      { name: 'busybox', version: '1.36.1', architecture: 'arm64', mica: false },
     ] },
     deployment: { ...available, id: 'a'.repeat(64), version: '2026.09.0', confirmed: true },
     uptime: { ...available, seconds: 93_784 },
@@ -53,7 +53,7 @@ describe('system information', () => {
     expect(screen.getByText('2026-09-01T12:34:56+08:00')).toBeTruthy()
     expect(screen.getByText(`${'a'.repeat(64)} · 2026.09.0`)).toBeTruthy()
     expect(screen.getByText('1d 2h 3m')).toBeTruthy()
-    expect(screen.getByText('2 packages, including 1 mos packages.')).toBeTruthy()
+    expect(screen.getByText('2 packages, including 1 mica packages.')).toBeTruthy()
     expect(screen.getByText('busybox')).toBeTruthy()
   })
 
@@ -93,7 +93,7 @@ describe('system information', () => {
 
   it('states an empty manifest instead of drawing an empty table', async () => {
     stubFetch({
-      '/api/v1/system/info': information({ packages: { available: true, count: 0, mosCount: 0, entries: [] } }),
+      '/api/v1/system/info': information({ packages: { available: true, count: 0, micaCount: 0, entries: [] } }),
       '/api/v1/system/telemetry': telemetryAbsent,
     })
     renderPanel(<InformationPanel />)
@@ -121,10 +121,10 @@ describe('system information', () => {
         packages: {
           available: true,
           count: 4096,
-          mosCount: 12,
+          micaCount: 12,
           truncated: true,
           malformedRows: 3,
-          entries: [{ name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mos: true }],
+          entries: [{ name: 'mica-system', version: '2026.09.0', architecture: 'arm64', mica: true }],
         },
       }),
       '/api/v1/system/telemetry': telemetryAbsent,

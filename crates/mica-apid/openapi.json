@@ -696,7 +696,7 @@
           "resources"
         ],
         "summary": "Export one diagnostic snapshot.",
-        "description": "The stored bytes, verbatim and already redacted, as an attachment named\n`mos-diagnostics-<machine id prefix>-<id>.json` so a browser saves it\nunder a name support can file. Never cached.",
+        "description": "The stored bytes, verbatim and already redacted, as an attachment named\n`mica-diagnostics-<machine id prefix>-<id>.json` so a browser saves it\nunder a name support can file. Never cached.",
         "operationId": "api_v1_diagnostics_snapshot",
         "parameters": [
           {
@@ -3880,7 +3880,7 @@
         "tags": [
           "ui"
         ],
-        "summary": "Stream a `.mos-ui.zip` to DATA, validate and extract it off the async worker,\nthen install it without changing the active generation.",
+        "summary": "Stream a `.mica-ui.zip` to DATA, validate and extract it off the async worker,\nthen install it without changing the active generation.",
         "operationId": "api_v1_ui_upload",
         "requestBody": {
           "content": {
@@ -5757,7 +5757,7 @@
           },
           "token": {
             "type": "string",
-            "description": "The whole token, `mos_<id>_<secret>`.\n\n**It appears here and nowhere else, ever.** Only the SHA-256 digest is\nstored, so a token that is lost is replaced and never recovered -- the\nposture `access.device` already takes."
+            "description": "The whole token, `mica_<id>_<secret>`.\n\n**It appears here and nowhere else, ever.** Only the SHA-256 digest is\nstored, so a token that is lost is replaced and never recovered -- the\nposture `access.device` already takes."
           }
         }
       },
@@ -6183,7 +6183,7 @@
           },
           "token": {
             "type": "string",
-            "description": "The whole token, `mos_<id>_<secret>`.\n\n**It appears here and nowhere else, ever**, exactly as the mint route's\ndoes: only the SHA-256 digest is stored. The id is not a separate\nmember because it is the token's own second segment, so a caller that\nholds this string can address it for a later `DELETE` without being\ntold it twice."
+            "description": "The whole token, `mica_<id>_<secret>`.\n\n**It appears here and nowhere else, ever**, exactly as the mint route's\ndoes: only the SHA-256 digest is stored. The id is not a separate\nmember because it is the token's own second segment, so a caller that\nholds this string can address it for a later `DELETE` without being\ntold it twice."
           }
         }
       },

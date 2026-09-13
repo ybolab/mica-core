@@ -5,24 +5,24 @@ fn normalizes_only_native_deployment_entries() {
     let id = "a".repeat(64);
     for suffix in ["", "+3", "+2-1", "+1-2", "+0-3"] {
         assert_eq!(
-            selected_entry(&format!("mos-{id}{suffix}.conf")).unwrap(),
+            selected_entry(&format!("mica-{id}{suffix}.conf")).unwrap(),
             id
         );
     }
     for suffix in ["+4", "+3-3", "+-1", "+0", "+2-01", "/../x", "+1-2.conf"] {
-        assert!(selected_entry(&format!("mos-{id}{suffix}.conf")).is_err());
+        assert!(selected_entry(&format!("mica-{id}{suffix}.conf")).is_err());
     }
-    assert!(selected_entry(&format!("mos-{}.conf", "A".repeat(64))).is_err());
+    assert!(selected_entry(&format!("mica-{}.conf", "A".repeat(64))).is_err());
     assert!(selected_entry("../deployment.json").is_err());
 }
 
 #[test]
 fn reads_efi_attributes_and_strict_utf16_termination() {
     let mut bytes = vec![7, 0, 0, 0];
-    for c in "mos-entry.conf\0".encode_utf16() {
+    for c in "mica-entry.conf\0".encode_utf16() {
         bytes.extend(c.to_le_bytes());
     }
-    assert_eq!(utf16_variable(&bytes).unwrap(), "mos-entry.conf");
+    assert_eq!(utf16_variable(&bytes).unwrap(), "mica-entry.conf");
     assert!(utf16_variable(&bytes[..bytes.len() - 1]).is_err());
     assert!(utf16_variable(&bytes[..bytes.len() - 2]).is_err());
     bytes.extend([0, 0]);

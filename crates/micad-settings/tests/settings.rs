@@ -130,9 +130,9 @@ fn get_whole_tree_scalar_and_nested() {
     let settings = populated();
     let whole = settings.get("").unwrap();
     assert_eq!(whole, settings.get(".").unwrap());
-    assert_eq!(whole["hostname"], json!("mos"));
+    assert_eq!(whole["hostname"], json!("mica"));
 
-    assert_eq!(settings.get("hostname").unwrap(), json!("mos"));
+    assert_eq!(settings.get("hostname").unwrap(), json!("mica"));
     assert_eq!(
         settings.get("network.eth0.static.address").unwrap(),
         json!("192.168.1.10/24")
@@ -271,7 +271,7 @@ fn set_errors_leave_state_unchanged() {
 #[test]
 fn json_path_get_navigates_a_live_state_tree() {
     let tree = json!({
-        "hostname": {"current": "mos"},
+        "hostname": {"current": "mica"},
         "network": {"eth0": {"operstate": "up", "addresses": ["10.0.0.2/24"]}},
     });
     assert_eq!(json_path_get(&tree, ""), Some(&tree));
@@ -1358,7 +1358,7 @@ fn configured() -> Settings {
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$ZGV2$ZGV2".to_string(),
     });
     settings.wifi.ap.mode = ApMode::Always;
-    settings.wifi.ap.ssid = Some("mos-ap".to_string());
+    settings.wifi.ap.ssid = Some("mica-ap".to_string());
     settings.mqtt.enabled = true;
     settings.time.timezone = "Europe/Berlin".to_string();
     settings.container.enabled = !settings.container.enabled;
@@ -1521,7 +1521,7 @@ fn newer_wifi_document() -> String {
     json!({
         "schema_version": WIFI_SCHEMA_VERSION + 1,
         "wifi": {
-            "ap": { "mode": "always", "ssid": "mos-ap", "channel": 11, "band": "6ghz" },
+            "ap": { "mode": "always", "ssid": "mica-ap", "channel": 11, "band": "6ghz" },
             "client": {
                 "enabled": true,
                 "interface": "wlan0",

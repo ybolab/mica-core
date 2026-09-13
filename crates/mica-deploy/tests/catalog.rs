@@ -29,7 +29,7 @@ fn catalog() -> Value {
         let artifact = deployment.pointer(pointer).unwrap();
         objects.insert(artifact["sha256"].as_str().unwrap(), json!({"sha256":artifact["sha256"],"bytes":artifact["bytes"],"url":format!("https://updates.test/v1/objects/{}",artifact["sha256"].as_str().unwrap())}));
     }
-    json!({"schema":"mos/catalog/v1","revision":2,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
+    json!({"schema":"mica/catalog/v1","revision":2,"issuedAt":"2026-09-09T00:00:00.000Z","expiresAt":"2026-09-10T00:00:00.000Z",
         "channels":[{"board":"x64","channel":"stable","releaseId":"release-1","generation":1}],
         "releases":[{"id":"release-1","channel":"stable","notes":"Test","deployment":String::from_utf8(signed(&deployment)).unwrap(),"objects":objects.values().collect::<Vec<_>>()}]})
 }
@@ -94,7 +94,7 @@ fn rejects_expiry_clock_rollback_equivocation_and_untrusted_signatures() {
         ("expiresAt", json!("2026-09-08T00:00:00.000Z")),
         ("issuedAt", json!("2026-09-11T00:00:00.000Z")),
         ("revision", json!(1)),
-        ("schema", json!("mos/updates/v1")),
+        ("schema", json!("mica/updates/v1")),
     ] {
         let mut changed = value.clone();
         changed[field] = replacement;

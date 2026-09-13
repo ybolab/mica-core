@@ -250,7 +250,7 @@ fn value_for(path: &str, setpoint: i64) -> Option<OwnedValue> {
         "/Mgmt/Connection" => string_value("connected"),
         "/DeviceInstance" => OwnedValue::from(1_i64),
         "/ProductId" => string_value("mica-mqtt-reference"),
-        "/ProductName" => string_value("mos MQTT reference"),
+        "/ProductName" => string_value("mica MQTT reference"),
         "/Connected" => OwnedValue::from(true),
         "/Example/ReadOnly" => string_value("ready"),
         SETPOINT_PATH => OwnedValue::from(setpoint),
