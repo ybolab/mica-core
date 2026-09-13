@@ -40,7 +40,7 @@ Moving micad to dropbear and adding the sftp-server package
 ## Dependencies
 
 - **blocked by**: (none)
-- **blocks**: `mica-system` dropbear.service (Depends: mica-sftp-server), `mica-build` adoption
+- **blocks**: `mica-build` adoption (`mica-system` needs nothing from here beyond `/run/mica/dropbear.env`)
 
 ## Notes
 
@@ -106,3 +106,17 @@ Moving micad to dropbear and adding the sftp-server package
 - Service-layer session survival across restart is mica-system's evidence
   (7faafef, KillMode=process); a micad-driven guest check is still open.
 - `make check` 1109/1109.
+
+### SFTP is a board feature (user policy, 2026-09-13 19:12 UTC)
+
+- `mica-sftp-server` is no longer a dependency of `mica-system` (its local
+  13c1299 drops the `Depends`); boards select it and mica-build composes it.
+  The producer and the Rust code stay here.
+- Implications here: the `sftp` producer still builds for both architectures on
+  every commit and the package gate covers it; nothing in micad assumes the
+  binary exists, and the reconciler renders the same arguments either way; the
+  sftp -D interop tests skip in
+  the rust-check image, which has no OpenSSH client, and were run explicitly in
+  a container that has one (adding openssh-client to that image is optional).
+- Own CI (cc4a3f9 and its parents f3de5c6, 1c7442a) sit below the runtime
+  commits, so they can be published without them.

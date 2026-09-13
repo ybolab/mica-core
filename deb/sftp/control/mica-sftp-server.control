@@ -14,3 +14,6 @@ Description: mos SFTP server
  .
  There is no dependency on micad: the binary speaks only SFTP to its SSH server
  and reads nothing micad renders.
+ .
+ A board feature: boards that offer file transfer select this package; the
+ base system does not depend on it.
