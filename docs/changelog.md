@@ -6,8 +6,8 @@ CI builds and publishes a pool only for a commit that needs one
 (`scripts/build/pool-decision.sh`). When everything changed since the nearest
 ancestor with a complete published pool (both architectures, this
 repository, that commit) is docs, markdown, `.gitignore` or a release pin
-whose verified releases name the same `IMAGE_MICA_BUILD_RUST` and
-`IMAGE_MICA_BUILD_BASE`, the commit builds nothing and gets no pool; any other
+whose verified releases pin `IMAGE_MICA_BUILD_RUST` and
+`IMAGE_MICA_BUILD_BASE` to the same repository and digest (a tag may differ), the commit builds nothing and gets no pool; any other
 change, and anything the step cannot establish, builds the full pool with
 every existing gate. Not yet published.
 

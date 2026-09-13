@@ -11,8 +11,8 @@ name: release
 #
 # A commit that changes no package input builds no pool: when everything
 # changed since the nearest ancestor with a complete published pool is docs,
-# markdown, .gitignore or a release pin whose verified images.env names the
-# same IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE,
+# markdown, .gitignore or a release pin whose verified images.env pins
+# IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE to the same digests,
 # scripts/build/pool-decision.sh says pool=skip and nothing below runs. Any
 # other change, and anything it cannot establish, is pool=build.
 on:

@@ -20,9 +20,10 @@
 #     deps/build-env.json;
 #   - when deps/build-env.json changed, both pins verified against their
 #     releases (scripts/build/build-env.sh) and IMAGE_MICA_BUILD_RUST and
-#     IMAGE_MICA_BUILD_BASE, the only images this repository builds in,
-#     the same digest pins in both images.env. Equal version strings prove
-#     nothing and are not compared.
+#     IMAGE_MICA_BUILD_BASE, the only images this repository builds in, each
+#     a well-formed name:tag@sha256 pin naming the same repository and the
+#     same digest in both images.env; a tag that differs is a label, not a
+#     change. Equal version strings prove nothing and are not compared.
 # A skipped commit has no pool of its own; the baseline's pool, built from
 # the same package inputs, carries its own provenance and is not repacked.
 #
@@ -190,6 +191,8 @@ done
 for key in IMAGE_MICA_BUILD_RUST IMAGE_MICA_BUILD_BASE; do
     a="$(image_of "${WORK}/base-env/images.env" "${key}")" || build "${key} is missing or not a digest pin in the release at ${BASE:0:12}"
     b="$(image_of "${WORK}/head-env/images.env" "${key}")" || build "${key} is missing or not a digest pin in the release at ${HEAD_COMMIT:0:12}"
-    [ "${a}" = "${b}" ] || build "${key} changed: ${a} -> ${b}"
+    # The content is the digest; the tag is a label. The repository is part of
+    # where the image comes from, so it must match too.
+    [ "${a%%:*}" = "${b%%:*}" ] && [ "${a##*@}" = "${b##*@}" ] || build "${key} changed: ${a} -> ${b}"
 done
-skip "only docs/markdown/.gitignore and the release pin changed since ${BASE:0:12}, and both verified releases name the same IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE"
+skip "only docs/markdown/.gitignore and the release pin changed since ${BASE:0:12}, and both verified releases pin IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE to the same repository and digest"

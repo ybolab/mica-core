@@ -38,6 +38,11 @@ S2="$(release v9.9.2 "${RUST_A}" "${BASE_A}" "${GO_B}")" # same effective images
 S3="$(release v9.9.3 "${RUST_B}" "${BASE_A}" "${GO_A}")" # Rust image changed
 S4="$(release v9.9.4 "${RUST_A}" "${BASE_B}" "${GO_A}")" # base image changed
 S5="$(release v9.9.5 "${RUST_A}" "${BASE_A}" "${GO_A}")"
+S6="$(release v9.9.6 "${RUST_A/rust.inputs-aaaaaaaaaaaaaaaa/rust.build-0123456789ab}" "${BASE_A/base.inputs-cccccccccccccccc/base.inputs-1111111111111111}" "${GO_A}")" # other tags, same digests
+S7="$(release v9.9.7 "${RUST_A%@*}@sha256:$(printf '7%.0s' {1..64})" "${BASE_A}" "${GO_A}")"                               # same Rust tag, other digest
+S8="$(release v9.9.8 "ghcr.io/ybolab/other-env:rust.inputs-aaaaaaaaaaaaaaaa@${RUST_A#*@}" "${BASE_A}" "${GO_A}")"          # same Rust digest, other repository
+S9="$(release v9.9.9 "${RUST_A%@*}" "${BASE_A}" "${GO_A}")"                                                               # verified, but the Rust ref is unpinned
+S10="$(release v9.9.10 "${RUST_A}" "${BASE_A%@*}@sha256:CCCC" "${GO_A}")"                                                  # verified, but the base digest is malformed
 echo tampered >>"${REL}/v9.9.5/images.env"                # SHA256SUMS no longer holds
 pin() { printf '{\n  "version": "%s",\n  "sha256sums": "%s"\n}\n' "$1" "$2"; }
 
@@ -102,7 +107,17 @@ expect skip "HEAD is the published baseline" "nothing changed since ${C0:0:12}" 
 
 # the release pin
 branch "${C0}"; put deps/build-env.json "$(pin v9.9.2 "${S2}")"; put docs/plan/x.md 'pin note'; H="$(commit pin-same)"
-expect skip "pin version bump with the same Rust and base digests (GO differs, unused)" "name the same IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE" "${R}" "${H}"
+expect skip "pin version bump with the same Rust and base digests (GO differs, unused)" "pin IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE to the same repository and digest" "${R}" "${H}"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.6 "${S6}")"; H="$(commit pin-retagged)"
+expect skip "pin whose Rust and base refs change tag but keep their digests" "pin IMAGE_MICA_BUILD_RUST and IMAGE_MICA_BUILD_BASE to the same repository and digest" "${R}" "${H}"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.7 "${S7}")"; H="$(commit pin-same-tag-new-digest)"
+expect build "pin whose Rust ref keeps its tag and changes digest" "IMAGE_MICA_BUILD_RUST changed" "${R}" "${H}"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.8 "${S8}")"; H="$(commit pin-other-repository)"
+expect build "pin whose Rust digest moved to another repository" "IMAGE_MICA_BUILD_RUST changed" "${R}" "${H}"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.9 "${S9}")"; H="$(commit pin-unpinned)"
+expect build "verified release with an unpinned Rust ref" "IMAGE_MICA_BUILD_RUST is missing or not a digest pin" "${R}" "${H}"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.10 "${S10}")"; H="$(commit pin-malformed)"
+expect build "verified release with a malformed base digest" "IMAGE_MICA_BUILD_BASE is missing or not a digest pin" "${R}" "${H}"
 branch "${C0}"; put deps/build-env.json "$(pin v9.9.3 "${S3}")"; H="$(commit pin-rust)"
 expect build "pin whose Rust image changed" "IMAGE_MICA_BUILD_RUST changed" "${R}" "${H}"
 branch "${C0}"; put deps/build-env.json "$(pin v9.9.4 "${S4}")"; H="$(commit pin-base)"
@@ -111,7 +126,7 @@ branch "${C0}"; put deps/build-env.json "$(pin v9.9.5 "${S5}")"; H="$(commit pin
 expect build "pin whose release assets do not verify" "did not verify" "${R}" "${H}"
 branch "${C0}"; put deps/build-env.json "$(pin v9.9.2 "$(printf '0%.0s' {1..64})")"; H="$(commit pin-wrong-sha)"
 expect build "pin recording the wrong SHA256SUMS hash" "did not verify" "${R}" "${H}"
-branch "${C0}"; put deps/build-env.json "$(pin v9.9.9 "${S1}")"; H="$(commit pin-no-release)"
+branch "${C0}"; put deps/build-env.json "$(pin v9.9.99 "${S1}")"; H="$(commit pin-no-release)"
 expect build "pin naming a release that cannot be fetched" "did not verify" "${R}" "${H}"
 
 # real inputs
