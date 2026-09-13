@@ -1,10 +1,12 @@
 name: release
-# Every push to main that passes the gates publishes the pool -- micad,
-# mica-apid, mica-mqttd and mica-mqtt-broker, both architectures -- as the
-# GitHub Release build-<commit12> of this commit; the assembly pins that
-# release through deps/packages/. The arm64 archives are cross-compiled by
-# the pinned Rust image and packed in the arm64 packaging image under
-# emulation.
+# Every push to main that passes the gates publishes the pool -- every
+# package this repository builds, both architectures -- to the one package
+# named after this repository, by this workflow's own token:
+# ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12>. The assembly pins it
+# through deps/packages/. Sources are public, so `make deps` needs no token;
+# publish.sh reads what it pushed back anonymously and fails while the package
+# is not public. The arm64 archives are cross-compiled by the pinned Rust
+# image and packed in the arm64 packaging image under emulation.
 on:
   push:
     branches: [main]
@@ -12,15 +14,18 @@ on:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Fetch the build substrate at its pin
         run: make deps
-        env:
-          GH_TOKEN: ${{ secrets.MICA_DEPS_TOKEN }}
       - name: Emulation for the arm64 packaging image
         uses: docker/setup-qemu-action@v3
       - name: Builder images, both architectures
@@ -45,7 +50,7 @@ jobs:
           set -euo pipefail
           make pool
           make package-gate
-      - name: Publish the release of this commit
+      - name: Publish the pool of this commit
         if: github.event_name == 'push'
         run: make publish
         env:

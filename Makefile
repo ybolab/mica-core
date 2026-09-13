@@ -19,7 +19,7 @@ MICA_ARCH ?= arm64
 
 help:
 	@echo "  deps                fetch build-env/ at its pin (deps/sources/); deps-check reads without downloading"
-	@echo "  deps-bump           rewrite the pin from the newest build-* release (DEP_TAG=build-<commit12> picks one)"
+	@echo "  deps-bump           rewrite the pin from the newest source artifact (DEP_TAG=build-<commit12> picks one)"
 	@echo "  build-env           the builder images, from the pins in build-env/images.env"
 	@echo "  rust-gate           hack/check.sh (VERSION agreement, fmt, clippy -D warnings, nextest, doctests, cargo-deny, openapi) in the pinned rust-check image"
 	@echo "  dbus-policy-test    prove the shipped micad D-Bus policy is root-only against a real dbus-daemon (needs dbus-daemon on the host)"
@@ -27,7 +27,7 @@ help:
 	@echo "  deb                 both producers for \$$MICA_ARCH into _out/debs/\$$MICA_ARCH/pool (MICA_ARCH=amd64|arm64)"
 	@echo "  pool                both producers, both architectures, indexed"
 	@echo "  package-gate        the package gate over this repository's pool"
-	@echo "  publish             the pool as the GitHub Release build-<commit12> of this commit"
+	@echo "  publish             the pool as ghcr.io/ybolab/mica-core:pool.<arch>.build-<commit12> (CI publishes; a developer machine does not)"
 	@echo "  lint                shell hygiene of the tree"
 	@echo "  check               everything that runs from the pinned images: lint, apid-ui-build-contract-test, rust-gate"
 
